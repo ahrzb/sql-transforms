@@ -1,6 +1,6 @@
 """The join ON residual, three ways.
 
-Split out of test_known_divergences.py 2026-08-16; see README.md for what
+See README.md for what
 belongs here (kept behaviour + its ground) versus in
 ../test_open_divergences.py (behaviour we intend to change).
 """
@@ -17,17 +17,12 @@ from confit.oracle import Oracle
 #
 # All three live in the same corner: a one-sided residual on a JOIN ON clause.
 #
-# The RECURSION one is the serious one and it is a REGRESSION IN MY OWN
-# REASONING. When fixing the many-join probe cache I wrote, in the ticket and in
-# the commit message, that a scalar join losing its probe cache across a CFG
-# split was "correct, and free when the split is a branch (only one arm runs)".
-# That is false when the split is inside the join's OWN residual: the cache miss
-# re-enters emit_probe, which re-emits the residual, which contains the split,
-# which misses again — unbounded recursion that kills the process at build time.
-# I asserted it without testing it.
-#
-# Reproduced by hand 2026-08-08 (exit 0xC00000FD, both join kinds). The
-# trap-freeness one below was relayed from the sweep.
+# The RECURSION one is the serious one. A scalar join losing its probe cache
+# across a CFG split looks "correct, and free when the split is a branch (only
+# one arm runs)". That is false when the split is inside the join's OWN
+# residual: the cache miss re-enters emit_probe, which re-emits the residual,
+# which contains the split, which misses again — unbounded recursion that kills
+# the process at build time (exit 0xC00000FD, both join kinds).
 
 _ONRES_BODY = """
 schema = pa.schema([pa.field("k", pa.int64(), nullable=False),
@@ -39,13 +34,12 @@ print("BUILT", [tuple(x.values()) for x in fn.infer_rows([{{"k": 0, "n": 1}}])])
 """
 
 
-# FIXED 2026-08-08. The scalar probe cache is now re-created on every block
-# transition, exactly as the many-join cache already was, plus a re-entry guard
-# so a FUTURE cache hole raises a named error instead of recursing to death.
+# The scalar probe cache is re-created on every block transition, exactly as
+# the many-join cache is, plus a re-entry guard so a cache hole raises a named
+# error instead of recursing to death.
 #
-# Still run in a SUBPROCESS: if this ever regresses it goes back to killing the
-# interpreter, and a subprocess turns that into a failed test rather than a
-# dead suite.
+# Run in a SUBPROCESS: a regression kills the interpreter, and a subprocess
+# turns that into a failed test rather than a dead suite.
 
 
 @pytest.mark.parametrize("join", ["JOIN", "LEFT JOIN"])
@@ -72,9 +66,9 @@ def test_split_in_the_on_residual_builds_and_is_correct(join, residual, oracle):
     assert p.stdout.strip().splitlines()[-1] == f"BUILT {want}", p.stdout
 
 
-# FIXED 2026-08-08. `scan_residual` no longer decides trap-freeness at all:
-# that question moved to `plan::may_trap`, which the JOIN ON residual rule is
-# the sole consumer of. A CASE is trap-free exactly when all of its arms are.
+# Trap-freeness is decided by `plan::may_trap` (not `scan_residual`), which
+# the JOIN ON residual rule is the sole consumer of. A CASE is trap-free
+# exactly when all of its arms are.
 
 _ONESIDED = pa.table(
     {"id": pa.array([0, 1], pa.int64()), "cat": pa.array([1, 2], pa.int64())}
@@ -85,9 +79,10 @@ _ONESIDED_ROWS = [(0, 1), (1, 2)]
 def _one_sided(residual: str, rows: list[tuple[int, int]]) -> list[tuple]:
     """Run `JOIN r ON t.k = r.id AND <residual>` and check it against DuckDB.
 
-    `residual` mentions only the dynamic side, which is the case the wave-4
-    rule guards: DuckDB scan-pushes a single-side residual, so trap TIMING
-    would differ from our hit-guarded lowering if it could trap at all.
+    `residual` mentions only the dynamic side, which is the case the
+    single-side residual rule guards: DuckDB scan-pushes a single-side
+    residual, so trap TIMING would differ from our hit-guarded lowering if
+    it could trap at all.
     """
     schema = pa.schema(
         [
@@ -116,7 +111,7 @@ def _one_sided(residual: str, rows: list[tuple[int, int]]) -> list[tuple]:
         "(CASE WHEN n > 1 THEN 1 ELSE 0 END) = 1",
         # no ELSE: the implicit NULL default is not a trap either
         "(CASE WHEN n > 1 THEN 1 END) = 1",
-        # COALESCE and NULLIF desugar to CASE and were refused the same way
+        # COALESCE and NULLIF desugar to CASE
         "COALESCE(n, 0) > 1",
         "NULLIF(n, 7) > 1",
         # nested, and with a comparison in the arm rather than the condition
@@ -136,7 +131,7 @@ def test_trap_free_case_in_a_one_sided_on_residual_builds(residual):
         "(CASE WHEN 9223372036854775807 + n > 1 THEN 1 ELSE 0 END) = 1",
         # ... and in the ELSE
         "(CASE WHEN n > 1 THEN 0 ELSE 9223372036854775807 + n END) = 1",
-        # bare arithmetic, the case that always was refused
+        # bare arithmetic
         "9223372036854775807 + n > 1",
     ],
 )
@@ -144,15 +139,15 @@ def test_a_genuinely_trapping_one_sided_on_residual_is_still_refused(residual):
     """The guard exists for a real reason. Widening it to trap-free CASEs must
     not widen it to CASEs that trap.
 
-    The last two spent one day (2026-08-17) out of this list, on the grounds
-    that `c + n > 1` cannot overflow because DuckDB rewrites it to
-    `n > 1 - c`. That rewrite is `expression_rewriter`, and the ORACLE is
-    DuckDB with the optimizer off, which performs the addition and overflows:
+    The last two can look trap-free on the grounds that `c + n > 1` cannot
+    overflow because DuckDB rewrites it to `n > 1 - c`. That rewrite is
+    `expression_rewriter`, and the ORACLE is DuckDB with the optimizer off,
+    which performs the addition and overflows:
 
         SELECT 9223372036854775807 + n > 1 FROM t   -- n = 5
         oracle: Out of Range Error: Overflow in addition of INT64
 
-    so they can trap after all, and refusing them is right."""
+    so they can trap, and refusing them is right."""
     with pytest.raises(ValueError, match="single-side residual with trapping ops"):
         _one_sided(residual, [(0, 5)])
 

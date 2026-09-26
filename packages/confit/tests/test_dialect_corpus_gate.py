@@ -1,23 +1,23 @@
 """Dialect L2 gate: parse→print is invisible to the oracle, corpus-wide.
 
-Law L2 of 2026-08-13-dialect-logical-plan-design.md: for every statement the
+Law L2: for every statement the
 dialect frontend admits, `run_duck(sql) == run_duck(print_duck(parse_duck(sql)))`.
 Each corpus case rebuilds its tables in a fresh DuckDB, hands the DESCRIBEd
 catalog to the frontend, and classifies:
 
   match             -- printed SQL returns identical column names and the
-                       identical row multiset (plan semantics are multisets,
-                       design D4; scan order is not part of the contract)
+                       identical row multiset (plan semantics are multisets;
+                       scan order is not part of the contract)
   clean-unsupported -- the frontend or printer refuses by name
                        ("unsupported: ..."), including catalog types the
-                       lattice boundary doesn't carry yet and FROMs that are
+                       lattice boundary doesn't carry and FROMs that are
                        not a base table
   FAIL              -- a bind error on a statement DuckDB itself accepts, a
                        result mismatch, or a crash: the gate requires zero
 
 The match count is the growth ladder, exactly like corpus replay: every
 construct the frontend learns flips cases from clean-unsupported to match.
-The floor below is the measured count at introduction — raise it when the
+The floor below is a measured count — raise it when the
 surface grows, never lower it.
 """
 
@@ -48,8 +48,8 @@ def run(o: Oracle, sql: str):
     cur = o.execute(sql)
     names = [d[0] for d in cur.description]
     # repr keeps int/float/bool/Decimal apart and makes NaN self-equal —
-    # plain == would count 1 == 1.0 == True as a match (review-confirmed
-    # blind spot: a roundtrip changing result TYPES must FAIL).
+    # plain == would count 1 == 1.0 == True as a match, and a roundtrip
+    # changing result TYPES must FAIL.
     rows = sorted(tuple(repr(v) for v in row) for row in cur.fetchall())
     return names, rows
 

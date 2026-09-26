@@ -7,7 +7,7 @@
 //! delegates to the SAME functions the interpreter uses (casemap,
 //! substr_window, duck_fcmp, DuckF64, the arena). The two backends cannot
 //! drift where they share code; the random-IR differential in tests.rs
-//! guards the rest. Inlining hot helpers is a later, measured optimization.
+//! guards the rest. Hot helpers are not inlined.
 //!
 //! ABI: one JIT'd function per program, called once per row:
 //! `extern "C" fn(*mut Cx) -> i64` returning 0 = emit, 1 = skip, 2 = a
@@ -207,8 +207,8 @@ extern "C" fn h_frem(a: f64, b: f64) -> f64 {
     a % b
 }
 
-// Wave-1 math helpers: each delegates to the interpreter's shared semantic
-// fn, so the backends physically cannot drift (pins spec 2026-07-26).
+// Math helpers: each delegates to the interpreter's shared semantic fn, so
+// the backends physically cannot drift (wave-1 pins).
 macro_rules! math1_h {
     ($name:ident, $f:path) => {
         extern "C" fn $name(p: *mut Cx, x: f64) -> f64 {
@@ -530,8 +530,8 @@ extern "C" fn h_ssubstr(
     (ao as usize + rng.start) as i64
 }
 
-// Wave-3 helpers: every one delegates to the interpreter's shared
-// semantic fn (pins spec 2026-07-26 wave 3) — the backends cannot drift.
+// String helpers: every one delegates to the interpreter's
+// shared semantic fn (wave-3 pins) — the backends cannot drift.
 
 extern "C" fn h_ssim(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64) -> i64 {
     let c = unsafe { cx(p) };
@@ -999,7 +999,7 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
                     Ty::Str => ScalarVal::Str(
                         arena.get(span(cell[0] as i64, cell[1] as i64)).to_string(),
                     ),
-                    // A UDF over DECIMAL refuses at bind (m-8 phase 5).
+                    // A UDF over DECIMAL refuses at bind.
                     Ty::Dec(..) => unreachable!("a udf parameter is never a decimal"),
                 })
             } else {
@@ -1096,13 +1096,12 @@ pub fn compile_ext(
     statics: Vec<super::StaticData>,
     externs: Vec<super::ExternImpl>,
 ) -> Result<CraneliftFn, CompileError> {
-    // Stage-B multiplicity programs (EmitTo loops / multimap probes) are
+    // Multiplicity programs (EmitTo loops / multimap probes) are
     // interpreter-only: rejecting here makes the caller's interp fallback
     // the documented 'many' path, and lets the match arms below treat
     // these constructs as unreachable. This is the ONLY thing the
-    // interpreter's eval loop is still load-bearing for — every other
-    // program compiles here, so lowering multiplicity to CLIF is what
-    // would remove the dependence on it.
+    // interpreter's eval loop is load-bearing for — every other program
+    // compiles here.
     let has_multiplicity = p
         .statics
         .iter()
@@ -1115,7 +1114,7 @@ pub fn compile_ext(
         });
     if has_multiplicity {
         return Err(CompileError::Static(
-            "multiplicity programs run on the interpreter (stage B)".into(),
+            "multiplicity programs run on the interpreter".into(),
         ));
     }
     // The interpreter compile also runs verify + prepare_statics; its
@@ -1952,7 +1951,7 @@ fn translate_inst(
                 NumOp1::Fabs => b.ins().fabs(x),
                 NumOp1::Fneg => b.ins().fneg(x),
                 NumOp1::Fround => call_h(b, module, "h_fround", &[x]).unwrap(),
-                // Wave-1: floor/ceil/trunc are single CLIF instructions;
+                // floor/ceil/trunc are single CLIF instructions;
                 // total transcendentals are plain helpers; trapping ones
                 // get the standard flag check.
                 NumOp1::Ffloor => b.ins().floor(x),
@@ -2445,14 +2444,13 @@ mod tests {
         assert_eq!(f(40, 2), 42);
     }
 
-    /// The lattice spec's hard dependency for the i128 lane: does cranelift
-    /// legalize i128 arithmetic on x64, through the same JIT harness the
-    /// engine uses? Answered here rather than assumed, because extending the
-    /// Dec lane to HUGEINT is scheduled behind the answer.
+    /// The i128 lane's hard dependency: does cranelift legalize i128
+    /// arithmetic on x64, through the same JIT harness the engine uses?
+    /// Answered here rather than assumed.
     ///
     /// i128 is passed and returned INDIRECTLY (a pointer to caller memory) —
     /// cranelift's I128 is a value type in the IR but not in the C ABI, so
-    /// the spike takes the shape a real kernel would: pointers in, pointer
+    /// the test takes the shape a real kernel would: pointers in, pointer
     /// out, loads and stores around native i128 ops.
     #[test]
     fn cranelift_legalizes_i128_add_mul_cmp_on_the_host() {
@@ -2533,9 +2531,9 @@ mod tests {
     /// above did NOT answer: `select` on I128 and I128 BLOCK PARAMS. The
     /// Dec lane needs both — a LEFT-join miss selects between the probed
     /// payload and a zero default, and CASE lowering carries the payload
-    /// across a block boundary as a branch argument. Written before the
-    /// lane, because a red here means cranelift refuses Dec programs and
-    /// the interpreter is the only backend for them.
+    /// across a block boundary as a branch argument. A red here means
+    /// cranelift refuses Dec programs and the interpreter is the only
+    /// backend for them.
     #[test]
     fn cranelift_legalizes_i128_select_and_block_params_on_the_host() {
         let mut flags = settings::builder();

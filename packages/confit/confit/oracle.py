@@ -4,8 +4,8 @@ Anything that compares this engine against DuckDB -- tests, corpus gates, the
 differential fuzzer -- gets its connection from here, so the oracle is a
 property of the REPO rather than a per-call-site choice that can be forgotten.
 
-Why optimizer-off is the oracle at all, measured 2026-08-17 and re-read
-against the DuckDB 1.5.5 sources 2026-08-25:
+Why optimizer-off is the oracle at all (measured on DuckDB 1.5.5 and
+checked against its sources):
 
   * `PRAGMA disable_optimizer` disables all 33 named optimizers AND flips
     twelve further sites that read `enable_optimizer` directly: physical
@@ -38,9 +38,8 @@ see `load`, where the difference is a semantic one, not a convenience.
 every connection here goes through it. The connection is per-instance for the
 same reason the module never assigns to `duckdb.connect`: `duckdb` is a shared
 module, so an import-time assignment leaks into every other package's tests
-for the rest of the session. It did once -- sql_transform's
-single-evaluation tests count sklearn calls made through DuckDB, and losing
-CSE doubled them.
+for the rest of the session -- sql_transform's single-evaluation tests, for
+one, count sklearn calls made through DuckDB, and losing CSE doubles them.
 
 A caller that WANTS the optimizer -- because it is documenting what the
 optimizer does -- says so in its own body with `optimizer_on()`, which reads

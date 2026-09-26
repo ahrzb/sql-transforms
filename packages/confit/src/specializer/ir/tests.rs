@@ -152,7 +152,7 @@ entry:
         "undefined value '%x'",
     );
     // ...and the verifier independently rejects the same shape when the
-    // program is constructed through the API (the path lowering will use).
+    // program is constructed through the API (the path lowering uses).
     use super::{BinOp, Block, Col, ColTy, Inst, Program, Term, Ty, Value};
     let p = Program {
         statics: vec![],
@@ -683,9 +683,8 @@ fn parser_rejects_wrong_dst_count() {
     );
 }
 
-// ----------------------------------------- adversarial-pass regressions --
-// Each of these pins a fix for a confirmed finding from the 2026-07-25
-// adversarial workflow (4 attack lenses + 2 reviews).
+// ---------------------------------------------------- adversarial cases --
+// Each of these pins a confirmed adversarial finding.
 
 /// Build the smallest valid API program shell around custom parts.
 fn api_program(statics: Vec<super::StaticTy>, name: &str, blocks: Vec<super::Block>) -> Program {
@@ -725,8 +724,8 @@ fn store_emit_block() -> super::Block {
     }
 }
 
-/// Deep-but-legal CFGs must verify, not abort the process — the reachability
-/// DFS was recursive and stack-overflowed at ~8k blocks.
+/// Deep-but-legal CFGs must verify, not abort the process — a recursive
+/// reachability DFS stack-overflows at ~8k blocks.
 #[test]
 fn deep_cfg_verifies_without_crashing() {
     use super::{Block, BlockId, Term};
@@ -746,7 +745,7 @@ fn deep_cfg_verifies_without_crashing() {
     verify(&p).expect("a deep linear CFG is legal");
 }
 
-/// Wave-4: one-sided empty map signatures are legal (cross-join and
+/// One-sided empty map signatures are legal (cross-join and
 /// semi-join shapes) and round-trip through the text format; only the
 /// BOTH-empty map — which carries no information — is rejected.
 #[test]
@@ -902,7 +901,7 @@ join:
     );
 }
 
-// Rule-coverage tests the design-conformance review found missing.
+// Rule-coverage tests.
 
 #[test]
 fn rejects_entry_with_params() {

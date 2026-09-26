@@ -1,120 +1,83 @@
 # Version changes and evidence mutability
 
-## Adopted version rule
+## Version rule
 
-The [reference enforcement rule](01-what-the-oracle-is.md) retains DuckDB 1.5.5
-and requires an exact oracle/test-environment pin plus a startup version assertion.
-An upgrade remains a separate reviewed change. The current implementation gaps
-below are not evidence that this policy is still open.
+The [reference enforcement rule](01-what-the-oracle-is.md) fixes DuckDB 1.5.5 and
+requires an exact oracle/test-environment pin plus a startup version assertion. A
+reference upgrade is a separate reviewed change.
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison).
 
 ## Current constraints
 
-**claim: bump-object.** `confit.oracle.Oracle.VERSION` names the intended reference.
-A deliberate reference upgrade must update that identity along with its environment.
-Opening the oracle compares the constant with `duckdb.__version__`; pin provenance is
-still partial, so pins recorded outside `Oracle` are not covered by that assertion.
+**claim: bump-object.** `confit.oracle.Oracle.VERSION` names the reference. A
+deliberate reference upgrade updates that identity along with its environment.
+Opening the oracle compares the constant with `duckdb.__version__`; pins recorded
+outside `Oracle` are not covered by that assertion.
 
-*Evidence:* `confit/oracle.py:74-76`; claim: oracle-version-constant; claim:
+*Evidence:* `confit.oracle.Oracle.VERSION`; claim: oracle-version-constant; claim:
 pin-provenance.
 
-**claim: pin-re-runnability.** **[FACT, measured 2026-08-25]** Re-recording first
-requires mechanical replay. The 53 pin files used 21 top-level shapes; claims appeared
-under `probes`, `pins`, `findings`, or domain keys; SQL fields used `query`, `sql`, `q`,
-or `expr`; setup often lived in prose; and only `pins-dialect/probe_joins.py` supplied a
-nearby replay harness.
+**claim: pin-re-runnability.** Pin files do not share one shape. Claims appear under
+`probes`, `pins`, `findings`, or domain keys; SQL fields use `query`, `sql`, `q`, or
+`expr`; setup often lives in prose; and only `pins-dialect/probe_joins.py` supplies a
+nearby replay harness. Re-recording therefore first requires mechanical replay.
 
-**claim: pin-conversion.** Old pins are made replayable without being rewritten
-(**ticket: convert-unrunnable-pins**, done 2026-09-26). `scripts/pin_corpus.py convert`
-derives setup statements where a pin states its tables mechanically — its own `setup`,
-the file's shared `setup`, or a typed `input_repr` such as `t(a BIGINT); rows=[(7,)]` —
-and writes them to `docs/specs/pins-replay.json` keyed by JSON pointer; pin files are
-untouched, and a replay under today's oracle is not a fresh run of the original capture.
-Of 1927 pin queries: 625 replay as written, 278 are converted (181 from `input_repr`,
-97 from stated setups), and the rest are inventoried with a reason — 460 untyped
-`input_repr` values (a bare value names no column and no type), 356 tables described
-only in prose, and 208 in files whose engine is not DuckDB or is unstated. All 160
-converted pins that recorded a `result_repr` reproduce it exactly.
+**claim: pin-conversion.** Old pins are made replayable without being rewritten.
+`scripts/pin_corpus.py convert` derives setup statements where a pin states its tables
+mechanically — its own `setup`, the file's shared `setup`, or a typed `input_repr` such
+as `t(a BIGINT); rows=[(7,)]` — and writes them to `docs/specs/pins-replay.json` keyed by
+JSON pointer; pin files are untouched, and a replay under today's oracle is not a fresh
+run of the original capture. Every other pin query is inventoried with a reason: an
+untyped `input_repr` (a bare value names no column and no type), a table described only
+in prose, or a file whose engine is not DuckDB or is unstated. Every converted pin that
+recorded a `result_repr` reproduces it exactly.
 
 *Enforced-by:* `packages/confit/tests/test_pin_corpus.py::test_a_converted_pin_reproduces_what_it_recorded`
 and `::test_every_pin_is_replayed_or_inventoried_with_a_reason`.
 
-**claim: capture-outside-the-oracle.** **[FACT, measured 2026-08-25]**
-`gen_casemap.py`, `gen_pow10.py`, `gen_strip_accents.py`, and
-`mine_duckdb_corpus.py` opened bare DuckDB connections without `disable_optimizer` and
-did not import `confit.oracle`; only 4 of 53 pin files mentioned optimizer state, and
-`pins-stageB/order-contract.json` explicitly describes optimizer-on capture. These are
-**not observations of the defined optimizer-off oracle**. Whether a capture remains
-useful for a narrower optimizer-on, historical, or provenance-only purpose must be
-stated case by case; this fact does not establish general acceptability.
+**claim: capture-outside-the-oracle.** `gen_casemap.py`, `gen_pow10.py`,
+`gen_strip_accents.py`, and `mine_duckdb_corpus.py` open bare DuckDB connections without
+`disable_optimizer` and do not use `confit.oracle`. Few pin files state optimizer state,
+and `pins-stageB/order-contract.json` explicitly describes optimizer-on capture. These
+are **not observations of the defined optimizer-off oracle**. Whether a capture is
+useful for a narrower optimizer-on or provenance-only purpose must be stated case by
+case. `Oracle`'s version assertion does not reach these bare connections.
 
-*Evidence:* the named scripts; `scripts/mine_duckdb_corpus.py:111`;
-`docs/specs/pins-stageB/order-contract.json`. `Oracle` now asserts its version on
-open (ticket: version-assert, done), which does not reach these bare connections. The
-common pin header now exists (claim: uniform-pin-header in [pins](06-pins.md)).
+*Evidence:* the named scripts; `docs/specs/pins-stageB/order-contract.json`; the pin
+header's `optimizer` field (claim: uniform-pin-header in [pins](06-pins.md)).
 
-**claim: mined-corpus-provenance.** **[FACT]** The miner ignores sqllogictest expected
-blocks, obtains rows through fresh optimizer-on connections, and writes no DuckDB
-version, date, or settings profile to `tests/corpus/duckdb_mined.jsonl`. Its expected
-rows therefore are not observations of the defined optimizer-off oracle. They may still
-support a narrower purpose only when that purpose and provenance are explicit.
+**claim: mined-corpus-provenance.** The miner ignores sqllogictest expected blocks and
+obtains rows through fresh optimizer-on connections. Its expected rows therefore are not
+observations of the defined optimizer-off oracle; they may support a narrower purpose
+only when that purpose and provenance are explicit. A mining run writes
+`duckdb_mined.provenance.json` beside the corpus — date, DuckDB version, settings
+profile (optimizer on, fresh default connection per file, threads), clone and miner
+revisions, mined directories and counts. The committed `tests/corpus/duckdb_mined.jsonl`
+has no such stamp and no provenance field, and a stamp saying optimizer on does not turn
+rows into optimizer-off evidence.
 
-*Evidence:* `scripts/mine_duckdb_corpus.py:1-12, :111`;
-`tests/corpus/duckdb_mined.jsonl` (678 lines and no provenance field when measured
-2026-08-25). Future mining runs write `duckdb_mined.provenance.json` beside the corpus —
-date, DuckDB version, settings profile (optimizer on, fresh default connection per
-file, threads), clone and miner revisions, mined directories and counts (**ticket:
-mined-corpus-stamp**, done; `scripts/mine_duckdb_corpus.py::provenance`,
-`tests/test_mined_corpus_stamp.py`). The current corpus predates the stamp and is not
-backfilled, and a stamp saying optimizer on does not turn its rows into optimizer-off
-evidence.
+*Evidence:* `scripts/mine_duckdb_corpus.py` (module docstring and `provenance`);
+`tests/test_mined_corpus_stamp.py`.
 
-## Proposed re-recording discipline
+## Re-recording
 
-New campaign evidence must be dated and provenance-bearing (claim: dated-provenance
-in [pins](06-pins.md)). That rule does not adopt the workflow below: the diff-report
-command, the triage classes, and the mutability classes with their memberships remain
-proposals, and the provenance facts recorded above stay facts rather than approvals.
+New campaign evidence is dated and provenance-bearing (claim: dated-provenance in
+[pins](06-pins.md)).
 
 **claim: re-record-diff-report.** Capture new answers with one command and emit a
 reviewable diff; do not silently replace the corpus. `scripts/pin_ast_shapes.py`
-does this for the AST-shape manifest, and `scripts/pin_corpus.py drift` generalizes it to
-the pin corpus (**ticket: corpus-drift-report**, done): every pin query that replays
-mechanically is re-run on a fresh `Oracle` and its answer written to
-`docs/specs/pins-drift.json`, which carries the DuckDB version and platform but no date,
-so an unchanged reference re-runs to an identical file and a changed one shows up as the
-file's `git diff`. A query answering differently on two runs is recorded `<unstable>`
-(the one today is `uuid()`). Only files whose header engine is DuckDB are replayed; with
-the converted setups (claim: pin-conversion), 903 of their 1719 queries replay on
-2026-09-26. The tool is manual, not a
-gate: platform-marked fields legitimately differ across platforms, and each changed
-answer still needs the review this chapter describes.
+does this for the AST-shape manifest, and `scripts/pin_corpus.py drift` does it for the
+pin corpus: every pin query that replays mechanically is re-run on a fresh `Oracle` and
+its answer written to `docs/specs/pins-drift.json`, which carries the DuckDB version and
+platform but no date, so an unchanged reference re-runs to an identical file and a
+changed one shows up as the file's `git diff`. A query answering differently on two runs
+is recorded `<unstable>` (for example `uuid()`). Only files whose header engine is
+DuckDB are replayed, including the converted setups (claim: pin-conversion). The tool
+is manual, not a gate: platform-marked fields legitimately differ across platforms, and
+each changed answer needs review.
 
-**claim: diff-triage-classes.** Classify each changed row exactly once:
-
-| proposed class | proposed consequence |
-|---|---|
-| upstream DuckDB bug fixed | update the pin, retaining the old evidence and reason |
-| DuckDB behavior changed | require an owner decision and ledger entry |
-| confit bug newly exposed | open a ticket and add a strict-xfail pin |
-| now abstaining | record it in the disposition table; prior success was accidental |
-
-**claim: changed-pin-record.** Retain a decision record for an accepted changed value so
-an upstream change and a regression remain distinguishable.
-
-**claim: mutability-classes.** A decision may assign one of these version-change rules;
-the classes and all listed memberships remain unratified:
-
-| proposed class | meaning | proposed examples |
-|---|---|---|
-| `frozen` | movement means the oracle is wrong | pseudo-oracle, nondeterminism, float-bit equality, severity |
-| `follows-oracle` | support may widen with the oracle | enumerated quirks, deduplication, error classes |
-| `may-change-on-bump` | re-decide during the bump | oracle identity, optimizer scope, platform/libm, parser-sensitive comparison, named float tolerances |
-
-The proposals require, in order, a binding version and complete provenance, replayable
-pins, a reviewable diff, classification, and a retained decision. Their presence here
-does not authorize a version bump or pin rewrite.
+*Evidence:* `packages/confit/tests/test_pin_corpus.py::test_the_drift_manifest_names_real_pins_and_this_reference`.
 
 ## Existing guard
 
@@ -123,7 +86,6 @@ live oracle answer, so oracle movement fails before confit's behavior can silent
 redefined as parity. This guards only tests using the pattern; it does not make the pin
 corpus replayable or produce a corpus diff.
 
-*Evidence:* `docs/specs/2026-08-19-cast-semantics-design.md:25`;
-`docs/specs/2026-08-25-task-120-design.md:374`;
-`docs/specs/2026-08-25-task-133-join-keys-design.md:625`; examples under
-`tests/known_divergences/`.
+*Evidence:* tests under `tests/known_divergences/` that take the `oracle` fixture, for
+example `test_string_budget.py::test_a_bigint_pad_count_refuses_like_duckdb`, which
+asserts DuckDB's live answer beside confit's refusal.

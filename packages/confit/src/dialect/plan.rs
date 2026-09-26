@@ -4,25 +4,22 @@
 //! [`Expr::Lit`]) and [`Expr::Cast`] CARRY a type; every interior node
 //! DERIVES its type through [`Expr::ty`], the same function at bind time
 //! and verify time — a stored result type that could drift from the rule
-//! that produced it is the `duck_width` side-channel the lattice spec
-//! rejected, so it does not exist here.
+//! that produced it would be a side-channel, so it does not exist here.
 //!
-//! Derivation rules are DuckDB's, as measured (pins-dialect/); combinations
-//! not yet pinned refuse by name. In particular decimal arithmetic result
-//! scales are lattice-spec phase-5 territory and refuse until measured —
-//! decimal COMPARISON and CASE-unification of equal decimal types are fine.
+//! Derivation rules are DuckDB's, as measured (pins-dialect/); combinations not
+//! pinned refuse by name. In particular decimal arithmetic result scales are
+//! not derived and refuse — decimal COMPARISON and CASE-unification of equal
+//! decimal types are fine.
 //!
-//! Relations are multisets (design D4): no node here can observe input
-//! order. Order-sensitive nodes (Window with its mandatory total ORDER and
-//! explicit frame, per D3) arrive in phase 2 carrying [`SortKey`], whose
-//! `nulls_first` is mandatory — the field exists now so no order-carrying
-//! node can ever be added without it.
+//! Relations are multisets: no node here can observe input order. An
+//! order-sensitive node must carry [`SortKey`], whose `nulls_first` is
+//! mandatory, so no order-carrying node can be added without it.
 
 use super::ty::DTy;
 use super::{unsup, DialectError};
 
 /// What a plan binds against: table schemas, nothing else. Nullability is
-/// a column fact (expressions don't track it in v0 — named coarseness in
+/// a column fact (expressions don't track it — named coarseness in
 /// the module doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Catalog {
@@ -133,8 +130,8 @@ pub enum UnOp {
 
 /// The scalar functions the plan has bought — each with a pinned
 /// signature and, per printer, either a measured-identical spelling, a
-/// forced one, or a named refusal (pins-dialect/scalar-functions probes,
-/// 2026-08-13). Growth is corpus-first: a function enters with its
+/// forced one, or a named refusal (pins-dialect/scalar-functions probes).
+/// Growth is corpus-first: a function enters with its
 /// DuckDB semantics measured (NULL propagation included) and each
 /// printer buys it separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,8 +291,7 @@ pub enum Expr {
         e: Box<Expr>,
     },
     /// strict=true is SQL CAST (errors on failure), strict=false TRY_CAST
-    /// (NULL on failure) — the design's mandatory explicit failure
-    /// semantics (D3).
+    /// (NULL on failure) — failure semantics are always explicit.
     Cast {
         strict: bool,
         e: Box<Expr>,
@@ -313,7 +309,7 @@ pub enum Expr {
         e: Box<Expr>,
     },
     /// IS [NOT] DISTINCT FROM — null-safe comparison, a distinct node (not
-    /// an Eq flag) because printers spell it per dialect (D3).
+    /// an Eq flag) because printers spell it per dialect.
     IsDistinct {
         negated: bool,
         l: Box<Expr>,
@@ -326,10 +322,9 @@ pub enum Expr {
     },
 }
 
-/// A sort key for the order-carrying nodes of phase 2+. Both fields are
-/// mandatory — there is no "default order" anywhere in the plan (D3;
-/// measured: DuckDB is NULLS LAST both directions, Spark is NULLS FIRST on
-/// ASC — pins-dialect/).
+/// A sort key for order-carrying nodes. Both fields are mandatory — there is no
+/// "default order" anywhere in the plan (measured: DuckDB is NULLS LAST both
+/// directions, Spark is NULLS FIRST on ASC — pins-dialect/).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortKey {
     pub expr: Expr,
@@ -477,7 +472,7 @@ fn derive_bin(op: BinOp, l: &DTy, r: &DTy) -> Result<DTy, DialectError> {
         Add | Sub | Mul => match (l, r) {
             (DTy::F64, o) | (o, DTy::F64) if o.is_numeric() => Ok(DTy::F64),
             (DTy::Dec(..), _) | (_, DTy::Dec(..)) => Err(unsup(format!(
-                "decimal arithmetic result scale for {} over {} and {} (lattice-spec phase 5)",
+                "decimal arithmetic result scale for {} over {} and {}",
                 op.name(),
                 l.name(),
                 r.name()
@@ -539,7 +534,7 @@ fn unify(a: &DTy, b: &DTy) -> Result<DTy, DialectError> {
     }
 }
 
-/// Join kinds (2026-08-13-dialect-join-node-design.md). SEMI/ANTI/ASOF/
+/// Join kinds. SEMI/ANTI/ASOF/
 /// APPLY/positional refuse at the frontend by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinKind {
@@ -598,7 +593,7 @@ pub enum Rel {
     /// column is a binder concern that never reaches the plan). `on` is a
     /// BOOLEAN expression bound over the combined schema; None iff Cross.
     /// Null-safe equality stays explicit through the expression node kind
-    /// (Eq vs IsDistinct) — design D3 without a separate key list.
+    /// (Eq vs IsDistinct) without a separate key list.
     Join {
         left: Box<Rel>,
         right: Box<Rel>,

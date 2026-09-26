@@ -2,7 +2,6 @@
 //! tables) into a specialized native function `f : Rows -> Rows`, prepared
 //! once and invoked millions of times with a small dynamic input relation.
 //!
-//! Design: packages/confit/docs/specs/2026-07-25-sql-specializer-design.md.
 //! This layer is the frontend + BTA + lowering. It emits the imperative IR
 //! of [`ir`], which either backend in [`exec`] — the closure-compiled
 //! interpreter oracle or Cranelift — then runs.
@@ -32,9 +31,9 @@ pub struct WideOut {
     pub first: u32,
     pub width: u32,
     /// Declared output field names — empty for an unnamed width-k extern
-    /// (the DRAFT-22 `list | None` boundary); non-empty for a NAMED extern
-    /// at every width, where the boundary assembles a STRUCT keyed by these
-    /// names (slice 5), matching DuckDB's struct registration.
+    /// (the `list | None` boundary); non-empty for a NAMED extern at every
+    /// width, where the boundary assembles a STRUCT keyed by these names,
+    /// matching DuckDB's struct registration.
     pub names: Vec<String>,
 }
 
@@ -70,7 +69,7 @@ pub struct StaticVal {
 /// comparison and nullability in [`plan::MapKey`] / [`plan::MapVal`].
 #[derive(Debug)]
 pub struct StaticSpec {
-    /// Stage-B self-join: no materialization — the build side is the
+    /// Multiplicity self-join: no materialization — the build side is the
     /// BATCH, assembled per call by the executor.
     pub batch: bool,
     /// The source table's registered name; EMPTY when `batch` — a self-join
@@ -115,7 +114,7 @@ impl Prepared {
     }
 }
 
-/// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's name and schema
+/// STAGE 1 for the ribbon: SQL text + the dynamic table's name and schema
 /// + the static-table catalog -> a verified imperative-IR program. The
 /// returned program is always verified — a lowering bug becomes
 /// [`PrepareError::Internal`], never an executable.
@@ -133,7 +132,7 @@ pub fn prepare(
 /// REFERENCE, star expansion included, instead of blocking construction)
 /// and `structs` (flattened to leaf lanes appended after the plain
 /// columns in `in_cols` — see [`plan::StructCol`]) — plus the declared UDF
-/// externs (DRAFT-22): an unknown function matching a declaration binds as
+/// externs: an unknown function matching a declaration binds as
 /// an opaque `ecall`.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_opaque(
@@ -228,8 +227,8 @@ pub fn prepare_opaque(
     // DOCUMENTATION, not the guarantee. `all_in` above is this very vector's
     // projection, taken a few lines apart, so this compares a list against
     // itself. What actually keeps the boundary's lanes and the program's
-    // columns in step is that there is now exactly ONE producer — the
-    // boundary's own second append is deleted. A reviewer who reads this
+    // columns in step is that there is exactly ONE producer — the boundary
+    // does not append a second time. A reviewer who reads this
     // assert as the guarantee would accept a patch that re-introduces a
     // second producer and keeps the assert green.
     debug_assert!(

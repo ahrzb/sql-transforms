@@ -1,7 +1,5 @@
 """NATURAL / USING join keys over STRUCT shared columns.
 
-Design: packages/confit/docs/specs/2026-08-25-task-133-join-keys-design.md.
-
 DuckDB's join binder intersects column NAME SETS with no type inspection
 (bind_joinref.cpp:185-208), so a shared STRUCT is an ordinary join key there
 and `=` on a struct is `row_matcher.cpp:379-382`: top-level Equals, every
@@ -33,7 +31,8 @@ _ROW_W2 = pa.schema([pa.field("id", pa.int64(), nullable=False), pa.field("w", _
 _ROW_W3 = pa.schema([pa.field("id", pa.int64(), nullable=False), pa.field("w", _S3)])
 
 # The THREE forms that must be told apart: NATURAL keys on ALL shared
-# columns, USING only on the named ones (matrix (h) row 2 proves they answer
+# columns, USING only on the named ones
+# (test_natural_and_using_key_on_different_column_sets shows they answer
 # differently on the same data).
 _FORMS = [
     "SELECT z AS o FROM __THIS__ NATURAL JOIN s",
@@ -94,7 +93,7 @@ def _static_w(wtype, wval, sid=5):
     )
 
 
-# --- matrix (a): struct STRUCT(mean DOUBLE) ---------------------------------
+# --- struct STRUCT(mean DOUBLE) ---------------------------------------------
 
 _A_CELLS = [
     ({"mean": 1.0}, {"mean": 1.0}, [{"o": 7}]),
@@ -113,7 +112,7 @@ def test_a_struct_join_key_matches_duckdb(sql, rw, sw, want):
     check(sql, _row_table(_ROW_W, [{"id": 5, "w": rw}]), _static_w(_S1, sw), want)
 
 
-# --- matrix (b): nested structs, including THE DISCRIMINATORS ---------------
+# --- nested structs, including THE DISCRIMINATORS ---------------------------
 
 _B_CELLS = [
     ({"inner": {"val": 9.0}}, {"inner": {"val": 9.0}}, [{"o": 7}]),
@@ -149,7 +148,7 @@ def test_a_three_deep_struct_join_key_matches_duckdb(sql, rw, sw, want):
     check(sql, _row_table(_ROW_W3, [{"id": 5, "w": rw}]), _static_w(_S3, sw), want)
 
 
-# --- matrix (c) + (d): float edges inside a field vs the scalar control -----
+# --- float edges inside a field vs the scalar control -----------------------
 
 _FLOAT_CELLS = [
     (float("nan"), float("nan"), [{"o": 7}]),
@@ -168,7 +167,7 @@ _ROW_D = pa.schema(
 @pytest.mark.parametrize(("rv", "sv", "want"), _FLOAT_CELLS)
 def test_a_struct_join_key_on_float_edges_agrees_with_the_scalar_control(rv, sv, want):
     """NaN keys NaN and -0.0 keys 0.0 INSIDE a struct field exactly as they
-    already do for a bare DOUBLE column (canon_f64_bits, matrix (c) vs (d))."""
+    do for a bare DOUBLE column (canon_f64_bits)."""
     check(
         _FORMS[0],
         _row_table(_ROW_W, [{"id": 5, "w": {"mean": rv}}]),
@@ -190,7 +189,7 @@ def test_a_struct_join_key_on_float_edges_agrees_with_the_scalar_control(rv, sv,
     )
 
 
-# --- matrix (g): the LEFT legs keep the left-miss NULL shape ----------------
+# --- the LEFT legs keep the left-miss NULL shape ----------------------------
 
 
 @pytest.mark.parametrize("sql", _LEFT_FORMS)
@@ -208,7 +207,7 @@ def test_a_left_join_on_a_struct_key_keeps_the_left_miss_shape(sql, rw, sw, want
     check(sql, _row_table(_ROW_W, [{"id": 5, "w": rw}]), _static_w(_S1, sw), want)
 
 
-# --- matrix (h): NATURAL and USING key on DIFFERENT column sets -------------
+# --- NATURAL and USING key on DIFFERENT column sets -------------------------
 
 
 def test_natural_and_using_key_on_different_column_sets():
@@ -222,8 +221,8 @@ def test_natural_and_using_key_on_different_column_sets():
 
 
 def test_natural_misses_when_only_the_struct_differs():
-    """The wrong answer this file exists for: ids equal, `w` unequal, and we
-    used to key on `id` alone and emit a row DuckDB never produces."""
+    """The wrong answer this file exists for: ids equal, `w` unequal, and
+    keying on `id` alone would emit a row DuckDB never produces."""
     check(
         _FORMS[0],
         _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}]),
@@ -232,7 +231,7 @@ def test_natural_misses_when_only_the_struct_differs():
     )
 
 
-# --- matrix (j) rows 4, 7-8: field order and name case ----------------------
+# --- field order and name case ----------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -278,7 +277,7 @@ def test_a_merged_struct_key_resolves_to_the_left_occurrence(sql):
 )
 def test_a_struct_key_leaf_stays_addressable_on_the_static_side(sw, want):
     """`s.w.mean` after a struct-keyed NATURAL JOIN: its leaves are KEY
-    lanes now, and a key column reconstructs from the dynamic side."""
+    lanes, and a key column reconstructs from the dynamic side."""
     check(
         "SELECT s.w.mean AS o FROM __THIS__ NATURAL JOIN s",
         _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}]),
@@ -312,7 +311,7 @@ def test_an_explicit_on_over_a_struct_still_refuses():
 )
 def test_a_shared_struct_name_matches_case_insensitively(sql):
     """Row `W` against static `w`: one shared column, keyed, and UNEQUAL
-    values miss (they used to serve -- matrix (j) rows 7-8)."""
+    values miss."""
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("W", _S1)]
     )
@@ -324,7 +323,7 @@ def test_a_shared_struct_name_matches_case_insensitively(sql):
     )
 
 
-# --- matrix (i-scalar): the merge rule the struct head has to join ----------
+# --- the merge rule the struct head has to join ----------------------------
 
 
 def test_the_using_merge_takes_the_left_value_on_a_miss():
@@ -394,7 +393,7 @@ def _refuses(sql, row_schema, static, needle, **kw):
 
 
 # `(arrow type, [row value, static value], column)` -- two values means the
-# sides DISAGREE, which is the cell that used to answer wrongly.
+# sides DISAGREE, which is the cell that would answer wrongly if served.
 _OPAQUE_SHARED = [
     (pa.timestamp("us"), [_T0, datetime.datetime(2021, 6, 30)], "t"),
     (pa.date32(), [datetime.date(2020, 1, 1), datetime.date(2021, 6, 30)], "t"),
@@ -411,11 +410,10 @@ _OPAQUE_SHARED = [
 @pytest.mark.parametrize(("aty", "vals", "col"), _OPAQUE_SHARED)
 def test_an_opaque_shared_column_refuses_by_name(sql, aty, vals, col):
     """A shared column with no lane on either side REFUSES naming the column
-    (severity-2 -> severity-4). TASK-134 adds key-only lanes so they serve;
-    what dies here is the wrong ANSWER.
+    (a severity-4 refusal instead of a severity-2 wrong ANSWER).
 
     The TIMESTAMP leg is the first row: DuckDB keys on `t` and returns
-    nothing, and we used to key on `id` alone and return the row.
+    nothing, and keying on `id` alone would return the row.
     """
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("t", aty)]
@@ -453,7 +451,7 @@ def test_a_row_side_decimal_shared_column_refuses_by_name():
 
 def test_a_struct_key_with_an_unlaneable_field_refuses_by_name():
     """No lane exists for the TIMESTAMP field, so the struct cannot be
-    keyed -- matrix (j) row 2, which used to serve the wrong rows."""
+    keyed; serving it would return the wrong rows."""
     sty = pa.struct([("mean", pa.float64()), ("t", pa.timestamp("us"))])
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("w", sty)]
@@ -465,7 +463,7 @@ def test_a_struct_key_with_an_unlaneable_field_refuses_by_name():
 
 def test_a_struct_key_with_a_dotted_field_name_refuses_by_name():
     """`flatten_static` / `build_fields` skip a dotted field name (it would
-    break the path encoding), so no lane exists -- matrix (j) row 3."""
+    break the path encoding), so no lane exists."""
     sty = pa.struct([("a.b", pa.float64()), ("c", pa.float64())])
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("w", sty)]
@@ -476,7 +474,7 @@ def test_a_struct_key_with_a_dotted_field_name_refuses_by_name():
 
 def test_mismatched_struct_field_name_sets_refuse_by_name():
     """DuckDB answers a constant-empty join; we have no leaf to pair, and a
-    deliberate severity-4 refusal is the decision (2026-08-25)."""
+    deliberate severity-4 refusal is the answer."""
     ab = pa.struct([("a", pa.float64()), ("b", pa.float64())])
     xy = pa.struct([("x", pa.float64()), ("y", pa.float64())])
     row_schema = pa.schema(
@@ -489,8 +487,8 @@ def test_mismatched_struct_field_name_sets_refuse_by_name():
 
 
 def test_a_scalar_against_a_struct_refuses_by_name():
-    """DuckDB refuses too (`Unimplemented type for cast`); we used to serve
-    the join keyed on nothing at all -- matrix (j) row 6."""
+    """DuckDB refuses too (`Unimplemented type for cast`); serving would key
+    the join on nothing at all."""
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("v", pa.int64())]
     )
@@ -505,7 +503,7 @@ def test_a_scalar_against_a_struct_refuses_by_name():
 
 
 def test_a_struct_key_serves_under_shape_map():
-    """The decision of 2026-08-25: struct keys SERVE under the map and
+    """Struct keys SERVE under the map and
     filter shapes (unique static keys, LEFT or inner)."""
     row = _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}])
     static = _static_w(_S1, {"mean": 2.0})

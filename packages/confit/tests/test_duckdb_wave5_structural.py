@@ -1,4 +1,4 @@
-"""Wave-5 structural + dialect forms vs the duckdb oracle.
+"""Structural + dialect forms vs the duckdb oracle.
 
 Pins: packages/confit/docs/specs/2026-07-26-wave5-structural-pins.md — colon
 prefix aliases (token pre-rewrite), slices, extended subscripts, bitwise
@@ -243,7 +243,7 @@ def test_joined_relation_column_list_alias_refusals():
         "does not exist",
     )
     # DELIBERATE COST (severity 4): duplicate names in the list -- DuckDB
-    # serves the first match, we refuse as ambiguous. Measured 2026-08-19.
+    # serves the first match, we refuse as ambiguous. Measured.
     assert refuses(
         "SELECT x.p AS o FROM __THIS__ JOIN s AS x(p, p) ON x.p = __THIS__.a",
         "ambiguous",

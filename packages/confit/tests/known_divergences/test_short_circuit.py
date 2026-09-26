@@ -1,6 +1,6 @@
 """WHERE short-circuit and three-valued logic.
 
-Split out of test_known_divergences.py 2026-08-16; see README.md for what
+See README.md for what
 belongs here (kept behaviour + its ground) versus in
 ../test_open_divergences.py (behaviour we intend to change).
 """
@@ -15,21 +15,15 @@ from confit.oracle import Oracle
 
 # ------------------------------------------- WHERE does not short-circuit --
 #
-# `fn kleene` was "branchless Kleene AND/OR from flag algebra" and emitted
-# BOTH operands unconditionally. `fn case`, immediately below it, DOES branch
-# — which is why the same trapping call inside a never-taken CASE arm was
-# correctly skipped. So a guard that excluded every row still evaluated the
-# thing it was written to guard, and its trap killed the whole request.
-#
-# FIXED 2026-08-08, by branching inside `FB::kleene` when the right operand
-# could trap. SUPERSEDED 2026-08-19: laziness is not a property of the
+# A WHERE guard that excludes every row must not evaluate the thing it guards:
+# a trap there would kill the whole request. Laziness is not a property of the
 # operator and not a function of what can trap — it is a property of the
 # CONTEXT the value is consumed in. That model, and which spellings it makes
 # lazy, is the measured matrix at the bottom of this file; it re-measures
 # against the live oracle, so it is the contract and this prose is only its
 # reading.
 #
-# So `FB::kleene` is branchless again, with nothing gating it: it is the
+# `FB::kleene` is branchless, with nothing gating it: it is the
 # VALUE-context route, where the consumer wants the three-valued RESULT, and
 # it evaluates both operands on every row. The laziness lives in
 # `FB::emit_truth`, the SELECTION-context route entered at the WHERE root and
@@ -43,13 +37,12 @@ from confit.oracle import Oracle
 # answers a different question: DuckDB scan-pushes a one-sided residual, so a
 # trap there would fire at a different time than ours.
 #
-# The 2026-08-08 branch carried a flag param only when the result was
-# NULLABLE, exactly as `FB::case` still does. That was not bookkeeping: the
-# null-lane discipline says a non-nullable SExpr lowers to a bare payload with
-# no flag anywhere, and the out-column stores `debug_assert!` it. A first cut
-# of that fix always carried one, which passed the entire suite in RELEASE —
-# `debug_assert!` compiles out — and panicked on `BETWEEN` in debug. Run the
-# suite against a debug build too.
+# A branch carries a flag param only when the result is NULLABLE, as
+# `FB::case` does. That is not bookkeeping: the null-lane discipline says a
+# non-nullable SExpr lowers to a bare payload with no flag anywhere, and the
+# out-column stores `debug_assert!` it. `debug_assert!` compiles out in
+# RELEASE, so a violation passes a release suite and panics (on `BETWEEN`,
+# for one) in debug. Run the suite against a debug build too.
 
 
 @pytest.mark.parametrize(
@@ -89,13 +82,12 @@ _3VL_ROWS = [(k, x) for k in (None, 0, 1) for x in (-1.5, 1.5)]
 )
 def test_short_circuit_preserves_three_valued_logic(right, oracle):
     """The branchless form was chosen because Kleene NULL semantics fall out
-    of flag algebra for free, and nothing since may regress them.
+    of flag algebra for free, and nothing may regress them.
 
     The full truth table — left in {NULL, FALSE, TRUE} against a right that
     is FALSE and TRUE — checked against DuckDB. Both spellings are projected,
-    so both lower branchless; the pair dates from the 2026-08-08 fix, where
-    trap-freeness picked the path, and is kept because the truth table has to
-    come out the same for a right operand that can trap as for one that
+    so both lower branchless; the pair is there because the truth table has
+    to come out the same for a right operand that can trap as for one that
     cannot.
     """
     schema = pa.schema(
@@ -141,8 +133,7 @@ def test_where_guard_skips_an_unknown_model_trap():
 
 
 # ===========================================================================
-# Selection context, the full measured matrix (2026-08-19 spec,
-# packages/confit/docs/specs/2026-08-19-selection-context-design.md).
+# Selection context, the full measured matrix.
 #
 # The model: AND is the ONLY lazy operator -- its LEFT always runs, its RIGHT
 # is skipped when the left is not TRUE, recursively. OR always evaluates both
@@ -212,9 +203,7 @@ def test_selection_context_matches_the_oracle(sql, oracle):
     except ValueError:
         # A named BUILD refusal is contract-legal exactly where the oracle
         # does not serve either. Where the oracle SERVES, a refusal is a
-        # cost this matrix must show, so only "T" absorbs it. (The
-        # (b AND t) = TRUE spellings refused "comparison on BOOLEAN" until
-        # 2026-09-26; they now build and are compared like the rest.)
+        # cost this matrix must show, so only "T" absorbs it.
         assert want[0] == "T", f"{sql}: refused where the oracle serves"
         return
     try:

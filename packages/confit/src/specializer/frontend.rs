@@ -18,9 +18,11 @@
 //! the CAST target). A bare `SELECT NULL` has no context and stays
 //! unsupported.
 //!
-//! Known v0 divergences, deliberate: DuckDB types `1.5` as DECIMAL(2,1); we
-//! map decimal literals to f64. Integer CAST targets outside the served
-//! widths — HUGEINT and the unsigned family — collapse to i64.
+//! Decimal literals: DuckDB types `1.5` as DECIMAL(2,1); this frontend types
+//! them f64. CAST targets without a lane collapse — HUGEINT and the unsigned
+//! family to i64; FLOAT, REAL, DECIMAL and NUMERIC to f64 — and serve values
+//! DuckDB does not (finding: cast-target-collapse,
+//! docs/reports/2026-09-26-goal-reading.md).
 
 use sqlparser::ast::{
     AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator,
@@ -68,9 +70,9 @@ fn unsup(what: impl Into<String>) -> PrepareError {
 /// The ONE refusal for everything over a DECIMAL this build does not
 /// serve: arithmetic, a cast to anything but DOUBLE, and family
 /// unification with a non-identical type. Served as doubles, each of these
-/// was silently WRONG (0.50::BIGINT was 0 here, 1 on DuckDB; '0.5' where
-/// DuckDB says '0.50'), so refusing is the severity ladder's own
-/// preference and the lattice spec's rule verbatim.
+/// would be silently WRONG (0.50::BIGINT would be 0, 1 on DuckDB; '0.5'
+/// where DuckDB says '0.50'), so refusing is the severity ladder's own
+/// preference.
 fn refuse_dec(op: &str, ty: Ty, col: Option<&str>) -> PrepareError {
     let (p, s) = ty.dec().unwrap_or((38, 0));
     let where_ = match col {
@@ -79,8 +81,8 @@ fn refuse_dec(op: &str, ty: Ty, col: Option<&str>) -> PrepareError {
     };
     unsup(format!(
         "{op} over DECIMAL({p},{s}){where_} -- decimal arithmetic and casts \
-         are m-8 lattice phase 5; this build serves DECIMAL statics, \
-         compares them, and emits them unchanged"
+         are not served; DECIMAL statics serve, compare, and are emitted \
+         unchanged"
     ))
 }
 
@@ -94,13 +96,12 @@ fn dec_operand<'a>(a: &'a SExpr, b: &'a SExpr) -> Option<&'a SExpr> {
 /// destructured EXHAUSTIVELY.
 ///
 /// The doctrine — no `..` in a sqlparser AST pattern, so a clause we have
-/// never seen breaks the build instead of being silently dropped — reached
-/// `Query` and `Select` first. It did not reach the relation, where three
-/// separate `TableFactor::Table { name, alias, .. }` sites swallowed every
-/// modifier sqlparser can hang off a table name. That is how
-/// `TABLESAMPLE 3 ROWS` was parsed and ignored for a milestone: DuckDB
-/// served 3 rows, we served all 20, under `shape="map"`, whose
-/// one-row-out-per-row-in certificate the dropped clause satisfied.
+/// never seen breaks the build instead of being silently dropped — applies
+/// to the relation as to `Query` and `Select`: a `TableFactor::Table
+/// { name, alias, .. }` pattern would swallow every modifier sqlparser can
+/// hang off a table name. A dropped `TABLESAMPLE 3 ROWS` serves every row
+/// where DuckDB serves 3, and `shape="map"`'s one-row-out-per-row-in
+/// certificate does not catch it.
 ///
 /// Every field other than `name`/`alias` refuses by name. Returns `None` for
 /// a non-`Table` relation so each caller keeps its own wording for that.
@@ -201,10 +202,9 @@ pub fn is_builtin(name: &str) -> bool {
 /// Refuse every `Query` clause this engine does not implement.
 ///
 /// Destructured EXHAUSTIVELY on purpose — no `..` pattern. When sqlparser
-/// grows a clause this stops compiling, instead of silently ignoring it. That
-/// silence is how `FETCH FIRST n ROWS ONLY` came to be parsed and dropped
-/// while its synonym `LIMIT n` was refused by name: an ignored clause is a
-/// wrong ANSWER, not a missing feature.
+/// grows a clause this stops compiling, instead of silently ignoring it. An
+/// ignored clause is a wrong ANSWER, not a missing feature: a dropped
+/// `FETCH FIRST n ROWS ONLY` serves every row.
 fn refuse_unhandled_query(query: &sqlparser::ast::Query) -> Result<(), PrepareError> {
     let sqlparser::ast::Query {
         // checked by the caller
@@ -242,9 +242,9 @@ fn refuse_unhandled_query(query: &sqlparser::ast::Query) -> Result<(), PrepareEr
 }
 
 /// Refuse every `Select` clause this engine does not implement. Exhaustively
-/// destructured for the same reason as [`refuse_unhandled_query`] — `QUALIFY`
-/// was parsed and dropped, so a dedupe-to-latest query emitted every row and
-/// `shape='map'` still certified it.
+/// destructured for the same reason as [`refuse_unhandled_query`] — a dropped
+/// `QUALIFY` makes a dedupe-to-latest query emit every row, and
+/// `shape='map'` would still certify it.
 fn refuse_unhandled_select(select: &sqlparser::ast::Select) -> Result<(), PrepareError> {
     let sqlparser::ast::Select {
         // checked by the caller
@@ -328,7 +328,7 @@ fn refuse_unhandled_select(select: &sqlparser::ast::Select) -> Result<(), Prepar
 /// SQL text + the dynamic table's name/schema + the static-table catalog
 /// (+ declared UDF externs) -> bound relational tree, the equi-joins in
 /// FROM order, the derived output schema, and the width-k UDF output
-/// fields (DRAFT-22).
+/// fields.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn frontend(
     sql: &str,
@@ -447,9 +447,8 @@ pub fn frontend(
     };
     // A bare wide UDF item expands to its whole-validity lane plus k
     // component lanes; the WideOut records how the boundary reassembles
-    // them into ONE field — `list | None` for an unnamed extern (DRAFT-22
-    // step 2), a struct keyed by the declared names for a named one
-    // (slice 5).
+    // them into ONE field — `list | None` for an unnamed extern, a struct
+    // keyed by the declared names for a named one.
     let push_wide = |out_cols: &mut Vec<Col>,
                          exprs: &mut Vec<SExpr>,
                          wide_outs: &mut Vec<super::WideOut>,
@@ -518,7 +517,7 @@ pub fn frontend(
                     continue;
                 }
                 // COLUMNS('re') expands like a filtered star, keeping the
-                // bare column names (wave-B pins).
+                // bare column names (pins-waveB/).
                 if let Some(cols) = binder.expand_columns_item(e)? {
                     for (name, ex) in cols {
                         push_item(&mut out_cols, &mut exprs, name, ex)?;
@@ -555,7 +554,7 @@ pub fn frontend(
                     continue;
                 }
                 let e = fold(binder.expr(expr)?);
-                // Lateral aliases (wave-5 pins): later items and WHERE may
+                // Lateral aliases (pins-wave5/): later items and WHERE may
                 // reference this alias; the real column still wins.
                 binder
                     .bound_aliases
@@ -598,9 +597,8 @@ pub fn frontend(
     if let Some(pred) = &leftover_where {
         let bound = binder.expr(pred);
         let pred = fold(bool_context(bound?, "WHERE predicate")?);
-        // NO statically-NULL-conjunct elision here, deliberately — one
-        // matching optimizer-ON DuckDB lived here for a day and went out
-        // when the oracle moved to optimizer-OFF. Optimizer-ON DuckDB proves
+        // NO statically-NULL-conjunct elision here, deliberately: the oracle
+        // runs DuckDB optimizer-OFF. Optimizer-ON DuckDB proves
         // such a filter selects nothing and deletes it along with its
         // operands; the ORACLE evaluates it:
         //
@@ -661,9 +659,9 @@ fn bind_from<'a>(
         Some((n, alias)) => {
             // The engine's registry is SCHEMA-LESS: a single schema
             // qualifier is accepted when the table part matches the
-            // registered bare name (amends the wave-5 main.-only rule —
-            // DuckDB's schema-existence errors are unknowable to a
-            // schema-less registry; documented in known-limitations.md §5).
+            // registered bare name (DuckDB's schema-existence errors are
+            // unknowable to a schema-less registry; documented in
+            // known-limitations.md §5).
             let bare = match n.rsplit_once('.') {
                 Some((_, t)) => t,
                 None => &n,
@@ -683,7 +681,7 @@ fn bind_from<'a>(
                 // `t AS u(x, y)`: a PARTIAL list is legal (prefix rename,
                 // remaining columns keep their names); too many names is
                 // the pinned bind error; old names are fully shadowed
-                // (wave-5 pins).
+                // (pins-wave5/).
                 Some(a) => {
                     let model_cols = n_plain + opaque.len() + structs.len();
                     if a.columns.len() > model_cols {
@@ -788,7 +786,7 @@ fn bind_from<'a>(
                     "duplicate table name '{scope_name}' in FROM"
                 )));
             }
-            // Stage-B self-join: the build side is the BATCH — a keyless
+            // Self-join: the build side is the BATCH — a keyless
             // batchmap (built per call) with the WHOLE ON as residual.
             // USING/NATURAL is the equality residual `left.c = right.c` per
             // merged name, plus the merge itself (see `ScopeJoin::merged`).
@@ -877,7 +875,7 @@ fn bind_from<'a>(
                 let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, e)?;
                 (keys, key_cols, res, false)
             }
-            // USING desugar (wave-4 pins): each column pairs the LEFT
+            // USING desugar (pins-wave4/): each column pairs the LEFT
             // scope's binding with this table's column; duplicates in the
             // list dedupe silently; ambiguity in the left scope (e.g.
             // after a prior ON join) errors exactly like DuckDB.
@@ -926,17 +924,16 @@ fn bind_from<'a>(
             }
             // NATURAL = USING(all common column names), case-insensitive,
             // merged output like USING with the LEFT spelling; NO common
-            // columns is a hard error, never a cross product (wave-5 pins).
+            // columns is a hard error, never a cross product (pins-wave5/).
             JoinConstraint::Natural => {
                 let mut keys = Vec::new();
                 let mut key_cols = Vec::new();
                 let mut heads: Vec<String> = Vec::new();
                 // DuckDB intersects NAME SETS with no type inspection, so
                 // the scan is over every head, not just the scalar lanes.
-                // The `else { continue }` that used to swallow a struct or
-                // opaque head dropped the column OUT of the key set, and we
-                // emitted rows DuckDB never produces. It refuses BY NAME
-                // instead.
+                // Skipping a struct or opaque head would drop the column OUT
+                // of the key set and emit rows DuckDB never produces, so
+                // such a head refuses BY NAME instead.
                 for name in static_head_names(st) {
                     let ks = shared_key(&binder, st, &name, many)?;
                     if ks.is_empty() {
@@ -1366,7 +1363,7 @@ fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, Prep
 }
 
 /// Bind the non-key ON conjuncts of join `j` and AND them into the spec's
-/// residual, enforcing the wave-4 evaluation-order rule: single-side
+/// residual, enforcing the evaluation-order rule (pins-wave4/): single-side
 /// residuals must be conservatively trap-free (DuckDB scan-pushes them —
 /// different error timing); both-sides residuals may trap (DuckDB
 /// evaluates them per candidate pair, exactly our hit-guarded lowering).
@@ -1425,7 +1422,7 @@ fn bind_residual(
 /// pairing a dynamic-side expression with a static column become probe
 /// keys; every OTHER conjunct (non-equalities, constant equalities,
 /// both-sides-static equalities) is returned raw for residual binding once
-/// the join is in scope (wave-4: `match = key_hit AND residual`).
+/// the join is in scope (pins-wave4/: `match = key_hit AND residual`).
 #[allow(clippy::type_complexity)]
 fn bind_on<'e>(
     binder: &Binder<'_>,
@@ -1446,7 +1443,7 @@ fn bind_on<'e>(
                 right,
             } => (left, right, KeyCmp::Eq),
             // IS NOT DISTINCT FROM: NULL is an ordinary key value — NULL
-            // joins NULL (DRAFT-22's params-join contract).
+            // joins NULL (the params-join contract).
             SqlExpr::IsNotDistinctFrom(left, right) => (left, right, KeyCmp::NotDistinct),
             _ => {
                 residual.push(c);
@@ -1481,7 +1478,7 @@ fn bind_on<'e>(
         // and the table being joined is not in `binder.joins` yet while its
         // ON binds — so the check has to happen here, against `st` itself.
         // `c0.f0 = s0.c0` where the row table has struct c0 AND s0 has
-        // column c0 refuses; qualified spellings resolve as before.
+        // column c0 refuses; qualified spellings resolve normally.
         if let SqlExpr::CompoundIdentifier(parts) = dyn_side {
             let head = &parts[0].value;
             let head_in_outer = binder.column(head).is_ok()
@@ -1527,8 +1524,7 @@ fn promote_dec(e: SExpr, p: u8, s: u8) -> Result<SExpr, PrepareError> {
     if u32::from(int_dec_width(e.ty)) + u32::from(s) > 38 {
         return Err(PrepareError::Bind(format!(
             "cannot compare {} with a DECIMAL of scale {s}: DuckDB compares these \
-             as DECIMAL(38,{s}) and the integer cast can fail per row (m-8 lattice \
-             phase 5)",
+             as DECIMAL(38,{s}) and the integer cast can fail per row",
             e.ty.name()
         )));
     }
@@ -1600,7 +1596,7 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
             if u32::from(int_dec_width(a)) + u32::from(s) > 38 {
                 return Err(PrepareError::Bind(format!(
                     "cannot join {} with {}: DuckDB compares these as DECIMAL(38,{s}) \
-                     and the integer cast can fail per row (m-8 lattice phase 5)",
+                     and the integer cast can fail per row",
                     a.name(),
                     col_ty.name()
                 )));
@@ -1642,7 +1638,7 @@ fn static_head_names(st: &StaticTable) -> Vec<String> {
 /// One shared NATURAL/USING column -> the map keys it becomes, as
 /// `(probe expression, static key, IS NOT DISTINCT FROM)` triples.
 ///
-/// A scalar is one key, exactly as before. A STRUCT expands into ordinary
+/// A scalar is one key. A STRUCT expands into ordinary
 /// composite keys: one PLAIN presence key for the whole struct (a NULL
 /// struct never matches, on either side), one IS-NOT-DISTINCT presence key
 /// per nested node, and one IS-NOT-DISTINCT key per leaf, pairing fields BY
@@ -1924,7 +1920,7 @@ fn is_shadow_lane(sj: &ScopeJoin, pos: usize) -> bool {
         .any(|k| k.src == KeySrc::Lane(sj.val_cols[pos]))
 }
 
-/// One traversal answering the wave-4 residual SCOPE questions about a bound
+/// One traversal answering the residual SCOPE questions about a bound
 /// ON residual: `right`/`left` — does it reference THIS join's columns / any
 /// other scope; `known` — was every node classifiable at all, since an
 /// unrecognised node's children are never visited and so `left`/`right` are
@@ -1960,11 +1956,8 @@ fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool, known: &m
         | SKind::DecToFloat(a)
         | SKind::IntToDec { a, .. }
         | SKind::IntToFloat32(a)
-        // A DOUBLE unary minus is arithmetic this scan has always read: it
-        // was a subtraction from a signed zero until the NaN sign made the
-        // two spellings differ. The libm-backed f64 unaries were never
-        // classifiable and are left that way — widening them is a separate
-        // question, to be measured separately.
+        // A DOUBLE unary minus is plain arithmetic and is scanned through.
+        // The libm-backed f64 unaries are not classifiable.
         | SKind::MathF1 { op: NumOp1::Fneg, a } => {
             scan_residual(a, j, right, left, known);
         }
@@ -2064,7 +2057,7 @@ fn default_name(e: &SqlExpr) -> String {
 
 /// One joined static table in scope: how it is named, which of its columns
 /// are probe values (bindable directly) vs keys (reconstructed from the
-/// dynamic side: `r.id` ≡ CASE match THEN dyn-key ELSE NULL — wave-4).
+/// dynamic side: `r.id` ≡ CASE match THEN dyn-key ELSE NULL — pins-wave4/).
 struct ScopeJoin<'a> {
     name: String,
     table: std::borrow::Cow<'a, StaticTable>,
@@ -2091,7 +2084,7 @@ struct Binder<'a> {
     /// The dynamic table's name as spelled in FROM.
     this_name: String,
     /// The dynamic table's columns AS THE BINDER SEES THEM: borrowed
-    /// normally; an owned renamed copy under `t AS u(x, y)` (wave-5 pins —
+    /// normally; an owned renamed copy under `t AS u(x, y)` (pins-wave5/ —
     /// prefix rename, old names fully shadowed). Positions never change,
     /// so the lowered program still marshals by the ORIGINAL field names.
     in_cols: std::borrow::Cow<'a, [Col]>,
@@ -2108,17 +2101,17 @@ struct Binder<'a> {
     /// Struct row columns flattened to leaf lanes.
     structs: &'a [super::plan::StructCol],
     joins: Vec<ScopeJoin<'a>>,
-    /// All SELECT-list aliases (wave-5 pins: DuckDB's lateral aliases — a
+    /// All SELECT-list aliases (pins-wave5/: DuckDB's lateral aliases — a
     /// later item or WHERE may reference an earlier alias; the REAL column
     /// wins on a name clash; a forward reference is the pinned bind error).
     select_aliases: Vec<String>,
     /// Aliases already bound this pass, in SELECT order (frontend() fills
     /// this as it walks the projection; RefCell keeps `expr(&self)` intact).
     bound_aliases: std::cell::RefCell<Vec<(String, SExpr)>>,
-    /// Program regex table under construction (wave-B); indices are baked
+    /// Program regex table under construction; indices are baked
     /// into ReMatch/ReExtract/ReReplace nodes.
     regexes: std::cell::RefCell<Vec<super::ir::ReSpec>>,
-    /// Declared UDF externs (DRAFT-22): an unknown function matching one
+    /// Declared UDF externs: an unknown function matching one
     /// binds as an opaque ecall instead of the named refusal.
     udfs: &'a [super::ir::ExternSpec],
     /// The callables themselves, decl-order-aligned with `udfs`, for the
@@ -2183,7 +2176,7 @@ impl Drop for GuardScope<'_> {
 }
 
 /// The bound subject of a regex op must be VARCHAR (no implicit casts —
-/// wave-B pins; DuckDB binder errors name the function).
+/// pins-waveB/; DuckDB binder errors name the function).
 fn str_only(name: &str, e: SExpr) -> Result<SExpr, PrepareError> {
     if e.ty != Ty::Str {
         return Err(PrepareError::Bind(format!(
@@ -2256,8 +2249,8 @@ fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
     }
 }
 
-/// DuckDB's boundary rename for duplicate output names (wave-5 pins,
-/// pins-wave5/dup-names-client-contract.json): left-to-right after star
+/// DuckDB's boundary rename for duplicate output names
+/// (pins-wave5/dup-names-client-contract.json): left-to-right after star
 /// expansion, first occurrence keeps its name, later ones get
 /// `<own-original-case-name>_N` with the smallest free N; the collision
 /// check is case-insensitive and covers generated candidates too
@@ -2297,7 +2290,7 @@ enum StarLane {
 /// rows answered four ways across twelve fresh connections, and ORDER BY
 /// does not fix ties. Returns the clause's name for the refusal, None when
 /// there is none or the SQL does not parse (an unparseable query cannot be
-/// inspected and falls through to DuckDB as before).
+/// inspected and falls through to DuckDB).
 pub(crate) fn row_limit_clause(sql: &str) -> Option<&'static str> {
     use sqlparser::ast::{Query, SetExpr, Statement, TableFactor};
     fn in_query(q: &Query) -> Option<&'static str> {
@@ -2442,7 +2435,7 @@ fn like_match(s: &str, p: &str, ci: bool) -> bool {
 enum StarFilter {
     Like { ci: bool, neg: bool },
     Glob,
-    /// Wave-B pins: positive = unanchored RE2 SEARCH over names; NOT =
+    /// pins-waveB/: positive = unanchored RE2 SEARCH over names; NOT =
     /// NOT full-match — independent predicates, never complements.
     Similar { neg: bool },
 }
@@ -2591,7 +2584,7 @@ fn ast_not_if(negated: bool, e: SqlExpr) -> SqlExpr {
 }
 
 impl Binder<'_> {
-    /// DuckDB unifies BETWEEN/IN across the WHOLE construct (wave-1 pins):
+    /// DuckDB unifies BETWEEN/IN across the WHOLE construct (pins-wave1/):
     /// one common type for the subject and every bound/element, so a single
     /// f64 side promotes all sides. Numeric-with-string/bool mixing has
     /// exec-time cast semantics we don't model — clean-unsupported.
@@ -2600,7 +2593,7 @@ impl Binder<'_> {
         // A DECIMAL arm unifies with a WIDER decimal on DuckDB
         // (CombineEqualTypes / DecimalSizeCheck); we serve one (p,s) per
         // value, so a family mixing a decimal with anything not identical
-        // to it refuses by name (m-8 lattice phase 5).
+        // to it refuses by name.
         let mut any_dec: Option<SExpr> = None;
         let mut all_dec: Option<Ty> = None;
         let mut mixed_dec = false;
@@ -2624,7 +2617,7 @@ impl Binder<'_> {
                 return Err(self.dec_refusal("family unification", &d));
             }
         }
-        // Wave-5 pins: mixing casts the string/bool side to the NUMERIC
+        // pins-wave5/: mixing casts the string/bool side to the NUMERIC
         // side (strings numerically with half-away-from-zero rounding to
         // ints; bool -> 0/1; non-numeric strings are DuckDB Conversion
         // Errors). Only literals convert at bind — a string/bool COLUMN
@@ -2701,8 +2694,8 @@ impl Binder<'_> {
             .collect())
     }
 
-    /// Expand `*` / `tbl.*` per DuckDB's measured semantics (1.5.5, wave-5
-    /// pins): FROM order, declared column order within a table; grammar
+    /// Expand `*` / `tbl.*` per DuckDB's measured semantics (1.5.5,
+    /// pins-wave5/): FROM order, declared column order within a table; grammar
     /// order EXCLUDE -> REPLACE -> RENAME with the name filter applying
     /// after EXCLUDE only. Duplicate output names across the star survive
     /// here and are renamed by [`dedup_output_names`] (DuckDB's own
@@ -3089,7 +3082,7 @@ impl Binder<'_> {
 
     /// Bind an expression that must have a definite type on its own. A bare
     /// NULL with no adopting context takes DuckDB's SQLNULL default:
-    /// INTEGER (m-8 phase 2 — before widths there was no int32 to give it).
+    /// INTEGER.
     fn expr(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
         Ok(self.expr_or_null(e)?.unwrap_or_else(|| null_of(Ty::I32)))
     }
@@ -3166,7 +3159,7 @@ impl Binder<'_> {
     /// Whether `f` is `nullif(NULL, x)` — which propagates DuckDB's
     /// SQLNULL: the whole call is an ADOPTABLE bare NULL, not a committed
     /// int32 (`- nullif(NULL, 1)` is BIGINT there, `nullif(NULL, 1) *
-    /// 1::SMALLINT` SMALLINT; fleet 2026-08-13). The second argument still
+    /// 1::SMALLINT` SMALLINT). The second argument still
     /// binds so its own errors fire. Builtin names cannot be UDF-shadowed
     /// (see [`BUILTIN_NAMES`]), so the name test is enough.
     fn nullif_sqlnull(
@@ -3296,8 +3289,8 @@ impl Binder<'_> {
                     return Ok(null_of(Ty::I64));
                 };
                 // Unary minus over a DECIMAL-spelled operand that folds to
-                // NULL is SQLNULL/INTEGER on DuckDB (the campaign's
-                // seed-20275804 spelling); a DOUBLE-spelled one stays DOUBLE.
+                // NULL is SQLNULL/INTEGER on DuckDB; a DOUBLE-spelled one
+                // stays DOUBLE.
                 if ast_decimal_literal(expr)
                     && bind_foldable(&inner)
                     && matches!(fold(inner.clone()).kind, SKind::NullOf)
@@ -3358,7 +3351,7 @@ impl Binder<'_> {
                 // Same BIGINT rule as unary minus (measured: +NULL).
                 None => Ok(null_of(Ty::I64)),
                 // DuckDB's + is a real unary function over numerics only:
-                // +'a' / +TRUE are binder errors there (fleet 2026-08-13).
+                // +'a' / +TRUE are binder errors there.
                 Some(e) if e.ty.is_int() || e.ty == Ty::F64 => Ok(e),
                 Some(e) => Err(PrepareError::Bind(format!(
                     "no function matches +({})",
@@ -3461,7 +3454,7 @@ impl Binder<'_> {
                 ) => self.math1("ceil", NumOp1::Fceil, expr),
                 _ => Err(unsup("CEIL(x TO datetime-field)")),
             },
-            // BETWEEN and IN are exact K3 desugars (wave-1 pins): DuckDB's
+            // BETWEEN and IN are exact K3 desugars (pins-wave1/): DuckDB's
             // truth tables over NULL/NaN fall out of Kleene AND/OR of the
             // duck_fcmp comparisons with zero special cases. DuckDB unifies
             // types across the WHOLE construct (one common type for the
@@ -3475,16 +3468,16 @@ impl Binder<'_> {
             } => {
                 let mut u = self.unify_family(&[expr, low, high])?;
                 let (e, lo, hi) = (u.remove(0), u.remove(0), u.remove(0));
-                // NO dead-range short circuit here, deliberately. One lived
-                // here because optimizer-ON DuckDB folds a constant dead
-                // range (lo > hi) to FALSE in a FILTER and never evaluates
-                // the subject. The ORACLE evaluates it:
+                // NO dead-range short circuit here, deliberately.
+                // Optimizer-ON DuckDB folds a constant dead range (lo > hi)
+                // to FALSE in a FILTER and never evaluates the subject. The
+                // ORACLE evaluates it:
                 //
                 //   SELECT s FROM t WHERE CAST(s AS BIGINT) BETWEEN 22 AND 10
                 //   oracle: Conversion Error: Could not convert string 'one'
                 //
-                // The PROJECTION form evaluated under BOTH readings and still
-                // does, which is why only the filter half went away.
+                // The PROJECTION form evaluates the subject under both
+                // readings.
                 let both = ast_bin(
                     BinaryOperator::And,
                     ast_bin(BinaryOperator::GtEq, e.clone(), lo),
@@ -3544,7 +3537,7 @@ impl Binder<'_> {
                     };
                     for side in [&ba, &bp] {
                         if side.ty != Ty::Str {
-                            // GLOB has NO implicit casts (wave-5 pins;
+                            // GLOB has NO implicit casts (pins-wave5/;
                             // DuckDB's scalar name for it is ~~~).
                             return Err(PrepareError::Bind(format!(
                                 "no function matches ~~~({}, {})",
@@ -3610,7 +3603,7 @@ impl Binder<'_> {
             }
             // SIMILAR TO on VALUES is exactly regexp_full_match on the RAW
             // pattern — DuckDB translates NO wildcards ('h%o' is literal %,
-            // 'h.llo' is a live regex dot). Wave-B pins.
+            // 'h.llo' is a live regex dot). pins-waveB/.
             SqlExpr::SimilarTo {
                 negated,
                 expr,
@@ -3644,10 +3637,10 @@ impl Binder<'_> {
                         }
                     }
                 }
-                // audit 2026-08-13: a bare-NULL root types Str here and the
-                // chain still applies; DuckDB agrees for (NULL)[2] (VARCHAR)
-                // but types (NULL)[1:2] INTEGER (its SQLNULL fallback) —
-                // value parity holds (NULL either way). Preserved.
+                // A bare-NULL root types Str here and the chain still
+                // applies; DuckDB agrees for (NULL)[2] (VARCHAR) but types
+                // (NULL)[1:2] INTEGER (its SQLNULL fallback) — value parity
+                // holds (NULL either way).
                 let mut cur = match self.expr_or_null(root)? {
                     Some(b) => b,
                     None => null_of(Ty::Str),
@@ -3705,7 +3698,7 @@ impl Binder<'_> {
             })
     }
 
-    /// Expand a `COLUMNS('re')` / `COLUMNS(*)` SELECT item (wave-B):
+    /// Expand a `COLUMNS('re')` / `COLUMNS(*)` SELECT item (pins-waveB/):
     /// unanchored RE2 search over declared-case names, table-declaration
     /// order. Returns None when `e` is not a COLUMNS call; expression
     /// forms (COLUMNS(..) + 1) stay unsupported upstream.
@@ -3882,7 +3875,7 @@ impl Binder<'_> {
             }
             // Column patterns compile per row in DuckDB; the engine model
             // is prepare-time compilation only.
-            return Err(unsup("non-constant regex pattern (compiled at prepare in v0)"));
+            return Err(unsup("non-constant regex pattern (patterns compile at prepare)"));
         };
         let translated = if o.literal {
             regex::escape(&raw)
@@ -3929,9 +3922,9 @@ impl Binder<'_> {
     ) -> Result<SExpr, PrepareError> {
         if bs.ty != Ty::Str {
             // The LIST overload has different out-of-range semantics
-            // (NULL, not '') — only the VARCHAR path ships in v0.
+            // (NULL, not '') — only the VARCHAR path is served.
             return Err(unsup(format!(
-                "{name} on {} (only VARCHAR subscripts in v0)",
+                "{name} on {} (only VARCHAR subscripts are served)",
                 bs.ty.name()
             )));
         }
@@ -3968,7 +3961,7 @@ impl Binder<'_> {
     ) -> Result<SExpr, PrepareError> {
         if bs.ty != Ty::Str {
             return Err(unsup(format!(
-                "{name} on {} (only VARCHAR subscripts in v0)",
+                "{name} on {} (only VARCHAR subscripts are served)",
                 bs.ty.name()
             )));
         }
@@ -4379,8 +4372,7 @@ impl Binder<'_> {
         // DuckDB decides AMBIGUITY before it looks at the fields —
         // a head that binds in the driving table AND in a join scope refuses
         // even when only one side is a struct the path could walk. Resolving
-        // the struct first answered a query DuckDB rejects (the largest
-        // single class the campaign sees: 78 of 161 findings at 20k seeds).
+        // the struct first would answer a query DuckDB rejects.
         // GetMatchingBinding THROWS and no rung catches it, so the verdict
         // is on the head name alone, whatever the heads hold.
         let row = self.this_col_with_fields(name, fields);
@@ -4418,8 +4410,8 @@ impl Binder<'_> {
         if let Some(e) = opaque_static_refusal(&sj.table, name, &sj.name) {
             return Some(Err(e));
         }
-        // A scalar lane (value or key): a field asked of it is the
-        // pre-struct error, unchanged.
+        // A scalar lane (value or key): a field asked of it is DuckDB's
+        // not-a-struct error.
         Some(Err(PrepareError::Bind(format!(
             "Cannot extract field '{}' from expression \"{name}\" \
              because it is not a struct, union, map, or json",
@@ -4575,7 +4567,7 @@ impl Binder<'_> {
         }
         match hits.len() {
             // The REAL column wins over a same-named select alias (measured
-            // in both SELECT and WHERE — wave-5 pins).
+            // in both SELECT and WHERE — pins-wave5/).
             1 => Ok(hits.pop().expect("len checked")),
             0 if name.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
             0 => {
@@ -4754,8 +4746,8 @@ impl Binder<'_> {
                 )));
             }
         }
-        // NO i128 comparison fold here, deliberately. One lived here
-        // because optimizer-ON DuckDB answers an all-literal integer
+        // NO i128 comparison fold here, deliberately. Optimizer-ON DuckDB
+        // answers an all-literal integer
         // comparison through wide range analysis, without ever performing the
         // overflowing multiply. The ORACLE does not:
         //
@@ -4763,15 +4755,15 @@ impl Binder<'_> {
         //   oracle:  Out of Range Error: Overflow in multiplication of INT64
         //   opt-on:  true
         //
-        // The operand on its own errors at BIND under both readings, so
-        // only the comparison wrapper ever differed, and only because of
-        // the optimizer.
+        // The operand on its own errors at BIND under both readings; only
+        // the comparison wrapper differs, and only because of the
+        // optimizer.
         let a = self.expr_or_null(left)?;
         let b = self.expr_or_null(right)?;
         // DuckDB folds a strict op over a DECIMAL literal and a bare NULL
         // to SQLNULL — INTEGER — discarding the decimal (measured:
         // -2.681 + NULL and 2.5 * NULL are INTEGER; / stays DOUBLE). Our
-        // decimal literals are f64 (the documented v0 narrowing), so
+        // decimal literals are f64 (the documented narrowing), so
         // adoption would answer double.
         if matches!(
             op,
@@ -4811,7 +4803,7 @@ impl Binder<'_> {
                 (n, b)
             }
             (None, None) => {
-                // Wave-5 pins: NULL <op> NULL types by the operator —
+                // pins-wave5/: NULL <op> NULL types by the operator —
                 // + - * % -> BIGINT, / -> DOUBLE, comparisons -> BOOLEAN
                 // (via I64 operands), AND/OR -> BOOLEAN.
                 let ty = match op {
@@ -4887,7 +4879,7 @@ impl Binder<'_> {
                 })
             }
             // s ^@ p is exactly starts_with(s, p): byte-prefix compare,
-            // VARCHAR-only with no implicit casts (wave-5 pins).
+            // VARCHAR-only with no implicit casts (pins-wave5/).
             BinaryOperator::PGStartsWith => {
                 for side in [&a, &b] {
                     if side.ty != Ty::Str {
@@ -4931,15 +4923,14 @@ impl Binder<'_> {
         // NO nullness rewrite here, deliberately. `<arithmetic> IS [NOT] NULL`
         // answers without evaluating the arithmetic on optimizer-ON DuckDB —
         // `statistics_propagation` proves the predicate from the column's null
-        // statistic and deletes the expression — and this engine reproduced
-        // that for a day. The ORACLE is optimizer-OFF DuckDB,
-        // which evaluates and traps:
+        // statistic and deletes the expression. The ORACLE is optimizer-OFF
+        // DuckDB, which evaluates and traps:
         //
         //   SELECT (c0 * 32) IS NOT NULL FROM t   -- c0 TINYINT, one row -128
         //   oracle: Out of Range Error: Overflow in multiplication of INT8
         //
-        // so we evaluate and trap too. The rewrite was emulation of a pass
-        // whose answer is not a function of the query at all (it changes with
+        // so we evaluate and trap too. That pass's answer is not a
+        // function of the query at all (it changes with
         // the table's insert history — see
         // known_divergences/test_trap_elision.py), which is exactly why the
         // oracle excludes it.
@@ -4996,8 +4987,7 @@ impl Binder<'_> {
         let else_bound: Option<Option<SExpr>> =
             else_result.map(|e| self.expr_or_null(e)).transpose()?;
 
-        // Width unification — DuckDB's fold (2026-08-13 fleet, 0 errors on
-        // 19k probes; DuckDB source read 2026-08-24): SEED from the ELSE
+        // Width unification — DuckDB's fold: SEED from the ELSE
         // (its syntactic-literal hint intact); no ELSE — or ELSE NULL —
         // seeds as an implicit non-literal NULL. Then combine WHEN arms in
         // order; every combine makes the accumulator computed, so only the
@@ -5101,9 +5091,9 @@ impl Binder<'_> {
         if inner.ty == Ty::Str && to == Ty::I1 {
             return Err(unsup("CAST VARCHAR -> BOOLEAN"));
         }
-        // DECIMAL -> DOUBLE is bought (DuckDB's div/mod algorithm); every
-        // other target is phase 5. Both of the refused ones were WRONG
-        // VALUES before this landed.
+        // DECIMAL -> DOUBLE is served (DuckDB's div/mod algorithm); every
+        // other target refuses by name — served as doubles they would be
+        // wrong values.
         if inner.ty.dec().is_some() {
             if to == Ty::F64 {
                 return Ok(dec_to_float(inner));
@@ -5140,8 +5130,7 @@ impl Binder<'_> {
         // no CONSTANT-fold path to the lowering's narrow runtime trap (that
         // trap fires on emitted lanes, not on a folded literal), so the
         // refusal is NOT in_guarded-suspended (refusing a query DuckDB could
-        // run lazily beats serving a value it would never produce). Interim:
-        // it can retire once a folded constant can reach that same trap.
+        // run lazily beats serving a value it would never produce).
         if let Some((lo, hi)) = to.int_range() {
             let const_out = match &inner.kind {
                 SKind::Lit(Lit::I64(v)) => Some(!(lo..=hi).contains(v)),
@@ -5226,7 +5215,7 @@ impl Binder<'_> {
 
     /// `lits` are the operands' SYNTACTIC-literal hints, computed by the
     /// caller from the SQL AST (`ast_int_literal`) — never from bound
-    /// nodes (fleet 2026-08-13: every SExpr-shape heuristic leaks).
+    /// nodes (every SExpr-shape heuristic leaks).
     fn arith(
         &self,
         op: ArithOp,
@@ -5237,7 +5226,7 @@ impl Binder<'_> {
         // The shared strict-NULL rule (`fold_operand`). Folding to NULL
         // ELIMINATES the sibling subexpression, so a trapping ln/overflow/
         // giant-string under it never executes on DuckDB and must not here.
-        // Measured (2026-08-11): DuckDB's elision is literal-NULL only; a
+        // Measured: DuckDB's elision is literal-NULL only; a
         // runtime NULL does not spare the trap on either engine, so eager
         // per-row evaluation stays as it is. The nullness is read BEFORE
         // promotion — promote_f64 wraps NullOf in a cast, hiding it — but
@@ -5247,7 +5236,7 @@ impl Binder<'_> {
         let (a, a_null) = fold_operand(a);
         let (b, b_null) = fold_operand(b);
         let null_operand = a_null || b_null;
-        // Decimal ARITHMETIC is m-8 lattice phase 5. Refuse by name here,
+        // Decimal ARITHMETIC is not served. Refuse by name here,
         // before the promotion below turns it into the generic
         // "arithmetic needs numeric operands" — the column and its (p,s)
         // are what the reader needs.
@@ -5258,9 +5247,9 @@ impl Binder<'_> {
             op,
             ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor
         ) {
-            // Bitwise is integer-only (wave-5 pins: non-integer operands
+            // Bitwise is integer-only (pins-wave5/: non-integer operands
             // are binder errors) and width-polymorphic (1 & 2 is INTEGER,
-            // i & k is BIGINT — measured 2026-08-13); compute is i64 either
+            // i & k is BIGINT — measured); compute is i64 either
             // way.
             for e in [&a, &b] {
                 if !e.ty.is_int() {
@@ -5319,7 +5308,7 @@ impl Binder<'_> {
             }
         }
         let nullable = a.nullable || b.nullable;
-        // DuckDB pins (2026-07-26, waves 1+3): integer % by zero is NULL,
+        // DuckDB pins (pins-wave1/, pins-wave3/): integer % by zero is NULL,
         // and `//`/divide() by zero is NULL on BOTH ints and doubles —
         // guard with a CASE unless the divisor is a provably non-zero
         // literal. The idiv/irem traps stay reachable only for MIN op -1,
@@ -5434,7 +5423,7 @@ impl Binder<'_> {
             // DECIMAL vs INTEGER: DuckDB casts the INTEGER up, exactly, so
             // the comparison stays in the decimal's scale. The one shape it
             // refuses is the CAPPED width, where the integer's per-row cast
-            // can fail (source item 6) — a row-time trap phase 5 buys.
+            // can fail — reproducing that needs a row-time trap.
             (Ty::Dec(p, s), y) if y.is_int() => (a, promote_dec(b, p, s)?),
             (x, Ty::Dec(p, s)) if x.is_int() => (promote_dec(a, p, s)?, b),
             // DECIMAL vs DOUBLE: only decimal->double is a legal implicit
@@ -5462,7 +5451,7 @@ impl Binder<'_> {
             (a, b)
         };
         // NO constant shift and NO NULL-operand elision here, both
-        // deliberately, and both lived here once.
+        // deliberately.
         //
         // `x ± c <cmp> k` is simplified to `x <cmp> k∓c` by
         // `expression_rewriter`, so on optimizer-ON DuckDB `(i + 1) > 5`
@@ -5526,7 +5515,7 @@ impl Binder<'_> {
     }
 
     /// Try to execute a pure extern at BIND, DuckDB's bind fold
-    /// (spec 2026-08-13-bind-fold-alignment). `None` = not foldable here
+    /// `None` = not foldable here
     /// (side_effects declared, no evaluator, or a non-constant argument);
     /// `Some(Err(msg))` = the callable raised, and the CONTEXT decides
     /// (field access fails the build, || swallows — both measured);
@@ -5554,8 +5543,7 @@ impl Binder<'_> {
                 SKind::Lit(Lit::F64(v)) => Some(ScalarVal::F64(v)),
                 SKind::Lit(Lit::Str(s)) => Some(ScalarVal::Str(s)),
                 // A constant spelling our fold cannot finish (runtime-only
-                // ops over literals) — DuckDB would fold; we pass. The
-                // campaign owns finding any schema-visible residue.
+                // ops over literals) — DuckDB would fold; we pass.
                 _ => return None,
             });
         }
@@ -5569,7 +5557,7 @@ impl Binder<'_> {
     /// executes once at bind, never per row, and a non-deterministic
     /// "pure" udf gets one baked sample there too — while a raising
     /// callable keeps the runtime call (DuckDB's fold swallows
-    /// exceptions uniformly; review 2026-08-13).
+    /// exceptions uniformly).
     fn bind_fold_concat_operand(&self, e: SExpr) -> (SExpr, bool) {
         if bind_foldable(&e) && matches!(fold(e.clone()).kind, SKind::NullOf) {
             return (e, true);
@@ -5661,7 +5649,7 @@ impl Binder<'_> {
     /// wording. A bare-NULL field rides the adoptable-SQLNULL channel by
     /// construction — the substitute AST re-binds wherever the ORIGINAL
     /// stood (`- (struct_pack(a := NULL)).a` is BIGINT on DuckDB, the bare
-    /// field INTEGER; measured 2026-08-13).
+    /// field INTEGER; measured).
     fn desugar_struct_field(
         &self,
         e: &SqlExpr,
@@ -5804,10 +5792,10 @@ impl Binder<'_> {
         // via expr_or_null's shape gate); a real struct keeps its
         // declared field types, NULL fields included. A raised exception
         // is SWALLOWED and the runtime call stays — DuckDB's fold gives
-        // up uniformly (review 2026-08-13: DESCRIBE succeeds, the error
-        // fires at RUN with rows, a zero-row batch answers empty; an
-        // earlier FROM-less probe that seemed to error at bind was eager
-        // constant evaluation, not the binder).
+        // up uniformly (DESCRIBE succeeds, the error fires at RUN with
+        // rows, a zero-row batch answers empty; a FROM-less query that
+        // appears to error at bind is eager constant evaluation, not the
+        // binder).
         match self.try_extern_bind_fold(ext as usize, spec, &args) {
             Some(Err(_)) => {}
             Some(Ok(None)) => return Ok(Some(null_of(Ty::I32))),
@@ -5915,17 +5903,17 @@ impl Binder<'_> {
     }
 
     /// A struct-VALUED projection item — `struct_pack(n := e, ...)`, or that
-    /// guarded by `CASE WHEN g IS NULL THEN NULL ELSE ... END` (θ export,
-    /// slice 6). Lowered to the same wide-lane shape a named extern uses: a
+    /// guarded by `CASE WHEN g IS NULL THEN NULL ELSE ... END` (θ export).
+    /// Lowered to the same wide-lane shape a named extern uses: a
     /// whole-validity lane (false = the whole struct is NULL, distinct from
     /// a struct of NULLs) plus one component lane per field. `None` when
     /// this isn't that shape.
     ///
-    /// audit 2026-08-13: stricter than DuckDB — unnamed args
+    /// Stricter than DuckDB, deliberately — unnamed args
     /// (`struct_pack(i)` infers the field name there) and
     /// leading-underscore fields bind on the oracle; the recognizer
     /// refuses both (projection-loop-only, pydantic model boundary).
-    /// Preserved. Field ACCESS over struct_pack is `desugar_struct_field`'s
+    /// Field ACCESS over struct_pack is `desugar_struct_field`'s
     /// bind-time desugar and never reaches this recognizer.
     fn struct_pack_lanes(
         &self,
@@ -6052,7 +6040,7 @@ impl Binder<'_> {
         lanes.push((format!("{base}\u{1}valid"), valid));
         for (j, v) in values.iter().enumerate() {
             // struct_pack(a := NULL) is STRUCT(a INTEGER) on DuckDB —
-            // SQLNULL's int32 home (m-8 phase 2).
+            // SQLNULL's int32 home.
             let bound = match self.expr_or_null(v)? {
                 None => null_of(Ty::I32),
                 Some(x) => fold(x),
@@ -6149,8 +6137,8 @@ impl Binder<'_> {
 
     /// A bare wide UDF call as a projection item expands to a whole-validity
     /// lane plus per-return nullable component lanes sharing one call site:
-    /// a width-k (k >= 2) unnamed extern (the DRAFT-22 list boundary), or a
-    /// NAMED extern at EVERY width (slice 5 — DuckDB registers named
+    /// a width-k (k >= 2) unnamed extern (the list boundary), or a
+    /// NAMED extern at EVERY width (DuckDB registers named
     /// externs as STRUCT, so the boundary assembles a struct keyed by the
     /// returned declared names; empty names = list). `None` for anything
     /// else (width-1 unnamed calls stay ordinary scalar expressions). Lane
@@ -6337,10 +6325,10 @@ impl Binder<'_> {
     /// the f64 lane for the DOUBLE-returning math rows, and the result
     /// type. The arm then only builds its node.
     ///
-    /// audit 2026-08-13: the NULL short-circuit running BEFORE the type
-    /// checks is the audited dominant pattern — replace(NULL, 1, 2) binds
-    /// NULL::VARCHAR and pow(s, NULL) binds NULL::DOUBLE (the latter is
-    /// looser than DuckDB, which refuses the VARCHAR sibling). Preserved.
+    /// The NULL short-circuit runs BEFORE the type checks, DuckDB's
+    /// dominant pattern — replace(NULL, 1, 2) binds NULL::VARCHAR and
+    /// pow(s, NULL) binds NULL::DOUBLE (the latter is looser than DuckDB,
+    /// which refuses the VARCHAR sibling; kept deliberately).
     fn sig_resolve(
         &self,
         name: &str,
@@ -6349,7 +6337,7 @@ impl Binder<'_> {
     ) -> Result<SigArgs, PrepareError> {
         let n = sig.params.len();
         if (!sig.variadic && args.len() != n) || (sig.variadic && args.len() < n) {
-            // audit 2026-08-13: reverse alone spells its arity error
+            // reverse alone spells its arity error
             // "takes one argument"; every sibling says "exactly 1".
             return Err(PrepareError::Bind(if name == "reverse" {
                 format!("{name} takes one argument")
@@ -6411,16 +6399,15 @@ impl Binder<'_> {
         Ok(SigArgs::Bound(out, ret))
     }
 
-    /// The v0 builtin catalogue. Everything here follows the measured pins
+    /// The builtin catalogue. Everything here follows the measured pins
     /// in packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md; names
     /// not listed reject as clean unsupported.
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         // DuckDB refuses every call-node modifier on a scalar call (OVER is
         // a catalog error, FILTER invalid input, IGNORE NULLS a parser
-        // error) while these fields silently fell on the floor here, so the
-        // bare call was served where the oracle errors — the fuzz
-        // campaign's largest class. Destructured EXHAUSTIVELY (no `..`) for
+        // error); ignoring these fields would serve the bare call where
+        // the oracle errors. Destructured EXHAUSTIVELY (no `..`) for
         // the same reason as [`refuse_unhandled_query`]: a modifier field
         // added to sqlparser must break this build, not the answers.
         let sqlparser::ast::Function {
@@ -6478,7 +6465,7 @@ impl Binder<'_> {
             _ => None,
         };
         match name.as_str() {
-            // ucase/lcase are alias-identical to upper/lower (wave-3 pins:
+            // ucase/lcase are alias-identical to upper/lower (pins-wave3/:
             // exhaustive all-codepoint sweep, zero mismatches).
             "upper" | "lower" | "ucase" | "lcase" => {
                 let (bound, ty) = resolved.expect("signature row");
@@ -6507,7 +6494,7 @@ impl Binder<'_> {
                     _ => Err(PrepareError::Bind(format!("{name} takes 1 or 2 arguments"))),
                 }
             }
-            // Wave-1 string search (pins): instr/strpos/2-arg position are
+            // String search (pins-wave1/): instr/strpos/2-arg position are
             // one op with (haystack, needle) order; prefix/suffix alias
             // starts_with/ends_with; positions are 1-based codepoints.
             "instr" | "strpos" | "position" | "starts_with" | "prefix" | "ends_with"
@@ -6557,7 +6544,7 @@ impl Binder<'_> {
                     nullable,
                 })
             }
-            // Wave-1 f64 unary math (pins: 2026-07-26-wave1-builtin-pins.md).
+            // f64 unary math (pins: 2026-07-26-wave1-builtin-pins.md).
             // 1-arg log IS base 10 in DuckDB — handled under "log" below.
             "ln" | "log2" | "log10" | "exp" | "sqrt" | "cbrt" | "sin" | "cos" | "tan" | "floor"
             | "ceil" | "ceiling" => {
@@ -6585,8 +6572,8 @@ impl Binder<'_> {
                 [b, x] => self.math2("log", BinOp::Flogb, b, x),
                 _ => Err(PrepareError::Bind("log takes 1 or 2 arguments".to_string())),
             },
-            // One table row: the binary DOUBLE lane (math2's audited NULL
-            // ordering now lives in the resolution head). fdiv/fmod are
+            // One table row: the binary DOUBLE lane (math2's NULL ordering
+            // lives in the resolution head). fdiv/fmod are
             // the FLOOR pair — always DOUBLE, even for two int args.
             "pow" | "power" | "fdiv" | "fmod" | "nextafter" => {
                 let op = match name.as_str() {
@@ -6771,14 +6758,13 @@ impl Binder<'_> {
                 }
                 // Lazy per-row (measured: untaken erroring arms don't fire) —
                 // guaranteed here because CASE branches run only when taken.
-                // audit 2026-08-13: stricter than DuckDB twice — it binds
+                // Stricter than DuckDB twice, deliberately — it binds
                 // coalesce(NULL, NULL) as INTEGER and unifies BOOLEAN with
                 // ints (coalesce(b, i) -> INTEGER); both refuse here
-                // (BOOLEAN+DOUBLE refuses on both engines). Preserved.
+                // (BOOLEAN+DOUBLE refuses on both engines).
                 self.in_guarded.set(self.in_guarded.get() + 1);
                 let _guard = GuardScope(&self.in_guarded);
-                // Seed-then-combine (DuckDB's fold, 0 errors on 19k probes;
-                // DuckDB source read 2026-08-24): the seed keeps its
+                // Seed-then-combine (DuckDB's fold): the seed keeps its
                 // literal hint; every combine makes the accumulator
                 // computed. Literal NULL args never produce a value — they
                 // drop from evaluation — but they still fold as SQLNULL:
@@ -6796,7 +6782,7 @@ impl Binder<'_> {
                         continue;
                     };
                     // The hint rides with the arg's own SPELLING (never
-                    // the bound node — fleet 2026-08-13).
+                    // the bound node).
                     let new_lit = ast_int_literal(arg);
                     match unified {
                         None => {
@@ -6879,11 +6865,11 @@ impl Binder<'_> {
             // least/greatest: NULL-IGNORING (result NULL only when every
             // arg is), ties return the FIRST argument, NaN sorts above
             // +inf — all of which the CASE + duck-order-cmp composition
-            // reproduces exactly (wave-1 pins), so no IR op exists.
-            // audit 2026-08-13: stricter than DuckDB twice — it binds
+            // reproduces exactly (pins-wave1/), so no IR op exists.
+            // Stricter than DuckDB twice, deliberately — it binds
             // least(NULL, NULL) as INTEGER and unifies BOOLEAN with ints
             // (least(b, k) -> BIGINT); both refuse here (BOOLEAN+DOUBLE
-            // refuses on both engines). Preserved.
+            // refuses on both engines).
             "least" | "greatest" => {
                 if args.is_empty() {
                     return Err(PrepareError::Bind(format!(
@@ -6893,7 +6879,7 @@ impl Binder<'_> {
                 let mut bound = Vec::new();
                 for arg in &args {
                     // Literal NULL args contribute nothing (NULL-ignoring);
-                    // hints ride with the SPELLING (fleet 2026-08-13).
+                    // hints ride with the SPELLING.
                     if let Some(e) = self.expr_or_null(arg)? {
                         bound.push((e, ast_int_literal(arg)));
                     }
@@ -6978,10 +6964,10 @@ impl Binder<'_> {
                 Ok(acc)
             }
             "nullif" => {
-                // audit 2026-08-13: stricter than DuckDB wherever cmp(Eq)
-                // refuses a mix — nullif(s, i) -> VARCHAR and nullif(b, b)
+                // Stricter than DuckDB wherever cmp(Eq) refuses a mix,
+                // deliberately — nullif(s, i) -> VARCHAR and nullif(b, b)
                 // -> BOOLEAN both bind there (compare at the promoted type,
-                // result keeps arg 1's type). Preserved.
+                // result keeps arg 1's type).
                 let [a, b] = args[..] else {
                     return Err(PrepareError::Bind(
                         "nullif takes exactly 2 arguments".to_string(),
@@ -7011,7 +6997,7 @@ impl Binder<'_> {
                     }
                 }
             }
-            // Wave-3 similarity: all raw UTF-8 BYTE-based (measured);
+            // Similarity (pins-wave3/): all raw UTF-8 BYTE-based (measured);
             // editdist3 == levenshtein and mismatches == hamming exactly.
             "levenshtein" | "editdist3" | "damerau_levenshtein" | "jaccard" | "hamming"
             | "mismatches" => {
@@ -7109,10 +7095,10 @@ impl Binder<'_> {
                         "{name} takes exactly 3 arguments"
                     )));
                 };
-                // audit 2026-08-13: a bare-NULL subject types Str here;
-                // DuckDB's SQLNULL fallback types the slice INTEGER (while
+                // A bare-NULL subject types Str here; DuckDB's SQLNULL
+                // fallback types the slice INTEGER (while
                 // array_extract(NULL, 2) agrees at VARCHAR). Value parity
-                // holds. Preserved.
+                // holds.
                 let Some(bs) = self.expr_or_null(s)? else {
                     return Ok(null_of(Ty::Str));
                 };
@@ -7130,12 +7116,11 @@ impl Binder<'_> {
                     self.expr_or_null(pad)?,
                 );
                 // DuckDB's {l,r}pad count is INTEGER and its binder
-                // does NOT downcast — a BIGINT count is a binder error there
-                // (169 of the first campaign's 963 findings). Now that
-                // widths are typed, the gate IS the type: INTEGER or
-                // narrower binds, BIGINT refuses. The NULL short-circuit
-                // below must not skip this check (certification seed 1589);
-                // a bare-NULL count itself is fine: DuckDB types it INTEGER.
+                // does NOT downcast — a BIGINT count is a binder error
+                // there. The gate IS the type: INTEGER or narrower binds,
+                // BIGINT refuses. The NULL short-circuit below must not skip
+                // this check; a bare-NULL count itself is fine: DuckDB types
+                // it INTEGER.
                 let count_is_int32 =
                     |e: &SExpr| e.ty.is_int() && e.ty != Ty::I64;
                 let bad_count = format!(
@@ -7394,7 +7379,7 @@ impl Binder<'_> {
                     nullable: true,
                 })
             }
-            // Wave-3 math tail: add/subtract/multiply/divide/mod are EXACT
+            // Math tail (pins-wave3/): add/subtract/multiply/divide/mod are EXACT
             // aliases of + - * // % (measured: same values, types, and
             // error texts); fdiv/fmod are the FLOOR pair (always DOUBLE);
             // nextafter is C nextafter, total.
@@ -7408,7 +7393,7 @@ impl Binder<'_> {
                     "multiply" => ArithOp::Mul,
                     "divide" => ArithOp::IDiv,
                     // xor is FUNCTION-only in DuckDB; `#`/`^` are not it
-                    // (wave-5 pins — `^` is pow and stays unsupported).
+                    // (pins-wave5/ — `^` is pow and stays unsupported).
                     "xor" => ArithOp::BitXor,
                     _ => ArithOp::Rem,
                 };
@@ -7427,12 +7412,12 @@ impl Binder<'_> {
                 };
                 self.arith(op, bx, by, (ast_int_literal(x), ast_int_literal(y)))
             }
-            // Named rejects (wave-3 AC #3): each states WHY, not just what.
+            // Named rejects: each states WHY, not just what.
             "sum" | "count" | "avg" | "min" | "max" | "geomean" | "product" | "string_agg"
             | "first" | "last" | "any_value" => Err(unsup(format!(
-                "aggregate function {name} (no aggregation in v0)"
+                "aggregate function {name} (aggregation is not served)"
             ))),
-            // Wave-B regexp family (pins: 2026-07-27-waveB-regexp-pins.md).
+            // Regexp family (pins: 2026-07-27-waveB-regexp-pins.md).
             "regexp_matches" | "regexp_full_match" => {
                 let (s, p, opts) = match args[..] {
                     [s, p] => (s, p, None),
@@ -7462,7 +7447,7 @@ impl Binder<'_> {
                 }
             }
             "regexp_extract" => {
-                // audit 2026-08-13: stricter than DuckDB — its third arg
+                // Stricter than DuckDB — its third arg
                 // also accepts a constant NAME-LIST returning a STRUCT
                 // (regexp_extract(s, '(a)(b)', ['x','y'])); absent here.
                 let (s, p, group, opts) = match args[..] {
@@ -7565,7 +7550,7 @@ impl Binder<'_> {
                 }
             }
             "regexp_split_to_array" | "regexp_extract_all" => Err(unsup(format!(
-                "function {name} (list-valued — non-scalar in v0)"
+                "function {name} (list-valued, non-scalar)"
             ))),
             "reverse" => {
                 // ASCII byte path + UAX-29 extended grapheme path
@@ -7603,22 +7588,22 @@ impl Binder<'_> {
                     }
                 }
                 Err(unsup(format!(
-                    "function {} (not in the v0 catalogue)",
+                    "function {} (not in the builtin catalogue)",
                     f.name
                 )))
             }
             _ => {
-                // audit 2026-08-13: DuckDB 1.5.5 HAS if() and ifnull()
-                // (iif/nvl are absent there too); neither is in the
-                // catalogue, so a UDF/tree may claim those two names and
-                // silently diverge from oracle semantics. Preserved.
+                // DuckDB 1.5.5 HAS if() and ifnull() (iif/nvl are absent
+                // there too); neither is in the catalogue, so a UDF/tree may
+                // claim those two names and silently diverge from oracle
+                // semantics.
                 // A declared tree transform: same namespace as the ecall
                 // UDFs, but it lowers to the native kernel rather than a
                 // callback, so it is resolved before them.
                 if let Some(cat) = self.find_tree(&f.name.to_string()) {
                     return self.tree_call(cat, &args);
                 }
-                // Declared UDF externs (DRAFT-22): width-1 is an ordinary
+                // Declared UDF externs: width-1 is an ordinary
                 // scalar expression; width-k is bare-item-only (handled in
                 // the projection loop), so reaching it here is refused.
                 if let Some((ext, spec)) = self.find_udf(&f.name.to_string()) {
@@ -7627,7 +7612,7 @@ impl Binder<'_> {
                         // loop): a named extern MID-EXPRESSION has no
                         // scalar reading — DuckDB's struct registration
                         // would binder-error. Bare items take the struct
-                        // boundary in the projection loop (slice 5).
+                        // boundary in the projection loop.
                         return Err(unsup(format!(
                             "udf '{}' is struct-valued (declared field names) \
                              — serve it as its own SELECT item or address an \
@@ -7657,14 +7642,14 @@ impl Binder<'_> {
                     });
                 }
                 Err(unsup(format!(
-                    "function {} (not in the v0 catalogue)",
+                    "function {} (not in the builtin catalogue)",
                     f.name
                 )))
             }
         }
     }
 
-    /// Wave-1 string search: both args must be Str (no implicit numeric
+    /// String search (pins-wave1/): both args must be Str (no implicit numeric
     /// casts — measured binder errors). A literal NULL binds to the typed
     /// NULL result for every member EXCEPT contains, where DuckDB's
     /// overloads (MAP/LIST) make a bare NULL a binder error — mirrored.
@@ -7679,8 +7664,8 @@ impl Binder<'_> {
         // contains has MAP/LIST overloads; a NULL literal NEEDLE binds only
         // when a NON-literal Str haystack anchors resolution (measured:
         // contains(s, NULL) and contains(NULL, 'o') work, contains('abc',
-        // NULL) and contains(NULL, NULL) are binder errors — the corpus
-        // refuted the fleet's blanket-error pin, so this mirrors exactly).
+        // NULL) and contains(NULL, NULL) are binder errors — mirrored
+        // exactly).
         if name == "contains" && bn.is_none() {
             let anchored = matches!(&bh, Some(e) if !matches!(e.kind, SKind::Lit(_)));
             if !anchored {
@@ -7715,13 +7700,13 @@ impl Binder<'_> {
 
     /// round(x, n) / trunc(x, n): result type == subject type; the digits
     /// slot maxes at INTEGER — a BIGINT digits expression (column or wide
-    /// literal) is a binder error on DuckDB too (probed 2026-08-13).
+    /// literal) is a binder error on DuckDB too (measured).
     /// Total on both types (i64 wraps — pinned).
     ///
-    /// audit 2026-08-13: looser than DuckDB once — a bare-NULL subject
-    /// returns before the digits slot is even bound (round(NULL, s) is
-    /// NULL here, a binder error there). This interleaved order is also
-    /// why round/trunc stay Custom rows. Preserved.
+    /// Looser than DuckDB in one case — a bare-NULL subject returns
+    /// before the digits slot is even bound (round(NULL, s) is NULL here, a
+    /// binder error there). This interleaved order is also why round/trunc
+    /// stay Custom rows.
     fn round2(&self, trunc: bool, x: &SqlExpr, n: &SqlExpr) -> Result<SExpr, PrepareError> {
         let name = if trunc { "trunc" } else { "round" };
         let Some(subject) = self.expr_or_null(x)? else {
@@ -7756,7 +7741,7 @@ impl Binder<'_> {
         })
     }
 
-    /// Wave-1 unary f64 math: numeric args promote to DOUBLE, VARCHAR and
+    /// Unary f64 math (pins-wave1/): numeric args promote to DOUBLE, VARCHAR and
     /// BOOLEAN columns are binder errors (no implicit cast — measured), a
     /// literal NULL binds to the DOUBLE overload.
     fn math1(&self, name: &str, op: NumOp1, arg: &SqlExpr) -> Result<SExpr, PrepareError> {
@@ -7776,15 +7761,15 @@ impl Binder<'_> {
         Ok(math1_node(op, inner))
     }
 
-    /// Wave-1 binary f64 math (now just log(base, x); the fixed-arity
+    /// Binary f64 math (pins-wave1/; just log(base, x) — the fixed-arity
     /// members read the signature table). A literal NULL in either slot
     /// pre-empts every domain check (measured: log(-2.0, NULL) is NULL,
     /// not an error).
     ///
-    /// audit 2026-08-13: the NULL short-circuit preceding the type checks
-    /// is looser than DuckDB — log(s, NULL) binds NULL::DOUBLE here where
-    /// it refuses the VARCHAR sibling. Preserved (the head reproduces the
-    /// same order for the table rows).
+    /// The NULL short-circuit preceding the type checks is looser than
+    /// DuckDB — log(s, NULL) binds NULL::DOUBLE here where it refuses the
+    /// VARCHAR sibling (the resolution head reproduces the same order for
+    /// the table rows).
     fn math2(
         &self,
         name: &str,
@@ -8022,12 +8007,10 @@ fn null_of(ty: Ty) -> SExpr {
 /// production. Data-driven counts keep the runtime cap, documented in
 /// known-limitations.md.
 ///
-/// This used to claim DuckDB's behaviour past the budget was "a coin flip"
-/// between serving and erroring. Measured 2026-08-16, that is false: repeat
-/// serves deterministically to 4294967295 bytes and errors deterministically
-/// above it, while lpad/rpad refuse past INTEGER at the binder because their
-/// count parameter is declared INTEGER (a separate rule). We do not get to
-/// borrow their instability as a reason, because they have none.
+/// DuckDB's behaviour past the budget is deterministic, not a reason to
+/// refuse: repeat serves to 4294967295 bytes and errors above it, while
+/// lpad/rpad refuse past INTEGER at the binder because their count
+/// parameter is declared INTEGER (a separate rule).
 fn refuse_budget_breaking_count(name: &str, count: &SExpr) -> Result<(), PrepareError> {
     const BUDGET: i64 = 1 << 30; // bytes; an n-char 1-byte result is n bytes
     if let SKind::Lit(Lit::I64(n)) = fold(count.clone()).kind {
@@ -8049,7 +8032,7 @@ fn refuse_budget_breaking_count(name: &str, count: &SExpr) -> Result<(), Prepare
 /// means some leaf isn't an int32 literal (column, cast, big literal, `/`
 /// which is DOUBLE there) — 64-bit semantics apply and nothing refuses.
 /// `Fine(None)` is a NULL-valued but trap-free subtree (INTEGER % 0 is NULL
-/// on DuckDB, measured in the wave pins).
+/// on DuckDB, measured in the pins).
 enum I32Fold {
     NotShaped,
     Traps,
@@ -8118,7 +8101,7 @@ fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareError> {
     if name.contains("INT") {
         // DuckDB's named widths. INT8 is BIGINT (eight BYTES); HUGEINT and
         // the unsigned family still collapse to i64 (range divergence noted
-        // in the module docs; i128 is m-8 phase 4).
+        // in the module docs).
         Ok(match name.as_str() {
             "TINYINT" | "INT1" => Ty::I8,
             "SMALLINT" | "INT2" | "SHORT" => Ty::I16,
@@ -8149,7 +8132,7 @@ fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
     let (lit, ty) = match v {
         SqlValue::Number(text, _) => {
             if text.contains('.') || text.to_ascii_lowercase().contains('e') {
-                // DuckDB would type this DECIMAL; v0 collapses to f64.
+                // DuckDB types this DECIMAL; here it collapses to f64.
                 let f = text
                     .parse::<f64>()
                     .map_err(|_| PrepareError::Bind(format!("bad numeric literal '{text}'")))?;
@@ -8210,7 +8193,7 @@ fn cmp_sym(pred: CmpPred) -> &'static str {
 
 /// DuckDB numeric promotion. The result-type RULE is the operator's
 /// `sig::OPS` row — `/` is Fixed(F64), everything else Widens across the
-/// integer width lattice (m-8 phase 2); this function is the rule's
+/// integer width lattice; this function is the rule's
 /// consumer and owns the promotion nodes.
 fn numeric_promote(
     op: ArithOp,
@@ -8254,8 +8237,8 @@ fn width_rank(t: Ty) -> u8 {
     }
 }
 
-/// One width-combine step of DuckDB's integer-width promotion (measured
-/// 2026-08-13 fleet, scored over 19k queries): equal widths keep; a WIDER
+/// One width-combine step of DuckDB's integer-width promotion
+/// (measured): equal widths keep; a WIDER
 /// side that is a syntactic literal narrows to a narrower NON-literal side
 /// when its VALUE fits; otherwise the wider side wins. So `c8 + 127` is
 /// TINYINT and `c8 + 128` is INTEGER, skipping SMALLINT;
@@ -8343,8 +8326,8 @@ fn ast_decimal_typed(e: &SqlExpr) -> bool {
 /// The value of a SYNTACTIC integer literal, from the SQL AST: a bare
 /// Number, optionally under parentheses or unary MINUS. Never unary plus
 /// (DuckDB's `+` is a real function that erases literal-ness), never a
-/// function call, never a cast, never anything bound — the 2026-08-13
-/// adversarial fleet proved every SExpr-shape heuristic leaks (verbatim
+/// function call, never a cast, never anything bound — every SExpr-shape
+/// heuristic leaks (verbatim
 /// family returns, `0 - N` user spellings, retyped degenerations), so the
 /// hint comes from the spelling alone. This is DuckDB's own notion for
 /// its value-fits promotion.

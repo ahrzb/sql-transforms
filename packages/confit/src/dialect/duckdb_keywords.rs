@@ -1,5 +1,5 @@
 //! DuckDB's keyword table, pinned — generated from `duckdb_keywords()`
-//! on DuckDB v1.5.5 (2026-08-13). The auto-name renderer quotes any
+//! on DuckDB v1.5.5. The auto-name renderer quotes any
 //! identifier whose lowercase form appears here (measured: every keyword
 //! category quotes — unreserved `yes`, type_function `left`, column_name
 //! `trim`). Regenerate after a DuckDB upgrade:

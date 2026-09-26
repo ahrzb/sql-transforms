@@ -106,8 +106,7 @@ Confit's regime is serving.
 - **548 of 678** statements (as of 2026-09-26, recorded in
   [`docs/reports/corpus-counts.json`](docs/reports/corpus-counts.json))
   mined from DuckDB's own test suite replay
-  bit-exact, with **zero wrong answers** at every point in the project's
-  history; the remainder are clean, named build-time rejections. The count
+  bit-exact, with **zero wrong answers**; the remainder are clean, named build-time rejections. The count
   is floored by `tests/test_corpus_replay.py` (`MATCH_FLOOR`), so it can
   grow but cannot shrink unnoticed.
 - Every semantic is implemented from *measured* behavior — queries executed

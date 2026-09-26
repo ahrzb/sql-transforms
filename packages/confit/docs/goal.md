@@ -36,4 +36,3 @@ a reason to exclude a transform from the target.
 - [Oracle](oracle/README.md): the SQL reference and comparison rules.
 - [Success measures](specs/success-measures.md): correctness controls, coverage, and latency.
 - [Dated reports](reports/): measurements and implementation gaps, not requirements.
-- [Earlier citations](oracle/13-old-ids.md): locations of merged or moved definitions.

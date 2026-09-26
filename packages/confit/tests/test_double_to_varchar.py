@@ -8,7 +8,7 @@ why the sign is carried that far is argued once at `Lit` in
 src/specializer/ir/mod.rs.
 
 Every string-producing path in this file shares one formatter, so they are
-checked together: a fix that reached only the explicit CAST would leave `||`
+checked together: a change that reached only the explicit CAST would leave `||`
 and `concat` spelling the same value differently.
 
 Casting to text is also the ONLY way the sign is checkable from here: the
@@ -38,12 +38,12 @@ NAN = float("nan")
 INF = float("inf")
 
 # Every sign/finiteness combination the formatter distinguishes, plus the two
-# forms whose exponent spelling the same code already owed DuckDB.
+# forms whose exponent spelling the same code must match DuckDB on.
 DOUBLES = [NAN, -NAN, INF, -INF, -0.0, 0.0, 1.0, 1e300, 1e-5, None]
 
 # The explicit cast, the two implicit ones (`||` and `concat` bind their
 # double operand through the same cast), and a struct field, which is the
-# shape the divergence was found in (below).
+# shape FOUND_BY_SQL (below) exercises.
 SQL = (
     "SELECT CAST(d AS VARCHAR) AS c,"
     " d || '|' AS bar,"
@@ -63,10 +63,9 @@ NEG_SQL = (
     " FROM __THIS__"
 )
 
-# The case that found it, verbatim: a NaN out of `pow(-0.25, 0.1)` rendered
-# inside a struct field, which the differential fuzz campaign (fuzz/runner.py
-# over seeds 0-1999, seed 1804) graded DIVERGE_VALUE -- the engine wrote
-# `nan` into the field where DuckDB wrote `-nan`.
+# A NaN out of `pow(-0.25, 0.1)` rendered inside a struct field: DuckDB
+# writes `-nan` into the field, and a writer that drops the sign writes `nan`
+# (a DIVERGE_VALUE in the differential fuzzer, fuzz/runner.py).
 FOUND_BY_SQL = (
     "SELECT struct_pack(f0 := CAST(pow(-0.25e0, 0.1e0) AS VARCHAR)) AS s FROM __THIS__"
 )

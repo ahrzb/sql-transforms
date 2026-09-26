@@ -112,7 +112,7 @@ fn casts_fixture_executes_and_traps() {
     };
     // @1 NULL: n = nearest(3.5) - trunc(3.5) = 4 - 3 = 1; msg = select over
     // scmp.eq("3.5:", ":") = false -> ":". 3.5 rather than 2.5 so the two
-    // opcodes still disagree now that `nearest` is half-to-EVEN —
+    // opcodes disagree with `nearest` being half-to-EVEN —
     // nearest(2.5) == trunc(2.5) == 2 would make this fixture blind to a
     // collapse of the two modes.
     let f = compile(
@@ -389,9 +389,8 @@ entry:
     );
 }
 
-// ----------------------------------------- adversarial-pass regressions --
-// Each pins a fix for a confirmed finding from the 2026-07-26 adversarial
-// workflow against the interpreter.
+// ---------------------------------------------------- adversarial cases --
+// Each pins a confirmed adversarial finding against the interpreter.
 
 /// store.opt with a false flag stores the TYPE DEFAULT payload, never the
 /// live register (spec pin in ir/mod.rs).
@@ -509,8 +508,8 @@ fn emitted_counts_rows() {
 }
 
 // ------------------------------------------------------- semantics pins --
-// One test per documented pin in interp.rs that the design review found
-// untested. Each tiny program computes one edge through the text form.
+// Tests for documented pins in interp.rs. Each tiny program computes one edge
+// through the text form.
 
 /// Run `body` as a one-output program over a single dummy row (`in.d` = 0,
 /// there so the batch has a shape, not to be read), and snapshot the one
@@ -1129,7 +1128,7 @@ fn fneg_flips_the_sign_bit_on_both_backends() {
     assert_eq!(snapshot_bits(&stc), want, "cranelift");
 }
 
-/// The `predict` semantics the design froze, run END TO END on BOTH
+/// The `predict` semantics, run END TO END on BOTH
 /// backends: a NULL feature is not a NULL result (the model has a defined
 /// answer for missing), whereas an unseen group is.
 #[test]
@@ -1335,7 +1334,7 @@ entry:
 
 #[test]
 fn multimap_expand_fixture_executes() {
-    // Stage-B machinery end to end: dup keys fan out one output row per
+    // Multiplicity machinery end to end: dup keys fan out one output row per
     // match (probe order outer, INSERTION order inner — the stable sort
     // keeps equal keys in materialization order), zero matches skip, and
     // the cyclic CFG verifies + roundtrips through the text format.
@@ -1398,7 +1397,7 @@ done:
 }
 
 // -------------------------------------------------------------- externs --
-// DRAFT-22 step 2: ecall executes the supplied ExternImpl; both backends
+// ecall executes the supplied ExternImpl; both backends
 // route through the same call_extern, so results and traps are identical.
 
 /// A width-1 scaler-shaped extern: nullable i64 id + f64 feature -> f64.

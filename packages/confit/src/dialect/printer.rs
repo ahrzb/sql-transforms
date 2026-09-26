@@ -7,9 +7,9 @@
 //! Column references are ordinal-addressed: every expression prints against
 //! a per-ordinal table of pre-rendered SQL refs ([`ColRef`]). Name-addressed
 //! sources (a subquery boundary, a bare table) mark duplicate names
-//! unresolvable — referencing one refuses, same words as before. Join sides
+//! unresolvable — referencing one refuses. Join sides
 //! get deterministic aliases (`__cf_jN`), so cross-side duplicates are
-//! simply unambiguous (2026-08-13-dialect-join-node-design.md, approach A).
+//! simply unambiguous.
 
 use super::plan::{Catalog, Expr, JoinKind, Rel};
 use super::ty::DTy;

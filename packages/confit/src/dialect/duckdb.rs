@@ -1,5 +1,5 @@
 //! The DuckDB dialect: frontend (SQL → bound plan) and printer (plan →
-//! DuckDB SQL). DuckDB is the reference engine (design D1), so this pair
+//! DuckDB SQL). DuckDB is the reference engine, so this pair
 //! carries laws L1 and L2: `parse(print(p)) == p` on PROJECTION-ROOTED
 //! plans (every plan this frontend produces; a bare Scan prints as an
 //! explicit SELECT list and reparses as the equivalent Project), and
@@ -12,14 +12,14 @@
 //! breaks the build, not the answers. Everything not lowered refuses by
 //! name (`Unsupported`), wrong-against-catalog is `Bind`.
 //!
-//! v0 surface (grown corpus-first, per the design's phases): a FROM clause
+//! Surface (grown corpus-first): a FROM clause
 //! of base tables joined by ON/USING/NATURAL or by comma (INNER/LEFT/RIGHT/
 //! FULL/CROSS), WHERE, and projection items that are bare columns, `*`, a
 //! qualified star, an ALIASED expression, or an unaliased expression whose
 //! DuckDB auto-name was measured — an unmeasured rendering refuses rather
 //! than invent an output name. Calls reach only the bought scalar set.
 //! DISTINCT, ORDER BY/LIMIT, set operations, aggregates and windows refuse
-//! by name; they are later phases.
+//! by name.
 //!
 //! Printer discipline: every identifier quoted (DuckDB matches
 //! case-insensitively regardless, spelling preserved), every compound
@@ -145,7 +145,7 @@ struct Scope {
     /// name keeps DuckDB's ambiguity error.
     merged: Vec<(String, Expr, Vec<usize>)>,
     /// `*` expansion, in order: USING-merged columns once at their
-    /// left-side position (probed 2026-08-13), everything else physical.
+    /// left-side position (probed), everything else physical.
     star: Vec<(String, Expr)>,
 }
 
@@ -435,7 +435,7 @@ fn fold_join(
 }
 
 /// Bind a USING/NATURAL column list: build the equality conjunction, the
-/// per-kind merged-column resolution exprs (probed 2026-08-13: INNER/LEFT
+/// per-kind merged-column resolution exprs (probed: INNER/LEFT
 /// merge to the left column, RIGHT to the right, FULL to the null-preferring
 /// CASE), and the star expansion (merged once at the left position).
 fn bind_using(
@@ -1135,7 +1135,7 @@ impl printer::ExprPrinter for Duck {
 
 /// DuckDB's auto-name for an unaliased SELECT item: the engine's own
 /// rendering of the parsed expression, with SOURCE identifier spellings
-/// (measured 2026-08-13, pins-dialect/auto-naming.json). Only the bound
+/// (measured, pins-dialect/auto-naming.json). Only the bound
 /// surface is rendered; anything whose display was not measured refuses
 /// by name — and every rendering is live-verified by the L2/L3 gates,
 /// which compare column names against the real engine.

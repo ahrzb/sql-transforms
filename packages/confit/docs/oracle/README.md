@@ -29,9 +29,9 @@ define how variation is handled.
 | Interpreting a comparison run | [Verdicts and refusal](04-verdicts-agreement-abstention-refusal.md) · [Campaign validity](10-campaign-validity-and-blind-spots.md) |
 | Recording and maintaining evidence | [Pins](06-pins.md) · [Reference version changes](09-version-bumps-and-mutability.md) |
 | Investigating a difference | [Divergence ledger](07-the-divergence-ledger.md) · [Severity](08-the-severity-ladder.md) |
-| Pending work or decisions | [Proposed work](11-proposed-tickets.md) · [Decision index](12-ask-index.md) |
-| Earlier citations | [Citation map](13-old-ids.md) |
+| Settled policy | [Oracle policy](../decisions/oracle-policy.md) |
 
 The [goal](../goal.md) defines product scope. The
 [success measures](../specs/success-measures.md) also cover fit/serving and sklearn
 references; those are separate checks, not alternative definitions of this oracle.
+Future work lives in [PLANS.md](../../PLANS.md), not in these chapters.

@@ -10,13 +10,13 @@ instead of drowning the campaign.
 
 Two axes, deliberately separate. A column's SEMANTIC type picks the
 operators; its STORAGE type (`SCALARS`, plus `Struct`, plus `OPAQUE`) is what
-the table actually declares. They were fused once — every generated column
-was int64/double/string/bool — and the cost was invisible: narrow widths and
-struct columns were unreachable by ANY seed, so whole families of live bugs
-could not be found no matter how long a campaign ran. `leaves()` is the
+the table actually declares. Fused — every generated column
+int64/double/string/bool — narrow widths and struct columns would be
+unreachable by ANY seed, so whole families of bugs could not be found no
+matter how long a campaign ran. `leaves()` is the
 bridge: it flattens a storage schema to the referenceable lanes the
 expression layer binds. test_fuzz_smoke.py's parity tests keep the two axes
-from drifting apart again.
+from drifting apart.
 """
 
 from __future__ import annotations
@@ -957,8 +957,8 @@ def _cell(rng: random.Random, spec) -> object:
     if storage.startswith("decimal("):
         # A STATIC-ONLY type. Deliberately NOT in SEMANTIC, so the expression
         # grammar never binds one -- every operator over a decimal except a
-        # comparison, a join and CAST-to-DOUBLE refuses by name until lattice
-        # phase 5, and a grammar full of them would bury the signal in
+        # comparison, a join and CAST-to-DOUBLE refuses by name, and a
+        # grammar full of them would bury the signal in
         # REFUSED. Star expansion and the schema path are what
         # exercise the lane, which is exactly where it is observable.
         if spec.endswith("?") and rng.random() < 0.3:

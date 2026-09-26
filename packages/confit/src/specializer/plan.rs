@@ -1,12 +1,12 @@
 //! The relational IR: what the frontend produces, what BTA annotates, what
-//! lowering consumes. Deliberately skinny — the v0 shape is the
+//! lowering consumes. Deliberately skinny — the shape is the
 //! scan/filter/project ribbon over the dynamic table, and joins to static
 //! tables are not tree nodes at all (see [`Rel`]).
 
 use super::ir::{ColTy, CmpPred, Col, Lit, TrimSide, Ty};
 
 /// A relational operator tree over the dynamic table. Joins to static
-/// tables are not tree nodes: the v0 shape is rigid
+/// tables are not tree nodes: the shape is rigid
 /// (project(filter?(join*(scan)))), so the frontend returns them as an
 /// ordered [`JoinSpec`] list instead — the tree would only restate the
 /// vec's order.
@@ -417,7 +417,7 @@ pub struct JoinSpec {
     /// Index into the static-table catalog handed to `prepare`.
     /// MEANINGLESS when `batch` is true.
     pub table: usize,
-    /// Stage-B self-join: the build side is the BATCH itself (a keyless
+    /// Multiplicity self-join: the build side is the BATCH itself (a keyless
     /// batchmap built per call; the whole ON rides in `residual`).
     pub batch: bool,
     pub kind: JoinKind,
@@ -564,7 +564,7 @@ pub enum SKind {
         a: Box<SExpr>,
         b: Box<SExpr>,
     },
-    /// Wave-1 string search (haystack, needle) — total, NULL-propagating.
+    /// String search (haystack, needle) — total, NULL-propagating.
     Str2 {
         op: super::ir::StrOp2,
         a: Box<SExpr>,
@@ -588,7 +588,7 @@ pub enum SKind {
         id: Box<SExpr>,
         feats: Vec<SExpr>,
     },
-    /// Regex match against program regex `re` (wave-B; full-match forms
+    /// Regex match against program regex `re` (full-match forms
     /// pre-anchored in the ReSpec pattern at bind) -> I1.
     ReMatch {
         re: u32,
@@ -620,15 +620,15 @@ pub enum SKind {
         a: Box<SExpr>,
         n: Box<SExpr>,
     },
-    /// Wave-1 f64 unary math (operand promoted to F64 by the frontend);
+    /// f64 unary math (operand promoted to F64 by the frontend);
     /// NULL-propagating; the trapping ops get safe-masked payloads in
     /// lowering so a NULL row can never fire the domain trap.
     MathF1 {
         op: super::ir::NumOp1,
         a: Box<SExpr>,
     },
-    /// Wave-1 f64 binary math: Fpow (total) and Flogb(base, x) (trapping);
-    /// wave-3 adds Ffloordiv/Ffloormod/Fnextafter (all total).
+    /// f64 binary math: Fpow (total), Flogb(base, x) (trapping), and
+    /// Ffloordiv/Ffloormod/Fnextafter (all total).
     MathF2 {
         op: super::ir::BinOp,
         a: Box<SExpr>,
@@ -676,7 +676,7 @@ pub enum SKind {
     /// i1, never NULL. The building block for key-column reconstruction
     /// (`r.id` ≡ CASE JoinHit THEN dyn-key ELSE NULL) and semi joins.
     JoinHit(u32),
-    /// One lane of a declared-UDF extern call (DRAFT-22 step 2). The k+1
+    /// One lane of a declared-UDF extern call. The k+1
     /// lanes of one syntactic width-k call share `site` — lowering executes
     /// each site once per block (probe-style cache) so the callable runs
     /// once per row. `whole` reads the call-level validity (i1, never

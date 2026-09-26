@@ -746,7 +746,7 @@ impl Parser {
                 Ok(StaticTy::Scalar(ct))
             }
             "map" => {
-                // Either side may be empty (wave-4): `map() -> (i64)` is a
+                // Either side may be empty: `map() -> (i64)` is a
                 // cross-join single-entry map, `map(i64) -> ()` a semi join.
                 self.expect(Tok::LParen)?;
                 let keys = if *self.peek() == Tok::RParen {
@@ -766,7 +766,7 @@ impl Parser {
                 Ok(StaticTy::Map { keys, values })
             }
             "multimap" => {
-                // Stage-B: duplicate keys legal; empty keys = keyless join.
+                // Duplicate keys legal; empty keys = keyless join.
                 self.expect(Tok::LParen)?;
                 let keys = if *self.peek() == Tok::RParen {
                     Vec::new()

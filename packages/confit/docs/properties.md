@@ -2,9 +2,8 @@
 
 The laws this system holds — semantic guarantees, stated as invariants.
 Companion to the [success measures](specs/success-measures.md): KPIs are what we
-*measure*; properties are what must remain *true*. Each entry says where the property is argued
-(spec/draft) and where it is pinned (test). A change that repeals one of
-these is a design decision and goes through a draft, not a diff.
+*measure*; properties are what must remain *true*. Each entry says where the
+property is pinned (test).
 
 Layers follow the pipeline: marginalization → fit → serving → engine.
 
@@ -18,22 +17,21 @@ subqueries, transformer windows) is *static* — computed at fit, frozen into
 params tables; everything row-wise is *dynamic* — survives verbatim into
 `serving_sql`. An expression that survives untouched appears identically in
 both texts, so the two cannot disagree on it.
-*Spec:* 2026-07-29-sql-projection-marginalization-design. *Pinned:*
+*Pinned:*
 `_marginalize_test.py` rewrite goldens.
 
 **P2 — The one window rule.** A window is admitted iff its value is a
 function of row-visible values (partition keys, plus order values under
 RANGE/GROUPS peers). Physical position is the one thing a join key cannot
 carry: `row_number`, `ntile`, `lag`/`lead`, bounded ROWS frames, EXCLUDE
-are refused *forever*, not "later".
-*Spec:* window-widening design. *Pinned:* refusal tables in
+are refused permanently.
+*Pinned:* refusal tables in
 `_marginalize_test.py`.
 
 **P3 — Params multiplicity.** Every admitted window's value is constant
 within its key tuple, so DISTINCT over (keys, values) collapses to exactly
 one params row per key tuple, and each LEFT JOIN matches at most one row —
 serving never duplicates or drops a row (`shape="map"` is provable).
-*Spec:* marginalization design ("Multiplicity holds by construction").
 
 **P4 — NULL keys are ordinary keys.** PARTITION BY groups NULLs into one
 partition, so params joins use `IS NOT DISTINCT FROM`, never `=`; a NULL
@@ -53,7 +51,7 @@ and what a coercing or collated predicate breaks).
 a base-first level list and flatten by expression substitution; output
 names are frozen as explicit aliases before rewriting so substitution can
 never change a column's name.
-*Spec:* projection-chains-fit-plan design. *Pinned:* chain goldens.
+*Pinned:* chain goldens.
 
 **P6 — Subqueries are provably uncorrelated.** `FROM __THIS__` carries no
 alias and no other relation is in scope, so there is *no syntax* to
@@ -63,7 +61,7 @@ IN/ANY/ALL (per-row membership) refuse.
 **P7 — Refusals are construction-time and named.** Everything refused is
 refused at `SQLProjection(...)`/`DuckDBInferFn(...)` construction with an
 error naming the construct — never at fit, never at serve, never silently.
-*Carve-out (DRAFT-24):* a transform's codomain T is **learned**, so
+*Carve-out:* a transform's codomain T is **learned**, so
 refusals that depend on it — an addressed field that does not exist, a
 declared width that disagrees with the fitted one, a per-group codomain
 disagreement, a width-k call used inside an expression — are raised at
@@ -75,12 +73,11 @@ moves to serve time.
 synthesized name lives under `__` (`__param_0`, `__param_fit`,
 `{name}__x{token}`), so an identifier there is refused at construction —
 relation, CTE or alias. `__FIT__` and `__THIS__` are the exception: they are
-the two parameters, and the only `__` names an author writes. Implemented
-2026-08-08 (TASK-75); before that the prefix was reserved in name only and a
-user relation called `__param_0` silently beat the frozen parameter.
+the two parameters, and the only `__` names an author writes.
+*Pinned:* `model/_reserved_test.py`.
 
-**P8 (old implementation) — `__cf_` is reserved.** The prefix (case-insensitive) is refused in
-input SQL and declared schemas; all synthesized names live under it, so
+**P8b — `__cf_` is reserved in `sql_transform._marginalize`.** The prefix
+(case-insensitive) is refused in input SQL and declared schemas; all synthesized names live under it, so
 generated and authored names cannot collide.
 
 **P9 — The oracle is the parser and the printer.** SQL is parsed and
@@ -96,7 +93,7 @@ rather than an error, so every typed node carries every field DuckDB emits for
 its tag, and an unrecognised tag is carried whole — with its children still
 typed, or a `__FIT__` under a node we do not know would be invisible to
 freezing. In `sql_transform.model` this is `_nodes.py`, pinned per DuckDB
-version by `_shapes.json` (2026-08-08).
+version by `_shapes.json`.
 *Corollary — an identifier means what the oracle binds.* DuckDB folds every
 identifier, quoted ones too (unlike Postgres), so wherever the walk compares
 one name to another it folds: CTE keys, the supplied connection's catalog,
@@ -106,7 +103,7 @@ not names the catalog may claim *unqualified*; qualified, they are the
 connection's own by construction, since everything captured from the frame is
 registered under a bare name. The boundary is the caller's frame: Python's
 namespace is case-sensitive and is looked up, not bound, so `codes` and
-`Codes` stay two variables (TASK-76).
+`Codes` stay two variables.
 
 ## Fit
 
@@ -167,7 +164,6 @@ tuple or None out) is THE semantic contract every binding must match;
 determinism is the price of admission (the round-trip control assumes it).
 The default `apply_batch` loops the scalar form: boundary amortized, math
 not vectorized, so batch ≡ row bit-exactly.
-*Spec:* udf-protocol-serving-calls design; DRAFT-22.
 
 **P16 — Width rules.** Output width and field *names* are knowable only
 post-fit and are declared on the fitted UDF (`returns`/`return_names`).
@@ -178,24 +174,16 @@ evaluated once per row on both paths (DuckDB CSEs the identical pure
 calls into one struct-returning invocation; confit binds each read to one
 SSA lane of one shared-site ecall). A bare transformer call — any width,
 as an item or inside an expression — **refuses at construction** by name:
-it has no scalar reading, and no struct output boundary exists until
-DRAFT-25's nested outputs. Bundles (`struct_pack(...)`) are destructured
+it has no scalar reading, and there is no struct output boundary. Bundles (`struct_pack(...)`) are destructured
 at construction into positional feature arguments: no STRUCT or LIST
 value ever crosses the serving output boundary — every output column is
 scalar, and the struct exists transiently inside DuckDB's expression
-evaluation only. The engine's `list | None` boundary remains for direct
+evaluation only. The engine's `list | None` boundary serves direct
 `DuckDBInferFn(udfs=...)` users with UNNAMED width-k externs.
-*Amended 2026-08-04 (struct-valued calls, the subtraction loop):* the two
-owned rules with no oracle reading are deleted — loop 1/4's width-1
-scalar-valuedness (and its field-read collapse) and loop 3's flat
-alias-prefixed bare-item expansion (`AS e` → `e_pca0`). Authored
-spellings that used them now refuse or re-spell as field reads; an unseen
-group is NULL per field read. DRAFT-25 restores struct-level outputs (and
-the NULL-struct distinction) properly.
-*Amended 2026-08-05 (fit/transform split):* the `tfm(x) OVER w` sugar is
-**deleted** — the one construct with no oracle reading (a window
-aggregate returns one value per partition; the sugar returned per-row
-values). The surface: bare `tfm(bundle).field` is the single sugar
+An unseen group is NULL per field read.
+*Fit scope.* A transformer call has no windowed form (`tfm(x) OVER w`
+has no oracle reading: a window aggregate returns one value per partition).
+The surface: bare `tfm(bundle).field` is the single sugar
 (global fit-transform); any other fit scope spells the split —
 `tfm_transform(tfm_fit(bundle) OVER (PARTITION BY ...), bundle).field` —
 where `tfm_fit` is a true window aggregate (same θ per partition, θ =
@@ -203,12 +191,10 @@ where `tfm_fit` is a true window aggregate (same θ per partition, θ =
 there: the transform bundle may differ in values, name-keyed against the
 fit bundle). A registered transformer `x` reserves `x_fit`/`x_transform`.
 Fit-side contract: a fit is a multiset aggregate (order-blind,
-seed-fixed, author-signed — P15's family); declared order-sensitive fits
-will name their order in-call (a later slice); there is NO determinism
-promise for fit reproducibility in v0. Not-yet-landed fit clauses refuse
-by name: FILTER, in-call ORDER BY (ordered fits), frames, window-clause
-ORDER BY (running fits), θ export.
-*Spec:* 2026-08-05-fit-transform-split-design.
+seed-fixed, author-signed — P15's family); transformer fits carry no
+reproducibility promise. These fit clauses refuse by name: FILTER, in-call
+ORDER BY (ordered fits), frames, window-clause ORDER BY (running fits), θ
+export.
 
 **P16a — Names are the type; matching is name-keyed.** A fitted transform
 is `S → T` between named structs: S's field names and types come from the
@@ -219,12 +205,10 @@ is never possible, because a refit can renumber lanes (measured:
 OneHotEncoder gaining a category shifts every lane after it) — so a field
 that disappears refuses by name rather than silently rewiring. A codomain
 that differs per group is not a function type and refuses.
-*Spec:* DRAFT-24.
 
 **P17 — Serving rows have the training table's shape.** The serving row
 model derives from the training table's arrow schema (real types);
-unmappable columns are opaque and allowed unless referenced. (v0 contract;
-narrowing to referenced columns is a known future widening.)
+unmappable columns are opaque and allowed unless referenced.
 
 ## Engine (Confit)
 
@@ -252,9 +236,8 @@ UDF result is a named build error or trap — never a wrong value.
 inputs.** A reading that also depends on hidden table history, an
 unselected evaluation path, or an uncontrolled run is not an exact target:
 it is refused, or served under a narrower ruled contract, never frozen as
-whichever answer one run happened to give. The two ruled exceptions are
-confit's own serving-row order and the adopted float-reduction bound for
-future per-row `sum`/`avg` over matched `DOUBLE` values.
+whichever answer one run happened to give. The ruled exception is
+confit's own serving-row order.
 
 *Argued:* [claim: nondeterminism-axiom](oracle/03-nondeterminism.md#decision-rule).
 *Pinned:* `tests/known_divergences/test_trap_elision.py::test_duckdbs_is_null_elision_is_not_a_function_of_the_query_or_the_rows`
@@ -262,12 +245,3 @@ future per-row `sum`/`avg` over matched `DOUBLE` values.
 optimizer-off) and `tests/test_arrow_schema_api.py::test_a_row_limit_on_the_constant_path_refuses`
 (a row limit without a total order is refused, not frozen).
 
----
-
-## Agreed direction, not yet law
-
-Composition (FROM-position templates, frozen-artifact inlining,
-`as_udf()`), native typed UDF entries (DRAFT-23), step semantics for
-order-keyed windows (DRAFT-21), and the leakage/cross-fitting question
-(DRAFT-20) are *directions* recorded in drafts — they become properties
-here only when they land with pins.

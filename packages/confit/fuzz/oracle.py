@@ -16,7 +16,7 @@ Every case is run against DuckDB twice, on one connection:
                                function of the QUERY alone
     PRAGMA enable_optimizer    what a user actually sees
 
-Measured 2026-08-17: every trap-elision divergence in the record collapses to
+Measured: every trap-elision divergence in the record collapses to
 a TRAP with the optimizer off, which is what this engine does natively. The
 two readings therefore bracket the answer, and a finding classifies itself
 instead of needing a human to reason about fold visibility:
@@ -135,14 +135,14 @@ _DUCK_T = {
 
 # THE UNSHIPPED-FEATURE VERDICT, and why it is not a comparison
 #
-# One feature is not yet shipped: decimals (lattice-spec phase 5, Dec(p,s)
-# arithmetic). DuckDB types `1.5` as DECIMAL(2,1); we map it to f64. That is
-# a WIDTH difference, and there is no honest value comparison across it — the
-# oracle once cast DuckDB's answer down to f64 so the rows could still be
-# checked, which manufactured 1-ulp artifacts and graded the gap as
-# agreement. A feature we have not shipped either fails or says so by name.
-# So the case gets its OWN verdict, UNSHIPPED, carrying the class and the
-# lane that differs, and no value comparison happens at all.
+# One feature is not shipped: decimals (Dec(p,s) arithmetic). DuckDB types
+# `1.5` as DECIMAL(2,1); we map it to f64. That is a WIDTH difference, and
+# there is no honest value comparison across it — casting DuckDB's answer
+# down to f64 so the rows could still be checked manufactures 1-ulp
+# artifacts and grades the gap as agreement. A feature we have not shipped
+# either fails or says so by name. So the case gets its OWN verdict,
+# UNSHIPPED, carrying the class and the lane that differs, and no value
+# comparison happens at all.
 #
 # The class covers the LITERAL-derived case ONLY:
 # packages/confit/docs/known-limitations.md's "DECIMAL literals are f64" row.

@@ -43,7 +43,7 @@ pub fn dialect_parse(sql: &str, tables: PyCatalog) -> PyResult<String> {
     Ok(text::print(&rel))
 }
 
-/// Canonical plan text → SQL in the target dialect. v0 targets: "duckdb".
+/// Canonical plan text → SQL in the target dialect. Targets: "duckdb", "bigquery", "spark".
 #[pyfunction]
 pub fn dialect_print(plan_text: &str, target: &str, tables: PyCatalog) -> PyResult<String> {
     let cat = build_catalog(tables).map_err(err)?;

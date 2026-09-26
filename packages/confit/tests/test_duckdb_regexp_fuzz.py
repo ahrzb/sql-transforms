@@ -1,9 +1,9 @@
 """Standing differential regexp fuzzer: duckdb vs the engine.
 
-Wave B translated DuckDB/RE2 patterns to rust-regex behind a measured reject
-list (packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md).
-The one-time battery had 98 entries; the residual risk is constructs slipping
-through translate_pattern's pass-through path. This test generates patterns
+DuckDB/RE2 patterns are translated to rust-regex behind a measured reject
+list (packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md). The
+residual risk is constructs slipping through translate_pattern's pass-through
+path. This test generates patterns
 from a grammar biased toward the divergence-prone axes (Perl classes in/out
 of char classes, inline flags, alternation, bounded repetition incl. the 1000
 cap, escapes, Unicode properties, char-class edge shapes like POSIX elements

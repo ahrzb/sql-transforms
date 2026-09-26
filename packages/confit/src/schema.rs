@@ -160,7 +160,7 @@ fn arrow_field_to_row_field(
         // name on reference and costs nothing unreferenced.
         //
         // float32 and the unsigned widths do NOT ride here either: both
-        // DIVERGE (measured 2026-08-15). float32 in value AND type
+        // DIVERGE (measured). float32 in value AND type
         // (s.v * 3.0 is 0.30000001192092896/FLOAT on DuckDB, f64 arithmetic
         // here), unsigned in type (uint64 stays UINT64 there, int64 here).
         // The row path refuses them; a catalogue that widened them silently

@@ -1,4 +1,4 @@
-"""Join-semantics probe backing joins.json (TASK-104).
+"""Join-semantics probe backing joins.json.
 
 Run: uv run python probe_joins.py
 """

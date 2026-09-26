@@ -1,4 +1,4 @@
-"""The decimals feature (m-8 Dec lane).
+"""The decimals feature (the Dec lane).
 
 Ordinary fits produce DECIMAL statics - sum(BIGINT) is decimal128(38,0),
 and it routinely leaves int64 (2^63+1 measured) - so serving them exactly
@@ -9,8 +9,8 @@ Every expectation here is the LIVE oracle: an optimizer-off DuckDB
 connection with the same arrow fixtures registered, compared on ROWS AND on
 SCHEMA through `confit.compare`. A wrong row is impossible to write.
 Expressions OVER a decimal (arithmetic, casts to int/varchar, mixed
-coalesce) are m-8 lattice phase 5 and refuse by name; those refusals are
-pinned on their message text.
+coalesce) refuse by name; those refusals are pinned on their message
+text.
 """
 
 from __future__ import annotations
@@ -354,7 +354,7 @@ def test_cast_a_decimal_static_to_double():
     )
 
 
-_PHASE5 = "m-8 lattice phase 5"
+_UNSERVED = "decimal arithmetic and casts are not served"
 
 
 def _refuses(sql: str, statics: dict[str, pa.Table], *needles: str) -> None:
@@ -373,7 +373,7 @@ def test_decimal_arithmetic_refuses_by_name(expr):
         {"p": _dec62(["0.50"])},
         "DECIMAL(6,2)",
         "'d'",
-        _PHASE5,
+        _UNSERVED,
     )
 
 
@@ -386,7 +386,7 @@ def test_a_decimal_cast_to_integer_or_varchar_refuses_by_name(target):
         {"p": _dec62(["0.50"])},
         "DECIMAL(6,2)",
         "'d'",
-        _PHASE5,
+        _UNSERVED,
     )
 
 
@@ -400,7 +400,7 @@ def test_coalesce_mixing_a_decimal_with_an_integer_refuses_by_name(expr):
         {"p": _dec62(["0.50"])},
         "DECIMAL(6,2)",
         "'d'",
-        _PHASE5,
+        _UNSERVED,
     )
 
 

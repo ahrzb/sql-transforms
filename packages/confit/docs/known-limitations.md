@@ -20,8 +20,7 @@ the ones still without one.
 There is no third mode. Every limitation here is a *measured decision*
 recorded in a pins spec (`packages/confit/docs/specs/`), not an accident.
 
-**Which DuckDB** (decided 2026-08-17, and it has a user-visible cost — see
-§5). "Identical to DuckDB" means DuckDB with its query optimizer off:
+**Which DuckDB** (a choice with a user-visible cost — see §5). "Identical to DuckDB" means DuckDB with its query optimizer off:
 
 ```sql
 PRAGMA disable_optimizer;
@@ -44,7 +43,7 @@ with identical contents. Confit compiles once against a *schema* and serves
 many batches; it never sees a table, let alone its history. A target you
 cannot compute from the query is not a target.
 
-**What "identical" means for ROW ORDER** (TASK-129, 2026-08-19). Values are
+**What "identical" means for ROW ORDER.** Values are
 bit-for-bit. A *sequence* is only promised where one is defined: on the row
 path by the serving contract (output rows follow input rows -- `map` exactly,
 `filter` as a subsequence, `many` as per-input-row blocks in input order,
@@ -56,13 +55,10 @@ The campaign fuzzer compares per this rule: sequence-strict self-legs on the
 row path (a reversed batch must reverse), sortedness-plus-multiset under
 `ORDER BY` (ties are free), multiset otherwise.
 
-**The break is CLOSED** (TASK-124, fixed 2026-08-19). Boolean short-circuit
-is now decided per CONTEXT, as DuckDB decides it: selection context (the
+**Boolean short-circuit** is decided per CONTEXT, as DuckDB decides it: selection context (the
 WHERE root and every `CASE WHEN` condition, projections included) makes
 `AND` lazy left-to-right and `OR` its exact dual, and exits to eager value
 context at `NOT`/`IS NULL`/comparisons/function arguments and CASE arms. The
-model, its measurements and the design are in
-`packages/confit/docs/specs/2026-08-19-selection-context-design.md`; the full
 measured matrix runs against the live oracle in
 `known_divergences/test_short_circuit.py`.
 
@@ -78,23 +74,23 @@ rejected by design (class 3 in the
 
 | Limitation | You'll see | Why |
 |---|---|---|
-| Regex patterns must be constants (`regexp_matches(s, pattern_col)` rejects) | `unsupported: non-constant regex pattern (compiled at prepare in v0)` | Regexes compile at prepare; DuckDB compiles per row. Per-row compilation is the opposite of specialization. |
+| Regex patterns must be constants (`regexp_matches(s, pattern_col)` rejects) | `unsupported: non-constant regex pattern (patterns compile at prepare)` | Regexes compile at prepare; DuckDB compiles per row. Per-row compilation is the opposite of specialization. |
 | Replacement strings / regex options / extract group indexes must be constants | `non-constant regexp_replace replacement` etc. | Same. |
-| Static (join) tables must be provided at build time; under the DEFAULT shapes their keys must be unique | `duplicate map key` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity, which SERVES under the opt-in `shape='many'` (TASK-59) — along with cross joins, inequality `ON` predicates, and constant `ON` clauses — with multiset parity vs DuckDB (its join output order is a measured hash-join accident; the engine emits probe order outer, build insertion order inner). Under `filter`/`map` the 1:1 contract is unchanged. NULL *values* serve since TASK-55; NULL *keys* never match. |
-| Self-joins require `shape='many'` | `joining the dynamic table to itself` | Under `'many'` the batch itself becomes the build side (assembled per call, the join condition as a per-pair residual) — comma/cross, `ON`, `USING` and `NATURAL` self-joins serve with multiset parity; a `USING`/`NATURAL` column is merged into the left occurrence exactly as DuckDB merges it (since 2026-09-26). The default shapes keep the original error. |
+| Static (join) tables must be provided at build time; under the DEFAULT shapes their keys must be unique | `duplicate map key` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity, which SERVES under the opt-in `shape='many'` — along with cross joins, inequality `ON` predicates, and constant `ON` clauses — with multiset parity vs DuckDB (its join output order is a measured hash-join accident; the engine emits probe order outer, build insertion order inner). Under `filter`/`map` the 1:1 contract holds. NULL *values* serve; NULL *keys* never match. |
+| Self-joins require `shape='many'` | `joining the dynamic table to itself` | Under `'many'` the batch itself becomes the build side (assembled per call, the join condition as a per-pair residual) — comma/cross, `ON`, `USING` and `NATURAL` self-joins serve with multiset parity; a `USING`/`NATURAL` column is merged into the left occurrence exactly as DuckDB merges it. The default shapes raise the error. |
 | Exactly one row table drives the query | `the specializer takes exactly one row table`, `must be the dynamic table` | The serving contract is rows-in → rows-out for one entity stream. |
 
 ## 2. Out of scope for row-serving (by decision, not difficulty)
 
-**The row-shape contract** (TASK-58): `DuckDBInferFn(..., shape=...)`
+**The row-shape contract**: `DuckDBInferFn(..., shape=...)`
 declares how many output rows each input row may produce, checked at
 build time. `"filter"` (the default) is the engine's native 0..1;
 `"map"` statically PROVES exactly-one (`out[i] ↔ in[i]`, the strict
 serving guarantee) by rejecting anything that can drop a row — a WHERE
 clause, an INNER join (key misses drop), a static-tables-only constant
-query; `"many"` (0..N) is the multiplicity opt-in (stage B): duplicate-key
+query; `"many"` (0..N) is the multiplicity opt-in: duplicate-key
 joins, cross joins, and inequality/constant `ON` joins build ONLY under
-it (one join per query for now, named restriction) — multiplicity can
+it (one join per query, a named rejection) — multiplicity can
 never sneak into a serving path by default. Comma and `ON` self-joins
 serve under `'many'` too, and so do `USING`/`NATURAL` self-joins.
 
@@ -103,12 +99,12 @@ constructs are out of scope because their output shape is not
 one-row-in/one-row-out. Syntax is not the scope test, though: the refusals
 below are listed by the syntax that triggers them, and only the forms that
 depend on sibling request rows are outside the model. A row-local CTE,
-subquery or set operation is an implementation gap, not an exclusion — the
+subquery or set operation is inside the model although this engine refuses it — the
 [restriction inventory](specs/serving-contract.md#restriction-inventory-by-class)
 classifies each family.
 
 - Aggregation: `GROUP BY`, `HAVING`, `sum`/`count`/`avg`/... →
-  `aggregate function ... (no aggregation in v0)`
+  `aggregate function ... (aggregation is not served)`
 - `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT` — row-independent transforms
   don't reorder or deduplicate.
 - CTEs (`WITH`), `UNION`/`INTERSECT`/`EXCEPT`, subqueries, multiple
@@ -119,8 +115,8 @@ classifies each family.
 
 The exception is a **static-tables-only query** (nothing dynamic remains):
 it is evaluated once at build by DuckDB itself and frozen, so aggregation,
-`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One carve-out
-(TASK-128, decided 2026-08-19): a **row limit refuses** — `LIMIT`, `OFFSET`,
+`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One carve-out:
+a **row limit refuses** — `LIMIT`, `OFFSET`,
 `FETCH`, `TOP`, anywhere in the statement, `ORDER BY` or not. Which rows
 survive a limit is not a function of the query: measured, the same
 `GROUP BY … FETCH FIRST 1 ROWS ONLY` over the same four rows answered
@@ -137,43 +133,41 @@ bool. Measured consequences:
 
 - **f32 base tables reject** (`engine is f64-only`).
 - **A static column is served at its declared arrow type or refused by
-  name** — never widened into a neighbouring lane. Corrected 2026-08-15:
-  the catalogue used to widen `float32` and the unsigned widths, and both
-  diverged silently. `float32` in value AND type (`s.v * 3.0` over `0.1`
-  is `0.30000001192092896`/FLOAT on DuckDB; f64 arithmetic here gave
-  `0.30000000447034836`/DOUBLE), unsigned in type (`uint64` stays UINT64
-  there, became int64 here). The row path had always refused both. The two
-  exceptions that stay served are measured equivalent, not convenient:
+  name** — never widened into a neighbouring lane, on the static and row
+  paths alike. Widening diverges: `float32` in value AND type (`s.v * 3.0`
+  over `0.1` is `0.30000001192092896`/FLOAT on DuckDB, `0.30000000447034836`/DOUBLE
+  in f64), unsigned in type (`uint64` stays UINT64 in DuckDB). The two
+  exceptions that are served are measured equivalent, not convenient:
   `large_string`/`utf8` (DuckDB normalises them to VARCHAR) and the
   decimal tiers (below).
-- **DECIMAL static columns serve EXACTLY** (since TASK-91): the payload is
+- **DECIMAL static columns serve EXACTLY**: the payload is
   the scaled integer in an i128 lane from ingest through the join, emitted
   as `decimal128(p,s)`. `2^53+1` comes back as itself, and so does
   `2^63+1` — an ordinary fit-time `sum(BIGINT)` produces that, which is
   why the lane is i128 and not i64. `decimal32`/`decimal64` inputs
   normalise to `decimal128(p,s)` output because DuckDB exports every tier
-  as 128-bit arrow. What still refuses, by name: EXPRESSIONS over a
+  as 128-bit arrow. What refuses, by name: EXPRESSIONS over a
   decimal — arithmetic, `CAST` to anything but `DOUBLE`, and
-  `COALESCE`/`CASE`/`greatest` unifying it with a non-identical type (m-8
-  lattice phase 5; each of these used to serve a silently wrong double).
+  `COALESCE`/`CASE`/`greatest` unifying it with a non-identical type (each
+  would otherwise compute a wrong double).
   Comparisons, joins, `CAST(d AS DOUBLE)` and `SELECT *` all serve.
   `decimal256` statics refuse (DuckDB itself refuses them at arrow
-  register, at any precision), and decimal ROW columns stay opaque.
-- **Structs of scalars SERVE** (since TASK-56): struct row columns are
+  register, at any precision), and decimal ROW columns are opaque.
+- **Structs of scalars SERVE**: struct row columns are
   flattened to scalar lanes at build time — field access (`a.i`, deep
   `t.t.t.t` paths) and struct-star (`a.*` incl. EXCLUDE/REPLACE) are
-  bit-identical to DuckDB. What still rejects, by name: the struct as a
+  bit-identical to DuckDB. What rejects, by name: the struct as a
   WHOLE value (`SELECT a` — non-scalar output), bracket field access
   (`a['i']` — DuckDB names such outputs by full expression text, not
   modeled), and struct fields whose own types are non-scalar.
 - **Lists reject** (`row column 'x' has a non-scalar type`) — list types
-  are out of the row-schema vocabulary and stay opaque: unreferenced
-  (star expansion included) they cost nothing to declare; since TASK-56
-  an unreferenced timestamp/list field no longer blocks a scalar-only
+  are out of the row-schema vocabulary and are opaque: unreferenced
+  (star expansion included) they cost nothing to declare, an
+  unreferenced timestamp/list field does not block a scalar-only
   query, and `EXCLUDE`/name filters/`REPLACE` can remove one from a
-  star. Referenced, they refuse by name. Lists also still gate
+  star. Referenced, they refuse by name. Lists also gate
   `regexp_extract_all` / `regexp_split_to_array` / the STRUCT form of
-  `regexp_extract` (`list-valued — non-scalar in v0`).
+  `regexp_extract` (`list-valued, non-scalar`).
 - **DECIMAL literals are f64** — a documented divergence: DuckDB types
   `1.5` as `DECIMAL(2,1)` and does decimal arithmetic; we map to f64.
   Values agree on every corpus case; exact-decimal accumulation semantics
@@ -182,22 +176,20 @@ bool. Measured consequences:
   and a DOUBLE cast for us (half to even, `-2`). Casting a DOUBLE *column*
   agrees exactly — measure DOUBLE cast behaviour with a DOUBLE column or an
   explicit `::DOUBLE`, never with a literal, or you will pin the wrong
-  rounding mode (TASK-70 did).
+  rounding mode.
 - Integer widths: the engine TYPES in DuckDB's lattice (TINYINT..BIGINT —
   literals are INTEGER by magnitude, `::SMALLINT` is real, `ascii` returns
   INTEGER, `infer_arrow` emits int8/int16/int32 from the type) but
   COMPUTES in two machine widths, i64 and f64. The width is observable
-  exactly where DuckDB's is: the Arrow schema (shipped, TASK-79/m-8
-  phase 2, catalogue pinned in `test_integer_widths.py`) and the overflow
-  trap threshold (m-8 phase 3, shipped 2026-08-17): a narrow value that
+  exactly where DuckDB's is: the Arrow schema (catalogue pinned in
+  `test_integer_widths.py`) and the overflow trap threshold: a narrow value that
   overflows traps where it is PRODUCED, on both output paths and inside a
   wider expression (`a + a > 0`, `CAST(a + a AS BIGINT)`), exactly where
   DuckDB raises. The trap text names the width (`value out of range for
   INTEGER`) rather than DuckDB's operator wording, which the error-text
   rule permits. HUGEINT and the unsigned family are not
-  served at all — they refuse by name rather than collapse to i64 (see the
-  static-column entry above); serving them is the i128 lane, whose
-  cranelift dependency was verified GO on 2026-08-15 (TASK-100).
+  served — they refuse by name rather than collapse to i64 (see the
+  static-column entry above).
 
 ## 4. Semantics descoped after measurement
 
@@ -210,14 +202,14 @@ wrong answer or require semantics we can't reproduce exactly:
 | `^` operator | It IS pow in DuckDB, but sqlparser's precedence differs from DuckDB's (`2*x^y` would parse as `(2*x)^y`). Mapping it computes the wrong tree silently. Use `pow()`. |
 | prefix `~`, `#`, `NOT GLOB` | Same class: precedence/parse divergences that would silently mis-associate. `xor()` covers bit-xor; `NOT (x GLOB p)` works. |
 | Regex reject list: `\B`, `\Q…\E`, `(?<name>…)`, duplicate group names, bounds > 1000, stacked quantifiers (`a*+`), `\u` escapes, negated Perl classes inside `[...]` | The RE2↔rust-regex differential battery (98 entries) proved these are the constructs where the engines disagree or DuckDB itself is broken (`\B` crashes DuckDB at runtime on non-ASCII). Everything else is byte-identical. |
-| Fuzzer-found regex rejects (TASK-54): `\1`–`\9` backrefs outside classes, the full stacked-quantifier grammar (`{2}*`, `?*`, `a???` — one lazy `?` is the only legal follower), nested repetition products > 1000, whitespace inside `{m, n}` bounds, class set-op lookalikes (`--`/`&&`/`~~`), non-POSIX `[` inside classes, Perl-class range endpoints (`[a-\d]`), capturing `(x){0}`, anchor-only multi-anchor patterns (DuckDB is SELF-inconsistent on these — its row path disagrees with its own constant fold), `$` anchors in non-final position (`'$hello'` — DuckDB's row path literal-optimizes the leading `$`+literal into a PREFIX match, matching "hello world", while its own constant fold matches normally; found by the standing fuzzer on seed 20260728), and counted repetitions over RE2's PROGRAM-SIZE budget (`(\p{L}){1,500}` is "pattern too large" in DuckDB while rust-regex serves it — rejected via a one-sided weight estimate that always fires before DuckDB's real budget; same seed, pins `pins-waveB/fuzzer-20260728.json`) | The standing differential fuzzer (`packages/confit/tests/test_duckdb_regexp_fuzz.py`, in the normal gate) found these 12 classes in its first 3k-case deep run — each one a silent-wrong-answer risk in rust-regex — then re-swept to ZERO divergences over 40k cases across 8 seeds. Pins: `pins-waveB/fuzzer-task54.json`. |
+| Fuzzer-found regex rejects: `\1`–`\9` backrefs outside classes, the full stacked-quantifier grammar (`{2}*`, `?*`, `a???` — one lazy `?` is the only legal follower), nested repetition products > 1000, whitespace inside `{m, n}` bounds, class set-op lookalikes (`--`/`&&`/`~~`), non-POSIX `[` inside classes, Perl-class range endpoints (`[a-\d]`), capturing `(x){0}`, anchor-only multi-anchor patterns (DuckDB is SELF-inconsistent on these — its row path disagrees with its own constant fold), `$` anchors in non-final position (`'$hello'` — DuckDB's row path literal-optimizes the leading `$`+literal into a PREFIX match, matching "hello world", while its own constant fold matches normally; found by the standing fuzzer on seed 20260728), and counted repetitions over RE2's PROGRAM-SIZE budget (`(\p{L}){1,500}` is "pattern too large" in DuckDB while rust-regex serves it — rejected via a one-sided weight estimate that always fires before DuckDB's real budget; same seed, pins `pins-waveB/fuzzer-20260728.json`) | The standing differential fuzzer (`packages/confit/tests/test_duckdb_regexp_fuzz.py`, in the normal gate) found these 12 classes — each one a silent-wrong-answer risk in rust-regex. With them rejected, a 40k-case sweep across 8 seeds shows zero divergences. Pins: `pins-waveB/fuzzer-task54.json`. |
 | `SIMILAR TO ... ESCAPE` | Not implemented in DuckDB itself. |
 | `* EXCLUDE (t.key)` on a USING join | DuckDB UNMERGES the coalesced column (it reappears at the right table's position) — measured, not modeled. Unqualified EXCLUDE works. |
 | `BETWEEN`/`IN` mixing non-numeric string literals with numbers | DuckDB converts at EXECUTION time (an empty input succeeds!); a bind-time conversion was measured to be over-eager. Numeric literals convert fine. |
 | `COLUMNS(...)` inside expressions, lambda/list forms | Only bare `COLUMNS('re')` / `COLUMNS(*)` as select items are served. |
-| Pad/repeat counts past the 1 GiB string-builder budget (TASK-88) | A LITERAL count that can exceed the budget refuses at build; a DATA-DRIVEN count (column, `CAST(k AS INTEGER)`) keeps the runtime cap and traps at 1 GiB. DuckDB is deterministic here (measured 2026-08-16, bounds rechecked 2026-09-26): `repeat` serves up to a 4294967295-byte string and raises Out of Range above it; `lpad`/`rpad` take an INTEGER count, so a count above 2147483647 is a Binder Error. Between 1 GiB and those bounds DuckDB serves and we refuse or trap — the ground is Confit's resource limit, not DuckDB instability: no gigabyte allocations per serving row, by decision. |
-| `CASE` where every branch is NULL, `COALESCE`/`least`/`greatest` of only NULLs | DuckDB binds the all-NULL FAMILY forms (SQLNULL → INTEGER); the engine still refuses them. A bare `NULL` select item, `nullif(NULL, x)`, and `NULL <op> NULL` all SERVE with DuckDB's types since m-8 phase 2 (bare NULL is int32, its INTEGER). |
-| Bare `NULL` as `repeat`'s string (TASK-86, BLOB face) | DuckDB picks the **BLOB** overload — a type this engine doesn't have until the m-8 Blob phase — so adopting VARCHAR answered with a different schema. Spell it `CAST(NULL AS VARCHAR)`, which both engines type identically. Adopters that agree with DuckDB — `upper(NULL)`, `coalesce(NULL, x)`, `nullif(x, NULL)`, `nullif(NULL, x)` (int32, m-8 phase 2), a NULL `repeat` count — keep serving, pinned schema-equal. |
+| Pad/repeat counts past the 1 GiB string-builder budget | A LITERAL count that can exceed the budget refuses at build; a DATA-DRIVEN count (column, `CAST(k AS INTEGER)`) keeps the runtime cap and traps at 1 GiB. DuckDB is deterministic here (measured): `repeat` serves up to a 4294967295-byte string and raises Out of Range above it; `lpad`/`rpad` take an INTEGER count, so a count above 2147483647 is a Binder Error. Between 1 GiB and those bounds DuckDB serves and we refuse or trap — the ground is Confit's resource limit, not DuckDB instability: no gigabyte allocations per serving row, by decision. |
+| `CASE` where every branch is NULL, `COALESCE`/`least`/`greatest` of only NULLs | DuckDB binds the all-NULL FAMILY forms (SQLNULL → INTEGER); the engine refuses them. A bare `NULL` select item, `nullif(NULL, x)`, and `NULL <op> NULL` all SERVE with DuckDB's types (bare NULL is int32, its INTEGER). |
+| Bare `NULL` as `repeat`'s string (BLOB face) | DuckDB picks the **BLOB** overload — a type this engine does not serve — so adopting VARCHAR would answer with a different schema. Spell it `CAST(NULL AS VARCHAR)`, which both engines type identically. Adopters that agree with DuckDB — `upper(NULL)`, `coalesce(NULL, x)`, `nullif(x, NULL)`, `nullif(NULL, x)` (int32), a NULL `repeat` count — serve, pinned schema-equal. |
 
 ## 5. Deliberate contract choices (behavior differs from raw DuckDB surface)
 
@@ -257,11 +249,8 @@ These are served, but with a consciously chosen surface — know them:
   measured doing this are `expression_rewriter` (constant shifting, folding
   a trapping constant, dead-range elimination) and
   `statistics_propagation` (proving `IS NOT NULL` from a column's null
-  statistic, and pruning a filter from a value range). The 2026-08-17
-  4000-seed campaign snapshot holds 7 `DIVERGE_OPT` seeds among its 28
-  findings (312, 812, 1196, 1563, 1564, 2174, 2805; recounted 2026-08-25 —
-  earlier text here said 8), described in
-  `packages/confit/docs/2026-08-17-fuzz-triage.md`.
+  statistic, and pruning a filter from a value range). The campaign fuzzer
+  labels these findings `DIVERGE_OPT` (§7).
 
   The trade is deliberate: matching the optimizer means matching an
   undocumented moving target that is not a function of the query, and in
@@ -271,15 +260,15 @@ These are served, but with a consciously chosen surface — know them:
   your DuckDB session reproduces exactly what confit does.
 - **`%`-by-zero NaN bit pattern is platform-libm** — pinned as
   engine==oracle bit agreement per platform, not a constant.
-- **Schema qualifiers are registry-noise** (TASK-55): the engine's table
+- **Schema qualifiers are registry-noise**: the engine's table
   registry is schema-less, so a relation qualifier (`JOIN s1.t1`) resolves
   when the table part matches a registered bare name. DuckDB's
   schema-existence errors (`schema "x" does not exist`) are not
   reproduced — a schema-less registry cannot know which schemas would
-  exist. Ambiguous matches still error. A column qualified through such a
-  relation does NOT resolve (measured 2026-09-26): `d.v` over `JOIN main.d`
+  exist. Ambiguous matches error. A column qualified through such a
+  relation does NOT resolve (measured): `d.v` over `JOIN main.d`
   and the 3-part `s1.t1.col` both refuse with `bind error: unknown table`,
-  where DuckDB serves the first. With struct paths (TASK-56) resolution is
+  where DuckDB serves the first. With struct paths resolution is
   longest-qualifier-first with backtracking (measured), and any first
   part is accepted as a schema when the second matches the table — so
   `w.w.w` on a table `w` with struct column `w` binds the LONGER
@@ -329,5 +318,4 @@ Three mechanisms in the normal test gate, and one manual campaign:
    optimizer-off reading is a bug, a disagreement only with the optimizer-on
    one is the §5 cost above, and an agreement with optimizer-on *against*
    the oracle means the engine is reproducing a pass it should not — that
-   last category is reported as a bug; it was empty after the 2026-08-17
-   sweep, the last recorded campaign.
+   last category is reported as a bug.

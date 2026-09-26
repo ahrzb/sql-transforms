@@ -1,5 +1,5 @@
 {
-  "_pin": {"schema": 1, "subject": "fuzzer-task54", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-27", "harness": "unknown", "committed": "2026-07-27", "evidences": ["claim: dated-provenance", "claim: regexp-fuzz-gate", "packages/confit/docs/known-limitations.md", "packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md", "packages/confit/tests/test_known_limitations.py"]},
+  "_pin": {"schema": 1, "subject": "fuzzer-task54", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-27", "harness": "unknown", "committed": "2026-07-27", "evidences": ["claim: regexp-fuzz-gate", "packages/confit/docs/known-limitations.md", "packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md", "packages/confit/src/specializer/frontend.rs", "packages/confit/tests/test_known_limitations.py"]},
   "meta": {
     "task": "TASK-54 standing differential regexp fuzzer",
     "measured": "2026-07-27, DuckDB 1.5.5 vs the engine (rust regex 1.13 behind retrans.rs), tests/test_duckdb_regexp_fuzz.py grammar",

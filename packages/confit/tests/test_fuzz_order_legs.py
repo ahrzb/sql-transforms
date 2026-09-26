@@ -1,7 +1,7 @@
 """The oracle's order legs must actually FIRE.
 
-A comparison leg that never fails verifies nothing (a review found the
-multiset form sorting every leg, so ANY permutation of the row path passed).
+A comparison leg that never fails verifies nothing (a multiset form that
+sorts every leg passes ANY permutation of the row path).
 Each test here wraps a real engine in a deliberate order bug and requires the
 leg to report it -- these are capability pins: delete the leg, or quietly
 route it back through the multiset form, and they go red.

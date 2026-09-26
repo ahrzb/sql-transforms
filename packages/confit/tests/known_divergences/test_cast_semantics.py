@@ -1,6 +1,6 @@
 """CAST: rounding mode, and the refusal text about it.
 
-Split out of test_known_divergences.py 2026-08-16; see README.md for what
+See README.md for what
 belongs here (kept behaviour + its ground) versus in
 ../test_open_divergences.py (behaviour we intend to change).
 """
@@ -14,14 +14,10 @@ from confit.oracle import Oracle
 
 # ------------------------------------------------- CAST rounding mode --
 #
-# `lower::cast` emitted `Inst::Ftoi { mode: RoundMode::Round }` under the
-# comment "ftoi.round matches DuckDB CAST rounding". It did not. Both backends
-# implemented RoundMode::Round as Rust `f64::round()` — half AWAY from zero —
-# while DuckDB's DOUBLE->BIGINT cast is half-to-EVEN.
-#
-# FIXED 2026-08-08. The mode is now `RoundMode::Nearest`
-# (`ftoi.nearest` in the IR text), half-to-even on both backends. Only CAST
-# and TRY_CAST ever emitted it, so no other op moved.
+# DuckDB's DOUBLE->BIGINT cast is half-to-EVEN. `lower::cast` emits
+# `RoundMode::Nearest` (`ftoi.nearest` in the IR text), half-to-even on both
+# backends; `RoundMode::Round` is Rust `f64::round()` — half AWAY from zero —
+# and is wrong for the cast. Only CAST and TRY_CAST emit `Ftoi`.
 #
 # TWO SEPARATE ROUNDINGS LIVE HERE AND THEY ARE EASY TO CONFUSE:
 #
@@ -29,11 +25,10 @@ from confit.oracle import Oracle
 #   CAST(DECIMAL AS BIGINT)  half away from zero -2.5 -> -3
 #   round(DOUBLE)            half away from zero -2.5 -> -3.0
 #
-# Two pre-existing Rust pins asserted half-away-from-zero for the DOUBLE cast
-# and had to be corrected. Both were written from a DuckDB query on a bare
-# `-2.5` literal — which DuckDB types DECIMAL(2,1), not DOUBLE. Measure a
-# DOUBLE cast with a DOUBLE column or an explicit `::DOUBLE`, never a literal.
-# (Decimal literals binding as f64 is a separate, deliberate v0 divergence;
+# A DuckDB query on a bare `-2.5` literal measures the DECIMAL cast, not the
+# DOUBLE one: DuckDB types the literal DECIMAL(2,1). Measure a DOUBLE cast
+# with a DOUBLE column or an explicit `::DOUBLE`, never a literal.
+# (Decimal literals binding as f64 is a separate, deliberate divergence;
 # see packages/confit/docs/known-limitations.md.)
 
 CAST_SCHEMA = pa.schema([pa.field("f", pa.float64(), nullable=False)])
@@ -42,7 +37,8 @@ _CAST_F = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 2.6, -2.6, 1e19]
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
 def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch, oracle):
-    """Every exactly-representable half-integer used to differ by 1. `1e19` is
+    """Every exactly-representable half-integer differs by 1 between the two
+    modes. `1e19` is
     on the end to keep the range-guarded TRY_CAST path (a second `Ftoi` site)
     in the same comparison — it overflows BIGINT and must become NULL."""
     if backend == "interpreter":
@@ -135,7 +131,7 @@ def test_the_out_of_range_cast_trap_quotes_the_value_duckdbs_way(
 
 
 # The refusal text must not assert DuckDB errors on an input
-# where DuckDB serves a value. Measured 2026-08-15: a numeric string that
+# where DuckDB serves a value. Measured: a numeric string that
 # fits the target is parsed and ROUNDED by DuckDB (both CAST and TRY_CAST);
 # only a non-numeric string, or one whose value misses the target's range,
 # actually errors there. The cast itself is still refused — this is about
@@ -157,10 +153,8 @@ def _cast_refusal(expr: str) -> str:
 @pytest.mark.parametrize(
     "expr, want",
     [
-        # Since the decimal parser landed (2026-08-19) a numeric-string
-        # constant is parsed and rounded HALF AWAY FROM ZERO, exactly as
-        # DuckDB's IntegerDecimalCastOperation does. These used to refuse
-        # "not implemented".
+        # A numeric-string constant is parsed and rounded HALF AWAY FROM
+        # ZERO, exactly as DuckDB's IntegerDecimalCastOperation does.
         ("CAST('1.5' AS BIGINT)", 2),
         ("CAST('2.5' AS BIGINT)", 3),
         ("CAST('-1.5' AS BIGINT)", -2),
@@ -189,15 +183,15 @@ def test_a_numeric_string_constant_parses_and_rounds(expr, want):
 )
 def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
     """Non-numeric, or numeric but outside the target — DuckDB's CAST errors
-    and TRY_CAST yields NULL, so the original wording is accurate."""
+    and TRY_CAST yields NULL, so the refusal's wording is accurate."""
     msg = _cast_refusal(expr)
     assert "TRY_CAST" in msg, msg
 
 
 # ===========================================================================
 # DOUBLE -> narrow integers. This engine implements the
-# ROUND-FIRST-THEN-CHECK semantics of DuckDB main (PR #24393, merged
-# 2026-08-03) and of Postgres. Released DuckDB (v1.5.5, our pinned oracle)
+# ROUND-FIRST-THEN-CHECK semantics of DuckDB main (PR #24393) and of
+# Postgres. Released DuckDB (v1.5.5, our pinned oracle)
 # checks the RAW double first and then hits UB: `CAST(127.5 AS TINYINT)`
 # serves a WRAPPED -128 (x86; aarch64 would saturate at INTEGER width), and
 # `-128.5` is refused although it rounds into range. An answer that differs
@@ -331,7 +325,7 @@ _S2I_EDGES = [
     "2 2",
     "9999999999999999999999",
     "true",
-    # 2026-08-24 bounds audit (integer_cast_operator.hpp, v1.5.5 checkout):
+    # Bounds from integer_cast_operator.hpp (v1.5.5 sources):
     # DuckDB's decimal path accumulates the MANTISSA in int64 (refusing on
     # overflow), silently DROPS fraction digits past int64 capacity, parses
     # the exponent into an int16, and only recognizes 0x/0b on a bare

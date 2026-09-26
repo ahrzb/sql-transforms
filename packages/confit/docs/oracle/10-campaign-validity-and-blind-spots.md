@@ -4,44 +4,39 @@
 
 **claim: regexp-fuzz-gate.** The regexp fuzzer is the standing differential gate. Its
 normal run uses `N=250` and a fixed seed; `REGEXP_FUZZ_SEED` and `REGEXP_FUZZ_N` select
-deeper runs. The first deep run found 122 divergences distilled to 12 rejection classes;
-a later dated sweep reported zero divergences across 40,000 cases and 8 seeds. Its
-four-outcome rule permits DuckDB-success/confit-reject as conservative bind-time
-rejection, and findings feed the reject list, pin note, and limitations row.
+deeper runs. Per case it requires identical rows, a conservative confit rejection, or
+both engines erroring; DuckDB-success/confit-reject is permitted as conservative
+bind-time rejection. Findings feed the reject list, a pin note, and a limitations row.
+`pins-waveB/fuzzer-task54.json` records the 12 rejection classes and a zero-divergence
+sweep of 40,000 cases over 8 seeds.
 
-*Evidence:* `tests/test_duckdb_regexp_fuzz.py:13-20, :35-37`;
-`docs/specs/pins-waveB/fuzzer-task54.json`;
-`docs/reports/pins-first-methodology.md:70-74`.
+*Evidence:* `tests/test_duckdb_regexp_fuzz.py` (module docstring);
+`docs/specs/pins-waveB/fuzzer-task54.json`; `known-limitations.md` §4.
 
 `packages/confit/fuzz/` is instead a manual `python -m fuzz.runner` campaign.
 `tests/test_fuzz_smoke.py` gates deterministic generation, reproducible verdicts, and
-verdict rules; it does not demand zero campaign findings. `known-limitations.md` §7 now
-says so instead of listing the campaign among the gated mechanisms (**ticket:
-fuzzer-gate-correction**, done).
+verdict rules; it does not demand zero campaign findings. `known-limitations.md` §7 says
+the same.
 
-**claim: campaign-as-acceptance.** An m-8 phase completes only after a campaign certifies
-it. When a feature used an xfail or fuzzer marker, certification occurs after that marker
-is removed or emptied; before then the run proves only that suppression still works.
+**claim: campaign-as-acceptance.** Feature work completes only after a campaign
+certifies it. When a feature used an xfail or fuzzer marker, certification occurs after
+that marker is removed or emptied; before then the run proves only that suppression
+still works.
 
-*Evidence:* `backlog/milestones/m-8 - duckdbs-type-lattice.md:40-41`;
-`docs/specs/2026-08-11-duckdb-type-lattice-design.md:110-131`; claim:
-feature-in-flight.
+*Evidence:* claim: feature-in-flight in [the ledger](07-the-divergence-ledger.md).
 
 **claim: zero-fails-gate.** Corpus replay classifies each case as match,
 clean-unsupported, or FAIL; it requires zero FAILs, and unsupported is clean only with a
-documented rejection class. The shipped test also enforces `MATCH_FLOOR = 547`.
+documented rejection class. The test also enforces `MATCH_FLOOR`, whose comment records
+the reason for each adjustment — including that declared unsigned widths exposed three
+type divergences that value-only comparison had counted as matches.
 
-The code records why the former 550 headline became 547: declared unsigned widths
-exposed three type divergences that value-only comparison had counted as matches. That
-explains the current constant.
-
-**claim: stable-corpus-ratchet.** A stable corpus allows no
-unexplained decrease in support: floors rise as support grows, and a reduction requires
-a reviewed reason recorded beside the adjusted floor together with the affected cases.
-The shipped `MATCH_FLOOR = 547` is an existing instance of that mechanism, not a new
-one, and its total is not universal SQL compatibility: a regression offset by a new
-match leaves the total unchanged, so the floor never replaces case-level regression
-checks. Adopting the rule measures nothing by itself.
+**claim: stable-corpus-ratchet.** A stable corpus allows no unexplained decrease in
+support: floors rise as support grows, and a reduction requires a reviewed reason
+recorded beside the adjusted floor together with the affected cases. `MATCH_FLOOR` is an
+instance of that mechanism, and its total is not universal SQL compatibility: a
+regression offset by a new match leaves the total unchanged, so the floor never replaces
+case-level regression checks.
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
 population and reporting detail in
@@ -50,13 +45,12 @@ population and reporting detail in
 *Enforced by:* `tests/test_corpus_replay.py` (`MATCH_FLOOR`, `replay_counts`). The dated
 headline count lives apart from that constant in `docs/reports/corpus-counts.json`,
 written by `scripts/corpus_counts.py` from the same replay, and
-`tests/test_corpus_counts.py` keeps every displayed count equal to it and dated
-(**ticket: match-count-single-home**, done).
+`tests/test_corpus_counts.py` keeps every displayed count equal to it and dated.
 
 The expected rows were recorded optimizer-on without capture metadata (claim:
-mined-corpus-provenance). A replay match remains an observation about that corpus, but
-it is not evidence of agreement with the defined optimizer-off oracle. Any narrower use
-must say so explicitly.
+mined-corpus-provenance). A replay match is an observation about that corpus, but it is
+not evidence of agreement with the defined optimizer-off oracle. Any narrower use must
+say so explicitly.
 
 ## Comparison blind spots
 
@@ -65,7 +59,7 @@ must say so explicitly.
 | blind spot | what is not compared | current mitigation or limit |
 |---|---|---|
 | no total `ORDER BY` | DuckDB row sequence | multiset comparison; our-side self-legs check serving order, not oracle order |
-| future order-sensitive aggregate values | element order that may vary with `threads` | each such family needs a justified contract before it is supported, and is refused until then (claim: order-sensitive-family-contract in [ordering](03-nondeterminism.md)); the global `threads` setting is unchanged |
+| order-sensitive aggregate values | element order that may vary with `threads` | each such family is refused until it has a justified contract (claim: order-sensitive-family-contract in [ordering](03-nondeterminism.md)); the global `threads` setting is unpinned |
 | `order-by-unevaluated` fallback | sortedness on a non-output key | visible logged tag, never silent |
 | approximate bind errors | message body | compare error class; bodies are outside claim: error-texts |
 | named exclusions | statistics-dependent kernels, f32-grid operations, or inexpressible schemas | measured source and input exclusions, classified under [scope classification](../specs/serving-contract.md#scope-classification); classification does not ratify each individual exclusion |
@@ -75,10 +69,9 @@ must say so explicitly.
 | output nullability | DuckDB's exact nullable flags | not required: `same_type`/`assert_schema` ignore flags at any depth; soundness of our non-null promises is checked on our own rows by `non_null_violation` (`DIVERGE_VALUE`, class `unsound-non-null`) |
 | timeout or panic | all semantics for the unanswered case | finding with SQL, inputs and side (`oracle`/`confit`/`harness`) attributed from the worker's last phase marker; rated in the abstention section |
 
-
 ## Self-checks when oracle comparison abstains
 
-**claim: metamorphic-self-legs.** Six checks remain useful without treating them as
+**claim: metamorphic-self-legs.** Six checks are useful without treating them as
 DuckDB agreement:
 
 1. batch versus single-row sequence equality;
@@ -92,51 +85,41 @@ The first five use exact canonical comparison. Sklearn uses an absolute `1e-9` b
 a second reference, not as the oracle. These legs also run for `UNSHIPPED`; canonical
 NaN equality retains the bit-level blind spot above.
 
-*Evidence:* `fuzz.oracle._extra_legs`; `fuzz.oracle.run_case:611-627` for backend
-agreement; `tests/test_fuzz_order_legs.py`; P19 in `docs/properties.md:240-245`.
-Dedicated hostile-Arrow, rows-versus-Arrow, and sklearn tests were absent when measured
-2026-09-02.
+*Evidence:* `fuzz.oracle._extra_legs`; `fuzz.oracle.run_case` for backend agreement;
+`tests/test_fuzz_order_legs.py`; P19 in `docs/properties.md`. No dedicated test covers
+the hostile-Arrow, rows-versus-Arrow, or sklearn legs.
 
-## Reporting rules and what is not built
+## Reporting rules
 
 **claim: unspecified-residuals.** Unknown observations are reported separately as
 unresolved, not counted as confirmed parity defects or agreement. Differences in a
 genuinely unconstrained aspect are not parity defects; unexplained differences must
-not be relabelled unspecified. A confirmed in-contract mismatch remains a defect.
-The retired “79 of 84” summary supplies no current cases or count for any category.
+not be relabelled unspecified. A confirmed in-contract mismatch is a defect.
 See [unresolved observations](07-the-divergence-ledger.md).
 
 **claim: acceptance-reporting.** Report generated-campaign acceptance; no percentage
 target is adopted. Each rate states its population and shows unknown outcomes and
 invalid declarations separately. Do not improve it by silently changing the
-generator or denominator. C1–C5 and D1–D2 remain unchanged.
+generator or denominator. C1–C5 and D1–D2 are the success measures.
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
 dispositions in [success measures](../specs/success-measures.md#measurement-policy).
 
-The adopted reporting intent does not adopt a schema for it. The runner reports raw
-verdict counts, the same verdicts by outcome category over the case population, refusals
-by oracle outcome, and an AGREE-only construct histogram; the table below says which
-proposal is implemented.
+The runner reports raw verdict counts, the same verdicts by outcome category over the
+case population, refusals by oracle outcome, and an AGREE-only construct histogram.
 
-| proposal | proposed effect | status |
-|---|---|---|
-| **claim: coverage-denominator** | report distinct `(operator, argument-type, edge-class)` triples rather than raw query count | implemented in `fuzz.coverage` and the report's triples section, reached versus agreed per operator (ticket: coverage-triples); reporting only, no universal coverage-metadata scheme |
-| **claim: abstention-rate** | report rates for `SKIP`, `TIMEOUT`, `PANIC`, and `order-by-unevaluated`, keeping `UNSHIPPED` separate | implemented as claim: abstention-report (ticket: per-kind-abstention-report) |
+**claim: coverage-denominator.** The report counts distinct
+`(operator, argument-type, edge-class)` triples, reached versus agreed per operator,
+rather than raw query count. This is reporting only, not a universal coverage-metadata
+scheme.
 
-Refusal-quality and unsupported-width reporting come before any new blocking KPI, and
-none is adopted here. Where reason codes may appear is claim: reason-code-placement in
+*Enforced-by:* `fuzz.coverage` and the report's triples section.
+
+**claim: abstention-rate.** The report gives rates for `SKIP`, `TIMEOUT`, `PANIC`, and
+`order-by-unevaluated`, keeping `UNSHIPPED` separate; see claim: abstention-report in
 [verdicts](04-verdicts-agreement-abstention-refusal.md).
 
-## Remaining campaign prerequisites
-
-These are implementation gaps, not open decisions:
-
-- replace the retired “79 of 84” phase-2 figure by replaying stored SQL or by a clearly
-  labelled fresh campaign, then classify the residuals; seeds cannot recreate the
-  2026-08-17 baseline after generator changes;
-- keep dated displayed match counts apart from the shipped floor (done:
-  `docs/reports/corpus-counts.json`).
-
-See [the decision index](12-ask-index.md) for the compact status of every decision and
-[the oracle policy decision](../decisions/oracle-policy.md) for the accepted policy.
+No blocking KPI is adopted from refusal-quality or unsupported-width reporting. Where
+reason codes may appear is claim: reason-code-placement in
+[verdicts](04-verdicts-agreement-abstention-refusal.md). The accepted policy is
+[the oracle policy decision](../decisions/oracle-policy.md).

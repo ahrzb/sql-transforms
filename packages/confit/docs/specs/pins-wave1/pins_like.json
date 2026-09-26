@@ -1,5 +1,5 @@
 {
- "_pin": {"schema": 1, "subject": "pins_like", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-26", "harness": "unknown", "committed": "2026-07-26", "evidences": ["claim: statistics-dependent-exclusion", "divergence: ilike-nul", "packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md", "packages/confit/src/specializer/exec/kernels.rs", "packages/confit/tests/test_corpus_replay.py"]},
+ "_pin": {"schema": 1, "subject": "pins_like", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-26", "harness": "unknown", "committed": "2026-07-26", "evidences": ["claim: statistics-dependent-exclusion", "divergence: ilike-nul", "packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md", "packages/confit/src/specializer/exec/kernels.rs", "packages/confit/src/specializer/frontend.rs", "packages/confit/tests/test_corpus_replay.py"]},
  "pins": [
   {
    "expr": "s LIKE '%' / '%%' / '%%%'",

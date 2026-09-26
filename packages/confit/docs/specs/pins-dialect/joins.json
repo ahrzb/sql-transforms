@@ -1,5 +1,5 @@
 {
-  "_pin": {"schema": 1, "subject": "TASK-104: 2026-08-13-dialect-join-node-design.md", "engine": "duckdb", "engine_version": "unknown", "optimizer": "unknown", "captured": "2026-08-13", "harness": "probe_joins.py; t1(a INT, b VARCHAR), t2(a INT, c DOUBLE), t3(d INT), NULL keys in both a-columns", "committed": "2026-08-13", "evidences": ["claim: dated-provenance", "packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md", "packages/confit/src/dialect/mod.rs", "packages/confit/src/dialect/plan.rs", "packages/confit/src/dialect/tests.rs"]},
+  "_pin": {"schema": 1, "subject": "TASK-104: 2026-08-13-dialect-join-node-design.md", "engine": "duckdb", "engine_version": "unknown", "optimizer": "unknown", "captured": "2026-08-13", "harness": "probe_joins.py; t1(a INT, b VARCHAR), t2(a INT, c DOUBLE), t3(d INT), NULL keys in both a-columns", "committed": "2026-08-13", "evidences": ["packages/confit/src/dialect/mod.rs", "packages/confit/src/dialect/plan.rs", "packages/confit/src/dialect/tests.rs"]},
   "_meta": {
     "date": "2026-08-13",
     "engine": "duckdb (repo-pinned oracle)",

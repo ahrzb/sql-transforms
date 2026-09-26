@@ -180,7 +180,7 @@ impl ColData {
 /// spans — input/const/static strings are copied in on read, so registers
 /// stay `Copy` and nothing borrows across rows. Offsets are usize: a single
 /// call can legitimately accumulate more than 4 GiB of varlen data, and a
-/// u32 span silently aliased old data past the wrap (adversarial finding).
+/// u32 span would silently alias old data past the wrap.
 #[derive(Clone, Copy, Debug)]
 pub struct StrRef {
     pub off: usize,
@@ -424,7 +424,7 @@ pub enum StaticData {
         val: ScalarVal,
     },
     /// Entries are sorted + deduped at compile into a probe table; the
-    /// binary-search probe is allocation-free (design doc: how a map is
+    /// binary-search probe is allocation-free (how a map is
     /// materialized is a backend decision — the oracle picks the simplest
     /// correct structure, perfect hashing is the codegen backend's game).
     Map(Vec<(Vec<KeyBits>, Vec<ScalarVal>)>),
@@ -493,8 +493,8 @@ pub enum RegVal {
 /// with [`interp::InterpFn::new_state`], reuse across calls — `run` clears
 /// (capacity-preserving) and refills them.
 ///
-/// Zero-allocation contract, stated precisely (the naive "after one warm
-/// call" claim was refuted by adversarial testing): a run allocates only
+/// Zero-allocation contract, stated precisely (one warm call does NOT
+/// guarantee it): a run allocates only
 /// when the input's *arena footprint* — branch paths taken, probe hits,
 /// non-NULL varlen values, output row count — exceeds every previous run's
 /// high-water mark. Such growth is one-time and monotone: repeating any

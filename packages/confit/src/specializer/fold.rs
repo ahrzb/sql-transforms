@@ -8,7 +8,7 @@
 //!   that merely dominates (`FALSE AND dynamic`) is never folded, because
 //!   dropping the dynamic side could drop its trap;
 //! * an operation that would trap at run time (integer overflow, `% 0`) is
-//!   left unfolded — the trap stays a run-time trap, same timing as before;
+//!   left unfolded — the trap stays a run-time trap, with unchanged timing;
 //! * f64 arithmetic and comparisons mirror exec/interp.rs exactly (IEEE:
 //!   `x/0 = inf`, NaN compares false except `!=`);
 //! * CASE and CAST never evaluate eagerly — a CAST can trap, and a CASE arm
@@ -123,7 +123,7 @@ pub fn fold(e: SExpr) -> SExpr {
                 _ => e(SKind::IntToFloat32(Box::new(inner))),
             }
         }
-        // Wave-1 builtins, math and string and regex alike: fold children
+        // Builtins, math and string and regex alike: fold children
         // only — the ops themselves stay runtime so constant domain errors
         // trap per row exactly like the vectorized path we pin against (no
         // fold/vector divergence).
@@ -197,7 +197,7 @@ pub fn fold(e: SExpr) -> SExpr {
                 b: Box::new(b),
             })
         }
-        // Wave-3 string ops: fold children only, same policy as Str2 —
+        // Three-string ops: fold children only, same policy as Str2 —
         // the ops stay runtime so constant trap rows keep their timing.
         SKind::Str3 { op, a, b, c } => {
             let a = fold(*a);
@@ -336,8 +336,8 @@ pub fn fold(e: SExpr) -> SExpr {
             // would hide that NULL from the binder's strict-op elision.
             // Arm VALUES still never fold themselves here — only the
             // selection runs, which is what the runtime does anyway.
-            // An arm escaping the CASE carries the node's unified width
-            // (fleet 2026-08-13: the arm's own ty re-narrowed enclosers).
+            // An arm escaping the CASE carries the node's unified width;
+            // keeping the arm's own ty would re-narrow enclosers.
             let retype = |mut r: SExpr| {
                 if r.ty != ty && r.ty.is_int() && ty.is_int() {
                     r.ty = ty;
@@ -418,9 +418,8 @@ pub fn fold(e: SExpr) -> SExpr {
             // DuckDB's binder evaluates a foldable expression: through the
             // SAME parse kernels both backends call, so fold and runtime
             // cannot disagree. A failed TRY_CAST is NULL -- which then folds
-            // a strict operator around it, sparing its sibling (campaign
-            // seed 2253). A failed CAST is left to trap at run time, as it
-            // did before.
+            // a strict operator around it, sparing its sibling. A failed CAST
+            // is left to trap at run time.
             if let SKind::Lit(Lit::Str(s)) = &inner.kind {
                 let parsed = if ty == Ty::F64 {
                     super::exec::kernels::duck_stof(s).map(Lit::F64)

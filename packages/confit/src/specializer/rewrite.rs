@@ -36,11 +36,10 @@ fn ends_value(t: Option<&Token>) -> bool {
 }
 
 /// Rewrite star name filters — `* [EXCLUDE (...)] {LIKE | NOT LIKE | GLOB |
-/// NOT ILIKE} '<pat>'` — into the one form sqlparser CAN parse, `* ILIKE`,
+/// NOT ILIKE | [NOT] SIMILAR TO} '<pat>'` — into the one form sqlparser CAN parse, `* ILIKE`,
 /// encoding the real operator as a `\u{1}<code>:` prefix inside the pattern
 /// string (decoded by the binder; a plain `* ILIKE` has no marker). Runs
-/// BEFORE the infix-GLOB rewrite so star-GLOB is consumed here. `* SIMILAR
-/// TO` stays a parse error (regexp semantics — wave B).
+/// BEFORE the infix-GLOB rewrite so star-GLOB is consumed here.
 pub fn rewrite_star_filters(tokens: Vec<Token>) -> Vec<Token> {
     let star_position = |out: &[Token]| {
         match out.iter().rev().find(|t| !matches!(t, Token::Whitespace(_))) {
@@ -117,7 +116,7 @@ pub fn rewrite_star_filters(tokens: Vec<Token>) -> Vec<Token> {
             Some(Token::Word(w)) if w.value.eq_ignore_ascii_case("glob") && !negated => {
                 Some("G")
             }
-            // `* [NOT] SIMILAR TO 're'` (wave-B): consume the TO here.
+            // `* [NOT] SIMILAR TO 're'`: consume the TO here.
             Some(Token::Word(w)) if w.keyword == Keyword::SIMILAR => {
                 j += 1;
                 while matches!(tokens.get(j), Some(Token::Whitespace(_))) {

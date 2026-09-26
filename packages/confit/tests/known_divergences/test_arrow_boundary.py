@@ -1,6 +1,6 @@
 """The infer_arrow boundary: output types and round-trips.
 
-Split out of test_known_divergences.py 2026-08-16; see README.md for what
+See README.md for what
 belongs here (kept behaviour + its ground) versus in
 ../test_open_divergences.py (behaviour we intend to change).
 """
@@ -13,31 +13,24 @@ from confit import DuckDBInferFn, compare
 
 # ------------------------------------------------- the infer_arrow path --
 #
-# The documented entry points — infer_rows and infer_arrow — are supposed to be
-# the same function behind different boundaries. Two ways they were not, both
-# FIXED 2026-08-08.
+# The documented entry points — infer_rows and infer_arrow — are the same
+# function behind different boundaries. Two places that can break:
 #
-# The FIRST was resolved by REFUSAL, the other half of the contract.
-# `infer_arrow` builds no Python rows — that is its entire reason to exist — so
-# there was nothing to call `model_validate` on. Running the rows through
-# pydantic anyway would have made the columnar path exactly as slow as the row
-# one, which is to say pointless; silently skipping it gave two answers from one
-# function. That whole surface is gone now: the pydantic `output_model=` kwarg
-# and the synthesized-model machinery beside it were deleted by the
-# arrow-schema-api migration (2026-08-13, spec
-# 2026-08-13-arrow-schema-api-design.md), so the refusal has no construction
-# left to express — `output_model=` raises TypeError at
+# Output validation. `infer_arrow` builds no Python rows — that is its entire
+# reason to exist — so there is nothing to call a pydantic `model_validate` on;
+# running the rows through pydantic anyway would make the columnar path as slow
+# as the row one, and silently skipping it would give two answers from one
+# function. There is no `output_model=` kwarg: it raises TypeError at
 # `DuckDBInferFn.__init__` itself, for every entry point, pinned in
 # `test_arrow_schema_api.py::test_infer_and_output_model_are_gone`.
 #
-# The SECOND was resolved by matching DuckDB: `pa.string()`, 32-bit offsets. The
-# 2 GiB-per-batch ceiling that comes with them is refused by name rather than
-# wrapped.
+# String output matches DuckDB: `pa.string()`, 32-bit offsets. The 2 GiB-per-
+# batch ceiling that comes with them is refused by name rather than wrapped.
 
 
 def test_infer_arrow_without_an_output_model_still_works():
     """infer_arrow needs nothing extra supplied to serve — the fast path both
-    of those fixes protect is exercised directly here."""
+    of those rules protect is exercised directly here."""
     schema = pa.schema([pa.field("x", pa.int64(), nullable=False)])
     fn = DuckDBInferFn(
         "SELECT x * 5 AS y FROM __THIS__",
@@ -88,13 +81,13 @@ def test_infer_arrow_string_output_feeds_back_in():
 
 
 # ---------------------------------------------------------------------------
-# Adjudicated 2026-08-19 as a fuzzer fix, not an engine bug: a join
-# star with colliding names. DuckDB's TOP-LEVEL arrow export keeps the
-# DUPLICATES; its own subquery/CTE/CTAS boundaries and .df() rename them
-# `<name>_N` -- which is the wave-5 client contract this engine adopted
+# A join star with colliding names: a fuzzer-side normalization, not an
+# engine bug. DuckDB's TOP-LEVEL arrow export keeps the DUPLICATES; its own
+# subquery/CTE/CTAS boundaries and .df() rename them `<name>_N` -- which is
+# the client contract this engine adopts
 # (pins-wave5/dup-names-client-contract.json), because dict-shaped
 # infer_rows output cannot hold two `c0` keys losslessly. KEPT divergence:
-# our arrow names are the deduped contract names; the campaign's schema leg
+# our arrow names are the deduped contract names; the fuzzer's schema leg
 # normalizes DuckDB through the same rule.
 # ---------------------------------------------------------------------------
 def test_join_star_collisions_keep_the_wave5_dedup_contract(oracle):

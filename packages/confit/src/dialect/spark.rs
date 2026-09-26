@@ -1,5 +1,5 @@
 //! The Spark printer: plan → Spark SQL under the PINNED configuration
-//! (design D6, pins-dialect/spark-ansi.json): `spark.sql.ansi.enabled=true`,
+//! (pins-dialect/spark-ansi.json): `spark.sql.ansi.enabled=true`,
 //! `spark.sql.session.timeZone=UTC`. Output is only valid under that
 //! config — ANSI off changes overflow, cast, and division semantics
 //! wholesale, i.e. it is a different dialect this printer does not speak.
@@ -39,11 +39,11 @@
 //! * Strings escape with backslashes; identifiers quote with backticks
 //!   (`` ` `` doubles inside).
 //! * Decimal literals print bare: Spark types them DECIMAL by digit count
-//!   like DuckDB (pinned literal typing class), and the v0 plan admits
+//!   like DuckDB (pinned literal typing class), and the plan admits
 //!   decimals only into comparisons and CASE, where value semantics —
 //!   not precision propagation — decide.
 //!
-//! Print-only, like BigQuery: the "from Spark" frontend is design phase 5.
+//! Print-only, like BigQuery: there is no Spark frontend.
 
 use super::plan::{BinOp, Catalog, Expr, Rel, ScalarFn, UnOp};
 use super::printer::{col_ref, query, ColRef, ExprPrinter};
@@ -63,8 +63,7 @@ pub fn print_sql(rel: &Rel, cat: &Catalog) -> Result<String, DialectError> {
 /// can satisfy L3: the table itself is materialized on the target, so every
 /// column type needs a bought landing zone even when the query never touches
 /// it (HUGEINT's only candidate, DECIMAL(38,0), cannot hold -2^127 — the L3
-/// gate crashed on exactly that value). Refusal by type name, per the
-/// design's type table.
+/// gate crashed on exactly that value). Refusal by type name.
 fn refuse_unbought_scans(rel: &Rel, cat: &Catalog) -> Result<(), DialectError> {
     match rel {
         Rel::Scan { table } => {

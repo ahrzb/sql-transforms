@@ -1,4 +1,4 @@
-"""Differential fuzzer for confit (spec: 2026-08-11-differential-fuzzer-design).
+"""Differential fuzzer for confit.
 
 Seeded, stdlib-only. `gen.gen(seed)` builds a random Case (schema + data +
 query AST); `oracle.run_case(case)` answers with a Verdict against DuckDB and

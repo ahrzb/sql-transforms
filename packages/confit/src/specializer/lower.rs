@@ -85,8 +85,8 @@ fn arrow_narrow_name(ty: Ty) -> &'static str {
 /// projection's i-th expression stores to `out_cols[i]`. `joins` indexes
 /// `catalog`, and join `j` probes static `@j`, so the `model<...>` statics
 /// for `model_refs` (indices into `models`) are appended after them all.
-/// `many` selects the multiplicity loop of `shape="many"`, which stage B
-/// limits to a single join.
+/// `many` selects the multiplicity loop of `shape="many"`, which is
+/// limited to a single join.
 ///
 /// The result is well-formed but NOT yet canonical or verified; the caller
 /// does both. What the loop form cannot serve refuses here as
@@ -138,13 +138,13 @@ pub fn lower(
     let model_base = if many && joins.len() == 1 { 1 } else { joins.len() };
     let mut fb = FB::new(in_cols, joins, catalog, udfs, model_base);
 
-    // shape='many' (stage B): joins lower as multiplicity LOOPS over
-    // multimap row ranges — 0..N output rows per input row. One join per
-    // query for now; a map's key-uniqueness is unknown at prepare, so
-    // under 'many' every join takes the loop form.
+    // shape='many': joins lower as multiplicity LOOPS over multimap row ranges
+    // — 0..N output rows per input row. One join per query; a map's
+    // key-uniqueness is unknown at prepare, so under 'many' every join takes
+    // the loop form.
     if many && joins.len() > 1 {
         return Err(PrepareError::Unsupported(
-            "multiple joins under shape='many' (one join per query in stage B)".to_string(),
+            "multiple joins under shape='many' (one join per query)".to_string(),
         ));
     }
     if many
@@ -241,8 +241,8 @@ pub fn lower(
         // pushes lanes and forgets to truncate. A leak leaves dead values
         // riding every later block transition — well-formed IR, so `verify`
         // says nothing, and a release-only test run sees nothing either
-        // (measured: the whole suite passed green with a `live.truncate`
-        // deleted from the arm that had just been fixed to add it).
+        // (measured: the whole suite passes green with a `live.truncate`
+        // deleted from an arm).
         assert!(live.is_empty(), "live stack leaked before column {ci}");
         let lane = fb.emit(e, &mut live)?;
         let col = ci as u32;
@@ -348,8 +348,8 @@ struct FB<'a> {
     /// Scalar joins whose residual is being emitted right now, innermost
     /// last. Same hazard as `many`, different cache: the join's value lanes
     /// ride the live stack but the cache ENTRY is per block, and a split
-    /// inside the residual used to drop it, miss, and re-enter `emit_probe`
-    /// without bound — a stack overflow that killed the process rather than
+    /// inside the residual would drop it, miss, and re-enter `emit_probe`
+    /// without bound — a stack overflow that kills the process rather than
     /// raising. A stack, not an Option: a residual may probe another join.
     probe_seeds: Vec<ProbeSeed>,
 }
@@ -565,7 +565,7 @@ impl<'a> FB<'a> {
     /// (scalar and many paths) and from every CASE condition; exits to
     /// `emit` at every operator that can tell NULL from FALSE.
     ///
-    /// The measured model (the 2026-08-19 spec): AND is the ONLY lazy
+    /// The measured model: AND is the ONLY lazy
     /// operator -- its LEFT always runs, its RIGHT is skipped when the left
     /// is not TRUE, recursively through both children. OR always evaluates
     /// both sides but passes the context through, which is how a conjunction
@@ -1602,7 +1602,7 @@ impl<'a> FB<'a> {
         plan::map_vals(cols, &spec.val_cols)
     }
 
-    /// Stage-B loop lowering for the (single) join under shape='many':
+    /// Multiplicity loop lowering for the (single) join under shape='many':
     ///
     ///   entry:  key exprs (trap per input row), ProbeRange -> [lo, hi)
     ///           (NULL keys force an EMPTY range — a NULL never matches),
@@ -1963,10 +1963,10 @@ impl<'a> FB<'a> {
             return Ok((*valid_hit, dsts.clone()));
         }
         // Re-entering a join while emitting its OWN residual means the cache
-        // entry was lost across a block transition. That used to recurse until
-        // the process died of stack overflow; the seeding above prevents it,
-        // and this turns any FUTURE hole into a named error rather than a
-        // dead serving process.
+        // entry was lost across a block transition. Unchecked, that recurses
+        // until the process dies of stack overflow; the seeding above
+        // prevents it, and this turns any remaining hole into a named error
+        // rather than a dead serving process.
         if self.probe_seeds.iter().any(|p| p.join == j) {
             return Err(PrepareError::Internal(format!(
                 "probe cache for @{j} lost inside its own residual"

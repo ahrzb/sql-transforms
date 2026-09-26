@@ -7,9 +7,8 @@ seed range (with both AGREE and REFUSED present, else the grammar or the
 oracle is broken), verdicts are reproducible, the planted known-live case
 diverges-or-refuses, and the shrinker preserves a verdict while shrinking.
 
-And — added after a struct column in a static table turned out to be
-unreachable by any seed — that the generator's table-column vocabulary is
-not narrower than the boundary's. A campaign can only find bugs in the
+And that the generator's table-column vocabulary is not narrower than the
+boundary's. A campaign can only find bugs in the
 inputs it can express, so a generator narrower than the API is a silent
 coverage hole that no campaign size closes. Those are the parity tests
 below; they are the reason this file exists as much as the machinery ones.
@@ -68,10 +67,9 @@ def test_verdicts_cover_the_contract_and_reproduce():
 
 
 def test_planted_over_modifier_diverges_or_refuses():
-    """`abs(k) OVER ()` is live on master: DuckDB refuses it, confit builds
-    it -- the silently-dropped-modifier class, one function over. The fuzzer
-    must see that case as not-AGREE today, and as REFUSED once fixed — this
-    assertion survives the fix."""
+    """`abs(k) OVER ()`: DuckDB refuses it -- the silently-dropped-modifier
+    class. The fuzzer must see that case as not-AGREE: a build divergence if
+    the engine serves it, REFUSED if it refuses."""
     case = gen.planted_over_case()
     v = oracle.run_case(case)
     assert v.kind in ("DIVERGE_BUILD", "REFUSED"), v
@@ -89,10 +87,10 @@ def _decimal_lit_case(pack: bool) -> gen.Case:
 
 
 def test_an_unshipped_lane_is_classified_and_never_value_compared():
-    """The oracle used to cast DuckDB's DECIMAL answer down to our f64 so the
-    values could still be compared. That manufactured 1-ulp artifacts and
-    graded a feature nobody has shipped as agreement. An unshipped width now
-    gets its own verdict, and no comparison at all."""
+    """Casting DuckDB's DECIMAL answer down to our f64 so the values could
+    still be compared would manufacture 1-ulp artifacts and grade an
+    unshipped feature as agreement. An unshipped width gets its own verdict,
+    and no comparison at all."""
     for pack in (False, True):
         v = oracle.run_case(_decimal_lit_case(pack))
         assert (v.kind, v.klass) == ("UNSHIPPED", "decimals"), v
@@ -192,9 +190,8 @@ def test_generator_reaches_every_boundary_scalar_type():
 
 
 def test_generator_reaches_struct_columns_in_row_and_static_tables():
-    """The hole that hid it: a struct column is lanes in a row table and is
-    dropped from the catalogue in a static one, and no seed could express
-    either."""
+    """A struct column is lanes in a row table and is dropped from the
+    catalogue in a static one; the generator must express both."""
     _, row_struct, static_struct, _ = _vocabulary(PARITY_SEEDS)
     assert row_struct, "no struct column ever generated in a row table"
     assert static_struct, "no struct column ever generated in a static table"
@@ -240,8 +237,8 @@ def test_opt_emulated_is_final_and_no_self_leg_replaces_it(monkeypatch):
     self-legs never run, so none of them can overwrite the primary finding.
 
     The class is empty in practice, so it is planted: the baseline reading is
-    emptied (it now disagrees with us) while the optimizer-on reading is left
-    alone (it still agrees), and a self-leg that would report DIVERGE_VALUE is
+    emptied (so it disagrees with us) while the optimizer-on reading is left
+    alone (so it agrees), and a self-leg that would report DIVERGE_VALUE is
     standing by."""
     seed = _row_path_agree_seed(monkeypatch)
     real_run = oracle._duck_run

@@ -1,6 +1,5 @@
 # ruff: noqa: E501  -- pin claims and queries are single-line by format (query lines map 1:1 to observed segments)
-"""Phase-0 DuckDB probes for the dialect logical plan
-(2026-08-13-dialect-logical-plan-design.md).
+"""DuckDB probes behind the dialect logical plan (`src/dialect/plan.rs`).
 
 Emits the pins-dialect/*.json fixtures in the house pins format. Claims are
 authored against the OBSERVED output of this script — rerun after a DuckDB

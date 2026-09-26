@@ -1,9 +1,9 @@
 //! Hand-written IR programs, one habitat per instruction. Written in the
 //! human-friendly form (named values, named labels) that the parser accepts
 //! and the printer canonicalizes — the round-trip tests exercise exactly that
-//! path. M-interp reuses these as its first executable programs.
+//! path. The executor tests reuse these as executable programs.
 
-/// The design-doc example: nullable arithmetic against a probed static.
+/// Nullable arithmetic against a probed static.
 /// Covers: load, load.opt, probe, itof, fdiv, and, store.opt, emit.
 pub const PROJECTION: &str = r#"
 static @0: map(str) -> (f64)
@@ -178,7 +178,7 @@ unseen:
 
 /// The fixtures the IR gate walks (round-trip and opcode coverage), each
 /// with the name its failures are reported under. `MULTI_EXPAND` is not
-/// among them: the stage-B fixture is built directly by the executor tests.
+/// among them: the multiplicity fixture is built directly by the executor tests.
 pub fn all() -> Vec<(&'static str, &'static str)> {
     vec![
         ("projection", PROJECTION),
@@ -190,7 +190,7 @@ pub fn all() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// Stage-B multiplicity: a multimap probe loop — per input row, one output
+/// Multiplicity: a multimap probe loop — per input row, one output
 /// row per matching entry (emit.to back-edge), zero matches skip. Covers:
 /// multimap statics, probe.range/probe.read, emit.to, a legal CFG cycle.
 pub const MULTI_EXPAND: &str = r#"

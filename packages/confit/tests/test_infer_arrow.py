@@ -126,13 +126,13 @@ def test_named_rejections():
 
 
 # There is no "infer_arrow refuses a supplied output model" pin because
-# output_model= no longer exists: nothing can be supplied, so there is no
+# there is no output_model= kwarg: nothing can be supplied, so there is no
 # separate refusal path to differential-test. The premise ("a supplied model
 # flips infer_arrow's behaviour") is covered once, at the constructor, by
 # test_arrow_schema_api.py::test_infer_and_output_model_are_gone.
 
 
-# Integer widths are typed for real (m-8 phase 2), so the schema suite allows
+# Integer widths are typed for real, so the schema suite allows
 # NO differences and this is a plain parity test rather than a width pin. The
 # catalogue lives in test_integer_widths.py.
 def test_infer_arrow_integer_width_matches_duckdb(oracle):
@@ -568,8 +568,8 @@ def test_a_non_nullable_struct_leaf_refuses_a_child_level_null():
 
 
 def test_a_struct_column_with_two_chunks_names_combine_chunks():
-    """The existing refusal, now that the all-scalar one no longer fires
-    first and hides it."""
+    """The chunked-struct refusal: the all-scalar one does not fire first
+    and hide it."""
     fn = _build(_S114_SQL, _S114)
     two = pa.concat_tables(
         [

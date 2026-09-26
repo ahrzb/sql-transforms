@@ -6,7 +6,7 @@
 //!
 //! Hand-rolled xorshift instead of a proptest dependency: round-trip failures
 //! shrink trivially (the seed pins the program), and the generator doubles as
-//! the input source for M-interp's interpreter-vs-codegen fuzzing.
+//! the input source for interpreter-vs-codegen fuzzing.
 
 use super::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode,
@@ -262,7 +262,7 @@ fn load_all(
                 });
             }
             // The random-program generator doesn't emit multiplicity loops
-            // (stage-B programs are exercised by targeted tests instead).
+            // (multiplicity programs are exercised by targeted tests).
             StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. } => {
             }
         }
@@ -304,7 +304,7 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                     BinOp::Xor,
                 ];
                 // idiv/irem excluded: they trap on zero, and generated
-                // programs must stay executable for M-interp fuzzing.
+                // programs must stay executable for interpreter-vs-codegen fuzzing.
                 // Flogb joins at low weight: it traps on half the domain,
                 // but identical-trap agreement is differential signal too.
                 let op = if rng.chance(5) {
@@ -419,7 +419,7 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let a = ensure(rng, b, scope, insts, Ty::Str);
                 // Positions are small fresh consts, not arbitrary scope
                 // values: the ±2^32 range guard traps, and generated
-                // programs must stay executable for M-interp fuzzing.
+                // programs must stay executable for interpreter-vs-codegen fuzzing.
                 let start = small(rng, b, insts);
                 scope.add(start, Ty::I64);
                 let len = if rng.chance(50) {
@@ -435,8 +435,8 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
             }
             11 => {
                 // iabs excluded: it traps on i64::MIN, and generated programs
-                // must stay executable for M-interp fuzzing. The wave-1
-                // trapping unaries join at low weight (trap-agreement is
+                // must stay executable for interpreter-vs-codegen fuzzing.
+                // The trapping math unaries join at low weight (trap-agreement is
                 // signal, but programs should mostly run to completion).
                 let total = [
                     NumOp1::Fabs,

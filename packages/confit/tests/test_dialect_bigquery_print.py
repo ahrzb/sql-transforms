@@ -1,11 +1,10 @@
 """The BigQuery print target through the Python boundary.
 
 Spelling-level coverage only: the printer's semantics follow BigQuery's
-documented GoogleSQL and the design's landing-zone table, and the live
-remote gate is the design's phase 4 — still owed. What this test pins is
-that the target is reachable from Python, forces the documented spellings
-(typed decimal literals, SAFE_CAST, DIV/MOD), and refuses the design's
-refusal rows by name.
+documented GoogleSQL, and there is no live BigQuery gate. What this test
+pins is that the target is reachable from Python, forces the documented
+spellings (typed decimal literals, SAFE_CAST, DIV/MOD), and refuses by name
+the constructs it does not print.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ def test_forced_spellings(catalog):
         "WHERE b IS NOT DISTINCT FROM 'o''k'",
         catalog,
     )
-    # Forced spellings after the adversarial review: DIV inside the
+    # Forced spellings: DIV inside the
     # zero-divisor guard (DuckDB gives NULL where BigQuery DIV errors),
     # / as IEEE_DIVIDE (DuckDB's zero divisors are IEEE inf/NaN).
     guarded_div = "(CASE WHEN 2 = 0 THEN CAST(NULL AS INT64) ELSE DIV(`big`, 2) END)"
