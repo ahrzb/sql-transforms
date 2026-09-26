@@ -282,3 +282,20 @@ def test_a_broken_non_null_promise_is_a_divergence(monkeypatch):
     monkeypatch.setattr(oracle, "non_null_violation", lambda *a: "row 0 'o0'")
     v = oracle.run_case(gen.gen(seed))
     assert (v.kind, v.klass) == ("DIVERGE_VALUE", "unsound-non-null"), v
+
+
+def test_a_verdict_line_carries_its_inputs_not_just_a_seed():
+    """Seeds are not durable identities once the generator changes, so the
+    line itself carries the SQL and every input needed to replay it, and
+    survives a JSON round trip (the worker pipe and findings.jsonl)."""
+    import json
+
+    for seed in range(0, N, 7):
+        line = json.loads(json.dumps(oracle.run_case_json(seed)))
+        case = gen.gen(seed)
+        assert line["sql"] == gen.render(case.query)
+        inputs = line["inputs"]
+        assert set(inputs) == {"row_schema", "rows", "statics", "udfs", "tree", "shape"}
+        assert inputs["rows"] == json.loads(json.dumps(oracle.plain(case.rows)))
+        assert set(inputs["statics"]) == set(case.statics)
+        assert inputs["shape"] == case.shape

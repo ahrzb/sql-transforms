@@ -14,12 +14,21 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
+import hashlib
 import json
+import platform
 import subprocess
 import sys
 import tempfile
 import threading
 from pathlib import Path
+
+import duckdb
+from confit.oracle import Oracle
+
+from . import gen as G
+from .oracle import case_inputs
 
 INTERESTING = (
     "DIVERGE_VALUE",
@@ -101,16 +110,7 @@ def _drive(seeds, results, timeout, lock):
             results.append(json.loads(line))
             continue
         kind = "TIMEOUT" if fired.is_set() else "PANIC"
-        results.append(
-            {
-                "seed": seed,
-                "kind": kind,
-                "klass": kind.lower(),
-                "detail": _stderr_tail(err),
-                "sql": "",
-                "tags": [],
-            }
-        )
+        results.append(blame(seed, kind, _stderr_tail(err)))
         proc.kill()
         err.close()
         proc, err = _spawn()
@@ -119,9 +119,66 @@ def _drive(seeds, results, timeout, lock):
     err.close()
 
 
+def blame(seed: int, kind: str, detail: str) -> dict:
+    """The finding for a worker that died or hung on `seed`. It returned
+    nothing, so the case is regenerated here: generation is deterministic and
+    cheap, and a finding with a bare seed is lost at the next generator change.
+    """
+    try:
+        case = G.gen(seed)
+        sql, inputs, tags = G.render(case.query), case_inputs(case), case.tags
+    except Exception as e:  # noqa: BLE001 — the blame must still be recorded
+        sql, inputs, tags = "", {"error": f"{type(e).__name__}: {e}"}, []
+    return {
+        "seed": seed,
+        "kind": kind,
+        "klass": kind.lower(),
+        "detail": detail,
+        "sql": sql,
+        "tags": list(tags),
+        "inputs": inputs,
+    }
+
+
+def _git(*args: str) -> str:
+    try:
+        return subprocess.run(  # noqa: S603 — fixed argv
+            ["git", *args],  # noqa: S607
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def provenance(start: int, n: int) -> dict:
+    """What a dated campaign result must say about itself: when it ran, which
+    engine and generator produced it, and against which reference. Old runs
+    stay history; this is what makes a new one comparable to the next."""
+    gen_src = Path(G.__file__).read_bytes()
+    return {
+        "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "engine_revision": _git("rev-parse", "HEAD") or "unknown",
+        "engine_dirty": bool(_git("status", "--porcelain", "--", "..")),
+        "generator_revision": "sha256:" + hashlib.sha256(gen_src).hexdigest()[:16],
+        "reference": {
+            "duckdb": duckdb.__version__,
+            "oracle_version": Oracle.VERSION,
+            "baseline": "optimizer-off (PRAGMA disable_optimizer), native tables",
+            "bracket": "optimizer-on, same connection",
+        },
+        "seeds": [start, start + n - 1],
+        "platform": f"{platform.system()} {platform.machine()}, "
+        f"python {platform.python_version()}",
+    }
+
+
 def campaign(start: int, n: int, workers: int, timeout: float, out: Path):
     """Seeds `start .. start + n - 1` across `workers` subprocesses: reports,
     writes the findings to `out`, and returns every verdict dict."""
+    prov = provenance(start, n)  # stamped at the start: the run's date
     seeds = iter(range(start, start + n))
     results: list[dict] = []
     lock = threading.Lock()
@@ -138,14 +195,15 @@ def campaign(start: int, n: int, workers: int, timeout: float, out: Path):
         if len(results) - done >= 500:
             done = len(results)
             print(f"... {done}/{n}", file=sys.stderr)
-    report(results, out)
+    report(results, out, provenance=prov)
     return results
 
 
-def report(results: list[dict], out: Path):
+def report(results: list[dict], out: Path, provenance: dict | None = None):
     """Print the campaign summary and write every INTERESTING verdict to
-    `out`, one JSON object per line. The file keeps the raw findings; only
-    the printout collapses them to one example per (kind, klass)."""
+    `out`, one JSON object per line, after a `{"provenance": ...}` header
+    line when one is given. The file keeps the raw findings; only the
+    printout collapses them to one example per (kind, klass)."""
     kinds = collections.Counter(r["kind"] for r in results)
     print("\n== verdicts ==")
     for k, c in kinds.most_common():
@@ -202,6 +260,8 @@ def report(results: list[dict], out: Path):
     for r in findings:
         dedup.setdefault((r["kind"], r["klass"]), r)
     with out.open("w", encoding="utf-8") as f:
+        if provenance is not None:
+            f.write(json.dumps({"provenance": provenance}) + "\n")
         for r in findings:
             f.write(json.dumps(r) + "\n")
     print(f"\n== findings: {len(findings)} raw, {len(dedup)} classes -> {out} ==")

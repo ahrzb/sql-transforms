@@ -58,6 +58,8 @@ doc suffices.
 
 from __future__ import annotations
 
+import dataclasses
+import decimal
 import math
 import os
 from dataclasses import dataclass
@@ -912,11 +914,46 @@ def _first_words(s: str, n: int = 6) -> str:
     return " ".join(s.split()[:n])[:80]
 
 
+def plain(x):
+    """`x` as JSON-safe data: dataclasses become dicts, tuples lists, and the
+    values JSON has no type for (Decimal, bytes) their exact text."""
+    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+        return {f.name: plain(getattr(x, f.name)) for f in dataclasses.fields(x)}
+    if isinstance(x, dict):
+        return {str(k): plain(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [plain(v) for v in x]
+    if isinstance(x, decimal.Decimal):
+        return str(x)
+    if isinstance(x, bytes):
+        return x.hex()
+    return x
+
+
+def case_inputs(case: G.Case) -> dict:
+    """Everything besides the SQL that a replay needs. A seed only names a
+    case under one generator revision; these name it under any."""
+    return {
+        "row_schema": plain(case.row_schema),
+        "rows": plain(case.rows),
+        "statics": plain(case.statics),
+        "udfs": plain(case.udfs),
+        "tree": plain(case.tree),
+        "shape": case.shape,
+    }
+
+
 def run_case_json(seed: int) -> dict:
-    """`gen(seed)` through `run_case`, as the JSON line the worker prints."""
+    """`gen(seed)` through `run_case`, as the JSON line the worker prints:
+    the verdict, the SQL, and the case's inputs."""
     case = G.gen(seed)
     try:
         v = run_case(case)
     except Exception as e:  # noqa: BLE001 — oracle's own bug, not the engine's
         v = Verdict("SKIP", f"oracle:{type(e).__name__}", str(e), case.tags)
-    return {"seed": seed, "sql": G.render(case.query), **v.to_json()}
+    return {
+        "seed": seed,
+        "sql": G.render(case.query),
+        **v.to_json(),
+        "inputs": case_inputs(case),
+    }

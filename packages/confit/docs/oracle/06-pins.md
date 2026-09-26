@@ -34,7 +34,7 @@ state this rule; proposed **ticket: phase-probing-in-methodology** tracks that g
 
 **claim: pin-provenance.** A replayable pin identifies the oracle version, settings
 profile, capture date, and capture-harness commit. `Oracle.VERSION` records an intended
-version but is not itself a runtime assertion (claim: oracle-version-constant).
+version, and opening the oracle asserts it (claim: oracle-version-constant).
 
 **claim: dated-provenance.** New campaign results must be dated and record the executed
 SQL, inputs, generator revision where generated, engine revision, and reference
@@ -42,9 +42,20 @@ configuration. A seed is an aid, not a durable identity after a generator change
 Earlier runs remain frozen history, not rewritten to appear current.
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
-Adoption does not establish enforcement or choose a file format. It does not convert
-the existing pin corpus or adopt the metadata proposals below; the existing
-pin-provenance rule still applies to pins.
+It does not convert the existing pin corpus or adopt the metadata proposals below; the
+existing pin-provenance rule still applies to pins.
+
+*Enforced-by:* the campaign runner. `fuzz.runner.campaign` opens `findings.jsonl` with
+one `{"provenance": ...}` line — UTC start date, engine revision (git `HEAD` plus a
+dirty flag for `packages/confit`), generator revision (a hash of `fuzz/gen.py`), the
+reference (installed DuckDB, `Oracle.VERSION`, optimizer-off baseline and optimizer-on
+bracket), seed range, and platform. Every verdict line carries its SQL and its case's
+`inputs` (row schema, rows, static tables, UDF and tree specs, shape), and a `TIMEOUT` or
+`PANIC` is blamed with the same fields by regenerating its seed in the parent. The
+2026-08-17 `findings.jsonl` predates this and stays frozen as it is.
+*Evidence:* `packages/confit/tests/test_fuzz_report.py::test_findings_open_with_a_dated_provenance_header`,
+`::test_a_dead_worker_is_blamed_with_its_sql_and_inputs`, and
+`packages/confit/tests/test_fuzz_smoke.py::test_a_verdict_line_carries_its_inputs_not_just_a_seed`.
 
 The 2026-08-25 inventory found 41 of 53 files with `duckdb_version`, 10 with a capture
 date, and 3 with a harness or commit; version spelling and metadata shape varied.
