@@ -30,7 +30,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: dated-campaign-evidence** — Keep old runs historical; record SQL,
   inputs, generator revision where applicable, engine revision, and reference
   configuration in dated future results. Seeds are not durable case identities.
-- [ ] **ticket: unresolved-observation-reporting** — Show unresolved observations
+- [x] **ticket: unresolved-observation-reporting** — Show unresolved observations
   separately from agreement and confirmed defects. Do not downgrade established
   mismatches or manufacture cases from retired counts.
 - [ ] **ticket: refusal-quality-reporting** — Report construct naming and

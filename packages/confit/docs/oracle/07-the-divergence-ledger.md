@@ -11,8 +11,18 @@ relabelled contract-unspecified. The unresolved/unspecified distinction itself i
 defined in [ordering and status vocabulary](03-nondeterminism.md).
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
-Reporting this category remains implementation work. An untraceable historical
-summary or a future feature design is not itself a measured case to count.
+An untraceable historical summary or a future feature design is not itself a measured
+case to count.
+
+*Enforced-by:* `fuzz.runner.CATEGORY` and `fuzz.runner.report`. The campaign report's
+outcome section counts, over a stated population, `agreement` (`AGREE`, `AGREE_TRAP`,
+with `order-by-unevaluated` agreements named), `mismatch` (`DIVERGE_*`,
+`OPT_EMULATED`, `BUILD_EXC`), `unresolved` (`SKIP`, `TIMEOUT`, `PANIC`: no verdict was
+reached), `refused`, and `unshipped`; each `findings.jsonl` line carries its category.
+A mismatch is never moved into `unresolved`. This covers the campaign's unanswered
+cases; observations outside a campaign still need a ledger entry.
+*Evidence:* `packages/confit/tests/test_fuzz_report.py::test_unresolved_is_counted_apart_from_agreement_and_mismatch`
+and `::test_every_kind_lands_in_exactly_one_outcome_category`.
 
 ## Historical executable-ledger practice
 

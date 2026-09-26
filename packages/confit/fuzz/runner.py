@@ -51,6 +51,29 @@ INTERESTING = (
 # finding, so it gets its own section below rather than a place in either.
 COVERED = ("AGREE",)
 
+# Every verdict kind in exactly one reporting category. `unresolved` is the
+# visible, separately counted bucket for cases with no verdict at all: the
+# harness or a worker failed, so nothing was compared. It is not agreement,
+# and not a confirmed defect either; a mismatch is never moved into it.
+CATEGORY = {
+    "AGREE": "agreement",
+    "AGREE_TRAP": "agreement",
+    "DIVERGE_VALUE": "mismatch",
+    "DIVERGE_BUILD": "mismatch",
+    "DIVERGE_TRAP": "mismatch",
+    "DIVERGE_OPT": "mismatch",
+    "OPT_EMULATED": "mismatch",
+    "BUILD_EXC": "mismatch",
+    "SKIP": "unresolved",
+    "TIMEOUT": "unresolved",
+    "PANIC": "unresolved",
+    "REFUSED": "refused",
+    "UNSHIPPED": "unshipped",
+}
+_CATEGORY_NOTE = {
+    "unresolved": "no verdict: neither agreement nor a confirmed defect",
+}
+
 
 def _spawn():
     """A worker subprocess and the temp file holding its stderr, as
@@ -209,6 +232,26 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
     for k, c in kinds.most_common():
         print(f"  {k:14} {c}")
 
+    # The same verdicts by category, over an explicit population. An AGREE
+    # whose ORDER BY could not be evaluated is agreement on the multiset only,
+    # so it is counted inside agreement and named, never silently.
+    cats = collections.Counter(CATEGORY.get(r["kind"], "unresolved") for r in results)
+    print(f"\n== outcomes (population: {len(results)} cases) ==")
+    for cat in ("agreement", "mismatch", "unresolved", "refused", "unshipped"):
+        note = _CATEGORY_NOTE.get(cat, "")
+        print(f"  {cat:11} {cats[cat]:6}" + (f"  {note}" if note else ""))
+        if cat == "agreement":
+            weak = sum(
+                1
+                for r in results
+                if r["kind"] == "AGREE" and "order-by-unevaluated" in r["tags"]
+            )
+            if weak:
+                print(
+                    f"  {'':11} {weak:6}  of them order-by-unevaluated: "
+                    "sortedness not established"
+                )
+
     # Refusals keep the baseline's outcome for the same query. Grouped by it,
     # "DuckDB serves, we refuse" is the cost side of each refusal class; it
     # is reporting, not a finding, so nothing here reaches `out`.
@@ -263,7 +306,8 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
         if provenance is not None:
             f.write(json.dumps({"provenance": provenance}) + "\n")
         for r in findings:
-            f.write(json.dumps(r) + "\n")
+            cat = CATEGORY.get(r["kind"], "unresolved")
+            f.write(json.dumps({**r, "category": cat}) + "\n")
     print(f"\n== findings: {len(findings)} raw, {len(dedup)} classes -> {out} ==")
     for (kind, klass), r in sorted(dedup.items()):
         n = sum(1 for x in findings if (x["kind"], x["klass"]) == (kind, klass))
