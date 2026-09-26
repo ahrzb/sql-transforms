@@ -294,30 +294,16 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
     for k, c in kinds.most_common():
         print(f"  {k:14} {c}")
 
-    # The same verdicts by category, over an explicit population. An AGREE
-    # whose ORDER BY could not be evaluated is agreement on the multiset only,
-    # so it is counted inside agreement and named, never silently.
+    # The same verdicts by category, over an explicit population.
     cats = collections.Counter(CATEGORY.get(r["kind"], "unresolved") for r in results)
     print(f"\n== outcomes (population: {len(results)} cases) ==")
     for cat in ("agreement", "mismatch", "unresolved", "refused", "unshipped"):
         note = _CATEGORY_NOTE.get(cat, "")
         print(f"  {cat:11} {cats[cat]:6}" + (f"  {note}" if note else ""))
-        if cat == "agreement":
-            weak = sum(
-                1
-                for r in results
-                if r["kind"] == "AGREE" and "order-by-unevaluated" in r["tags"]
-            )
-            if weak:
-                print(
-                    f"  {'':11} {weak:6}  of them order-by-unevaluated: "
-                    "sortedness not established"
-                )
 
     # Abstentions: cases with no verdict, as rates over the population, the
-    # worker failures split by the side they died in. An AGREE whose ORDER BY
-    # went unevaluated is a partial abstention (sortedness not checked), so it
-    # is rated here too. UNSHIPPED is not an abstention; it has its own section.
+    # worker failures split by the side they died in. UNSHIPPED is not an
+    # abstention; it has its own section.
     n = max(len(results), 1)
     print(f"\n== abstentions (rate over {len(results)} cases) ==")
     for kind in ("SKIP", "TIMEOUT", "PANIC"):
@@ -326,12 +312,6 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
         by_side = "  ".join(f"{k} {c}" for k, c in sorted(sides.items()))
         line = f"  {kind:22} {len(hit):6}  {100 * len(hit) / n:5.1f}%"
         print(line + (f"  {by_side}" if kind != "SKIP" and hit else ""))
-    weak = sum(
-        1
-        for r in results
-        if r["kind"] == "AGREE" and "order-by-unevaluated" in r["tags"]
-    )
-    print(f"  {'order-by-unevaluated':22} {weak:6}  {100 * weak / n:5.1f}%")
 
     # Refusals keep the baseline's outcome for the same query. Grouped by it,
     # "DuckDB serves, we refuse" is the cost side of each refusal class; it

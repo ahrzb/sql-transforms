@@ -14,7 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow as pa
-import pytest
 from confit import DuckDBInferFn, compare
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -83,28 +82,3 @@ def test_a_scrambled_batch_is_caught_as_an_order_bug():
     singles = [fn.infer_arrow(table.slice(i, 1)).to_pylist() for i in range(3)]
     flat = [r for s in singles for r in s]
     assert compare.multiset(flat) == compare.multiset(got)
-
-
-def test_sortedness_follows_duckdb_defaults():
-    ok = [{"o": 1}, {"o": 2}, {"o": 2}, {"o": None}]
-    assert oracle._sorted_by(ok, "o")  # ties fine, NULLS LAST fine
-    assert not oracle._sorted_by([{"o": 2}, {"o": 1}], "o")
-    assert not oracle._sorted_by([{"o": None}, {"o": 1}], "o")  # NULL first: no
-    nan = float("nan")
-    assert oracle._sorted_by([{"o": 1.0}, {"o": nan}, {"o": None}], "o")
-    assert not oracle._sorted_by([{"o": nan}, {"o": 1.0}], "o")
-
-
-@pytest.mark.parametrize(
-    ("static_only", "order_by", "want"),
-    [
-        (False, None, "row-path"),
-        (True, None, "constant-unordered"),
-        (True, "o", "constant-ordered"),
-    ],
-)
-def test_compare_mode_is_derived_from_the_case(static_only, order_by, want):
-    case = SimpleNamespace(
-        query=SimpleNamespace(body=SimpleNamespace(order_by=order_by))
-    )
-    assert oracle.compare_mode(case, static_only) == want

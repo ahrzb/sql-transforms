@@ -11,7 +11,7 @@ the ones still without one.
 **The contract.** For any SQL you hand it, the engine does exactly one of:
 
 1. **Serve it bit-for-bit identical to DuckDB** (verified continuously
-   against DuckDB's own test corpus: 548 of 678 statements as of 2026-09-26,
+   against DuckDB's own test corpus: 539 of 678 statements as of 2026-09-26,
    recorded in [`reports/corpus-counts.json`](reports/corpus-counts.json)), or
 2. **Refuse loudly at BUILD time** — `DuckDBInferFn(...)` raises a
    `ValueError` naming the construct. Nothing is ever silently wrong or
@@ -47,13 +47,11 @@ cannot compute from the query is not a target.
 bit-for-bit. A *sequence* is only promised where one is defined: on the row
 path by the serving contract (output rows follow input rows -- `map` exactly,
 `filter` as a subsequence, `many` as per-input-row blocks in input order,
-join order within a block being the documented multiset), and on a
-static-tables-only result by a total `ORDER BY`. Anywhere else SQL defines no
-order and neither do we -- DuckDB itself returns the same unordered
+join order within a block being the documented multiset). Anywhere else SQL
+defines no order and neither do we -- DuckDB itself returns the same unordered
 `GROUP BY` in twelve different row orders over twelve connections (measured).
 The campaign fuzzer compares per this rule: sequence-strict self-legs on the
-row path (a reversed batch must reverse), sortedness-plus-multiset under
-`ORDER BY` (ties are free), multiset otherwise.
+row path (a reversed batch must reverse), multiset otherwise.
 
 **Boolean short-circuit** is decided per CONTEXT, as DuckDB decides it: selection context (the
 WHERE root and every `CASE WHEN` condition, projections included) makes
@@ -87,8 +85,7 @@ declares how many output rows each input row may produce, checked at
 build time. `"filter"` (the default) is the engine's native 0..1;
 `"map"` statically PROVES exactly-one (`out[i] ↔ in[i]`, the strict
 serving guarantee) by rejecting anything that can drop a row — a WHERE
-clause, an INNER join (key misses drop), a static-tables-only constant
-query; `"many"` (0..N) is the multiplicity opt-in: duplicate-key
+clause, an INNER join (key misses drop); `"many"` (0..N) is the multiplicity opt-in: duplicate-key
 joins, cross joins, and inequality/constant `ON` joins build ONLY under
 it (one join per query, a named rejection) — multiplicity can
 never sneak into a serving path by default. Comma and `ON` self-joins
@@ -113,18 +110,12 @@ classifies each family.
 - `rowid` pseudo-column — rows have no stable identity in a stream.
 - `FULL OUTER JOIN` — emits rows that no input row produced.
 
-The exception is a **static-tables-only query** (nothing dynamic remains):
-it is evaluated once at build by DuckDB itself and frozen, so aggregation,
-`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One carve-out:
-a **row limit refuses** — `LIMIT`, `OFFSET`,
-`FETCH`, `TOP`, anywhere in the statement, `ORDER BY` or not. Which rows
-survive a limit is not a function of the query: measured, the same
-`GROUP BY … FETCH FIRST 1 ROWS ONLY` over the same four rows answered
-**four different ways across twelve fresh connections**, and `ORDER BY` does
-not fix ties (a tie fed from a `GROUP BY` flipped in 20 runs). Freezing
-whichever answer the build-time run happened to get would make two builds of
-the same function disagree with each other. You'll see:
-`row limit (LIMIT/OFFSET) on a static-tables-only query`.
+A **static-tables-only query** (nothing reads the request table) is outside
+the model and refuses at build, naming the first construct the binder meets:
+the driving relation (`table 's' as the driving relation (must be the dynamic
+table …)`), `FROM-less SELECT`, or a clause such as `ORDER BY`. Run such a
+query on DuckDB. The ruling is
+[static-only queries](decisions/closed/static-only-queries.md).
 
 ## 3. Type-system boundaries
 

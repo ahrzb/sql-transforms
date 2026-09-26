@@ -38,8 +38,8 @@ cannot see reads of the run.
 
 ## The engine today
 
-The engine still serves a static-tables-only query: `eval_static_only` in
-`packages/confit/src/duckdb/mod.rs` evaluates it once at construction and freezes
-the rows (claim: one-door-bypass in [the oracle](../../oracle/01-what-the-oracle-is.md)).
-A row-limit clause on such a query and `shape='map'` are refused. Removing the path
-is tracked in `packages/confit/PLANS.md` ("Removing the static-only fold").
+A query that reads no request table refuses at construction, naming the first
+construct the binder meets (the driving relation, `FROM-less SELECT`, or a
+clause such as `ORDER BY`). The construction-time fold that used to serve these
+queries (`eval_static_only`) was removed on 2026-09-26, on the owner's ruling
+that it has no use case; the engine no longer calls DuckDB.

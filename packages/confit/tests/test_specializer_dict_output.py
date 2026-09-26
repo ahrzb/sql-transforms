@@ -35,17 +35,3 @@ def test_dict_mode_returns_fresh_dicts_per_call():
     first[0]["d"] = "mutated"
     again = fn.infer_rows(rows)
     assert again == [{"d": 2, "u": "X"}]
-
-
-def test_dict_mode_on_constant_engine():
-    fn = DuckDBInferFn(
-        "SELECT 1 AS one, 'x' AS s",
-        row_tables={"__THIS__": Row},
-        static_tables={},
-    )
-    got = fn.infer_rows([])
-    assert all(type(r) is dict for r in got)
-    # Mutating a returned dict must not leak into the next call.
-    if got:
-        got[0]["one"] = "mutated"
-        assert fn.infer_rows([]) != got
