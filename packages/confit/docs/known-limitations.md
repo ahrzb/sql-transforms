@@ -2,9 +2,11 @@
 
 This is the user-facing contract of Confit (`DuckDBInferFn`):
 what it refuses to serve, **why**, and what you see when you hit a limit.
-Its executable twin is [`packages/confit/tests/test_known_limitations.py`](../tests/test_known_limitations.py) —
-every limitation below is asserted there, so lifting one breaks a test and
-forces this document to change with it.
+Its executable twin is [`packages/confit/tests/test_known_limitations.py`](../tests/test_known_limitations.py),
+with further twins in the tests named per section. Coverage is demonstrated,
+not total: a limitation with a twin breaks a test when it is lifted, and the
+[ledger](oracle/07-the-divergence-ledger.md#executable-twin-coverage) records
+the ones still without one.
 
 **The contract.** For any SQL you hand it, the engine does exactly one of:
 
@@ -264,18 +266,22 @@ These are served, but with a consciously chosen surface — know them:
 - **`%`-by-zero NaN bit pattern is platform-libm** — pinned as
   engine==oracle bit agreement per platform, not a constant.
 - **Schema qualifiers are registry-noise** (TASK-55): the engine's table
-  registry is schema-less, so `s1.t1` (and 3-part `s1.t1.col` refs)
-  resolve when the table part matches a registered bare name. DuckDB's
+  registry is schema-less, so a relation qualifier (`JOIN s1.t1`) resolves
+  when the table part matches a registered bare name. DuckDB's
   schema-existence errors (`schema "x" does not exist`) are not
   reproduced — a schema-less registry cannot know which schemas would
-  exist. Ambiguous matches still error. With struct paths (TASK-56) the
-  same rule extends to n-part references: resolution is
+  exist. Ambiguous matches still error. A column qualified through such a
+  relation does NOT resolve (measured 2026-09-26): `d.v` over `JOIN main.d`
+  and the 3-part `s1.t1.col` both refuse with `bind error: unknown table`,
+  where DuckDB serves the first. With struct paths (TASK-56) resolution is
   longest-qualifier-first with backtracking (measured), and any first
   part is accepted as a schema when the second matches the table — so
   `w.w.w` on a table `w` with struct column `w` binds the LONGER
   schema-ish parse (a whole-struct rejection) where schema-aware DuckDB
-  would fall through to `column.field`. The divergence is always a loud
-  build-time rejection, never a different served value.
+  would fall through to `column.field`. Each divergence is a served answer
+  where DuckDB raises or a loud build-time rejection, never a different
+  served value. Twins: the schema-qualifier tests in
+  `test_known_limitations.py`.
 
 ## 6. How to read a rejection
 
@@ -297,8 +303,9 @@ Four mechanisms, all in the normal test gate:
 1. **The corpus replay** (678 statements mined from DuckDB's test suite):
    every statement must match bit-for-bit, reject cleanly, or be a named
    divergence — a wrong answer anywhere fails the gate.
-2. **The executable twin** (`packages/confit/tests/test_known_limitations.py`): every
-   limitation in this document is asserted; lifting one breaks a test.
+2. **The executable twin** (`packages/confit/tests/test_known_limitations.py`): the
+   limitations it asserts break a test when lifted. Coverage is partial, not
+   total; the ledger's `claim: doc-twin-totality` records the gaps.
 3. **The standing differential fuzzer** (`packages/confit/tests/test_duckdb_regexp_fuzz.py`):
    randomized DuckDB-vs-engine sweeps of the regex surface on every run
    (seed/size overridable for deep runs) — new divergences fail with the
