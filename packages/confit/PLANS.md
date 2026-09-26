@@ -6,11 +6,10 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,
-   VARCHAR and BOOLEAN CAST targets, and none of the struct forms that now
-   serve (dotted field names, `s['f']`, `struct_extract`, static `v.*`,
-   struct-leaf ON keys, schema-qualified keys). Widen it together with a
-   fresh dated reading (a generator change re-deals every seed).
+1. **Generator name collisions** (reading N=3, gap: generator-name-collisions).
+   `fuzz/gen.py` names row and static columns alike (`c0`, `c1`), so 29 of 34
+   struct-leaf ON keys are queries DuckDB rejects as ambiguous. Qualify the row
+   side of a generated ON key, or draw static names from a disjoint pool.
 
 ## Waiting on the owner
 

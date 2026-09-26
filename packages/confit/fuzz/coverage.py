@@ -70,6 +70,8 @@ def _applications(n):
         return ("unary -" if n.op == "-" else n.op), [n.e]
     if isinstance(n, G.Call):
         return n.name, list(n.args)
+    if isinstance(n, G.Col) and n.spell != "dot" and "." in n.name:
+        return f"struct field ({n.spell})", [n]
     if isinstance(n, G.Cast):
         return f"{'TRY_CAST' if n.try_ else 'CAST'} AS {n.to}", [n.e]
     if isinstance(n, G.Between):
