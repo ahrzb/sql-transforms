@@ -275,6 +275,9 @@ class Col(Node):
     name: str
     table: str | None = None
     ty: str = "float"
+    # How a struct LANE (`w.mean`) is spelled: the dot path, or one of the
+    # forms DuckDB reads the same field through. Plain columns ignore it.
+    spell: str = "dot"
 
 
 @dataclass
@@ -326,6 +329,8 @@ class Cast(Node):
     e: Node
     to: str
     try_: bool = False
+    # Index into the target's served spellings (CAST_SPELLINGS).
+    spell: int = 0
 
     def kids(self):
         return [self.e]
@@ -608,6 +613,31 @@ class Env:
         return [c for c in self.cols if c[2] == ty]
 
 
+# The non-dot spellings of a struct field read: `w['f']`, `(w).f`,
+# `struct_extract(w, 'f')` -- each is `w.f` in DuckDB.
+LANE_SPELLS = ("sub", "paren", "fn")
+
+# Every served spelling of each CAST target (frontend.rs cast_target); the
+# first is the canonical one.
+CAST_SPELLINGS = {
+    "int": ("BIGINT", "INT8", "LONG"),
+    "int32": ("INTEGER", "INT", "INT4", "SIGNED"),
+    "int16": ("SMALLINT", "INT2", "SHORT"),
+    "int8": ("TINYINT", "INT1"),
+    "float": ("DOUBLE", "FLOAT8", "DOUBLE PRECISION"),
+    "str": ("VARCHAR", "TEXT", "STRING"),
+    "bool": ("BOOLEAN", "BOOL", "LOGICAL"),
+}
+
+
+def _col(rng: random.Random, name: str, table: str | None, ty: str) -> Col:
+    """A column read; a struct lane is spelled a non-dot way a third of
+    the time."""
+    if "." in name and rng.random() < 0.33:
+        return Col(name, table, ty, rng.choice(LANE_SPELLS))
+    return Col(name, table, ty)
+
+
 CMP = ["=", "<>", "<", ">", "<=", ">="]
 ARITH_I = ["+", "-", "*", "%"]  # int/int division truncates; % traps on 0
 ARITH_F = ["+", "-", "*", "/"]
@@ -619,12 +649,12 @@ def expr(rng: random.Random, env: Env, ty: str, depth: int) -> Node:
     if depth <= 0:
         if cols and rng.random() < 0.6:
             t, n, _ = rng.choice(cols)
-            return Col(n, t, ty)
+            return _col(rng, n, t, ty)
         return lit(rng, ty)
     r = rng.random()
     if cols and r < 0.25:
         t, n, _ = rng.choice(cols)
-        return Col(n, t, ty)
+        return _col(rng, n, t, ty)
     if r < 0.32:
         return lit(rng, ty)
     if ty in ("int", "float"):
@@ -655,10 +685,15 @@ def _num(rng, env, ty, depth):
         return CaseW(whens, els)
     if r < 0.70:
         src = rng.choice(TYPES)
-        # Narrow targets are real: CAST/TRY_CAST AS INTEGER exercises the
-        # typed-width lane and its range semantics.
-        to = "int32" if ty == "int" and rng.random() < 0.4 else ty
-        return Cast(expr(rng, env, src, depth - 1), to, try_=rng.random() < 0.3)
+        # Narrow targets are real: CAST/TRY_CAST AS INTEGER/SMALLINT/TINYINT
+        # exercise the typed-width lanes and their range semantics.
+        to = ty
+        if ty == "int" and rng.random() < 0.5:
+            to = rng.choice(("int32", "int32", "int16", "int8"))
+        spell = rng.randrange(len(CAST_SPELLINGS[to])) if rng.random() < 0.3 else 0
+        return Cast(
+            expr(rng, env, src, depth - 1), to, try_=rng.random() < 0.3, spell=spell
+        )
     if r < 0.78:
         name = rng.choice(["coalesce", "nullif"])
         return Call(
@@ -799,8 +834,20 @@ def rexpr(e: Node) -> str:
     if isinstance(e, Col):
         # A lane name is a dotted path (`w.mean`); each segment quotes on its
         # own, or the whole path becomes one identifier that exists nowhere.
-        q = ".".join(_ident(p) for p in e.name.split("."))
-        return f"{_ident(e.table)}.{q}" if e.table else q
+        parts = e.name.split(".")
+        if e.spell == "dot" or len(parts) == 1:
+            q = ".".join(_ident(p) for p in parts)
+            return f"{_ident(e.table)}.{q}" if e.table else q
+        head = f"{_ident(e.table)}.{_ident(parts[0])}" if e.table else _ident(parts[0])
+        for f in parts[1:]:
+            key = "'" + f.replace("'", "''") + "'"
+            if e.spell == "sub":
+                head = f"{head}[{key}]"
+            elif e.spell == "paren":
+                head = f"({head}).{_ident(f)}"
+            else:
+                head = f"struct_extract({head}, {key})"
+        return head
     if isinstance(e, Bin):
         return f"({rexpr(e.lhs)} {e.op} {rexpr(e.rhs)})"
     if isinstance(e, Un):
@@ -810,13 +857,7 @@ def rexpr(e: Node) -> str:
         els = f" ELSE {rexpr(e.els)}" if e.els is not None else ""
         return f"(CASE {w}{els} END)"
     if isinstance(e, Cast):
-        to = {
-            "int": "BIGINT",
-            "int32": "INTEGER",
-            "float": "DOUBLE",
-            "str": "VARCHAR",
-            "bool": "BOOLEAN",
-        }[e.to]
+        to = CAST_SPELLINGS[e.to][e.spell]
         f = "TRY_CAST" if e.try_ else "CAST"
         return f"{f}({rexpr(e.e)} AS {to})"
     if isinstance(e, Call):
