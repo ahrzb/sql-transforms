@@ -111,8 +111,9 @@ generator or denominator. C1–C5 and D1–D2 remain unchanged.
 dispositions in [success measures](../specs/success-measures.md#measurement-policy).
 
 The adopted reporting intent does not adopt a schema for it. The runner reports raw
-verdict counts and an AGREE-only construct histogram; neither proposal below exists in
-code, and neither is approved beyond that intent.
+verdict counts, the same verdicts by outcome category over the case population, refusals
+by oracle outcome, and an AGREE-only construct histogram; neither proposal below exists
+in code, and neither is approved beyond that intent.
 
 | proposal | proposed effect | status |
 |---|---|---|
@@ -130,7 +131,6 @@ These are implementation gaps, not open decisions:
 - replace the retired “79 of 84” phase-2 figure by replaying stored SQL or by a clearly
   labelled fresh campaign, then classify the residuals; seeds cannot recreate the
   2026-08-17 baseline after generator changes;
-- emit the refusal-reason summary and the separately counted unresolved category;
 - keep dated displayed match counts apart from the shipped floor (ticket:
   match-count-single-home).
 
