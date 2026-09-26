@@ -547,7 +547,7 @@ fn arrow_ty(name: &str, label: &str, t: &Bound<'_, PyAny>) -> PyResult<Ty> {
         "string" => Ty::Str,
         other => {
             return Err(build_err(format!(
-                "udf '{name}': {label} type '{other}' is not one of \
+                "bind error: udf '{name}': {label} type '{other}' is not one of \
                  bool/int64/double/string"
             )))
         }
@@ -556,7 +556,7 @@ fn arrow_ty(name: &str, label: &str, t: &Bound<'_, PyAny>) -> PyResult<Ty> {
 
 /// `takes`: a `pa.Schema`, one field per argument, in call order.
 fn parse_takes(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec<Ty>)> {
-    let bad = || build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"));
+    let bad = || build_err(format!("bind error: udf '{name}': `takes` must be a pyarrow Schema"));
     let names: Vec<String> = obj.getattr("names").map_err(|_| bad())?.extract().map_err(|_| bad())?;
     let types = obj.getattr("types").map_err(|_| bad())?;
     let mut tys = Vec::with_capacity(names.len());
@@ -584,7 +584,7 @@ fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, V
         let n: usize = obj.getattr("num_fields")?.extract()?;
         if n == 0 {
             return Err(build_err(format!(
-                "udf '{name}': `returns` struct declares no fields"
+                "bind error: udf '{name}': `returns` struct declares no fields"
             )));
         }
         let mut names = Vec::with_capacity(n);
@@ -604,7 +604,7 @@ fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, V
         // would cross as its element.
         if k < 2 {
             return Err(build_err(format!(
-                "udf '{name}': a width-1 list return is a scalar — declare the \
+                "bind error: udf '{name}': a width-1 list return is a scalar — declare the \
                  element type rather than pa.list_(t, {k})"
             )));
         }
@@ -613,7 +613,7 @@ fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, V
     }
     if s.starts_with("list<") {
         return Err(build_err(format!(
-            "udf '{name}': `returns` list must declare its width — \
+            "bind error: udf '{name}': `returns` list must declare its width — \
              pa.list_(pa.float64(), k), not pa.list_(pa.float64())"
         )));
     }
@@ -650,14 +650,14 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
         // letting either side win.
         if super::specializer::frontend::is_builtin(&name) {
             return Err(build_err(format!(
-                "udf '{name}' collides with the builtin function '{name}' — \
+                "bind error: udf '{name}' collides with the builtin function '{name}' — \
                  rename it. The builtin binds first here, while DuckDB binds \
                  the udf, so the two engines would answer differently."
             )));
         }
         names.push(name.clone());
         let (_take_names, take_tys) = parse_takes(&name, &b.getattr("takes").map_err(|_| {
-            build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"))
+            build_err(format!("bind error: udf '{name}': `takes` must be a pyarrow Schema"))
         })?)?;
         // A UDF exposing `tree_tables()` is scored by the native kernel, so
         // it never becomes an extern: no callable, no GIL on the row path.
@@ -665,14 +665,14 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
         if b.hasattr("tree_tables")? {
             if take_tys.is_empty() {
                 return Err(build_err(format!(
-                    "udf '{name}': a tree transform scores at least one feature"
+                    "bind error: udf '{name}': a tree transform scores at least one feature"
                 )));
             }
             trees.push(parse_tree_udf(py, name, take_tys, &b)?);
             continue;
         }
         let (ret_names, rets) = parse_returns(&name, &b.getattr("returns").map_err(|_| {
-            build_err(format!("udf '{name}': `returns` must be a pyarrow DataType"))
+            build_err(format!("bind error: udf '{name}': `returns` must be a pyarrow DataType"))
         })?)?;
         let mut params = Vec::with_capacity(take_tys.len() + 1);
         // The implicit leading instance id (DRAFT-22): objects with an
@@ -687,7 +687,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
         for (i, a) in ret_names.iter().enumerate() {
             if ret_names[..i].iter().any(|b| b.eq_ignore_ascii_case(a)) {
                 return Err(build_err(format!(
-                    "udf '{name}': return_names collide case-insensitively ('{a}')"
+                    "bind error: udf '{name}': return_names collide case-insensitively ('{a}')"
                 )));
             }
         }
@@ -698,7 +698,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
         let side_effects = match b.getattr("side_effects") {
             Err(_) => false,
             Ok(v) => v.extract::<bool>().map_err(|_| {
-                build_err(format!("udf '{name}': `side_effects` must be a bool"))
+                build_err(format!("bind error: udf '{name}': `side_effects` must be a bool"))
             })?,
         };
         out.push(UdfDecl {
@@ -1022,8 +1022,8 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                     // Declared non-nullable yet NULL in the data — the
                     // original guard stays as a safety net.
                     return Err(build_err(format!(
-                        "static table '{}' has a NULL in value column '{name}' — declared \
-                         non-nullable",
+                        "bind error: static table '{}' has a NULL in value column '{name}' — \
+                         declared non-nullable",
                         spec.table
                     )));
                 }
@@ -1066,7 +1066,7 @@ fn parse_tree_udf(
     let (nodes, headers, grid): (Py<PyAny>, Py<PyAny>, String) =
         got.extract().map_err(|_| {
             build_err(format!(
-                "udf '{name}': tree_tables() must return (nodes, models, compare_grid)"
+                "bind error: udf '{name}': tree_tables() must return (nodes, models, compare_grid)"
             ))
         })?;
     let grid = match grid.as_str() {
@@ -1074,7 +1074,7 @@ fn parse_tree_udf(
         "float64" => super::specializer::plan::CompareGrid::F64,
         other => {
             return Err(build_err(format!(
-                "udf '{name}': compare_grid '{other}' is not 'float32' or 'float64'"
+                "bind error: udf '{name}': compare_grid '{other}' is not 'float32' or 'float64'"
             )))
         }
     };
@@ -1729,7 +1729,7 @@ impl DuckDBInferFn {
                             // Fixed rows regardless of input — the exact
                             // opposite of out[i] <-> in[i].
                             return Err(pyo3::exceptions::PyValueError::new_err(
-                                "shape='map': a static-tables-only query emits fixed \
+                                "unsupported: shape='map': a static-tables-only query emits fixed \
                                  rows unrelated to the input rows",
                             ));
                         }
@@ -1747,7 +1747,7 @@ impl DuckDBInferFn {
         if strict_map {
             if let Some(blocker) = &prepared.one_row_blocker {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "shape='map': {blocker}"
+                    "unsupported: shape='map': {blocker}"
                 )));
             }
         }

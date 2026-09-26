@@ -92,15 +92,22 @@ three `ValueError` prefixes:
 - `parse error:` — outside the accepted dialect; and
 - `bind error:` — invalid against the declared schema.
 
-Current corpus classification does not match that set. `_CLEAN` accepts `unsupported:`,
-`parse error:`, `duplicate map key`, and `NULL in value column`; it omits `bind error:`,
-and the final two messages have no documented prefix. This is an implementation/document
-inconsistency, not permission to infer a fourth settled policy. See
-**ticket: clean-prefix-reconcile**.
+The engine's formerly unprefixed build-time families now carry the prefix of their
+class (**ticket: clean-prefix-reconcile**, done 2026-09-26), keeping their old text as a
+suffix: a duplicate key in a 1:1 static map is `unsupported: duplicate map key …`
+(multiplicity restriction), `shape='map'` blockers are `unsupported: shape='map': …`,
+and a NULL in a declared non-null static value column and the build-time UDF
+declaration errors (`udf '<name>': …`) are `bind error: …` (inconsistent caller
+declaration). UDF errors raised while serving a row are runtime traps and keep their
+text. The corpus gate's `_CLEAN` is now exactly `unsupported:` and `parse error:`;
+`bind error:` stays a corpus FAIL on purpose, because every corpus statement is one
+DuckDB answered, so "invalid against the declared schema" cannot be its reason. No
+public error-code API was added.
 
-*Evidence:* `packages/confit/docs/known-limitations.md:274-285`, P7 and P18 in
+*Evidence:* `packages/confit/docs/known-limitations.md` §6, P7 and P18 in
 `packages/confit/docs/properties.md`, and
-`packages/confit/tests/test_corpus_replay.py:36`.
+`packages/confit/tests/test_corpus_replay.py` (`_CLEAN`), and
+`packages/confit/tests/test_known_limitations.py::test_every_refusal_family_carries_a_documented_prefix`.
 
 **claim: refusal-quality-report.** The campaign reports refusal quality, not only
 prefix presence: of all refusals, how many carry a documented prefix, how many name the

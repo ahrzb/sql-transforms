@@ -295,7 +295,9 @@ whose message starts with a classification:
 - `unsupported: ...` — real SQL, deliberately not served (this document).
 - `parse error: ...` — the dialect surface ends here.
 - `bind error: ...` — the query is wrong against YOUR schema (typo,
-  type mismatch), not a limitation.
+  type mismatch) or your declarations disagree with each other or with the
+  data (a UDF's `takes`/`returns`, a NULL in a column declared non-null),
+  not a limitation.
 
 If a message you hit isn't in this document or the tests, that's a bug in
 our bookkeeping — file it.
