@@ -279,13 +279,13 @@ fn one_row_blocker(
         }
     }
     if has_filter(rel) {
-        return Some("a WHERE clause can drop rows (shape='filter' serves it)".into());
+        return Some("a WHERE clause can drop rows (use shape='filter')".into());
     }
     for j in joins {
         if j.kind != plan::JoinKind::Left {
             if j.batch {
                 return Some(
-                    "an INNER self-join drops rows on a miss (shape='many' serves it)"
+                    "an INNER self-join drops rows on a miss (use shape='many')"
                         .to_string(),
                 );
             }
@@ -296,7 +296,7 @@ fn one_row_blocker(
         }
         if j.batch {
             // A LEFT self-join still multiplies rows — never exactly-one.
-            return Some("a self-join multiplies rows (shape='many' serves it)".to_string());
+            return Some("a self-join multiplies rows (use shape='many')".to_string());
         }
     }
     None
