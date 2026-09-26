@@ -19,4 +19,18 @@
 derived tables 144, `WITH` 87, the literal 9223372036854775808 (i128 lane) 35,
 non-scalar columns 13, of 525. The grammar measures the generator, not demand.
 
+**Row-locality of the two largest classes** (seeds 0–1999, master `84ea988`,
+each refused case's AST checked for `DISTINCT`, `ORDER BY`, a row limit,
+`GROUP BY`, `QUALIFY`, an aggregate or a window over request rows, in the
+outer query or a subquery over the request table):
+
+| class | refused, DuckDB answers | of them row-local |
+|---|---|---|
+| derived table, `FROM (SELECT …)` | 157 | 150 |
+| `WITH` | 94 | 88 |
+
+A row-local derived table or CTE is inside the model (the
+[serving contract](../../specs/serving-contract.md#restriction-inventory-by-class)
+class 2); these 238 are the recoverable part.
+
 **Ruling.** None yet; the owner's choice.
