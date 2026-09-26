@@ -51,6 +51,10 @@ pub struct StaticKey {
     /// IS-NOT-DISTINCT machinery gives it DuckDB's nested semantics.
     pub present: bool,
     pub map: plan::MapKey,
+    /// The probe expression's declared type before lane erasure: a VARCHAR
+    /// build key converts to THIS width (`INTEGER` probe: '3000000000'
+    /// fails, as DuckDB's VARCHAR -> INT32 cast does).
+    pub probe_ty: ir::Ty,
 }
 
 /// One map value at the boundary: its path plus its slot layout.
@@ -195,7 +199,8 @@ pub fn prepare_opaque(
                     .key_cols
                     .iter()
                     .zip(plan::map_keys(&j.keys, &j.key_cols))
-                    .map(|(c, map)| {
+                    .zip(&j.keys)
+                    .map(|((c, map), probe)| {
                         let (path, present) = match &c.src {
                             plan::KeySrc::Lane(c) => (paths[*c as usize].clone(), false),
                             plan::KeySrc::Present(p) => (p.clone(), true),
@@ -209,7 +214,12 @@ pub fn prepare_opaque(
                             !present || map.ty == ir::Ty::I1,
                             "a presence key is always I1"
                         );
-                        StaticKey { path, present, map }
+                        StaticKey {
+                            path,
+                            present,
+                            map,
+                            probe_ty: probe.ty,
+                        }
                     })
                     .collect(),
                 vals: j
