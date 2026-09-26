@@ -269,17 +269,12 @@ These are served, but with a consciously chosen surface — know them:
   when the table part matches a registered bare name. DuckDB's
   schema-existence errors (`schema "x" does not exist`) are not
   reproduced — a schema-less registry cannot know which schemas would
-  exist. Ambiguous matches error. A column qualified through such a
-  relation does NOT resolve (measured): `d.v` over `JOIN main.d`
-  and the 3-part `s1.t1.col` both refuse with `bind error: unknown table`,
-  where DuckDB serves the first. With struct paths resolution is
-  longest-qualifier-first with backtracking (measured), and any first
-  part is accepted as a schema when the second matches the table — so
-  `w.w.w` on a table `w` with struct column `w` binds the LONGER
-  schema-ish parse (a whole-struct rejection) where schema-aware DuckDB
-  would fall through to `column.field`. Each divergence is a served answer
-  where DuckDB raises or a loud build-time rejection, never a different
-  served value. Twins: the schema-qualifier tests in
+  exist. Ambiguous matches error. A relation is in scope under its bare
+  name, and a column may be qualified through the schema it was named
+  through (`main` when unqualified) and the `memory` catalog: `d.v`,
+  `main.d.v` and `memory.main.d.v` all serve over `JOIN main.d`; another
+  schema, another catalog, or a schema over an alias refuses, as DuckDB's
+  binder does. Twins: the schema-qualifier tests in
   `test_known_limitations.py`.
 
 ## 6. How to read a rejection

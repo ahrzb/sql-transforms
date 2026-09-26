@@ -780,8 +780,16 @@ fn bind_from<'a>(
     };
     let (dyn_name, renamed_cols) = dyn_name;
 
+    // An aliased relation has no schema: `main.x.a` over `FROM t AS x` is a
+    // binder error on DuckDB (measured), so nothing can match "".
+    let this_schema = match plain_table(&table.relation)? {
+        Some((_, Some(_))) => String::new(),
+        Some((n, None)) => rel_schema(&n),
+        None => "main".to_string(),
+    };
     let mut binder = Binder {
         this_name: dyn_name,
+        this_schema,
         in_cols: match renamed_cols {
             Some(v) => std::borrow::Cow::Owned(v),
             None => std::borrow::Cow::Borrowed(in_cols),
@@ -821,10 +829,17 @@ fn bind_from<'a>(
             Some((n, alias)) => (n, alias),
             None => return Err(unsup(format!("JOIN {}", join.relation))),
         };
+        // A schema-qualified relation (`main.d`, `memory.main.d`) is in
+        // scope under its bare table name, as on DuckDB: `d.v` and
+        // `main.d.v` both reach it (measured).
         let scope_name = rel_alias
             .as_ref()
             .map(|a| a.name.value.clone())
-            .unwrap_or_else(|| raw_name.clone());
+            .unwrap_or_else(|| {
+                raw_name
+                    .rsplit_once('.')
+                    .map_or(raw_name.clone(), |(_, t)| t.to_string())
+            });
         if raw_name.eq_ignore_ascii_case(this_name) {
             if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
                 // Dropping it answered a query with the WRONG names in
@@ -893,6 +908,7 @@ fn bind_from<'a>(
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
+                schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
                 table: std::borrow::Cow::Owned(StaticTable::all_scalar(
                     scope_name,
                     in_cols[..binder.n_plain].to_vec(),
@@ -1023,6 +1039,7 @@ fn bind_from<'a>(
 
         binder.joins.push(ScopeJoin {
             name: scope_name,
+            schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
             table: match renamed {
                 Some(t) => std::borrow::Cow::Owned(t),
                 None => std::borrow::Cow::Borrowed(&statics[table_idx]),
@@ -1069,10 +1086,17 @@ fn bind_from<'a>(
             Some((n, alias)) => (n, alias),
             None => return Err(unsup(relation_refusal(&rel.relation))),
         };
+        // A schema-qualified relation (`main.d`, `memory.main.d`) is in
+        // scope under its bare table name, as on DuckDB: `d.v` and
+        // `main.d.v` both reach it (measured).
         let scope_name = rel_alias
             .as_ref()
             .map(|a| a.name.value.clone())
-            .unwrap_or_else(|| raw_name.clone());
+            .unwrap_or_else(|| {
+                raw_name
+                    .rsplit_once('.')
+                    .map_or(raw_name.clone(), |(_, t)| t.to_string())
+            });
         if raw_name.eq_ignore_ascii_case(this_name) {
             if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
                 // Dropping it answered a query with the WRONG names in
@@ -1103,6 +1127,7 @@ fn bind_from<'a>(
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
+                schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
                 table: std::borrow::Cow::Owned(StaticTable::all_scalar(
                     scope_name,
                     in_cols[..binder.n_plain].to_vec(),
@@ -1190,6 +1215,7 @@ fn bind_from<'a>(
         let val_cols = val_cols_for(st, &key_cols, &keys);
         binder.joins.push(ScopeJoin {
             name: scope_name,
+            schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
             table: match renamed {
                 Some(t) => std::borrow::Cow::Owned(t),
                 None => std::borrow::Cow::Borrowed(&statics[table_idx]),
@@ -1398,6 +1424,19 @@ fn walk_fields(
         }
     }
     unreachable!("the loop returns on the last part")
+}
+
+/// The schema a relation lives in as spelled in FROM: the part before the
+/// table (`main.d`, `memory.main.d`), `main` when unqualified. A column may
+/// be qualified through exactly this schema (measured: `main.t.c` binds over
+/// `FROM t`, `other.t.c` is DuckDB's `Referenced table "other.t" not found`).
+fn rel_schema(raw_name: &str) -> String {
+    let parts: Vec<&str> = raw_name.split('.').collect();
+    if parts.len() >= 2 {
+        parts[parts.len() - 2].to_string()
+    } else {
+        "main".to_string()
+    }
 }
 
 fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {
@@ -2141,6 +2180,8 @@ fn default_name(e: &SqlExpr) -> String {
 /// dynamic side: `r.id` ≡ CASE match THEN dyn-key ELSE NULL — pins-wave4/).
 struct ScopeJoin<'a> {
     name: String,
+    /// The schema the relation was named through (see [`rel_schema`]).
+    schema: String,
     table: std::borrow::Cow<'a, StaticTable>,
     kind: JoinKind,
     key_cols: Vec<JoinKey>,
@@ -2164,6 +2205,8 @@ struct ScopeJoin<'a> {
 struct Binder<'a> {
     /// The dynamic table's name as spelled in FROM.
     this_name: String,
+    /// The schema the driving relation was named through ([`rel_schema`]).
+    this_schema: String,
     /// The dynamic table's columns AS THE BINDER SEES THEM: borrowed
     /// normally; an owned renamed copy under `t AS u(x, y)` (pins-wave5/ —
     /// prefix rename, old names fully shadowed). Positions never change,
@@ -4273,9 +4316,30 @@ impl Binder<'_> {
     /// a hard error (measured). The schema part follows the registry-noise
     /// rule (known-limitations §5).
     fn compound(&self, parts: &[sqlparser::ast::Ident]) -> Result<SExpr, PrepareError> {
-        // R1: schema.(this|join).column[.fields...]
+        // R0: memory.schema.(this|join).column[.fields...] -- the default
+        // catalog, then the same rung as R1.
+        if parts.len() >= 4 && parts[0].value.eq_ignore_ascii_case("memory") {
+            let (schema, rel) = (&parts[1].value, &parts[2].value);
+            if rel.eq_ignore_ascii_case(&self.this_name)
+                && schema.eq_ignore_ascii_case(&self.this_schema)
+            {
+                if let Some(r) = self.this_col_with_fields(&parts[3].value, &parts[4..]) {
+                    return r;
+                }
+            } else if self.joins.iter().any(|sj| {
+                sj.name.eq_ignore_ascii_case(rel) && sj.schema.eq_ignore_ascii_case(schema)
+            }) {
+                if let Some(r) = self.qualified_path(rel, &parts[3..]) {
+                    return r;
+                }
+            }
+        }
+        // R1: schema.(this|join).column[.fields...], the schema being the one
+        // the relation was named through.
         if parts.len() >= 3 {
-            if parts[1].value.eq_ignore_ascii_case(&self.this_name) {
+            if parts[1].value.eq_ignore_ascii_case(&self.this_name)
+                && parts[0].value.eq_ignore_ascii_case(&self.this_schema)
+            {
                 if let Some(r) = self.this_col_with_fields(&parts[2].value, &parts[3..]) {
                     return r;
                 }
@@ -4288,10 +4352,10 @@ impl Binder<'_> {
             // branch is guarded: `t.t.t.t FROM t.t` is a real
             // schema-qualified corpus case and it lands in the branch above.
             !parts[0].value.eq_ignore_ascii_case(&self.this_name)
-                && self
-                    .joins
-                    .iter()
-                    .any(|sj| sj.name.eq_ignore_ascii_case(&parts[1].value))
+                && self.joins.iter().any(|sj| {
+                    sj.name.eq_ignore_ascii_case(&parts[1].value)
+                        && sj.schema.eq_ignore_ascii_case(&parts[0].value)
+                })
             {
                 if let Some(r) = self.qualified_path(&parts[1].value, &parts[2..]) {
                     return r;
@@ -4326,6 +4390,20 @@ impl Binder<'_> {
                         .any(|sj| sj.name.eq_ignore_ascii_case(&parts[i].value))
             };
             if parts.len() >= 3 && relation(1) {
+                let schema_ok = if parts[1].value.eq_ignore_ascii_case(&self.this_name) {
+                    parts[0].value.eq_ignore_ascii_case(&self.this_schema)
+                } else {
+                    self.joins.iter().any(|sj| {
+                        sj.name.eq_ignore_ascii_case(&parts[1].value)
+                            && sj.schema.eq_ignore_ascii_case(&parts[0].value)
+                    })
+                };
+                if !schema_ok {
+                    return Err(PrepareError::Bind(format!(
+                        "Referenced table \"{}.{}\" not found",
+                        parts[0].value, parts[1].value
+                    )));
+                }
                 return self.qualified(&parts[1].value, &parts[2].value);
             }
             if relation(0) {

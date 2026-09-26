@@ -3662,10 +3662,13 @@ fn structs_flatten_to_lanes() {
     for sql in [
         "SELECT a.i FROM __THIS__",
         "SELECT __THIS__.a.i FROM __THIS__",
-        "SELECT s.__THIS__.a.i FROM __THIS__",
+        "SELECT main.__THIS__.a.i FROM __THIS__",
     ] {
         assert_eq!(run(sql).unwrap(), rows(&[&["1"], &["NULL"]]), "{sql}");
     }
+    // Only the schema the relation lives in qualifies it (DuckDB:
+    // `Referenced table "s.__THIS__" not found`).
+    assert!(run("SELECT s.__THIS__.a.i FROM __THIS__").is_err());
     // Output name = last part as written.
     let p = prep_s("SELECT a.I FROM __THIS__").unwrap();
     assert_eq!(p.out_cols[0].name, "I");
