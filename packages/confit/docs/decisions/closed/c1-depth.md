@@ -13,4 +13,6 @@ one is the control?
 - **Amend C1's text to 25.** A change to a correctness control, so it goes through
   review per the [success measures](../../specs/success-measures.md#standing-rule).
 
-**Ruling.** None yet.
+**Ruling (owner, 2026-09-27).** Raise the default to 1,500. Amending the
+written control to 25 would weaken it, not correct documentation; the ~50 s
+more per gate run is a cost accepted explicitly.
