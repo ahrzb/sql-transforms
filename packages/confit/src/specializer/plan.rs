@@ -812,7 +812,7 @@ pub fn bind_foldable(e: &SExpr) -> bool {
 /// Integer `%` stays integral (measured: `5%2 -> INTEGER`). `IDiv` is
 /// DuckDB's `//` / divide(): truncating division on ints, PLAIN division
 /// on doubles (NOT floor — measured -7.5//2.0 = -3.75), zero divisor ->
-/// NULL on both (the frontend wraps the CASE guard).
+/// NULL on both (the lowering's result flag, `zero_divisor_nulls`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArithOp {
     Add,

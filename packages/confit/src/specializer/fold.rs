@@ -573,8 +573,8 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x.checked_sub(*y).map(Lit::I64),
             ArithOp::Mul => x.checked_mul(*y).map(Lit::I64),
             ArithOp::Rem => x.checked_rem(*y).map(Lit::I64),
-            // Zero/MIN//-1 stay unfolded; the frontend's CASE guard turns
-            // the zero row into NULL at runtime, never reaching the fold.
+            // MIN//-1 stays unfolded (it traps); a zero divisor is NULLed
+            // by the Arith arm above before reaching here.
             ArithOp::IDiv => x.checked_div(*y).map(Lit::I64),
             ArithOp::Div => unreachable!("/ is promoted to f64 by the frontend"),
             // Trapping shifts stay unfolded (None) exactly when the
@@ -590,9 +590,8 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x - y,
             ArithOp::Mul => x * y,
             ArithOp::Div => x / y,
-            // `//` on doubles is plain division (wave-3 pins); the zero-
-            // divisor NULL comes from the frontend's CASE guard, which is
-            // never folded — this arm only sees the guarded default.
+            // `//` on doubles is plain division (wave-3 pins); a zero
+            // divisor is NULLed by the Arith arm above before reaching here.
             ArithOp::IDiv => x / y,
             // IEEE, exactly as exec/interp.rs: x % 0.0 is NaN, never traps.
             ArithOp::Rem => x % y,
