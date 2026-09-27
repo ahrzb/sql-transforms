@@ -20,7 +20,7 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 - `docs/decisions/open/`: next query classes (derived tables and row-local
   CTEs: 238 of 251 such refusals are row-local, about 12% of the campaign),
-  C1 depth, native-transform parity bounds.
+  native-transform parity bounds.
 
 ## Query classes (large; order is the owner's call)
 
