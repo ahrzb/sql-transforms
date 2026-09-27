@@ -245,7 +245,11 @@ def check(seed: int) -> tuple[collections.Counter, list[Finding]]:
             continue
         # Qualifying a bare name resolves an ambiguity DuckDB also refuses:
         # the qualified query is a different query, not a respelling.
-        if name == "qualify-row-cols" and base[0] == "refuse" and "ambiguous" in base[1]:
+        if (
+            name == "qualify-row-cols"
+            and base[0] == "refuse"
+            and "ambiguous" in base[1]
+        ):
             counts[(name, "not-equivalent")] += 1
             continue
         if _known(name, base, other):
@@ -279,7 +283,10 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     counts, findings = run(range(a.seed, a.seed + a.n), a.workers)
     for name in REWRITES:
-        row = {k: counts[(name, k)] for k in ("checked", "known", "not-equivalent", "finding")}
+        row = {
+            k: counts[(name, k)]
+            for k in ("checked", "known", "not-equivalent", "finding")
+        }
         print(f"{name:18} " + "  ".join(f"{k} {v}" for k, v in row.items()))
     shown: collections.Counter = collections.Counter()
     for f in findings:
