@@ -15,20 +15,20 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 2. **Change-cost review, steps 2–4** (same report): gate speed, metamorphic
    spelling suite, parity harness and `confit.probe`, nightly deep campaign,
    `frontend.rs` split, one relation resolver, explicit Cranelift fallback.
+3. **Row-local derived tables and CTEs**, PRs 0–4 of the approved design
+   (`docs/specs/2026-09-26-row-local-subqueries-design.md`), under its
+   acceptance gate.
 
 ## Waiting on the owner
 
-- `docs/decisions/open/`: next query classes (derived tables and row-local
-  CTEs: 238 of 251 such refusals are row-local, about 12% of the campaign),
-  native-transform parity bounds.
+- `docs/decisions/open/`: the order of the query classes after derived tables
+  and CTEs, native-transform parity bounds.
 
 ## Query classes (large; order is the owner's call)
 
-- **Row-local CTEs, scalar/correlated/`IN` subqueries, derived tables, set
+- **Scalar/correlated/`IN` subqueries, a CTE referenced twice, set
   operations.** Blanket bans today; only batch-dependent forms are out of
-  scope. Derived tables (144) and `WITH` (87) are the two largest refusal
-  classes of queries DuckDB answers on the generated grammar (reading N=3,
-  of 525).
+  scope. Row-local derived tables and CTEs are in Next.
 - **Per-row aggregation over matched static rows** (correlated scalar
   subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
   over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
