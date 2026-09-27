@@ -1285,6 +1285,50 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
                 env.tree,
             )
         body.items = _items(rng, env, rng.randrange(1, 3))
+    elif r < 0.81 and rng.random() < 0.6:  # typed sub-select: a query level
+        # The subquery's columns carry their real types, so the outer level
+        # can compute over them, filter on them, and key a static join on
+        # them; spelled as a derived table or as a CTE over the request
+        # table (both read once).
+        tags.append("subq-typed")
+        n = rng.randrange(1, 4)
+        tys = [rng.choice(TYPES + ("float",)) for _ in range(n)]
+        inner = Sel(
+            [
+                (expr(rng, env, ty, rng.randrange(1, 4)), f"i{k}")
+                for k, ty in enumerate(tys)
+            ],
+            "__THIS__",
+            where=expr(rng, env, "bool", 2) if rng.random() < 0.4 else None,
+        )
+        as_cte = rng.random() < 0.4
+        rel = "sub"
+        if as_cte:
+            tags.append("cte-request")
+            rel = rng.choice(["req", "Req"])
+            ctes.append((rel, inner))
+            body = Sel([], rel)
+        else:
+            body = Sel([], None, sub=inner)
+        oenv = Env(
+            [(None, f"i{k}", ty) for k, ty in enumerate(tys)], env.udfs, env.tree
+        )
+        if statics and rng.random() < 0.5:
+            sname = rng.choice(list(statics))
+            sch = statics[sname][0]
+            on = _equi_on(rng, oenv, sname, sch)
+            if on is not None:
+                tags.append("subq-join")
+                body.joins.append(Join(rng.choice(["INNER", "LEFT"]), sname, on))
+                oenv = Env(
+                    oenv.cols + [(sname, c, t) for c, t, _ in leaves(sch)],
+                    env.udfs,
+                    env.tree,
+                )
+        body.items = _items(rng, oenv, rng.randrange(1, 4))
+        if rng.random() < 0.4:
+            body.where = expr(rng, oenv, "bool", 2)
+        env = oenv
     elif r < 0.81:  # sub-select in FROM
         tags.append("subq")
         inner = Sel(
