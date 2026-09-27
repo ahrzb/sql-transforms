@@ -7,15 +7,21 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Change-cost review** (`docs/reports/2026-09-26-change-cost-review.md`):
-   parity harness and `confit.probe`, nightly deep campaign. The codebase
-   points and the metamorphic spelling suite (`fuzz/metamorphic.py`) are
-   done.
-2. **Subquery design, PR 4** (static-only subqueries computed at
+   nightly deep campaign. Done: the codebase points, the metamorphic
+   spelling suite (`fuzz/metamorphic.py`), and the parity harness with its
+   probe (`fuzz/parity.py`, `fuzz/probe.py`; in `fuzz/` rather than the wheel,
+   because the campaign verdict code lives there).
+2. **Parity migration.** Moved so far: `test_null_operands`,
+   `test_arm_widening`, `test_derived_tables`, `test_metamorphic`. Still on
+   their own helpers: the other direct `Oracle()` users (`grep -l "Oracle()"
+   tests`). Types outside the campaign vocabulary (uint, list, decimal
+   statics) keep theirs until `spec_of` covers them.
+3. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
-3. **Unaliased expression names** (`tests/test_open_divergences.py`):
+4. **Unaliased expression names** (`tests/test_open_divergences.py`):
    DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
    echoes the SQL text. Needs DuckDB's expression printer for the output
    name, at the top level and at every subquery boundary.

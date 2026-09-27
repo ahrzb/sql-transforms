@@ -7,51 +7,27 @@ payloads; these pins hold that a NULL row's masked payloads can never reach
 a trap, on both backends. A row with values on both sides still traps.
 """
 
-import os
+import sys
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn, compare
-from confit.oracle import Oracle
-from test_duckdb_interpreter import _row_schema, static
+from confit import DuckDBInferFn
+from test_duckdb_interpreter import _row_schema
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity, table  # noqa: E402
 
 I64_MIN = -(2**63)
 
 
-def _confit(sql, row_schema, rows, force_interp):
-    prev = os.environ.pop("SPECIALIZER_FORCE_INTERP", None)
-    try:
-        if force_interp:
-            os.environ["SPECIALIZER_FORCE_INTERP"] = "1"
-        fn = DuckDBInferFn(
-            sql, row_tables={"__THIS__": _row_schema(row_schema)}, static_tables={}
-        )
-    finally:
-        os.environ.pop("SPECIALIZER_FORCE_INTERP", None)
-        if prev is not None:
-            os.environ["SPECIALIZER_FORCE_INTERP"] = prev
-    assert fn.backend == ("interpreter" if force_interp else "cranelift")
-    return fn.infer_rows(rows)
-
-
-def _oracle(sql, row_schema, rows):
-    o = Oracle()
-    o.load("__THIS__", static(row_schema, rows))
-    return compare.rows(o.answer(sql))
-
-
 def _serves_as_duckdb(sql, row_schema, rows):
-    want = _oracle(sql, row_schema, rows)
-    for force in (False, True):
-        compare.assert_rows(_confit(sql, row_schema, rows, force), want, ctx=sql)
+    assert_parity(sql, table(row_schema, rows), expect="AGREE")
 
 
 def _traps_as_duckdb(sql, row_schema, rows, match):
-    with pytest.raises(Exception, match=match):
-        _oracle(sql, row_schema, rows)
-    for force in (False, True):
-        with pytest.raises(Exception, match=match):
-            _confit(sql, row_schema, rows, force)
+    assert_parity(sql, table(row_schema, rows), trap=match)
 
 
 @pytest.mark.parametrize(

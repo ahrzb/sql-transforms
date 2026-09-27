@@ -8,12 +8,15 @@ the overflowing row traps on both engines, and in-range rows answer the same
 values at the same output type.
 """
 
-import os
+import sys
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn, compare
-from confit.oracle import Oracle
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity  # noqa: E402
 
 SCHEMA = pa.schema(
     [
@@ -28,25 +31,6 @@ SCHEMA = pa.schema(
 
 def _table(rows):
     return pa.Table.from_pylist(rows, schema=SCHEMA)
-
-
-def _confit(sql, rows, force_interp):
-    prev = os.environ.pop("SPECIALIZER_FORCE_INTERP", None)
-    try:
-        if force_interp:
-            os.environ["SPECIALIZER_FORCE_INTERP"] = "1"
-        fn = DuckDBInferFn(sql, row_tables={"__THIS__": SCHEMA}, static_tables={})
-    finally:
-        os.environ.pop("SPECIALIZER_FORCE_INTERP", None)
-        if prev is not None:
-            os.environ["SPECIALIZER_FORCE_INTERP"] = prev
-    return fn.infer_arrow(_table(rows))
-
-
-def _oracle(sql, rows):
-    o = Oracle()
-    o.load("__THIS__", _table(rows))
-    return o.answer(sql)
 
 
 N = "c0 * c0"  # TINYINT: overflows at c0 = -128
@@ -85,27 +69,20 @@ ARMS = {
 }
 
 
+# Both backends, both DuckDB readings, output types by the campaign's rule.
 @pytest.mark.parametrize("expr", ARMS.values(), ids=ARMS.keys())
-@pytest.mark.parametrize("force_interp", [False, True])
-def test_a_narrow_arm_overflows_at_its_own_width(expr, force_interp):
-    sql = f"SELECT {expr} AS o FROM __THIS__"
+def test_a_narrow_arm_overflows_at_its_own_width(expr):
     rows = [{"c0": -128, "c1": 5, "c2": -32768, "x": 1.5, "s": "a"}]
-    with pytest.raises(Exception, match="Overflow|out of range"):
-        _oracle(sql, rows)
-    with pytest.raises(Exception, match="Overflow|out of range"):
-        _confit(sql, rows, force_interp)
+    assert_parity(
+        f"SELECT {expr} AS o FROM __THIS__", _table(rows), trap="Overflow|out of range"
+    )
 
 
 @pytest.mark.parametrize("expr", ARMS.values(), ids=ARMS.keys())
-@pytest.mark.parametrize("force_interp", [False, True])
-def test_in_range_rows_answer_at_the_unified_width(expr, force_interp):
-    sql = f"SELECT {expr} AS o FROM __THIS__"
+def test_in_range_rows_answer_at_the_unified_width(expr):
     rows = [
         {"c0": 3, "c1": 5, "c2": 7, "x": 1.5, "s": "a"},
         {"c0": None, "c1": 9, "c2": None, "x": None, "s": None},
         {"c0": 11, "c1": None, "c2": -4, "x": -2.0, "s": "b"},
     ]
-    want = _oracle(sql, rows)
-    got = _confit(sql, rows, force_interp)
-    assert got.schema.field("o").type == want.schema.field("o").type
-    compare.assert_rows(got.to_pylist(), compare.rows(want), ctx=sql)
+    assert_parity(f"SELECT {expr} AS o FROM __THIS__", _table(rows), expect="AGREE")

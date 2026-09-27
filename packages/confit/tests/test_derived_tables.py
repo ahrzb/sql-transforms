@@ -9,11 +9,17 @@ boundary names columns as DuckDB does.
 """
 
 import os
+import sys
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn, compare
+from confit import DuckDBInferFn
 from confit.oracle import Oracle
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity  # noqa: E402
 
 SCHEMA = pa.schema([pa.field("a", pa.int64()), pa.field("s", pa.string())])
 MAX = 2**63 - 1
@@ -106,44 +112,40 @@ SERVES = {
     ),
 }
 
+# Each of these traps on DuckDB with the optimizer off, the contract; its
+# optimizer may prune or reorder the trapping column and return rows
+# (DIVERGE_OPT, reported by the campaign on its own line).
 TRAPS = {
     "an unread column still traps": (
         "SELECT a FROM (SELECT a, a + 9223372036854775807 AS b FROM __THIS__)",
         [(MAX, "x"), (1, "y")],
         "Overflow",
+        "DIVERGE_OPT",
     ),
     "the inner SELECT finishes before the outer WHERE": (
         "SELECT i FROM (SELECT CAST(s AS INTEGER) AS i, s FROM __THIS__) "
         "WHERE s <> 'x'",
         [(1, "x"), (2, "5")],
         "onver",
+        "DIVERGE_OPT",
     ),
     "constants do not fold across a level": (
         "SELECT k + 9223372036854775807 AS o FROM (SELECT 1 AS k FROM __THIS__)",
         [(1, "x")],
         "Overflow",
+        "AGREE_TRAP",
     ),
 }
 
 
 @pytest.mark.parametrize("sql, rows", SERVES.values(), ids=SERVES.keys())
-@pytest.mark.parametrize("force_interp", [False, True])
-def test_serves_as_duckdb(sql, rows, force_interp):
-    want = _oracle(sql, rows)
-    got = _build(sql, force_interp).infer_arrow(_table(rows))
-    assert got.schema.names == want.schema.names
-    assert [f.type for f in got.schema] == [f.type for f in want.schema]
-    compare.assert_rows(got.to_pylist(), compare.rows(want), ctx=sql)
+def test_serves_as_duckdb(sql, rows):
+    assert_parity(sql, _table(rows), expect="AGREE")
 
 
-@pytest.mark.parametrize("sql, rows, match", TRAPS.values(), ids=TRAPS.keys())
-@pytest.mark.parametrize("force_interp", [False, True])
-def test_traps_as_duckdb(sql, rows, match, force_interp):
-    with pytest.raises(Exception, match=match):
-        _oracle(sql, rows)
-    fn = _build(sql, force_interp)
-    with pytest.raises(Exception, match=match):
-        fn.infer_arrow(_table(rows))
+@pytest.mark.parametrize("sql, rows, match, kind", TRAPS.values(), ids=TRAPS.keys())
+def test_traps_as_duckdb(sql, rows, match, kind):
+    assert_parity(sql, _table(rows), trap=match, expect=kind)
 
 
 @pytest.mark.parametrize(
@@ -198,10 +200,7 @@ def test_joins_inside_the_subquery_serve():
         "(SELECT a, v FROM __THIS__ LEFT JOIN d ON a = d.id) AS t WHERE a > 0"
     )
     rows = [(1, "x"), (3, "y"), (-1, "z")]
-    want = _oracle(sql, rows, {"d": d})
-    for force in (False, True):
-        got = _build(sql, force, statics={"d": d}).infer_arrow(_table(rows))
-        compare.assert_rows(got.to_pylist(), compare.rows(want), ctx=sql)
+    assert_parity(sql, _table(rows), statics={"d": d}, expect="AGREE")
 
 
 def test_the_one_row_proof_walks_every_stage():
@@ -267,23 +266,14 @@ BESIDE = {
 
 
 @pytest.mark.parametrize("sql", BESIDE.values(), ids=BESIDE.keys())
-@pytest.mark.parametrize("force_interp", [False, True])
-def test_joins_beside_derived_tables_and_ctes_serve_as_duckdb(sql, force_interp):
-    statics = {"d": D, "e": E}
-    want = _oracle(sql, JOIN_ROWS, statics)
-    got = _build(sql, force_interp, statics=statics).infer_arrow(_table(JOIN_ROWS))
-    assert got.schema.names == want.schema.names
-    assert [f.type for f in got.schema] == [f.type for f in want.schema]
-    compare.assert_rows(got.to_pylist(), compare.rows(want), ctx=sql)
+def test_joins_beside_derived_tables_and_ctes_serve_as_duckdb(sql):
+    assert_parity(sql, _table(JOIN_ROWS), statics={"d": D, "e": E}, expect="AGREE")
 
 
-@pytest.mark.parametrize("force_interp", [False, True])
-def test_a_cte_column_the_outer_query_never_reads_still_traps(force_interp):
+def test_a_cte_column_the_outer_query_never_reads_still_traps():
     sql = (
         "WITH c AS (SELECT a, a + 9223372036854775807 AS big FROM __THIS__) "
         "SELECT a FROM c"
     )
-    with pytest.raises(Exception, match="Overflow"):
-        _oracle(sql, JOIN_ROWS)
-    with pytest.raises(Exception, match="Overflow"):
-        _build(sql, force_interp).infer_arrow(_table(JOIN_ROWS))
+    # The optimizer prunes `big`; the contract (optimizer off) traps.
+    assert_parity(sql, _table(JOIN_ROWS), trap="Overflow", expect="DIVERGE_OPT")
