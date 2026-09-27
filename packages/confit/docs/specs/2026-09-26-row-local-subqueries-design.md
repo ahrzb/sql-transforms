@@ -237,8 +237,8 @@ alongside it.
 | PR | what lands | what it serves |
 |---|---|---|
 | 0. Runner and snapshot | per-seed verdicts, baseline comparison and exit status; the candidate snapshot | nothing new |
-| 1. Staged pipeline | `Rel` as stages owning their joins, predicate and projection; the query context; slots in lowering | nothing new; per-seed verdicts, gate and corpus identical |
-| 2. Derived tables | binder recursion, naming, alias lists, closed scope, the SQLNULL refusal, the one-row proof over stages | row-local derived tables, one level, no joins inside |
+| 1. Staged pipeline | `Rel` as stages owning their joins, predicate and projection; slots in lowering | nothing new; per-seed verdicts, gate and corpus identical |
+| 2. Derived tables | the query context, binder recursion, naming, alias lists, closed scope, the SQLNULL refusal, the one-row proof over stages | row-local derived tables, one level, no joins inside |
 | 3. Joins, nesting, CTEs | joins inside, outer joins on slots, any depth, a CTE referenced once, the `many` global join count | the rest of phase 1; recovery on the snapshot measured |
 | 4. Static-only subqueries | binding schema on registered statics, the construction-time run, the refusal claim in the contract | phase 2; recovery on the snapshot measured |
 
@@ -261,6 +261,10 @@ Owner review, 2026-09-27, and what changed:
    frozen snapshot after PR 3 and PR 4.
 5. **Interface details.** Stage ownership, the shared query context, the global
    `many` join count and "once per row reaching the stage" are settled above.
+
+The query context moved from PR 1 to PR 2 (2026-09-27): it has nothing to
+share until a second binder exists, so PR 1 would only have added unused
+scaffolding.
 
 Rulings on the open questions: (1) staged pipeline approved, PR 1
 behavior-preserving; (2) phase 2 approved under the conditions above; (3)
