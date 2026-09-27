@@ -142,6 +142,17 @@ impl Binder<'_> {
     /// it is always a FIELD, never a column of a relation: `v['x']` with
     /// `v` a relation in scope is not `v.x`. Such a root is left alone.
     pub(super) fn struct_access_path(&self, e: &SqlExpr) -> Option<Vec<Ident>> {
+        self.struct_access_path_beside(e, None)
+    }
+
+    /// [`Self::struct_access_path`] with one more relation name in scope:
+    /// the static table a JOIN ON binds against, which is not in
+    /// `self.joins` until its ON has bound.
+    pub(super) fn struct_access_path_beside(
+        &self,
+        e: &SqlExpr,
+        rel: Option<&str>,
+    ) -> Option<Vec<Ident>> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         let (base, fields) = match e {
             SqlExpr::CompoundFieldAccess { root, access_chain } => {
@@ -158,7 +169,7 @@ impl Binder<'_> {
                         chain = rest;
                     }
                 }
-                let base = self.struct_access_base(root, root_run)?;
+                let base = self.struct_access_base(root, root_run, rel)?;
                 (base, chain_fields(chain)?)
             }
             SqlExpr::Function(f) if f.name.to_string().eq_ignore_ascii_case("struct_extract") => {
@@ -175,7 +186,7 @@ impl Binder<'_> {
                 let SqlValue::SingleQuotedString(field) = &v.value else {
                     return None;
                 };
-                (self.struct_access_base(target, Vec::new())?, vec![Ident::new(field)])
+                (self.struct_access_base(target, Vec::new(), rel)?, vec![Ident::new(field)])
             }
             _ => return None,
         };
@@ -189,20 +200,26 @@ impl Binder<'_> {
     /// run (plus `more`, dots that continue it), or a nested access. A run
     /// ending on a relation name in scope is refused (see
     /// [`Self::struct_access_path`]).
-    pub(super) fn struct_access_base(&self, root: &SqlExpr, more: Vec<Ident>) -> Option<Vec<Ident>> {
+    pub(super) fn struct_access_base(
+        &self,
+        root: &SqlExpr,
+        more: Vec<Ident>,
+        rel: Option<&str>,
+    ) -> Option<Vec<Ident>> {
         let mut path = match root {
-            SqlExpr::Nested(i) if more.is_empty() => return self.struct_access_base(i, more),
+            SqlExpr::Nested(i) if more.is_empty() => return self.struct_access_base(i, more, rel),
             SqlExpr::Identifier(i) => vec![i.clone()],
             SqlExpr::CompoundIdentifier(p) => p.clone(),
             SqlExpr::CompoundFieldAccess { .. } | SqlExpr::Function(_) if more.is_empty() => {
-                return self.struct_access_path(root);
+                return self.struct_access_path_beside(root, rel);
             }
             _ => return None,
         };
         path.extend(more);
         let last = path.last()?;
         let is_rel = last.value.eq_ignore_ascii_case(&self.this_name)
-            || self.joins.iter().any(|sj| last.value.eq_ignore_ascii_case(&sj.name));
+            || self.joins.iter().any(|sj| last.value.eq_ignore_ascii_case(&sj.name))
+            || rel.is_some_and(|r| last.value.eq_ignore_ascii_case(r));
         (!is_rel).then_some(path)
     }
 

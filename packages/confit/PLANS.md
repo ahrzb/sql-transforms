@@ -7,8 +7,9 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Change-cost review** (`docs/reports/2026-09-26-change-cost-review.md`):
-   metamorphic spelling suite, parity harness and `confit.probe`, nightly deep
-   campaign. The codebase points are done.
+   parity harness and `confit.probe`, nightly deep campaign. The codebase
+   points and the metamorphic spelling suite (`fuzz/metamorphic.py`) are
+   done.
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
@@ -77,6 +78,14 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 - `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
   (DuckDB converts at execution; a bind-time conversion is over-eager).
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
+- **Relation read as a struct** (`d['k']`, `(d).k`, `__THIS__['a']`): DuckDB
+  serves the relation's row struct; confit refuses in every spelling, but as
+  a bind error ("column 'd' does not exist"), which claims DuckDB rejects it.
+  Either serve it (it is `d.k`) or refuse it as unsupported by name.
+- **Wrapped-query refusals** the metamorphic suite allowlists
+  (`fuzz/metamorphic.py` `KNOWN`): a struct- or list-valued column inside a
+  derived table (about 13% of generated queries when wrapped) and a subquery
+  under a `shape='many'` join. Serving struct slots removes the first.
 
 ## Evidence and gates
 
