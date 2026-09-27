@@ -477,7 +477,7 @@ def run_case(case: G.Case) -> Verdict:
     exception escaping here is the oracle's own bug, and `run_case_json`
     turns that into SKIP rather than blaming the engine.
     """
-    sql = G.render(case.query)
+    sql = case.sql if case.sql is not None else G.render(case.query)
     tags = list(case.tags)
     schema = _arrow_schema(case.row_schema)
     statics = {n: _arrow_table(sch, rows) for n, (sch, rows) in case.statics.items()}
@@ -824,6 +824,67 @@ def case_inputs(case: G.Case) -> dict:
         "tree": plain(case.tree),
         "shape": case.shape,
     }
+
+
+def _revive_spec(spec):
+    """A `plain`ed storage spec back to itself: a Struct was a dict."""
+    if isinstance(spec, dict):
+        return G.Struct(
+            tuple((n, _revive_spec(s)) for n, s in spec["fields"]), spec["nullable"]
+        )
+    return spec
+
+
+def _revive_cell(spec, v):
+    """A `plain`ed cell back to itself under its spec: a Decimal was its
+    text, a struct value a dict of cells. Every other value JSON keeps."""
+    if v is None:
+        return None
+    if isinstance(spec, G.Struct):
+        return {n: _revive_cell(s, v[n]) for n, s in spec.fields}
+    if spec.rstrip("?").startswith("decimal("):
+        return decimal.Decimal(v)
+    return v
+
+
+def _revive_table(schema: dict, rows: list[dict]) -> tuple[dict, list[dict]]:
+    schema = {c: _revive_spec(s) for c, s in schema.items()}
+    return schema, [{c: _revive_cell(schema[c], r[c]) for c in schema} for r in rows]
+
+
+def case_from_inputs(seed: int, sql: str, inputs: dict) -> G.Case:
+    """The case a stored `(sql, case_inputs(case))` names, under any generator
+    revision: `run_case` answers it exactly as it answered the original. It
+    carries no AST (`query` is None), so only `run_case` can take it."""
+    row_schema, rows = _revive_table(inputs["row_schema"], inputs["rows"])
+    statics = {
+        name: _revive_table(schema, rows)
+        for name, (schema, rows) in inputs["statics"].items()
+    }
+    udfs = [
+        G.UdfSpec(
+            u["name"],
+            [tuple(t) for t in u["takes"]],
+            tuple(u["ret"]),
+            u["instances"],
+        )
+        for u in inputs["udfs"]
+    ]
+    tree = inputs["tree"]
+    if tree is not None:
+        tree = G.TreeSpec(**{**tree, "int_features": tuple(tree["int_features"])})
+    return G.Case(
+        seed=seed,
+        row_schema=row_schema,
+        rows=rows,
+        statics=statics,
+        udfs=udfs,
+        tree=tree,
+        query=None,
+        shape=inputs["shape"],
+        output=None,
+        sql=sql,
+    )
 
 
 def run_case_json(seed: int) -> dict:

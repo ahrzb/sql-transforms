@@ -289,3 +289,45 @@ def test_abstentions_are_reported_as_rates_by_kind_and_side(tmp_path, capsys):
         f"  {'TIMEOUT':22} {1:6}  {10.0:5.1f}%  oracle 1",
         f"  {'PANIC':22} {1:6}  {10.0:5.1f}%  confit 1",
     ]
+
+
+# --- the acceptance gate (subquery design, "Acceptance gate") ---------------
+
+
+def test_every_gated_kind_fails_the_gate_and_diverge_opt_does_not():
+    for kind in runner.GATED:
+        assert runner.gate([_r(1, "AGREE"), _r(2, kind)], None) == [f"1 {kind}"]
+    assert runner.gate([_r(1, "AGREE"), _r(2, "DIVERGE_OPT")], None) == []
+    assert runner.gate([_r(1, "REFUSED"), _r(2, "UNSHIPPED")], None) == []
+
+
+def test_the_gated_set_is_every_mismatch_and_unresolved_kind_but_diverge_opt():
+    want = {
+        k
+        for k, cat in runner.CATEGORY.items()
+        if cat in ("mismatch", "unresolved") and k != "DIVERGE_OPT"
+    }
+    assert set(runner.GATED) == want
+
+
+def test_cases_round_trip_and_a_lost_agreement_fails_the_gate(tmp_path):
+    before = [_r(1, "AGREE"), _r(2, "AGREE_TRAP"), _r(3, "REFUSED"), _r(4, "AGREE")]
+    cases = tmp_path / "cases.jsonl"
+    runner.write_cases(before, cases)
+    lines = [json.loads(ln) for ln in cases.read_text().splitlines()]
+    assert [c["seed"] for c in lines] == [1, 2, 3, 4]
+    assert set(lines[0]) == {"seed", "kind", "klass"}
+
+    # Same totals, different cases: seed 1 lost its agreement, seed 3 gained
+    # one. Totals would call this preserved; the case-level check does not.
+    after = [_r(1, "REFUSED"), _r(2, "AGREE_TRAP"), _r(3, "AGREE"), _r(4, "AGREE")]
+    assert runner.lost_agreements(after, cases) == [(1, "REFUSED")]
+    assert runner.gate(after, cases) == [
+        "seed 1 agreed in the baseline and is now REFUSED"
+    ]
+
+
+def test_a_baseline_wider_than_the_run_only_checks_the_run(tmp_path):
+    cases = tmp_path / "cases.jsonl"
+    runner.write_cases([_r(1, "AGREE"), _r(9, "AGREE")], cases)
+    assert runner.lost_agreements([_r(1, "AGREE")], cases) == []

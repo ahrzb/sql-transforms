@@ -504,6 +504,9 @@ class Case:
     output: str | None  # nothing consumes this: dict rows are the only mode
     # the constructs this case exercises, for the coverage histogram
     tags: list[str] = field(default_factory=list)
+    # A case revived from stored SQL and inputs (`oracle.case_from_inputs`)
+    # has no AST: its SQL is carried as text and `query` is None.
+    sql: str | None = None
 
 
 # ------------------------------------------------------------------ values
