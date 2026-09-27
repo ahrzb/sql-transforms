@@ -23,7 +23,7 @@ import pyarrow as pa
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from fuzz import gen, oracle, shrink  # noqa: E402
+from fuzz import gen, oracle, runner, shrink  # noqa: E402
 
 N = 120  # seeds per smoke run; a campaign is 100x this
 
@@ -324,7 +324,7 @@ def test_a_case_marks_each_phase_on_stderr_before_it_runs(capsys):
         for ln in capsys.readouterr().err.splitlines()
         if ln.startswith(oracle.PHASE_MARK)
     ]
-    assert phases[:3] == ["confit:build", "oracle", "confit:run"], phases
+    assert phases[:3] == ["confit:build", "confit:run", "oracle"], phases
 
 
 def test_a_case_revived_from_its_stored_inputs_answers_like_the_original():
@@ -366,3 +366,25 @@ def test_the_subquery_candidate_snapshot_is_whole_and_revivable():
     for c in lines:
         case = oracle.case_from_inputs(c["seed"], c["sql"], c["inputs"])
         assert case.sql and case.query is None
+
+
+def test_a_resource_ceiling_is_excluded_only_where_duckdb_does_not_trap():
+    """Nightly seed 1000308, shrunk: `repeat('a', 2**31 - 1)` traps on the
+    1 GiB string budget (serving contract, exclusion: resource-ceilings).
+    DuckDB builds the 2 GiB string instead, which can outlast the case
+    budget, so it is interrupted at CEILING_DEADLINE and the case is
+    EXCLUDED. Past DuckDB's own 4 GiB bound it traps too, and the case is an
+    ordinary agreement (seeds 30, 33, 1705)."""
+    import pyarrow as pa
+    from fuzz import parity
+
+    sql = "SELECT repeat('a', c1) AS o0 FROM __THIS__"
+    big = pa.table({"c1": pa.array([2**31 - 1], pa.int32())})
+    v = parity.verdict(sql, big)
+    assert (v.kind, v.klass) == ("EXCLUDED", "resource-ceiling"), v
+    assert "EXCLUDED" not in runner.GATED
+    sql2 = "SELECT repeat('abcdefghij', c1) AS o0 FROM __THIS__"
+    huge = pa.table({"c1": pa.array([2**31 - 1], pa.int64())})
+    assert parity.verdict(sql2, huge).kind == "AGREE_TRAP"
+    small = pa.table({"c1": pa.array([3], pa.int32())})
+    assert parity.verdict(sql, small).kind == "AGREE"

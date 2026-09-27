@@ -71,6 +71,7 @@ CATEGORY = {
     "PANIC": "unresolved",
     "REFUSED": "refused",
     "UNSHIPPED": "unshipped",
+    "EXCLUDED": "excluded",
 }
 # The acceptance gate (docs/specs/2026-09-26-row-local-subqueries-design.md,
 # "Acceptance gate"): under --strict any of these fails the run. DIVERGE_OPT
@@ -314,7 +315,14 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
     # The same verdicts by category, over an explicit population.
     cats = collections.Counter(CATEGORY.get(r["kind"], "unresolved") for r in results)
     print(f"\n== outcomes (population: {len(results)} cases) ==")
-    for cat in ("agreement", "mismatch", "unresolved", "refused", "unshipped"):
+    for cat in (
+        "agreement",
+        "mismatch",
+        "unresolved",
+        "refused",
+        "unshipped",
+        "excluded",
+    ):
         note = _CATEGORY_NOTE.get(cat, "")
         print(f"  {cat:11} {cats[cat]:6}" + (f"  {note}" if note else ""))
 

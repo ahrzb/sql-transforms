@@ -6,11 +6,11 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Change-cost review** (`docs/reports/2026-09-26-change-cost-review.md`):
-   nightly deep campaign. Done: the codebase points, the metamorphic
-   spelling suite (`fuzz/metamorphic.py`), and the parity harness with its
-   probe (`fuzz/parity.py`, `fuzz/probe.py`; in `fuzz/` rather than the wheel,
-   because the campaign verdict code lives there).
+1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
+   runs `fuzz.nightly` (100k fresh seeds plus the metamorphic suite) and files
+   red runs as a "Nightly campaign findings" issue. Watch the first runs for
+   runner time and flaky TIMEOUTs; triage each filed class to a fix, a named
+   exclusion, or an open-divergence pin.
 2. **Parity migration.** Moved so far: `test_null_operands`,
    `test_arm_widening`, `test_derived_tables`, `test_metamorphic`. Still on
    their own helpers: the other direct `Oracle()` users (`grep -l "Oracle()"
@@ -103,7 +103,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   differential in `src/specializer/exec/tests.rs`.
 - **816 pin queries are not mechanically replayable** (460 untyped
   `input_repr`, 356 prose-only tables; `docs/specs/pins-drift.json`).
-- **Campaign cadence.** Manual CLI, no schedule.
 - **Unruled ledger rows** in `docs/oracle/07-the-divergence-ledger.md`; each
   new order-sensitive family needs an ordering contract first
   (`docs/oracle/03-nondeterminism.md`).
