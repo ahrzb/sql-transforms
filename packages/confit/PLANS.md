@@ -10,9 +10,14 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    metamorphic spelling suite, parity harness and `confit.probe`, nightly deep
    campaign. The codebase points are done except the staged pipeline, which
    is PR 1 of item 2.
-2. **Row-local derived tables and CTEs**, PRs 0–4 of the approved design
+2. **Row-local derived tables and CTEs**, PRs 3–4 of the approved design
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`), under its
-   acceptance gate.
+   acceptance gate. PR 2 serves derived tables alone in FROM (132 of the
+   150 phase-1 candidates); PR 3 adds joins beside them and CTEs.
+3. **Unaliased expression names** (`tests/test_open_divergences.py`):
+   DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
+   echoes the SQL text. Needs DuckDB's expression printer for the output
+   name, at the top level and at every subquery boundary.
 
 ## Waiting on the owner
 

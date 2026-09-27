@@ -270,6 +270,10 @@ pub(super) fn bind_from<'a>(
     // Installed at construction so JOIN keys and residuals, which bind in
     // here, fold pure externs exactly like the projection.
     bind_eval: &'a [ExternImpl],
+    // What this level reads: the request table, or a derived table whose
+    // output columns are `in_cols`.
+    driving: Driving,
+    ctx: QueryCtx,
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
@@ -278,8 +282,12 @@ pub(super) fn bind_from<'a>(
     let Some((table, comma_rels)) = from.split_first() else {
         return Err(unsup("FROM-less SELECT -- a query must read the request table"));
     };
-    let dyn_name = match plain_table(&table.relation)? {
-        Some((n, alias)) => {
+    let dyn_name = match (&driving, plain_table(&table.relation)?) {
+        // A derived table is always named (its alias, else
+        // `unnamed_subquery`); its column-alias list was applied by the
+        // caller, so `in_cols` already carries the names in scope.
+        (Driving::Derived { name }, _) => (name.clone(), None),
+        (Driving::Request, Some((n, alias))) => {
             // The engine's registry is SCHEMA-LESS: a single schema
             // qualifier is accepted when the table part matches the
             // registered bare name (DuckDB's schema-existence errors are
@@ -333,13 +341,15 @@ pub(super) fn bind_from<'a>(
                 None => (n.to_string(), None),
             }
         }
-        None => return Err(unsup(relation_refusal(&table.relation))),
+        (Driving::Request, None) => return Err(unsup(relation_refusal(&table.relation))),
     };
     let (dyn_name, renamed_cols) = dyn_name;
 
     // An aliased relation has no schema: `main.x.a` over `FROM t AS x` is a
     // binder error on DuckDB (measured), so nothing can match "".
     let this_schema = match plain_table(&table.relation)? {
+        // Nor does a derived table: it is never schema-qualified.
+        _ if matches!(driving, Driving::Derived { .. }) => String::new(),
         Some((_, Some(_))) => String::new(),
         Some((n, None)) => n.schema(),
         None => "main".to_string(),
@@ -364,15 +374,17 @@ pub(super) fn bind_from<'a>(
             })
             .collect(),
         bound_aliases: std::cell::RefCell::new(Vec::new()),
-        regexes: std::cell::RefCell::new(Vec::new()),
+        regexes: std::cell::RefCell::new(ctx.regexes),
         udfs,
         bind_eval,
         models,
-        model_refs: std::cell::RefCell::new(Vec::new()),
-        sites: std::cell::Cell::new(0),
+        model_refs: std::cell::RefCell::new(ctx.model_refs),
+        sites: std::cell::Cell::new(ctx.sites),
+        // Per level: the same call text at two levels has different
+        // arguments, so it is a different call site.
         extern_sites: std::cell::RefCell::new(Vec::new()),
         in_guarded: std::cell::Cell::new(0),
-        minted_lanes: std::cell::RefCell::new(Vec::new()),
+        minted_lanes: std::cell::RefCell::new(ctx.minted_lanes),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
