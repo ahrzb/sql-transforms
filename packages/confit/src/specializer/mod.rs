@@ -153,11 +153,11 @@ pub fn prepare_opaque(
     // fold of pure externs. Empty disables the fold.
     bind_eval: &[exec::ExternImpl],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
+    let (plan, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
         frontend::frontend(
             sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
         )?;
-    let one_row_blocker = one_row_blocker(&rel, &joins, statics);
+    let one_row_blocker = one_row_blocker(&plan, &joins, statics);
     // THE one producer of the lane list. A minted lane is an ordinary input
     // column from here down — appended, so no caller lane index shifts —
     // and `all_in` is this vector's projection, not a second list built
@@ -166,7 +166,7 @@ pub fn prepare_opaque(
     input_lanes.extend(minted_lanes);
     let all_in: Vec<ir::Col> = input_lanes.iter().map(plan::InputLane::col).collect();
     let mut program = lower::lower(
-        &rel, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
+        &plan, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
         &model_refs,
     )?;
     // Block-splitting lowerings mint ids out of text order; renumber so
@@ -262,23 +262,16 @@ pub fn prepare_opaque(
     })
 }
 
-/// The static exactly-one-row proof behind `shape="map"`: a Filter node or
-/// a non-LEFT join can drop input rows; everything else the engine serves
-/// is row-preserving (unique join keys are already the map contract, so a
-/// LEFT join never drops or duplicates).
+/// The static exactly-one-row proof behind `shape="map"`, over every stage:
+/// a WHERE at any level or a non-LEFT join can drop input rows; everything
+/// else the engine serves is row-preserving (unique join keys are already
+/// the map contract, so a LEFT join never drops or duplicates).
 fn one_row_blocker(
-    rel: &plan::Rel,
+    plan: &plan::Plan,
     joins: &[plan::JoinSpec],
     statics: &[plan::StaticTable],
 ) -> Option<String> {
-    fn has_filter(r: &plan::Rel) -> bool {
-        match r {
-            plan::Rel::Filter { .. } => true,
-            plan::Rel::Project { input, .. } => has_filter(input),
-            plan::Rel::Scan => false,
-        }
-    }
-    if has_filter(rel) {
+    if plan.stages.iter().any(|s| s.pred.is_some()) {
         return Some("a WHERE clause can drop rows (use shape='filter')".into());
     }
     for j in joins {

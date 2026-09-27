@@ -55,7 +55,7 @@ pub fn fold(e: SExpr) -> SExpr {
     let SExpr { kind, ty, nullable } = e;
     let e = |kind| SExpr { kind, ty, nullable };
     match kind {
-        SKind::Col(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
+        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
         | SKind::JoinHit(_) => e(kind),
         // Opaque call: fold the args, never the call itself.
         SKind::ExternCall {
@@ -370,7 +370,7 @@ pub fn fold(e: SExpr) -> SExpr {
             // condition is constant TRUE, so the branch costs nothing after
             // lowering).
             let escape = |r: SExpr| -> SExpr {
-                if matches!(r.kind, SKind::Lit(_) | SKind::NullOf | SKind::Col(_)) {
+                if matches!(r.kind, SKind::Lit(_) | SKind::NullOf | SKind::Col(_) | SKind::Slot(_)) {
                     return retype(r);
                 }
                 let cond = SExpr {
