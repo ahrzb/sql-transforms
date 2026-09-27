@@ -101,7 +101,7 @@ def test_dynamic_self_join_rejects():
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT a FROM __THIS__ LIMIT 5", "LIMIT"),
         ("SELECT DISTINCT a FROM __THIS__", "DISTINCT"),
-        ("WITH c AS (SELECT 1) SELECT a FROM __THIS__", "common table"),
+        ("WITH RECURSIVE c AS (SELECT 1) SELECT a FROM c", "RECURSIVE"),
         ("SELECT a FROM __THIS__ UNION SELECT a FROM __THIS__", "UNION"),
         ("SELECT rowid FROM __THIS__", "rowid"),
         (

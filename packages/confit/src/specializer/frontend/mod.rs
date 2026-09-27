@@ -156,7 +156,7 @@ pub fn frontend(
         models,
         bind_eval,
     };
-    let q = bind_query(query, &env)?;
+    let q = bind_query(query, &env, &[])?;
     Ok((
         Plan { stages: q.stages },
         q.joins,
@@ -213,59 +213,100 @@ struct BoundQuery {
 /// outer level sees only those columns (the inner scope is closed), and
 /// each is computed once per row reaching the inner stage, read or not
 /// (docs/specs/2026-09-26-row-local-subqueries-design.md).
-fn bind_query(query: &sqlparser::ast::Query, env: &Env<'_>) -> Result<BoundQuery, PrepareError> {
+fn bind_query<'q>(
+    query: &'q sqlparser::ast::Query,
+    env: &Env<'_>,
+    ctes: &[CteDef<'q>],
+) -> Result<BoundQuery, PrepareError> {
+    // The CTEs in scope here: the enclosing ones, then this WITH's, each
+    // body seeing only those declared before it. A CTE nobody reads is never
+    // bound, as on DuckDB (measured: an unused CTE naming an unknown column
+    // or table, or dividing by zero, leaves the query serving).
+    let mut scope: Vec<CteDef<'q>> = ctes.to_vec();
+    if let Some(with) = &query.with {
+        if with.recursive {
+            return Err(unsup("WITH RECURSIVE"));
+        }
+        for cte in &with.cte_tables {
+            if cte.materialized.is_some() || cte.from.is_some() {
+                return Err(unsup("a MATERIALIZED hint on a CTE"));
+            }
+            let def = CteDef {
+                alias: &cte.alias,
+                query: &cte.query,
+                scope: scope.clone(),
+                reads: std::rc::Rc::new(std::cell::Cell::new(0)),
+            };
+            scope.push(def);
+        }
+    }
+    let find = |name: &RelName| -> Option<&CteDef<'q>> {
+        let [part] = name.0.as_slice() else {
+            return None;
+        };
+        scope
+            .iter()
+            .rev()
+            .find(|d| d.alias.name.value.eq_ignore_ascii_case(part))
+    };
     let select = level_select(query)?;
     let from = cross_joins_as_commas(&select.from);
-    let Some(TableFactor::Derived {
-        lateral,
-        subquery,
-        alias,
-        sample,
-    }) = from.first().map(|t| &t.relation)
-    else {
-        let b = bind_select(
-            select,
-            env,
-            env.in_cols,
-            env.opaque,
-            env.structs,
-            Driving::Request,
-            QueryCtx::default(),
-        )?;
-        let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
-        return Ok(BoundQuery {
-            stages: vec![Stage {
-                joins: (0..b.joins.len() as u32).collect(),
-                pred: b.pred,
-                project: b.project,
-            }],
-            joins: b.joins,
-            out_cols: b.out_cols,
-            null_cols,
-            wide_outs: b.wide_outs,
-            ctx: b.ctx,
-        });
-    };
-    if *lateral {
-        return Err(unsup("LATERAL subquery"));
+    // A CTE anywhere but the driving position would join a relation the
+    // engine computes per request against the row: not served yet.
+    for (i, rel) in from.iter().enumerate() {
+        let joined = rel.joins.iter().map(|j| &j.relation);
+        for factor in (i > 0).then_some(&rel.relation).into_iter().chain(joined) {
+            if let Some((name, _)) = plain_table(factor)? {
+                if find(&name).is_some() {
+                    return Err(unsup("a CTE joined beside another relation"));
+                }
+            }
+        }
     }
-    if sample.is_some() {
-        return Err(unsup("TABLESAMPLE on a derived table"));
-    }
-    if from.len() > 1 || !from[0].joins.is_empty() {
-        return Err(unsup(
-            "a JOIN or a comma-joined relation beside a derived table",
-        ));
-    }
-    let inner = bind_query(subquery, env)?;
+    let driving = from.first().map(|t| &t.relation);
+    // The driving relation as a subquery: a derived table, or a CTE read
+    // here (its body, the scope it binds in, and the alias lists that name
+    // its columns, applied in order).
+    let (subquery, sub_scope, name, renames): (_, &[CteDef<'q>], String, Vec<&TableAlias>) =
+        match driving {
+            Some(TableFactor::Derived {
+                lateral,
+                subquery,
+                alias,
+                sample,
+            }) => {
+                if *lateral {
+                    return Err(unsup("LATERAL subquery"));
+                }
+                if sample.is_some() {
+                    return Err(unsup("TABLESAMPLE on a derived table"));
+                }
+                let name = alias
+                    .as_ref()
+                    .map_or("unnamed_subquery".to_string(), |a| a.name.value.clone());
+                (subquery.as_ref(), &scope, name, alias.iter().collect())
+            }
+            Some(factor) => match plain_table(factor)? {
+                Some((rel_name, alias)) if find(&rel_name).is_some() => {
+                    let def = find(&rel_name).expect("found above");
+                    def.reads.set(def.reads.get() + 1);
+                    if def.reads.get() > 1 {
+                        return Err(unsup("a CTE read more than once"));
+                    }
+                    let name = alias.map_or(def.alias.name.value.clone(), |a| a.name.value.clone());
+                    let renames = std::iter::once(def.alias).chain(alias).collect();
+                    (def.query, def.scope.as_slice(), name, renames)
+                }
+                _ => return bind_request_level(select, env),
+            },
+            None => return bind_request_level(select, env),
+        };
+    let inner = bind_query(subquery, env, sub_scope)?;
     if !inner.wide_outs.is_empty() {
         return Err(unsup("a struct- or list-valued column in a derived table"));
     }
-    let name = alias
-        .as_ref()
-        .map_or("unnamed_subquery".to_string(), |a| a.name.value.clone());
     let mut cols = inner.out_cols;
-    if let Some(a) = alias {
+    for a in renames {
         // A PARTIAL list renames a prefix; the rest keep their names; too
         // many names is DuckDB's bind error (measured, as for a table).
         if a.columns.len() > cols.len() {
@@ -288,43 +329,88 @@ fn bind_query(query: &sqlparser::ast::Query, env: &Env<'_>) -> Result<BoundQuery
         Driving::Derived { name },
         inner.ctx,
     )?;
-    // This level references the subquery only through its columns.
+    // This level references the subquery only through its columns; its
+    // joins were numbered from 0 and continue after the inner levels' in
+    // the query-wide list (storage identity; this stage owns them).
+    let off = inner.joins.len() as u32;
     let over_null = |e: &mut SExpr| refs_col(e, &|i| inner.null_cols[i as usize]);
+    let null_refusal = || unsup("an expression over a bare NULL subquery column");
     for (_, e) in b.project.iter_mut() {
         if !matches!(e.kind, SKind::Col(_)) && over_null(e) {
-            return Err(unsup(
-                "an expression over a bare NULL subquery column",
-            ));
+            return Err(null_refusal());
         }
     }
-    if let Some(p) = b.pred.as_mut() {
-        if over_null(p) {
-            return Err(unsup(
-                "an expression over a bare NULL subquery column",
-            ));
+    let mut level_exprs: Vec<&mut SExpr> = Vec::new();
+    level_exprs.extend(b.pred.as_mut());
+    for spec in b.joins.iter_mut() {
+        level_exprs.extend(spec.keys.iter_mut());
+        level_exprs.extend(spec.residual.as_mut());
+    }
+    for e in level_exprs {
+        if over_null(e) {
+            return Err(null_refusal());
         }
+        into_level(e, off);
     }
     for (_, e) in b.project.iter_mut() {
-        slotify(e);
-    }
-    if let Some(p) = b.pred.as_mut() {
-        slotify(p);
+        into_level(e, off);
     }
     let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
     let mut stages = inner.stages;
     stages.push(Stage {
-        joins: Vec::new(),
+        joins: (off..off + b.joins.len() as u32).collect(),
         pred: b.pred,
         project: b.project,
     });
+    let mut joins = inner.joins;
+    joins.extend(b.joins);
     Ok(BoundQuery {
         stages,
-        joins: inner.joins,
+        joins,
         out_cols: b.out_cols,
         null_cols,
         wide_outs: b.wide_outs,
         ctx: b.ctx,
     })
+}
+
+/// A level whose FROM starts with the request table.
+fn bind_request_level(
+    select: &sqlparser::ast::Select,
+    env: &Env<'_>,
+) -> Result<BoundQuery, PrepareError> {
+    let b = bind_select(
+        select,
+        env,
+        env.in_cols,
+        env.opaque,
+        env.structs,
+        Driving::Request,
+        QueryCtx::default(),
+    )?;
+    let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
+    Ok(BoundQuery {
+        stages: vec![Stage {
+            joins: (0..b.joins.len() as u32).collect(),
+            pred: b.pred,
+            project: b.project,
+        }],
+        joins: b.joins,
+        out_cols: b.out_cols,
+        null_cols,
+        wide_outs: b.wide_outs,
+        ctx: b.ctx,
+    })
+}
+
+/// A CTE in scope: its name and column list, its body, the CTEs that body
+/// may read (those declared before it), and how often the query has read it.
+#[derive(Clone)]
+struct CteDef<'q> {
+    alias: &'q TableAlias,
+    query: &'q sqlparser::ast::Query,
+    scope: Vec<CteDef<'q>>,
+    reads: std::rc::Rc<std::cell::Cell<u32>>,
 }
 
 /// Whether `e` references an input column `pick` selects.
@@ -335,14 +421,17 @@ fn refs_col(e: &mut SExpr, pick: &dyn Fn(u32) -> bool) -> bool {
     e.children_mut().into_iter().any(|c| refs_col(c, pick))
 }
 
-/// A level bound over a derived table's columns reads them as slots.
-fn slotify(e: &mut SExpr) {
-    if let SKind::Col(i) = e.kind {
-        e.kind = SKind::Slot(i);
-        return;
+/// Place an expression bound at a level over a derived table into the
+/// query: its column references read the previous stage's slots, and its
+/// join references move past the `off` joins of the levels below.
+fn into_level(e: &mut SExpr, off: u32) {
+    match &mut e.kind {
+        SKind::Col(i) => e.kind = SKind::Slot(*i),
+        SKind::StaticCol { join, .. } | SKind::JoinHit(join) => *join += off,
+        _ => {}
     }
     for c in e.children_mut() {
-        slotify(c);
+        into_level(c, off);
     }
 }
 
@@ -354,9 +443,6 @@ fn level_select(query: &sqlparser::ast::Query) -> Result<&sqlparser::ast::Select
     // is match-DuckDB-or-refuse, and dropping QUALIFY silently emitted every
     // row. Both helpers walk every field of their AST node, so
     // adding a clause to sqlparser breaks the build rather than the answers.
-    if query.with.is_some() {
-        return Err(unsup("WITH / common table expressions"));
-    }
     if query.order_by.is_some() {
         return Err(unsup("ORDER BY"));
     }
