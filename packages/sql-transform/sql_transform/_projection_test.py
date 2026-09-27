@@ -372,7 +372,7 @@ def test_unaliased_outputs_keep_names():
 
 def test_fuzz_differential():
     """Seeded random projections; MARGINALIZE_FUZZ_N deepens the run."""
-    n = int(os.environ.get("MARGINALIZE_FUZZ_N", "25"))
+    n = int(os.environ.get("MARGINALIZE_FUZZ_N", "1500"))
     rng = random.Random(20260729)
     aggs = ["avg", "sum", "min", "max", "count", "stddev_samp", "median"]
     for _ in range(n):
