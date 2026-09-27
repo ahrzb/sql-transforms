@@ -299,7 +299,12 @@ pub(super) fn bind_on<'e>(
         // ON binds — so the check has to happen here, against `st` itself.
         // `c0.f0 = s0.c0` where the row table has struct c0 AND s0 has
         // column c0 refuses; qualified spellings resolve normally.
-        if let SqlExpr::CompoundIdentifier(parts) = dyn_side {
+        // (Every spelling of the path: `c0['f0']` is `c0.f0` here too.)
+        let dyn_path = match dyn_side {
+            SqlExpr::CompoundIdentifier(parts) => Some(parts.clone()),
+            _ => binder.struct_access_path_beside(dyn_side, Some(scope_name)),
+        };
+        if let Some(parts) = dyn_path {
             let head = &parts[0].value;
             let head_in_outer = binder.column(head).is_ok()
                 || binder
@@ -889,6 +894,20 @@ pub(super) fn static_col_of(
         }
         SqlExpr::Nested(inner) => {
             return static_col_of(inner, st, scope_name, scope_schema, binder)
+        }
+        // A struct leaf in a non-dotted spelling (`s.c['f']`, `(s.c).f`,
+        // `struct_extract(s.c, 'f')`) is the same key as `s.c.f`.
+        SqlExpr::CompoundFieldAccess { .. } | SqlExpr::Function(_) => {
+            return match binder.struct_access_path_beside(e, Some(scope_name)) {
+                Some(path) => static_col_of(
+                    &SqlExpr::CompoundIdentifier(path),
+                    st,
+                    scope_name,
+                    scope_schema,
+                    binder,
+                ),
+                None => Ok(None),
+            };
         }
         _ => return Ok(None),
     };
