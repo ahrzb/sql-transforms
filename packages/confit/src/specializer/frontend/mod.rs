@@ -35,7 +35,7 @@ use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
-    ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Rel, SExpr, SKind,
+    ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Plan, SExpr, SKind,
     StaticTable, StructCol, StructField, StructNode, bind_foldable, may_trap,
 };
 
@@ -99,7 +99,7 @@ pub fn frontend(
     bind_eval: &[ExternImpl],
 ) -> Result<
     (
-        Rel,
+        Plan,
         Vec<JoinSpec>,
         Vec<Col>,
         Vec<super::ir::ReSpec>,
@@ -349,7 +349,7 @@ pub fn frontend(
     // (an alias visible inside WHERE when no real column shares the name)
     // resolves; the plan shape is unchanged — Filter still sits under
     // Project on the scan.
-    let mut rel = Rel::Scan;
+    let mut filter = None;
     if let Some(pred) = &leftover_where {
         let bound = binder.expr(pred);
         let pred = fold(bool_context(bound?, "WHERE predicate")?);
@@ -362,10 +362,7 @@ pub fn frontend(
         //   oracle: Conversion Error: Could not convert string 'abc' to DOUBLE
         //
         // so the filter keeps its operands and its traps.
-        rel = Rel::Filter {
-            input: Box::new(rel),
-            pred,
-        };
+        filter = Some(pred);
     }
 
     let named = out_cols
@@ -374,10 +371,7 @@ pub fn frontend(
         .zip(exprs)
         .collect::<Vec<_>>();
     Ok((
-        Rel::Project {
-            input: Box::new(rel),
-            exprs: named,
-        },
+        Plan::single(joins.len(), filter, named),
         joins,
         out_cols,
         binder.regexes.into_inner(),

@@ -4092,3 +4092,187 @@ fn a_wide_scale_decimal_key_against_an_int_probe_refuses_by_name() {
     .to_string();
     assert!(e.contains("cannot join") && e.contains("dec(38,30)"), "{e}");
 }
+
+// ------------------------------------------------- the staged pipeline --
+//
+// No SQL binds to more than one stage yet (derived tables land next), so
+// these plans are built by hand and lowered directly: the DuckDB
+// evaluation-order rules of the subquery design, on both backends
+// (docs/specs/2026-09-26-row-local-subqueries-design.md).
+
+mod staged {
+    use super::super::exec::testutil::snapshot;
+    use super::super::exec::{cranelift, interp};
+    use super::super::ir::{self, CmpPred, Col, Lit, Ty};
+    use super::super::plan::{ArithOp, Plan, SExpr, SKind, Stage};
+    use super::{batch, c_i64, cols, rows};
+
+    fn e(kind: SKind, ty: Ty, nullable: bool) -> SExpr {
+        SExpr { kind, ty, nullable }
+    }
+    fn col(i: u32) -> SExpr {
+        e(SKind::Col(i), Ty::I64, false)
+    }
+    fn slot(i: u32) -> SExpr {
+        e(SKind::Slot(i), Ty::I64, false)
+    }
+    fn lit(v: i64) -> SExpr {
+        e(SKind::Lit(Lit::I64(v)), Ty::I64, false)
+    }
+    fn add(a: SExpr, b: SExpr) -> SExpr {
+        let kind = SKind::Arith {
+            op: ArithOp::Add,
+            a: Box::new(a),
+            b: Box::new(b),
+        };
+        e(kind, Ty::I64, false)
+    }
+    fn le(a: SExpr, b: SExpr) -> SExpr {
+        let kind = SKind::Cmp {
+            pred: CmpPred::Le,
+            a: Box::new(a),
+            b: Box::new(b),
+        };
+        e(kind, Ty::I1, false)
+    }
+    fn stage(pred: Option<SExpr>, project: Vec<SExpr>) -> Stage {
+        Stage {
+            joins: Vec::new(),
+            pred,
+            project: project
+                .into_iter()
+                .enumerate()
+                .map(|(i, x)| (format!("c{i}"), x))
+                .collect(),
+        }
+    }
+
+    /// Lower, canonicalize and verify `plan` over one BIGINT input `a`, run
+    /// it on BOTH backends, and require they agree; the interpreter's
+    /// answer (rows, or the trap text) comes back.
+    fn run(plan: Plan, input: &[Option<i64>]) -> (ir::Program, Result<Vec<Vec<String>>, String>) {
+        let in_cols = cols(&[("a", Ty::I64, false)]);
+        let n_out = plan.stages.last().unwrap().project.len();
+        let out_cols: Vec<Col> = cols(
+            &(0..n_out)
+                .map(|i| (["o0", "o1", "o2"][i], Ty::I64, false))
+                .collect::<Vec<_>>(),
+        );
+        let mut p = super::super::lower::lower(
+            &plan, &[], &[], &in_cols, out_cols, vec![], &[], "run", false, &[], &[],
+        )
+        .expect("lowers");
+        ir::canonicalize(&mut p);
+        ir::verify::verify(&p).expect("verifies");
+        let b = batch(input.len(), vec![c_i64(input)]);
+        let fi = interp::compile(&p, vec![]).expect("interp compile");
+        let mut si = fi.new_state();
+        let got_i = fi.run(&b, &mut si).map(|_| snapshot(&si)).map_err(|t| t.to_string());
+        let fc = cranelift::compile(&p, vec![]).expect("cranelift compile");
+        let mut sc = fc.new_state();
+        let got_c = fc.run(&b, &mut sc).map(|_| snapshot(&sc)).map_err(|t| t.to_string());
+        assert_eq!(got_i, got_c, "backends disagree");
+        (p, got_i)
+    }
+
+    const MAX: i64 = i64::MAX;
+
+    #[test]
+    fn a_column_the_outer_stage_never_reads_still_traps() {
+        // SELECT b FROM (SELECT a + MAX AS x, a AS b ...): x is unread.
+        let plan = Plan {
+            stages: vec![
+                stage(None, vec![add(col(0), lit(MAX)), col(0)]),
+                stage(None, vec![slot(1)]),
+            ],
+        };
+        let (_, got) = run(plan, &[Some(1)]);
+        assert!(got.unwrap_err().contains("Overflow"));
+        let plan = Plan {
+            stages: vec![
+                stage(None, vec![add(col(0), lit(MAX)), col(0)]),
+                stage(None, vec![slot(1)]),
+            ],
+        };
+        assert_eq!(run(plan, &[Some(0)]).1.unwrap(), rows(&[&["0"]]));
+    }
+
+    #[test]
+    fn the_inner_select_finishes_before_the_outer_where() {
+        // SELECT b FROM (SELECT a + MAX AS x, a AS b ...) WHERE b <= 0: the
+        // row a = 1 traps in the inner SELECT before the outer WHERE drops it.
+        let plan = Plan {
+            stages: vec![
+                stage(None, vec![add(col(0), lit(MAX)), col(0)]),
+                stage(Some(le(slot(1), lit(0))), vec![slot(1)]),
+            ],
+        };
+        assert!(run(plan, &[Some(0), Some(1)]).1.unwrap_err().contains("Overflow"));
+    }
+
+    #[test]
+    fn the_inner_where_guards_the_inner_select() {
+        // SELECT x FROM (SELECT a + MAX AS x ... WHERE a <= 0): the row a = 1
+        // never reaches the SELECT that would overflow.
+        let plan = Plan {
+            stages: vec![
+                stage(Some(le(col(0), lit(0))), vec![add(col(0), lit(MAX))]),
+                stage(None, vec![slot(0)]),
+            ],
+        };
+        let (_, got) = run(plan, &[Some(0), Some(1), Some(-5)]);
+        assert_eq!(got.unwrap(), rows(&[&[&MAX.to_string()], &[&(MAX - 5).to_string()]]));
+    }
+
+    #[test]
+    fn a_slot_read_twice_is_computed_once() {
+        // SELECT x, x + 1 FROM (SELECT a + 1 AS x ...): one addition for x.
+        let plan = Plan {
+            stages: vec![
+                stage(None, vec![add(col(0), lit(1))]),
+                stage(None, vec![slot(0), add(slot(0), slot(0)), slot(0)]),
+            ],
+        };
+        let (p, got) = run(plan, &[Some(2)]);
+        assert_eq!(got.unwrap(), rows(&[&["3", "6", "3"]]));
+        let adds = p
+            .blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .filter(|i| matches!(i, ir::Inst::Bin { op: ir::BinOp::Iadd, .. }))
+            .count();
+        assert_eq!(adds, 2, "the slot's addition ran once; the outer sum once");
+    }
+
+    #[test]
+    fn slots_survive_block_splits_across_three_stages() {
+        // Each stage filters (a block split carrying the slots), and the
+        // middle stage reads its input slot after the split.
+        let plan = Plan {
+            stages: vec![
+                stage(Some(le(col(0), lit(10))), vec![add(col(0), lit(1)), col(0)]),
+                stage(Some(le(slot(1), lit(5))), vec![add(slot(0), slot(1))]),
+                stage(Some(le(slot(0), lit(9))), vec![slot(0)]),
+            ],
+        };
+        // a = 3: (4, 3) -> 7 -> kept; a = 5: (6, 5) -> 11 -> dropped by the
+        // last WHERE; a = 7: dropped by the middle WHERE; a = 20: by the first.
+        let (_, got) = run(plan, &[Some(3), Some(5), Some(7), Some(20)]);
+        assert_eq!(got.unwrap(), rows(&[&["7"]]));
+    }
+
+    #[test]
+    fn a_slot_outside_the_previous_stage_refuses_to_lower() {
+        let plan = Plan {
+            stages: vec![stage(None, vec![col(0)]), stage(None, vec![slot(1)])],
+        };
+        let in_cols = cols(&[("a", Ty::I64, false)]);
+        let out = cols(&[("o0", Ty::I64, false)]);
+        let err = super::super::lower::lower(
+            &plan, &[], &[], &in_cols, out, vec![], &[], "run", false, &[], &[],
+        )
+        .err()
+        .expect("refuses");
+        assert!(err.to_string().contains("slot 1"), "{err}");
+    }
+}

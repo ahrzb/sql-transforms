@@ -5,21 +5,38 @@
 
 use super::ir::{ColTy, CmpPred, Col, Lit, TrimSide, Ty};
 
-/// A relational operator tree over the dynamic table. Joins to static
-/// tables are not tree nodes: the shape is rigid
-/// (project(filter?(join*(scan)))), so the frontend returns them as an
-/// ordered [`JoinSpec`] list instead — the tree would only restate the
-/// vec's order.
-pub enum Rel {
-    Scan,
-    Filter {
-        input: Box<Rel>,
-        pred: SExpr,
-    },
-    Project {
-        input: Box<Rel>,
-        exprs: Vec<(String, SExpr)>,
-    },
+/// The bound query as an ordered pipeline of stages, innermost first: one
+/// stage per query level (docs/specs/2026-09-26-row-local-subqueries-design.md).
+///
+/// A stage runs its joins in FROM order, then its WHERE, then evaluates
+/// EVERY one of its SELECT columns; the next stage reads those results as
+/// [`SKind::Slot`]s. Each slot is computed once per row that reaches its
+/// stage, read or not, which is DuckDB's evaluation order for a subquery.
+/// The last stage's projection is the query's output.
+pub struct Plan {
+    pub stages: Vec<Stage>,
+}
+
+pub struct Stage {
+    /// The joins this stage runs, in FROM order: EXECUTION ownership. Each
+    /// is an index into the query-wide [`JoinSpec`] list, whose position is
+    /// the join's STORAGE identity (join `j` probes static `@j`).
+    pub joins: Vec<u32>,
+    pub pred: Option<SExpr>,
+    pub project: Vec<(String, SExpr)>,
+}
+
+impl Plan {
+    /// The single-level plan every query binds to today.
+    pub fn single(joins: usize, pred: Option<SExpr>, project: Vec<(String, SExpr)>) -> Plan {
+        Plan {
+            stages: vec![Stage {
+                joins: (0..joins as u32).collect(),
+                pred,
+                project,
+            }],
+        }
+    }
 }
 
 /// A static (prepare-time-known) table's schema, as given to `prepare`.
@@ -457,6 +474,10 @@ pub struct SExpr {
 pub enum SKind {
     /// Input column, by index into the dynamic table's schema.
     Col(u32),
+    /// Column `i` of the PREVIOUS stage's projection (see [`Plan`]): already
+    /// computed, range-checked and trapped where it was produced, so reading
+    /// it evaluates nothing.
+    Slot(u32),
     /// Value column `col` (index into the join's `val_cols`) of join `join`.
     /// Lowered as a lane of that join's probe: non-nullable under INNER
     /// (misses were already skipped), hit-flagged under LEFT.
@@ -705,6 +726,7 @@ pub enum SKind {
 pub fn may_trap(e: &SExpr) -> bool {
     match &e.kind {
         SKind::Col(_)
+        | SKind::Slot(_)
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
         | SKind::Lit(_)
@@ -752,7 +774,10 @@ pub fn zero_divisor_nulls(op: ArithOp, ty: Ty) -> bool {
 
 pub fn bind_foldable(e: &SExpr) -> bool {
     match &e.kind {
-        SKind::Col(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
+        // A slot never folds: constants do not fold across a query level
+        // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
+        // all on zero rows).
+        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
         SKind::ExternCall { .. } | SKind::TreePredict { .. } => false,
         SKind::Lit(_) | SKind::NullOf => true,
         SKind::Arith { a, b, .. }

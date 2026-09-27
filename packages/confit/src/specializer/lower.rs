@@ -33,14 +33,14 @@ use super::ir::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
     StrOp2, Term, Ty, Value,
 };
-use super::plan::{self, ArithOp, JoinKind, JoinSpec, KeyCmp, Rel, SExpr, SKind, StaticTable};
+use super::plan::{self, ArithOp, JoinKind, JoinSpec, KeyCmp, Plan, SExpr, SKind, StaticTable};
 
 
 /// Can this kind's NARROW result sit outside its width's range?
 ///
 /// The exempt list is an allowlist, and each entry earns it: `Col` and
 /// `StaticCol` are range-checked on the way IN (the ingest boundary mirrors
-/// `narrow_check`); a `Lit` outside its type's range refuses at build;
+/// `narrow_check`); a `Slot` was checked where its stage produced it; a `Lit` outside its type's range refuses at build;
 /// `NullOf` is a typed default; `JoinHit` is i1; and `Case` only forwards a
 /// value one of its arms already produced and checked. Everything else —
 /// arithmetic, casts, abs, extern returns, anything added later — is checked.
@@ -48,6 +48,7 @@ fn narrow_result_can_escape(k: &SKind) -> bool {
     !matches!(
         k,
         SKind::Col(_)
+            | SKind::Slot(_)
             | SKind::StaticCol { .. }
             | SKind::Lit(_)
             | SKind::NullOf
@@ -77,16 +78,22 @@ fn arrow_narrow_name(ty: Ty) -> &'static str {
     }
 }
 
-/// The bound plan as one imperative-IR program named `name`: the projection
-/// `rel` carries, its joins, and the statics they probe.
+/// The bound plan as one imperative-IR program named `name`: its stages, the
+/// joins they run, and the statics those probe.
 ///
 /// `in_cols` is the row input in LANE order (struct leaves already
-/// flattened) and `out_cols` its declared output, both positional — the
-/// projection's i-th expression stores to `out_cols[i]`. `joins` indexes
+/// flattened) and `out_cols` its declared output, both positional — the last
+/// stage's i-th projection stores to `out_cols[i]`. `joins` indexes
 /// `catalog`, and join `j` probes static `@j`, so the `model<...>` statics
 /// for `model_refs` (indices into `models`) are appended after them all.
 /// `many` selects the multiplicity loop of `shape="many"`, which is
-/// limited to a single join.
+/// limited to a single join and a single stage.
+///
+/// Stages lower in order into one program. A stage's projection values stay
+/// on the live stack, below whatever the next stage pushes, so every block
+/// transition carries them as block arguments: a slot is an SSA value
+/// computed once per row reaching its stage, and reading it evaluates
+/// nothing.
 ///
 /// The result is well-formed but NOT yet canonical or verified; the caller
 /// does both. What the loop form cannot serve refuses here as
@@ -94,7 +101,7 @@ fn arrow_narrow_name(ty: Ty) -> &'static str {
 /// surfaces as [`PrepareError::Internal`], never as a wrong program.
 #[allow(clippy::too_many_arguments)]
 pub fn lower(
-    rel: &Rel,
+    plan: &Plan,
     joins: &[JoinSpec],
     catalog: &[StaticTable],
     in_cols: &[Col],
@@ -115,23 +122,14 @@ pub fn lower(
             n_features: models[*r as usize].takes.len() as u32,
         })
         .collect();
-    let (exprs, filter_pred) = match rel {
-        Rel::Project { input, exprs } => match input.as_ref() {
-            Rel::Filter { input: scan, pred } => {
-                debug_assert!(matches!(scan.as_ref(), Rel::Scan));
-                (exprs, Some(pred))
-            }
-            Rel::Scan => (exprs, None),
-            Rel::Project { .. } => {
-                return Err(PrepareError::Internal("nested projection".to_string()))
-            }
-        },
-        _ => {
-            return Err(PrepareError::Internal(
-                "plan root is not a projection".to_string(),
-            ))
-        }
+    let Some(last) = plan.stages.last() else {
+        return Err(PrepareError::Internal("plan has no stage".to_string()));
     };
+    if last.project.len() != out_cols.len() {
+        return Err(PrepareError::Internal(
+            "the last stage's projection does not match the output".to_string(),
+        ));
+    }
 
     // The many path emits exactly one join static (it is guarded to a single
     // join); the normal path emits one per join.
@@ -139,9 +137,9 @@ pub fn lower(
     let mut fb = FB::new(in_cols, joins, catalog, udfs, model_base);
 
     // shape='many': joins lower as multiplicity LOOPS over multimap row ranges
-    // — 0..N output rows per input row. One join per query; a map's
-    // key-uniqueness is unknown at prepare, so under 'many' every join takes
-    // the loop form.
+    // — 0..N output rows per input row. One join per query, counted over the
+    // whole pipeline; a map's key-uniqueness is unknown at prepare, so under
+    // 'many' every join takes the loop form.
     if many && joins.len() > 1 {
         return Err(PrepareError::Unsupported(
             "multiple joins under shape='many' (one join per query)".to_string(),
@@ -159,7 +157,12 @@ pub fn lower(
         ));
     }
     if many && joins.len() == 1 {
-        fb.lower_many_loop(exprs, filter_pred, &out_cols)?;
+        let [stage] = plan.stages.as_slice() else {
+            return Err(PrepareError::Unsupported(
+                "a subquery under a shape='many' join".to_string(),
+            ));
+        };
+        fb.lower_many_loop(&stage.project, stage.pred.as_ref(), &out_cols)?;
         let statics = vec![if joins[0].batch {
             StaticTy::BatchMap {
                 values: plan::map_vals(in_cols, &joins[0].val_cols)
@@ -187,81 +190,53 @@ pub fn lower(
         return fb.finish(name, statics, in_cols, out_cols, regexes, udfs.to_vec());
     }
 
-    // Joins run before WHERE (SQL order), each in FROM order: probe, and for
-    // INNER skip the row on a miss. A LEFT join's probe is also forced here
-    // so its key expressions are evaluated (and can trap) for every row that
-    // reaches it, exactly as the join would — even if no value column is
-    // ever referenced. Later references re-probe per block (pure, cached),
-    // same ponytail trade as column re-loads.
-    for (j, spec) in joins.iter().enumerate() {
-        let mut live = Vec::new();
-        let (valid_hit, _) = fb.emit_probe(j as u32, &mut live)?;
-        if spec.kind == JoinKind::Inner {
-            let (keep, _) = fb.create_block(&[]);
-            let (miss, _) = fb.create_block(&[]);
-            fb.term(Term::Brif {
-                cond: valid_hit,
-                then_to: BlockId(keep as u32),
-                then_args: vec![],
-                else_to: BlockId(miss as u32),
-                else_args: vec![],
-            });
-            fb.switch(miss);
-            fb.term(Term::Skip);
-            fb.switch(keep);
+    // The previous stage's slots: the bottom of the live stack, always.
+    let mut live: Live = Vec::new();
+    for (si, stage) in plan.stages.iter().enumerate() {
+        let n_slots = live.len();
+        fb.n_slots = n_slots;
+        fb.lower_stage_head(stage, &mut live)?;
+        if si + 1 < plan.stages.len() {
+            // Every column, read or not, in SELECT order: its traps fire
+            // for every row reaching the stage, exactly as DuckDB evaluates
+            // a subquery. Each lane joins the live stack as soon as it
+            // exists, so a later column's block splits carry it.
+            for (_, e) in &stage.project {
+                let lane = fb.emit(e, &mut live)?;
+                live.push((lane, e.ty));
+            }
+            // The next stage sees only these: the inner scope is closed.
+            live.drain(..n_slots);
+            continue;
         }
-    }
-
-    if let Some(pred) = filter_pred {
-        // The WHERE root is SELECTION context: emit_truth is where AND's
-        // left-to-right laziness lives, recursively, at every depth rather
-        // than only along a top-level conjunct spine. A filter asks
-        // `pred IS TRUE`, and FALSE and NULL answer that question alike, so
-        // the bare i1 is the whole story.
-        let mut live = Vec::new();
-        let cond = fb.emit_truth(pred, &mut live)?;
-        let (keep, _) = fb.create_block(&[]);
-        let (drop, _) = fb.create_block(&[]);
-        fb.term(Term::Brif {
-            cond,
-            then_to: BlockId(keep as u32),
-            then_args: vec![],
-            else_to: BlockId(drop as u32),
-            else_args: vec![],
-        });
-        fb.switch(drop);
-        fb.term(Term::Skip);
-        fb.switch(keep);
-    }
-
-    let mut live = Vec::new();
-    for (ci, (_, e)) in exprs.iter().enumerate() {
-        // Not a `debug_assert`: this runs once per output column at prepare,
-        // never per row, and it is the ONLY thing that catches an arm which
-        // pushes lanes and forgets to truncate. A leak leaves dead values
-        // riding every later block transition — well-formed IR, so `verify`
-        // says nothing, and a release-only test run sees nothing either
-        // (measured: the whole suite passes green with a `live.truncate`
-        // deleted from an arm).
-        assert!(live.is_empty(), "live stack leaked before column {ci}");
-        let lane = fb.emit(e, &mut live)?;
-        let col = ci as u32;
-        if out_cols[ci].ty.nullable {
-            let flag = match lane.flag {
-                Some(f) => f,
-                // Nullability contract slack (e.g. an infallible TRY_CAST):
-                // the column is declared nullable, the lane is provably
-                // valid — store with a constant true flag.
-                None => fb.const_i1(true),
-            };
-            fb.inst(Inst::StoreOpt {
-                col,
-                flag,
-                val: lane.val,
-            });
-        } else {
-            debug_assert!(lane.flag.is_none(), "non-nullable column with a flag lane");
-            fb.inst(Inst::Store { col, val: lane.val });
+        for (ci, (_, e)) in stage.project.iter().enumerate() {
+            // Not a `debug_assert`: this runs once per output column at
+            // prepare, never per row, and it is the ONLY thing that catches
+            // an arm which pushes lanes and forgets to truncate. A leak
+            // leaves dead values riding every later block transition —
+            // well-formed IR, so `verify` says nothing, and a release-only
+            // test run sees nothing either (measured: the whole suite passes
+            // green with a `live.truncate` deleted from an arm).
+            assert!(live.len() == n_slots, "live stack leaked before column {ci}");
+            let lane = fb.emit(e, &mut live)?;
+            let col = ci as u32;
+            if out_cols[ci].ty.nullable {
+                let flag = match lane.flag {
+                    Some(f) => f,
+                    // Nullability contract slack (e.g. an infallible
+                    // TRY_CAST): the column is declared nullable, the lane is
+                    // provably valid — store with a constant true flag.
+                    None => fb.const_i1(true),
+                };
+                fb.inst(Inst::StoreOpt {
+                    col,
+                    flag,
+                    val: lane.val,
+                });
+            } else {
+                debug_assert!(lane.flag.is_none(), "non-nullable column with a flag lane");
+                fb.inst(Inst::Store { col, val: lane.val });
+            }
         }
     }
     fb.term(Term::Emit);
@@ -352,6 +327,9 @@ struct FB<'a> {
     /// without bound — a stack overflow that kills the process rather than
     /// raising. A stack, not an Option: a residual may probe another join.
     probe_seeds: Vec<ProbeSeed>,
+    /// How many slots the stage being lowered can read: the previous
+    /// stage's projection width, sitting at `live[..n_slots]`.
+    n_slots: usize,
 }
 
 /// Where an active many-join's probe lanes ride: `nd` live entries starting
@@ -394,6 +372,7 @@ impl<'a> FB<'a> {
             model_base,
             many: None,
             probe_seeds: Vec::new(),
+            n_slots: 0,
         }
     }
 
@@ -836,6 +815,14 @@ impl<'a> FB<'a> {
     /// anywhere else would skip the trap.
     fn emit_kind(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
         match &e.kind {
+            // The previous stage's column: the bottom of the live stack,
+            // rebound at every block transition, so this is whatever
+            // register holds it in the current block. Nothing is evaluated.
+            SKind::Slot(i) if (*i as usize) < self.n_slots => Ok(live[*i as usize].0),
+            SKind::Slot(i) => Err(PrepareError::Internal(format!(
+                "slot {i} read outside the previous stage's {} columns",
+                self.n_slots
+            ))),
             SKind::Col(idx) => {
                 if let Some(lane) = self.blocks[self.cur].cache.get(idx) {
                     return Ok(*lane);
@@ -1658,6 +1645,61 @@ impl<'a> FB<'a> {
     /// across splits) with the invariant: the probe lanes are always the
     /// LAST `nd` live entries; the per-block probe cache is re-seeded from
     /// them before every emission that can reference join columns.
+    /// A stage's joins, then its WHERE: joins run before WHERE (SQL order),
+    /// each in FROM order — probe, and for INNER skip the row on a miss. A
+    /// LEFT join's probe is also forced here so its key expressions are
+    /// evaluated (and can trap) for every row that reaches it, exactly as
+    /// the join would — even if no value column is ever referenced. Later
+    /// references re-probe per block (pure, cached), same ponytail trade as
+    /// column re-loads. `live` holds the previous stage's slots and is left
+    /// as it was found.
+    fn lower_stage_head(&mut self, stage: &plan::Stage, live: &mut Live) -> Result<(), PrepareError> {
+        for &j in &stage.joins {
+            let (valid_hit, _) = self.emit_probe(j, live)?;
+            if self.joins[j as usize].kind == JoinKind::Inner {
+                let tys = Self::live_types(live);
+                let (keep, keep_params) = self.create_block(&tys);
+                let (miss, _) = self.create_block(&tys);
+                let args = Self::live_args(live);
+                self.term(Term::Brif {
+                    cond: valid_hit,
+                    then_to: BlockId(keep as u32),
+                    then_args: args.clone(),
+                    else_to: BlockId(miss as u32),
+                    else_args: args,
+                });
+                self.switch(miss);
+                self.term(Term::Skip);
+                self.switch(keep);
+                self.enter_block(live, &keep_params);
+            }
+        }
+        if let Some(pred) = &stage.pred {
+            // The WHERE root is SELECTION context: emit_truth is where AND's
+            // left-to-right laziness lives, recursively, at every depth
+            // rather than only along a top-level conjunct spine. A filter
+            // asks `pred IS TRUE`, and FALSE and NULL answer that question
+            // alike, so the bare i1 is the whole story.
+            let cond = self.emit_truth(pred, live)?;
+            let tys = Self::live_types(live);
+            let (keep, keep_params) = self.create_block(&tys);
+            let (drop, _) = self.create_block(&tys);
+            let args = Self::live_args(live);
+            self.term(Term::Brif {
+                cond,
+                then_to: BlockId(keep as u32),
+                then_args: args.clone(),
+                else_to: BlockId(drop as u32),
+                else_args: args,
+            });
+            self.switch(drop);
+            self.term(Term::Skip);
+            self.switch(keep);
+            self.enter_block(live, &keep_params);
+        }
+        Ok(())
+    }
+
     fn lower_many_loop(
         &mut self,
         exprs: &[(String, SExpr)],
