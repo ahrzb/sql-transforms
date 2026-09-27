@@ -11,7 +11,7 @@
 | **3** | serves where DuckDB refuses | unsafe direction; DuckDB cannot run the query |
 | **4** | refuses where DuckDB serves | conservative direction; may be deliberate |
 
-*Evidence:* use in `src/specializer/frontend.rs` (`refuse_dec`).
+*Evidence:* use in `src/specializer/frontend/refusal.rs` (`refuse_dec`).
 
 ## Direction and disposition
 

@@ -52,7 +52,7 @@ duplicates. Renaming before `to_pylist()` prevents a dict row from retaining onl
 last duplicate column.
 
 *Enforced-by:* `confit.compare.dedup_names` and `.rows`, mirroring
-`specializer/frontend.rs::dedup_output_names`; the fuzzer imports the same helper.
+`specializer/frontend/star.rs::dedup_output_names`; the fuzzer imports the same helper.
 *Evidence:* duplicate-name tests in `packages/confit/tests/test_compare.py`,
 `packages/confit/docs/specs/pins-wave5/dup-names-client-contract.json`, and
 `packages/confit/tests/test_known_limitations.py::test_duplicate_names_use_duckdbs_boundary_rename`.

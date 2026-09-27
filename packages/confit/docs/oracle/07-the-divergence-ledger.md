@@ -123,7 +123,7 @@ Slugs are stable when multiple entries describe one mechanism.
   is not a blanket refusal of `WHERE FALSE`. Refusing where DuckDB serves is not by
   itself a correctness defect; the campaign report groups such refusals by DuckDB outcome
   (claim: refusal-absorb), and no twin measures this divergence's DuckDB-serves cost.
-  Evidence: `eval_i32_literal` in `src/specializer/frontend.rs`; claim:
+  Evidence: `eval_i32_literal` in `src/specializer/frontend/typing.rs`; claim:
   phase-separated-probes.
 - **divergence: regex-size-guard.** Confit's guard can fire before DuckDB's RE2 limit; it
   may over-refuse but cannot serve a query DuckDB rejects. Evidence:

@@ -1286,7 +1286,7 @@ fn prep_udfs(
 /// quietly re-opening the shadowing hole the list exists to close.
 #[test]
 fn builtin_names_match_the_catalogue() {
-    let src = include_str!("frontend.rs");
+    let src = include_str!("frontend/functions.rs");
     let lines: Vec<&str> = src.lines().collect();
     let start = lines
         .iter()

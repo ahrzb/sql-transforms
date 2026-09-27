@@ -115,7 +115,7 @@ def test_a_null_string_with_an_integer_count_still_serves():
 # a forced hand: a serving engine does not allocate a gigabyte per row. We
 # refuse where DuckDB would serve, which the match-or-refuse contract permits
 # — and a build-time refusal beats discovering it per-row in production.
-# The user-facing refusal text at frontend.rs states the same ground.
+# The user-facing refusal text in frontend/refusal.rs states the same ground.
 
 _SB_SCHEMA = pa.schema(
     [
