@@ -308,3 +308,23 @@ def test_exclude_entries_clash_only_under_the_same_or_no_qualifier():
                 static_tables={"d": DIM},
                 shape="many",
             )
+
+
+@pytest.mark.parametrize(
+    ("sql", "shape", "backend"),
+    [
+        # The one named fallback: Cranelift declines the multiplicity
+        # constructs, so a joining 'many' program runs on the interpreter.
+        ("SELECT pid, v FROM __THIS__ JOIN d ON pid = d.id", "many", "interpreter"),
+        # Everything else compiles; a codegen failure would raise, not fall
+        # back (duckdb/mod.rs), so reaching Cranelift here is the contract.
+        ("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id", "map", "cranelift"),
+        ("SELECT pid + 1 AS p FROM __THIS__", "many", "cranelift"),
+    ],
+)
+def test_only_multiplicity_programs_fall_back(sql, shape, backend):
+    dim = pa.table({"id": [1, 2], "v": ["a", "b"]})
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": T}, static_tables={"d": dim}, shape=shape
+    )
+    assert fn.backend == backend
