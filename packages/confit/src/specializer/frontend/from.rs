@@ -118,6 +118,145 @@ pub(super) fn plain_table(
 /// equi-joins to static tables. Returns the fully-scoped binder (every join
 /// visible) and the join specs in FROM order.
 #[allow(clippy::too_many_arguments)]
+/// Where a relation sits in FROM: its position decides only the wording of
+/// two refusals (an unparseable relation, an unresolvable table).
+#[derive(Clone, Copy)]
+pub(super) enum RelPosition {
+    Join,
+    Comma,
+}
+
+pub(super) enum RelSource {
+    /// The request table again: a self-join against the batch.
+    SelfJoin,
+    /// A provided static table, by index.
+    Static(usize),
+}
+
+/// A JOIN or comma relation after name resolution: everything both paths
+/// need before they bind keys. One resolver, so a naming rule (schema
+/// qualifiers, quoting, aliases, duplicate names) is written once.
+pub(super) struct ResolvedRel<'q> {
+    pub(super) alias: Option<&'q TableAlias>,
+    /// The name the relation is in scope under: its alias, else its bare
+    /// table name (`main.d` and `memory.main.d` are in scope as `d`, as on
+    /// DuckDB, measured).
+    pub(super) scope_name: String,
+    /// The schema it was named through; empty when aliased, since `main.x.a`
+    /// over `... AS x` is a binder error on DuckDB (measured).
+    pub(super) schema: String,
+    pub(super) source: RelSource,
+}
+
+impl ResolvedRel<'_> {
+    /// The scope entry of a self-join: the build side is the BATCH, every
+    /// plain row column a value lane, no probe keys.
+    pub(super) fn batch_scope<'b>(
+        &self,
+        in_cols: &[Col],
+        n_plain: usize,
+        kind: JoinKind,
+        merged: Vec<String>,
+    ) -> ScopeJoin<'b> {
+        ScopeJoin {
+            name: self.scope_name.clone(),
+            schema: self.schema.clone(),
+            table: std::borrow::Cow::Owned(StaticTable::all_scalar(
+                self.scope_name.clone(),
+                in_cols[..n_plain].to_vec(),
+            )),
+            kind,
+            key_cols: Vec::new(),
+            val_cols: (0..n_plain as u32).collect(),
+            keys: Vec::new(),
+            using: false,
+            merged,
+        }
+    }
+}
+
+/// The spec of a self-join: a keyless batchmap built per call, the whole ON
+/// (if any) as its residual.
+pub(super) fn batch_spec(n_plain: usize, kind: JoinKind, residual: Option<SExpr>) -> JoinSpec {
+    JoinSpec {
+        table: 0,
+        batch: true,
+        kind,
+        keys: Vec::new(),
+        key_cols: Vec::new(),
+        val_cols: (0..n_plain as u32).collect(),
+        residual,
+    }
+}
+
+/// Resolve one JOIN or comma relation against the scope built so far: its
+/// name and alias, the self-join guards, the static table it names, and the
+/// duplicate-name check, in that order (the order fixes which error a query
+/// with several faults reports).
+pub(super) fn resolve_relation<'q>(
+    binder: &Binder<'_>,
+    factor: &'q TableFactor,
+    position: RelPosition,
+    statics: &[StaticTable],
+    this_name: &str,
+    many: bool,
+) -> Result<ResolvedRel<'q>, PrepareError> {
+    let (raw_name, alias) = match plain_table(factor)? {
+        Some(named) => named,
+        None => {
+            return Err(unsup(match position {
+                RelPosition::Join => format!("JOIN {factor}"),
+                RelPosition::Comma => relation_refusal(factor),
+            }))
+        }
+    };
+    let scope_name = alias
+        .map(|a| a.name.value.clone())
+        .unwrap_or_else(|| raw_name.bare().to_string());
+    let schema = if alias.is_some() { String::new() } else { raw_name.schema() };
+    let source = if raw_name.to_string().eq_ignore_ascii_case(this_name) {
+        if alias.is_some_and(|a| !a.columns.is_empty()) {
+            // Dropping it answered a query with the WRONG names in
+            // scope; serving the rename on a self-join is unpinned.
+            return Err(unsup("column-list alias on a self-join"));
+        }
+        if !many {
+            return Err(unsup("joining the dynamic table to itself"));
+        }
+        if !binder.opaque.is_empty() || !binder.structs.is_empty() {
+            return Err(unsup("self-join over a row model with non-scalar columns"));
+        }
+        RelSource::SelfJoin
+    } else {
+        RelSource::Static(match position {
+            RelPosition::Join => resolve_static(statics, &raw_name)?,
+            // Unresolvable comma tables (schema-qualified names, table
+            // functions we didn't get as statics) stay CLEAN.
+            RelPosition::Comma => resolve_static(statics, &raw_name).map_err(|_| {
+                unsup(format!(
+                    "comma-joined table '{raw_name}' is not a provided static table"
+                ))
+            })?,
+        })
+    };
+    if binder.this_name.eq_ignore_ascii_case(&scope_name)
+        || binder
+            .joins
+            .iter()
+            .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
+    {
+        return Err(PrepareError::Bind(format!(
+            "duplicate table name '{scope_name}' in FROM"
+        )));
+    }
+    Ok(ResolvedRel {
+        alias,
+        scope_name,
+        schema,
+        source,
+    })
+}
+
 pub(super) fn bind_from<'a>(
     select: &sqlparser::ast::Select,
     this_name: &str,
@@ -243,41 +382,15 @@ pub(super) fn bind_from<'a>(
             JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
             other => return Err(unsup(join_refusal(other))),
         };
-        let (raw_name, rel_alias) = match plain_table(&join.relation)? {
-            Some((n, alias)) => (n, alias),
-            None => return Err(unsup(format!("JOIN {}", join.relation))),
-        };
-        // A schema-qualified relation (`main.d`, `memory.main.d`) is in
-        // scope under its bare table name, as on DuckDB: `d.v` and
-        // `main.d.v` both reach it (measured).
-        let scope_name = rel_alias
-            .as_ref()
-            .map(|a| a.name.value.clone())
-            .unwrap_or_else(|| raw_name.bare().to_string());
-        if raw_name.to_string().eq_ignore_ascii_case(this_name) {
-            if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
-                // Dropping it answered a query with the WRONG names in
-                // scope; serving the rename on a self-join is unpinned.
-                return Err(unsup("column-list alias on a self-join"));
-            }
-            if !many {
-                return Err(unsup("joining the dynamic table to itself"));
-            }
-            if !opaque.is_empty() || !structs.is_empty() {
-                return Err(unsup(
-                    "self-join over a row model with non-scalar columns",
-                ));
-            }
-            if binder.this_name.eq_ignore_ascii_case(&scope_name)
-                || binder
-                    .joins
-                    .iter()
-                    .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
-            {
-                return Err(PrepareError::Bind(format!(
-                    "duplicate table name '{scope_name}' in FROM"
-                )));
-            }
+        let rel = resolve_relation(
+            &binder,
+            &join.relation,
+            RelPosition::Join,
+            statics,
+            this_name,
+            many,
+        )?;
+        if let RelSource::SelfJoin = rel.source {
             // Self-join: the build side is the BATCH — a keyless
             // batchmap (built per call) with the WHOLE ON as residual.
             // USING/NATURAL is the equality residual `left.c = right.c` per
@@ -309,65 +422,32 @@ pub(super) fn bind_from<'a>(
                             names.push(c.clone()); // USING (a, a) dedupes
                         }
                     }
-                    (Some(using_equalities(&scope_name, &names)?), names)
+                    (Some(using_equalities(&rel.scope_name, &names)?), names)
                 }
                 JoinConstraint::Natural => (
-                    Some(using_equalities(&scope_name, &row_names)?),
+                    Some(using_equalities(&rel.scope_name, &row_names)?),
                     row_names.clone(),
                 ),
                 JoinConstraint::None => {
                     return Err(unsup("JOIN without ON (cross join)"))
                 }
             };
-            let n_batch = binder.n_plain as u32;
-            binder.joins.push(ScopeJoin {
-                name: scope_name.clone(),
-                schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
-                table: std::borrow::Cow::Owned(StaticTable::all_scalar(
-                    scope_name,
-                    in_cols[..binder.n_plain].to_vec(),
-                )),
-                kind,
-                key_cols: Vec::new(),
-                val_cols: (0..n_batch).collect(),
-                keys: Vec::new(),
-                using: false,
-                merged,
-            });
+            binder.joins.push(rel.batch_scope(in_cols, binder.n_plain, kind, merged));
             let residual = match &on {
                 None => None,
                 Some(e) => Some(fold(bool_context(binder.expr(e)?, "JOIN condition")?)),
             };
-            specs.push(JoinSpec {
-                table: 0,
-                batch: true,
-                kind,
-                keys: Vec::new(),
-                key_cols: Vec::new(),
-                val_cols: (0..n_batch).collect(),
-                residual,
-            });
+            specs.push(batch_spec(binder.n_plain, kind, residual));
             continue;
         }
-        let table_idx = resolve_static(statics, &raw_name)?;
-        if binder.this_name.eq_ignore_ascii_case(&scope_name)
-            || binder
-                .joins
-                .iter()
-                .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
-        {
-            return Err(PrepareError::Bind(format!(
-                "duplicate table name '{scope_name}' in FROM"
-            )));
-        }
-
-        let renamed = apply_column_alias(&statics[table_idx], rel_alias)?;
+        let RelSource::Static(table_idx) = rel.source else {
+            unreachable!("handled above")
+        };
+        let renamed = apply_column_alias(&statics[table_idx], rel.alias)?;
         let st = renamed.as_ref().unwrap_or(&statics[table_idx]);
         let (keys, key_cols, residual_raw, using) = match constraint {
             JoinConstraint::On(e) => {
-                let schema =
-                    if rel_alias.is_some() { String::new() } else { raw_name.schema() };
-                let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, &schema, e)?;
+                let (keys, key_cols, res) = bind_on(&binder, st, &rel.scope_name, &rel.schema, e)?;
                 (keys, key_cols, res, false)
             }
             // USING desugar (pins-wave4/): each column pairs the LEFT
@@ -454,8 +534,8 @@ pub(super) fn bind_from<'a>(
         let val_cols = val_cols_for(st, &key_cols, &keys);
 
         binder.joins.push(ScopeJoin {
-            name: scope_name,
-            schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
+            name: rel.scope_name,
+            schema: rel.schema,
             table: match renamed {
                 Some(t) => std::borrow::Cow::Owned(t),
                 None => std::borrow::Cow::Borrowed(&statics[table_idx]),
@@ -498,88 +578,23 @@ pub(super) fn bind_from<'a>(
         if !rel.joins.is_empty() {
             return Err(unsup("JOIN attached to a comma-joined relation"));
         }
-        let (raw_name, rel_alias) = match plain_table(&rel.relation)? {
-            Some((n, alias)) => (n, alias),
-            None => return Err(unsup(relation_refusal(&rel.relation))),
-        };
-        // A schema-qualified relation (`main.d`, `memory.main.d`) is in
-        // scope under its bare table name, as on DuckDB: `d.v` and
-        // `main.d.v` both reach it (measured).
-        let scope_name = rel_alias
-            .as_ref()
-            .map(|a| a.name.value.clone())
-            .unwrap_or_else(|| raw_name.bare().to_string());
-        if raw_name.to_string().eq_ignore_ascii_case(this_name) {
-            if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
-                // Dropping it answered a query with the WRONG names in
-                // scope; serving the rename on a self-join is unpinned.
-                return Err(unsup("column-list alias on a self-join"));
-            }
-            if !many {
-                return Err(unsup("joining the dynamic table to itself"));
-            }
-            if !opaque.is_empty() || !structs.is_empty() {
-                return Err(unsup(
-                    "self-join over a row model with non-scalar columns",
-                ));
-            }
-            if binder.this_name.eq_ignore_ascii_case(&scope_name)
-                || binder
-                    .joins
-                    .iter()
-                    .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
-            {
-                return Err(PrepareError::Bind(format!(
-                    "duplicate table name '{scope_name}' in FROM"
-                )));
-            }
+        let rel = resolve_relation(
+            &binder,
+            &rel.relation,
+            RelPosition::Comma,
+            statics,
+            this_name,
+            many,
+        )?;
+        let RelSource::Static(table_idx) = rel.source else {
             // Comma self-join = pure cross against the batch; equi
             // conjuncts stay in WHERE (cross-then-filter is bit-identical
             // under multiplicity — measured, pins-stageB).
-            let n_batch = binder.n_plain as u32;
-            binder.joins.push(ScopeJoin {
-                name: scope_name.clone(),
-                schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
-                table: std::borrow::Cow::Owned(StaticTable::all_scalar(
-                    scope_name,
-                    in_cols[..binder.n_plain].to_vec(),
-                )),
-                kind: JoinKind::Inner,
-                key_cols: Vec::new(),
-                val_cols: (0..n_batch).collect(),
-                keys: Vec::new(),
-                using: false,
-                merged: Vec::new(),
-            });
-            specs.push(JoinSpec {
-                table: 0,
-                batch: true,
-                kind: JoinKind::Inner,
-                keys: Vec::new(),
-                key_cols: Vec::new(),
-                val_cols: (0..n_batch).collect(),
-                residual: None,
-            });
+            binder.joins.push(rel.batch_scope(in_cols, binder.n_plain, JoinKind::Inner, Vec::new()));
+            specs.push(batch_spec(binder.n_plain, JoinKind::Inner, None));
             continue;
-        }
-        // Unresolvable comma tables (schema-qualified names, table
-        // functions we didn't get as statics) stay CLEAN.
-        let table_idx = resolve_static(statics, &raw_name).map_err(|_| {
-            unsup(format!(
-                "comma-joined table '{raw_name}' is not a provided static table"
-            ))
-        })?;
-        if binder.this_name.eq_ignore_ascii_case(&scope_name)
-            || binder
-                .joins
-                .iter()
-                .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
-        {
-            return Err(PrepareError::Bind(format!(
-                "duplicate table name '{scope_name}' in FROM"
-            )));
-        }
-        let renamed = apply_column_alias(&statics[table_idx], rel_alias)?;
+        };
+        let renamed = apply_column_alias(&statics[table_idx], rel.alias)?;
         let st = renamed.as_ref().unwrap_or(&statics[table_idx]);
         let mut keys = Vec::new();
         let mut key_cols = Vec::new();
@@ -595,9 +610,8 @@ pub(super) fn bind_from<'a>(
             else {
                 continue;
             };
-            let schema = if rel_alias.is_some() { String::new() } else { raw_name.schema() };
-            let l = static_col_of(left, st, &scope_name, &schema, &binder)?;
-            let r = static_col_of(right, st, &scope_name, &schema, &binder)?;
+            let l = static_col_of(left, st, &rel.scope_name, &rel.schema, &binder)?;
+            let r = static_col_of(right, st, &rel.scope_name, &rel.schema, &binder)?;
             let (col, dyn_side, static_side) = match (l, r) {
                 (Some(c), None) => (c, right.as_ref(), left.as_ref()),
                 (None, Some(c)) => (c, left.as_ref(), right.as_ref()),
@@ -627,8 +641,8 @@ pub(super) fn bind_from<'a>(
         }
         let val_cols = val_cols_for(st, &key_cols, &keys);
         binder.joins.push(ScopeJoin {
-            name: scope_name,
-            schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
+            name: rel.scope_name,
+            schema: rel.schema,
             table: match renamed {
                 Some(t) => std::borrow::Cow::Owned(t),
                 None => std::borrow::Cow::Borrowed(&statics[table_idx]),

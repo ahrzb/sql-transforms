@@ -8,7 +8,7 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 1. **Change-cost review** (`docs/reports/2026-09-26-change-cost-review.md`;
    codebase points 1–5 approved by the owner 2026-09-27): explicit Cranelift
-   fallback, one relation resolver, a written
+   fallback, a written
    unification rule pinned per operator family; then metamorphic spelling
    suite, parity harness and `confit.probe`, nightly deep campaign.
 2. **Row-local derived tables and CTEs**, PRs 0–4 of the approved design
