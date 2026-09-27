@@ -9,12 +9,11 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 1. **Change-cost review** (`docs/reports/2026-09-26-change-cost-review.md`):
    metamorphic spelling suite, parity harness and `confit.probe`, nightly deep
    campaign. The codebase points are done.
-2. **Subquery design, what is left**
+2. **Subquery design, PR 4** (static-only subqueries computed at
+   construction) waits on the owner: its 48 measured candidates turned out to
+   be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
-   recovery"): the generator arm for CTEs over the request table and joins
-   beside derived tables (PR 3b). PR 4 (static-only subqueries computed at
-   construction) waits on the owner: its 48 measured candidates turned out
-   to be unread CTEs, which now serve.
+   recovery").
 3. **Unaliased expression names** (`tests/test_open_divergences.py`):
    DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
    echoes the SQL text. Needs DuckDB's expression printer for the output
