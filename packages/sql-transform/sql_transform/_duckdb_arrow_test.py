@@ -35,22 +35,25 @@ timeout and an empty result trips the comparison. It flips to XPASS the day
 DuckDB materialises, drains, or raises.
 """
 
+import queue
 import subprocess
 import sys
+import threading
 
 import pytest
 
-# The budget is a HANG DETECTOR, not a performance bound -- the bug this
-# file exists for wedges forever, and the timeout is what turns that into a
-# failure instead of a wedged suite. It must therefore survive a LOADED
-# machine: measured 2026-08-19, interpreter start + `import duckdb` alone
-# takes 4.1-7.7s with 2x-cores of process burners (the healthy spelling's
-# real work is ~1s on top), and the two observed flakes ran inside full
-# suites at 3-6x normal wall time. 120s is >15x the worst
-# measured cold start; a genuine hang still fails, just slower -- a price
-# paid only when the bug actually regresses. Deliberately NO retry: an
+# Two budgets, because the bug this file exists for wedges FOREVER and only
+# the scan can wedge. Interpreter start + `import duckdb` is slow on a loaded
+# machine (measured 2026-08-19: 4.1-7.7s with 2x-cores of process burners,
+# and the two observed flakes ran inside full suites at 3-6x normal wall
+# time), so the child prints a marker once its imports finish and the start
+# budget covers only that. The scan itself is ~1s of real work; its budget is
+# a HANG DETECTOR, not a performance bound, and a hang is caught in
+# _SCAN_TIMEOUT instead of the old single 120s. Deliberately NO retry: an
 # INTERMITTENT hang must not be able to pass on its second try.
-_TIMEOUT = 120.0
+_START_TIMEOUT = 120.0
+_SCAN_TIMEOUT = 20.0
+_READY = "__ready__"
 _EXPECTED = "[(20.0,), (40.0,), (60.0,)]"
 
 _DRAIN = (
@@ -67,6 +70,7 @@ def _repro(fetch: str) -> str:
     )
     return (
         "import duckdb, pyarrow as pa\n"
+        f"print({_READY!r}, flush=True)\n"
         "con = duckdb.connect()\n"
         'con.register("src", pa.table({"price": [10.0, 20.0, 30.0]}))\n'
         + body
@@ -76,13 +80,33 @@ def _repro(fetch: str) -> str:
 
 
 def _run(fetch: str) -> str:
-    return subprocess.run(  # noqa: S603
+    proc = subprocess.Popen(  # noqa: S603
         [sys.executable, "-c", _repro(fetch)],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=_TIMEOUT,
-        check=True,
-    ).stdout.strip()
+    )
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def pump():
+        for line in proc.stdout:
+            lines.put(line.rstrip("\n"))
+        lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    try:
+        if lines.get(timeout=_START_TIMEOUT) != _READY:
+            raise RuntimeError(f"child did not start: {proc.stderr.read()}")
+        out = lines.get(timeout=_SCAN_TIMEOUT)
+        if proc.wait(timeout=_SCAN_TIMEOUT) != 0:
+            raise RuntimeError(f"child failed: {proc.stderr.read()}")
+    except queue.Empty:
+        raise TimeoutError("the child wedged") from None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    return (out or "").strip()
 
 
 @pytest.mark.parametrize("fetch", ["to_arrow_table", "drain"])
