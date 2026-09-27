@@ -1113,8 +1113,8 @@ pub fn compile_ext(
                     .any(|i| matches!(i, Inst::ProbeRange { .. } | Inst::ProbeRead { .. }))
         });
     if has_multiplicity {
-        return Err(CompileError::Static(
-            "multiplicity programs run on the interpreter".into(),
+        return Err(CompileError::InterpOnly(
+            "multiplicity programs (shape='many') run on the interpreter",
         ));
     }
     // The interpreter compile also runs verify + prepare_statics; its
@@ -1126,9 +1126,9 @@ pub fn compile_ext(
     flags.set("is_pic", "false").unwrap();
     flags.set("opt_level", "speed").unwrap();
     let isa = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
-        .map_err(|e| CompileError::Static(format!("cranelift: no host ISA: {e}")))?
+        .map_err(|e| CompileError::Codegen(format!("cranelift: no host ISA: {e}")))?
         .finish(settings::Flags::new(flags))
-        .map_err(|e| CompileError::Static(format!("cranelift: ISA: {e}")))?;
+        .map_err(|e| CompileError::Codegen(format!("cranelift: ISA: {e}")))?;
 
     let mut jb = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     for (name, ptr) in HELPERS {
@@ -1144,7 +1144,7 @@ pub fn compile_ext(
         helper_sig(name, &mut sig, ptr_ty);
         let id = module
             .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CompileError::Static(format!("cranelift declare {name}: {e}")))?;
+            .map_err(|e| CompileError::Codegen(format!("cranelift declare {name}: {e}")))?;
         helper_ids.insert(name, id);
     }
 
@@ -1336,14 +1336,14 @@ pub fn compile_ext(
 
     let fid = module
         .declare_function("row", Linkage::Export, &ctx.func.signature)
-        .map_err(|e| CompileError::Static(format!("cranelift declare row: {e}")))?;
+        .map_err(|e| CompileError::Codegen(format!("cranelift declare row: {e}")))?;
     module
         .define_function(fid, &mut ctx)
-        .map_err(|e| CompileError::Static(format!("cranelift define: {e}")))?;
+        .map_err(|e| CompileError::Codegen(format!("cranelift define: {e}")))?;
     module.clear_context(&mut ctx);
     module
         .finalize_definitions()
-        .map_err(|e| CompileError::Static(format!("cranelift finalize: {e}")))?;
+        .map_err(|e| CompileError::Codegen(format!("cranelift finalize: {e}")))?;
     let code = module.get_finalized_function(fid);
     let row_fn: RowFn = unsafe { std::mem::transmute(code) };
 

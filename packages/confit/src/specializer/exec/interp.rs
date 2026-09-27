@@ -82,6 +82,13 @@ pub enum CompileError {
     /// A ReSpec pattern failed to compile — the frontend validates patterns
     /// at bind, so this only fires on hand-written IR.
     Regex(String),
+    /// The program uses a construct only the interpreter executes (today:
+    /// the `shape='many'` multiplicity constructs). The one reason a caller
+    /// may fall back from Cranelift to the interpreter.
+    InterpOnly(&'static str),
+    /// Cranelift failed to generate code for a program the interpreter
+    /// accepts: an engine bug, never a reason to fall back silently.
+    Codegen(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -108,6 +115,8 @@ impl std::fmt::Display for CompileError {
                  shape='many'"
             ),
             CompileError::Regex(msg) => write!(f, "regex table entry failed to compile: {msg}"),
+            CompileError::InterpOnly(why) => write!(f, "interpreter only: {why}"),
+            CompileError::Codegen(msg) => write!(f, "cranelift codegen failed: {msg}"),
         }
     }
 }

@@ -18,7 +18,7 @@ use pyo3::types::{PyDict, PyString};
 use crate::error::InterpError;
 use crate::schema;
 use crate::specializer::exec::cranelift::{self, CraneliftFn};
-use crate::specializer::exec::interp::{compile_ext, InterpFn};
+use crate::specializer::exec::interp::{compile_ext, CompileError, InterpFn};
 use crate::specializer::exec::{
     self, Batch, ColData, ExternImpl, KeyBits, OutCol, ScalarVal, StaticData,
 };
@@ -1723,10 +1723,11 @@ impl DuckDBInferFn {
                 match cranelift::compile_ext(&prepared.program, data, make_externs(py, &udf_decls))
                 {
                     Ok(f) => Backend::Cranelift(f),
-                    // The failed attempt consumed the static data and the
-                    // externs; rebuild both on this cold path and fall back
-                    // to the interpreter.
-                    Err(_) => Backend::Interp(
+                    // The ONE fallback: a program Cranelift declines by name
+                    // (the multiplicity constructs). The failed attempt
+                    // consumed the static data and the externs; rebuild both
+                    // on this cold path.
+                    Err(CompileError::InterpOnly(_)) => Backend::Interp(
                         compile_ext(
                             &prepared.program,
                             materialize_statics(py, &prepared, &static_tables, &tree_decls)?,
@@ -1734,6 +1735,18 @@ impl DuckDBInferFn {
                         )
                         .map_err(|e| build_err(e.to_string()))?,
                     ),
+                    // Codegen failing on a program the interpreter accepts is
+                    // an engine bug: surface it, never serve around it. Not a
+                    // ValueError, so it is not read as a refusal.
+                    Err(e @ CompileError::Codegen(_)) => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "internal error: {e}"
+                        )))
+                    }
+                    // Verification, static-data and multiplicity-contract
+                    // errors come from the interpreter compile Cranelift runs
+                    // first: exactly what the interpreter path would say.
+                    Err(e) => return Err(build_err(e.to_string())),
                 }
             }
         };
