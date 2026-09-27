@@ -742,6 +742,14 @@ pub fn may_trap(e: &SExpr) -> bool {
 /// DuckDB's binder refuses to fold anything holding a column — and its
 /// bind-time typing rules (the `||`-to-SQLNULL collapse) key on ITS notion,
 /// so the gate must too.
+/// Whether `op` at result type `ty` answers NULL for a zero or NULL divisor
+/// (DuckDB: integer `%`, and `//` on ints and doubles). The lowering applies
+/// it as a flag, so the dividend is always evaluated; the binder reads it
+/// for nullability.
+pub fn zero_divisor_nulls(op: ArithOp, ty: Ty) -> bool {
+    (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv
+}
+
 pub fn bind_foldable(e: &SExpr) -> bool {
     match &e.kind {
         SKind::Col(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,

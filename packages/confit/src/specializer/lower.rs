@@ -971,6 +971,32 @@ impl<'a> FB<'a> {
                 // frontend's CASE, so a non-NULL one is never 0; the masked
                 // one must not be either. Float ops are total — no masking.
                 let flag = self.combine_flags(la.flag, lb.flag);
+                // Integer `%` and `//` on either lane answer NULL for a zero
+                // divisor: the divisor's non-zero test joins the result
+                // flag, so the masking below feeds the op 0 / 1, never 0 / 0.
+                // Both operands were evaluated above whatever the divisor, as
+                // DuckDB evaluates them, so a trap in the dividend still fires.
+                let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
+                    || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
+                let flag = if plan::zero_divisor_nulls(*op, e.ty) && !nonzero_lit {
+                    let lane = e.ty.lane();
+                    let zero = self.const_lit(if lane == Ty::F64 {
+                        Lit::F64(0.0)
+                    } else {
+                        Lit::I64(0)
+                    });
+                    let nz = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: CmpPred::Ne,
+                        ty: lane,
+                        dst: nz,
+                        a: lb.val,
+                        b: zero,
+                    });
+                    self.combine_flags(flag, Some(nz))
+                } else {
+                    flag
+                };
                 let (va, vb) = match (e.ty.lane(), flag) {
                     (Ty::I64, Some(f)) => {
                         let safe_b = if matches!(ir_op, BinOp::Idiv | BinOp::Irem) {

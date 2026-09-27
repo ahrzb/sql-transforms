@@ -5705,66 +5705,17 @@ impl Binder<'_> {
         }
         let nullable = a.nullable || b.nullable;
         // DuckDB pins (pins-wave1/, pins-wave3/): integer % by zero is NULL,
-        // and `//`/divide() by zero is NULL on BOTH ints and doubles —
-        // guard with a CASE unless the divisor is a provably non-zero
-        // literal. The idiv/irem traps stay reachable only for MIN op -1,
-        // where DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
-        let needs_guard =
-            (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv;
+        // and `//`/divide() by zero is NULL on BOTH ints and doubles. The
+        // zero/NULL-divisor rule is the lowering's (`zero_divisor_nulls`):
+        // the node stays a plain Arith so its DIVIDEND is always evaluated,
+        // as DuckDB evaluates it, and a trap inside it fires even when the
+        // divisor is 0 or NULL (fuzz seeds 23097, 20523, 46043). A CASE
+        // guard here skipped the dividend. The idiv/irem traps stay
+        // reachable only for MIN op -1, where DuckDB traps too. Float % is
+        // IEEE (x % 0.0 = NaN), no rule.
         let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
             || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
-        if needs_guard && !nonzero_lit {
-            let zero = SExpr {
-                kind: SKind::Lit(if ty == Ty::F64 {
-                    Lit::F64(0.0)
-                } else {
-                    Lit::I64(0)
-                }),
-                ty,
-                nullable: false,
-            };
-            // The guard must fire for a NULL divisor too: `b = 0` alone is
-            // NULL there (arm not taken) and the irem would run on the
-            // garbage payload. TRUE OR NULL = TRUE makes IS NULL the shield.
-            let is_zero = self.cmp(CmpPred::Eq, b.clone(), zero)?;
-            let cond = if b.nullable {
-                let is_null = SExpr {
-                    kind: SKind::IsNull {
-                        negated: false,
-                        inner: Box::new(b.clone()),
-                    },
-                    ty: Ty::I1,
-                    nullable: false,
-                };
-                SExpr {
-                    kind: SKind::Or {
-                        a: Box::new(is_null),
-                        b: Box::new(is_zero),
-                    },
-                    ty: Ty::I1,
-                    nullable: true,
-                }
-            } else {
-                is_zero
-            };
-            let rem = SExpr {
-                kind: SKind::Arith {
-                    op,
-                    a: Box::new(a),
-                    b: Box::new(b),
-                },
-                ty,
-                nullable,
-            };
-            return Ok(SExpr {
-                kind: SKind::Case {
-                    arms: vec![(cond, null_of(ty))],
-                    default: Some(Box::new(rem)),
-                },
-                ty,
-                nullable: true,
-            });
-        }
+        let nullable = nullable || (super::plan::zero_divisor_nulls(op, ty) && !nonzero_lit);
         Ok(SExpr {
             kind: SKind::Arith {
                 op,
@@ -6035,6 +5986,18 @@ impl Binder<'_> {
                 SKind::Lit(Lit::I64(v)) => Some(ScalarVal::I64(v)),
                 SKind::Lit(Lit::F64(v)) => Some(ScalarVal::F64(v)),
                 SKind::Lit(Lit::Str(s)) => Some(ScalarVal::Str(s)),
+                // `CAST('0' AS VARCHAR)`: the binder keeps a string literal
+                // cast to VARCHAR as a node (it compares unlike a bare
+                // literal), but as an argument it is just its value
+                // (fuzz seed 49961).
+                SKind::Cast { inner, .. }
+                    if a.ty == Ty::Str && matches!(inner.kind, SKind::Lit(Lit::Str(_))) =>
+                {
+                    let SKind::Lit(Lit::Str(s)) = inner.kind else {
+                        unreachable!("matched above")
+                    };
+                    Some(ScalarVal::Str(s))
+                }
                 // A constant spelling our fold cannot finish (runtime-only
                 // ops over literals) — DuckDB would fold; we pass.
                 _ => return None,
@@ -6451,11 +6414,7 @@ impl Binder<'_> {
                 (a, b) if a == b => bound,
                 // A narrow int upcasts into a declared int64 param (the
                 // lane is shared) — DuckDB's implicit INTEGER -> BIGINT.
-                (a, Ty::I64) if a.is_int() => {
-                    let mut e = bound;
-                    e.ty = Ty::I64;
-                    e
-                }
+                (a, Ty::I64) if a.is_int() => widen_int(bound, Ty::I64),
                 (a, Ty::F64) if a.is_int() => promote_f64(bound),
                 (a, b) => {
                     return Err(PrepareError::Bind(format!(

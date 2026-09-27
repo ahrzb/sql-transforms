@@ -284,6 +284,16 @@ pub fn fold(e: SExpr) -> SExpr {
             let (a, b) = (fold(*a), fold(*b));
             match (as_const(&a), as_const(&b)) {
                 (Some(K::Null), Some(_)) | (Some(_), Some(K::Null)) => null(ty),
+                // Both constant and a zero divisor: NULL, as the runtime flag
+                // answers (`super::plan::zero_divisor_nulls`). Only when the
+                // dividend is constant too -- a live dividend must still run.
+                (Some(K::Val(_)), Some(K::Val(y)))
+                    if super::plan::zero_divisor_nulls(op, ty)
+                        && (matches!(y, Lit::I64(0))
+                            || matches!(y, Lit::F64(v) if v == 0.0)) =>
+                {
+                    null(ty)
+                }
                 // MIN % -1 at a NARROW width overflows DuckDB's checked
                 // division even though the i64 value (0) is fine, so the
                 // fold must not hide it from the runtime guard.
@@ -406,6 +416,14 @@ pub fn fold(e: SExpr) -> SExpr {
         }
         SKind::Cast { inner, trying } => {
             let inner = fold(*inner);
+            // A cast of a constant NULL is a NULL of the target type, CAST or
+            // TRY_CAST alike: nothing to convert, nothing to trap. Without
+            // it `||`'s to_varchar wrapper hid a folded NULL operand
+            // (`TRY_CAST('x' AS DOUBLE) || 'a'` typed VARCHAR where DuckDB's
+            // binder collapses it to SQLNULL).
+            if matches!(inner.kind, SKind::NullOf) {
+                return null(ty);
+            }
             // A width-only cast of a folded integer constant collapses:
             // the node existed as the NON-literal provenance mark for the
             // value-fits promotion (frontend::int_literal_value), and by

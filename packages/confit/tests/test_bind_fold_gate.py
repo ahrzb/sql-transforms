@@ -107,7 +107,8 @@ def test_a_udf_over_a_cast_integer_constant_folds_at_bind(arg, want_ty, oracle):
         # at bind, so the division is NULL and the trapping CASE never runs.
         "(CASE WHEN 0.75e0 THEN CAST('' AS DOUBLE) END) "
         "/ floor(TRY_CAST('%_' AS DOUBLE))",
-        "CAST('' AS DOUBLE) / sqrt(TRY_CAST('x' AS DOUBLE))",
+        "sqrt(TRY_CAST('x' AS DOUBLE)) * 2.0e0",
+        "TRY_CAST('x' AS DOUBLE) || 'a'",
         "floor(TRY_CAST('x' AS DOUBLE)) || 'a'",
         "floor(TRY_CAST('x' AS DOUBLE)) + 1",
         "ceil(CAST(NULL AS DOUBLE))",

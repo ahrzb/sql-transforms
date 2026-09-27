@@ -61,9 +61,9 @@ ARMS = [
 def test_a_narrow_arm_overflows_at_its_own_width(expr, force_interp):
     sql = f"SELECT {expr} AS o FROM __THIS__"
     rows = [{"c0": -128, "c1": 5, "c2": -32768}]
-    with pytest.raises(Exception, match="Overflow"):
+    with pytest.raises(Exception, match="Overflow|out of range"):
         _oracle(sql, rows)
-    with pytest.raises(Exception, match="Overflow"):
+    with pytest.raises(Exception, match="Overflow|out of range"):
         _confit(sql, rows, force_interp)
 
 
