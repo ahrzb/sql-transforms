@@ -1,0 +1,80 @@
+name: Nightly campaign
+
+# The deep differential campaign (packages/confit/fuzz/nightly.py): a fresh
+# window of seeds each night through the strict oracle campaign and the
+# metamorphic spelling suite. A red run files its report as an issue, or
+# comments on the open one.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      n:
+        description: seeds in the window
+        default: "100000"
+      seed:
+        description: window start (empty = tonight's)
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-campaign
+  cancel-in-progress: false
+
+jobs:
+  campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # No Spark group: the campaign never touches the dialect gate.
+      - name: Build extension + install deps
+        run: uv sync --locked
+
+      - name: Campaign
+        id: run
+        working-directory: packages/confit
+        env:
+          N: ${{ inputs.n || '100000' }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          uv run --no-sync python -m fuzz.nightly --n "$N" ${SEED:+--seed "$SEED"} --out nightly
+
+      - name: Upload report and verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-campaign
+          path: packages/confit/nightly/
+          retention-days: 30
+
+      - name: File findings
+        if: failure() && steps.run.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        working-directory: packages/confit
+        run: |
+          printf '\n[Run and artifacts](%s)\n' "$RUN_URL" >> nightly/report.md
+          open=$(gh issue list --state open --search "in:title Nightly campaign findings" \
+                   --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body-file nightly/report.md
+          else
+            gh issue create --title "Nightly campaign findings" --body-file nightly/report.md
+          fi

@@ -42,6 +42,7 @@ worker-failure kinds.
 | `BUILD_EXC` | confit construction raises something other than the contract `ValueError` |
 | `REFUSED` | both confit backends reject construction with `ValueError` |
 | `UNSHIPPED` | an enumerated missing width prevents value comparison |
+| `EXCLUDED` | both confit backends trap on a resource ceiling of the serving contract's `resource-ceilings` exclusion (`fuzz.oracle.RESOURCE_CEILINGS`, matched verbatim) and DuckDB does not trap: it serves the value or is still building it at `CEILING_DEADLINE`, when it is interrupted. Where DuckDB traps too, the case compares as usual |
 | `SKIP` | an exception escapes the case harness |
 | `TIMEOUT` | a worker exceeds the per-case budget; detail is an 800-byte stderr tail |
 | `PANIC` | a worker exits without returning a verdict; detail has the same shape |

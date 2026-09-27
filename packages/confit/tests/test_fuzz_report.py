@@ -107,6 +107,7 @@ def test_every_kind_lands_in_exactly_one_outcome_category():
         "unresolved",
         "refused",
         "unshipped",
+        "excluded",
     }
 
 
@@ -121,6 +122,7 @@ def test_unresolved_is_counted_apart_from_agreement_and_mismatch(tmp_path, capsy
         _r(7, "TIMEOUT", "timeout"),
         _r(8, "REFUSED", "unsupported: x", "serves"),
         _r(9, "UNSHIPPED", "decimals"),
+        _r(10, "EXCLUDED", "resource-ceiling"),
     ]
     out = tmp_path / "f.jsonl"
     runner.report(results, out)
@@ -132,6 +134,7 @@ def test_unresolved_is_counted_apart_from_agreement_and_mismatch(tmp_path, capsy
         "no verdict: neither agreement nor a confirmed defect",
         f"  {'refused':11} {1:6}",
         f"  {'unshipped':11} {1:6}",
+        f"  {'excluded':11} {1:6}",
     ]
     lines = [json.loads(x) for x in out.read_text().splitlines()]
     assert {x["kind"]: x["category"] for x in lines} == {
