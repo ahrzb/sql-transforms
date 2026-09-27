@@ -961,19 +961,31 @@ impl<'a> FB<'a> {
                         )))
                     }
                 };
-                // Integer arithmetic traps (overflow, % edge cases): mask
-                // nullable payloads so garbage under a false flag can never
-                // fire the trap. Float ops are total — no masking needed.
-                let (va, vb) = if e.ty.lane() == Ty::I64 {
-                    (self.masked(la, Ty::I64), self.masked(lb, Ty::I64))
-                } else {
-                    (la.val, lb.val)
+                // Integer arithmetic traps (overflow, shift ranges, % edge
+                // cases): when EITHER operand is NULL, mask BOTH payloads, so
+                // a NULL row computes 0 op 0 (0 op 1 for / and %) and can
+                // never fire the trap. Masking each operand by its own flag
+                // is not enough: a NULL left operand masked to 0 still
+                // overflows `0 - i64::MIN` and still traps `0 << -1`, where
+                // DuckDB answers NULL. Divisors are zero-guarded by the
+                // frontend's CASE, so a non-NULL one is never 0; the masked
+                // one must not be either. Float ops are total — no masking.
+                let flag = self.combine_flags(la.flag, lb.flag);
+                let (va, vb) = match (e.ty.lane(), flag) {
+                    (Ty::I64, Some(f)) => {
+                        let safe_b = if matches!(ir_op, BinOp::Idiv | BinOp::Irem) {
+                            1
+                        } else {
+                            0
+                        };
+                        let da = self.const_lit(Lit::I64(0));
+                        let db = self.const_lit(Lit::I64(safe_b));
+                        (self.select_of(f, la.val, da), self.select_of(f, lb.val, db))
+                    }
+                    _ => (la.val, lb.val),
                 };
                 let val = self.bin(ir_op, va, vb);
-                let lane = Lane {
-                    flag: self.combine_flags(la.flag, lb.flag),
-                    val,
-                };
+                let lane = Lane { flag, val };
                 // MIN % -1 at a NARROW width. DuckDB computes the modulo
                 // through the checked division, which overflows at the
                 // width even though the mathematical result (0) is in range —
