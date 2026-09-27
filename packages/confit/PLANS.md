@@ -11,11 +11,13 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    red runs as a "Nightly campaign findings" issue. Watch the first runs for
    runner time and flaky TIMEOUTs; triage each filed class to a fix, a named
    exclusion, or an open-divergence pin.
-2. **Parity migration.** Moved so far: `test_null_operands`,
-   `test_arm_widening`, `test_derived_tables`, `test_metamorphic`. Still on
-   their own helpers: the other direct `Oracle()` users (`grep -l "Oracle()"
-   tests`). Types outside the campaign vocabulary (uint, list, decimal
-   statics) keep theirs until `spec_of` covers them.
+2. **Parity migration.** On the campaign verdict: `duck_check` (about 550
+   calls across the `test_duckdb_*` files, the shrinker's pin template),
+   `test_null_operands`, `test_arm_widening`, `test_derived_tables`,
+   `test_metamorphic`. Still on their own helpers: `test_integer_widths`,
+   `test_join_keys`, `test_infer_arrow`, `test_struct_column_access`,
+   `test_params_joins`, `test_udfs`, `duck_check_ulp` (ulp tolerance) and the
+   UDF helpers (`fuzz.parity` has no UDF input yet).
 3. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
