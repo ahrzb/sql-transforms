@@ -641,7 +641,17 @@ fn bind_select(
             }
             SelectItem::QualifiedWildcard(kind, opts) => {
                 let table = match kind {
-                    sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(n) => n.to_string(),
+                    // The identifier VALUES: `"d".*` names the relation d
+                    // (quoting keeps case-insensitivity in DuckDB too).
+                    sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(n) => n
+                        .0
+                        .iter()
+                        .map(|p| match p.as_ident() {
+                            Some(i) => i.value.clone(),
+                            None => p.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("."),
                     sqlparser::ast::SelectItemQualifiedWildcardKind::Expr(_) => {
                         return Err(unsup("expression.* wildcard"))
                     }

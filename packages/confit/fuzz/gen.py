@@ -809,8 +809,27 @@ def _instance_arg(rng, env, k: int) -> Node:
 # ---------------------------------------------------------------- rendering
 
 
+# DuckDB's reserved keywords (duckdb_keywords(), category 'reserved'): one
+# cannot start a column reference unquoted, so they render quoted like any
+# other hostile name. Pinned against DuckDB in test_fuzz_smoke.
+RESERVED = frozenset(
+    "all analyse analyze and any array as asc asymmetric both case cast check "
+    "collate column constraint create default deferrable desc describe distinct "
+    "do else end except false fetch for foreign from group having in initially "
+    "intersect into lambda lateral leading limit not null offset on only or order "
+    "pivot pivot_longer pivot_wider placing primary qualify references returning "
+    "select show some summarize symmetric table then to trailing true union unique "
+    "unpivot using variadic when where window with".split()
+)
+
+
 def _ident(name: str) -> str:
-    if name.replace("_", "").isalnum() and name.isascii() and not name[0].isdigit():
+    if (
+        name.replace("_", "").isalnum()
+        and name.isascii()
+        and not name[0].isdigit()
+        and name.lower() not in RESERVED
+    ):
         return name
     return '"' + name.replace('"', '""') + '"'
 

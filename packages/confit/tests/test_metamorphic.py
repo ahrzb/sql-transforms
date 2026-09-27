@@ -65,3 +65,39 @@ def test_a_relation_read_as_a_struct_stays_refused():
     sql = "SELECT a FROM __THIS__ LEFT JOIN d ON a = d['k']['f']"
     with pytest.raises(ValueError, match="column 'd' does not exist"):
         DuckDBInferFn(sql, row_tables={"__THIS__": ROW}, static_tables={"d": D})
+
+
+# ------------------------------------------------- found by the nightly run
+# (issue ahrzb/sql-transforms#303, window 1000000..1004999)
+
+T = pa.table(
+    {
+        "a": pa.array([1, 2], pa.int64()),
+        "from": pa.array([{"f0": 1}, {"f0": 2}], pa.struct([("f0", pa.int64())])),
+    }
+)
+DIM = pa.table({"id": pa.array([1], pa.int64()), "v": ["x"]})
+
+
+@pytest.mark.parametrize("qual", ['"d"', '"D"', "d", "D"])
+def test_a_quoted_wildcard_qualifier_names_its_relation(qual):
+    # `"d".*` kept its quotes and matched no relation (quote-all rewrite).
+    sql = f"SELECT {qual}.* FROM __THIS__ LEFT JOIN d ON a = d.id"
+    assert_parity(sql, T.select(["a"]), statics={"d": DIM}, expect="AGREE")
+
+
+@pytest.mark.parametrize(
+    "sql, kind",
+    [
+        # DuckDB's grammar will not start a column reference with a reserved
+        # keyword; confit built `(from).f0` (lane-paren rewrite).
+        ("SELECT (from).f0 AS x FROM __THIS__", "REFUSED"),
+        ("SELECT from.f0 AS x FROM __THIS__", "REFUSED"),
+        ('SELECT "from".f0 AS x FROM __THIS__', "AGREE"),
+        ("SELECT __THIS__.from.f0 AS x FROM __THIS__", "AGREE"),
+    ],
+)
+def test_a_reserved_keyword_starts_no_column_reference(sql, kind):
+    v = assert_parity(sql, T, expect=kind)
+    if kind == "REFUSED":
+        assert v.oracle == "rejects", v
