@@ -72,6 +72,23 @@ CATEGORY = {
     "REFUSED": "refused",
     "UNSHIPPED": "unshipped",
 }
+# The acceptance gate (docs/specs/2026-09-26-row-local-subqueries-design.md,
+# "Acceptance gate"): under --strict any of these fails the run. DIVERGE_OPT
+# is disagreement with the optimizer-ON reading, not with the chosen oracle,
+# so it is reported and never gates. BUILD_EXC, PANIC, SKIP and TIMEOUT gate
+# because an unexplained one is not allowed; explaining one means naming its
+# cause in the PR, and the run is repeated once it is fixed.
+GATED = (
+    "DIVERGE_VALUE",
+    "DIVERGE_TRAP",
+    "DIVERGE_BUILD",
+    "OPT_EMULATED",
+    "BUILD_EXC",
+    "PANIC",
+    "SKIP",
+    "TIMEOUT",
+)
+
 _CATEGORY_NOTE = {
     "unresolved": "no verdict: neither agreement nor a confirmed defect",
 }
@@ -425,6 +442,45 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
         print(f"  {n:6}  {kind:14} {klass}   e.g. seed {r['seed']}: {r['sql'][:90]}")
 
 
+def write_cases(results: list[dict], path: Path) -> None:
+    """One `{"seed", "kind", "klass"}` line per seed, in seed order: the
+    per-case record a later run compares against with --baseline."""
+    with path.open("w", encoding="utf-8") as f:
+        for r in sorted(results, key=lambda r: r["seed"]):
+            case = {"seed": r["seed"], "kind": r["kind"], "klass": r.get("klass", "")}
+            f.write(json.dumps(case) + "\n")
+
+
+def lost_agreements(results: list[dict], baseline: Path) -> list[tuple[int, str]]:
+    """Seeds in agreement in `baseline` (a --cases file) that are not in
+    agreement now, as `(seed, kind now)`. Equal totals are not evidence of
+    preservation; this is the case-level check. Seeds outside this run's
+    range are ignored, so a baseline may cover more seeds than the run."""
+    now = {r["seed"]: r["kind"] for r in results}
+    lost = []
+    for line in baseline.read_text(encoding="utf-8").splitlines():
+        b = json.loads(line)
+        kind = now.get(b["seed"])
+        if kind is None:
+            continue
+        if CATEGORY.get(b["kind"]) == "agreement" and CATEGORY.get(kind) != "agreement":
+            lost.append((b["seed"], kind))
+    return lost
+
+
+def gate(results: list[dict], baseline: Path | None) -> list[str]:
+    """The acceptance gate's failures, as printable lines; empty = pass."""
+    fails = []
+    kinds = collections.Counter(r["kind"] for r in results)
+    for k in GATED:
+        if kinds[k]:
+            fails.append(f"{kinds[k]} {k}")
+    if baseline is not None:
+        for seed, kind in lost_agreements(results, baseline):
+            fails.append(f"seed {seed} agreed in the baseline and is now {kind}")
+    return fails
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
@@ -433,8 +489,26 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=30.0)
     ap.add_argument("--out", type=Path, default=Path("findings.jsonl"))
+    ap.add_argument("--cases", type=Path, help="write every seed's verdict here")
+    ap.add_argument(
+        "--baseline", type=Path, help="a --cases file whose agreements must hold"
+    )
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 on a gated verdict or a lost baseline agreement",
+    )
     a = ap.parse_args()
-    campaign(a.seed, a.n, a.workers, a.timeout, a.out)
+    results = campaign(a.seed, a.n, a.workers, a.timeout, a.out)
+    if a.cases is not None:
+        write_cases(results, a.cases)
+    fails = gate(results, a.baseline)
+    if a.baseline is not None or a.strict:
+        print(f"\n== acceptance gate: {'FAIL' if fails else 'pass'} ==")
+        for line in fails:
+            print(f"  {line}")
+    if a.strict and fails:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

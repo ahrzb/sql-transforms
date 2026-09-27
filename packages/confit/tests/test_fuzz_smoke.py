@@ -325,3 +325,44 @@ def test_a_case_marks_each_phase_on_stderr_before_it_runs(capsys):
         if ln.startswith(oracle.PHASE_MARK)
     ]
     assert phases[:3] == ["confit:build", "oracle", "confit:run"], phases
+
+
+def test_a_case_revived_from_its_stored_inputs_answers_like_the_original():
+    """`case_from_inputs` is what makes a stored case independent of the
+    generator revision: the revived case must carry the same inputs, value
+    types included (a Decimal stays a Decimal), and earn the same verdict."""
+    import json
+
+    for seed in range(0, N, 3):
+        case = gen.gen(seed)
+        stored = json.loads(
+            json.dumps(
+                {"sql": gen.render(case.query), "inputs": oracle.case_inputs(case)}
+            )
+        )
+        revived = oracle.case_from_inputs(seed, stored["sql"], stored["inputs"])
+        assert json.dumps(oracle.case_inputs(revived)) == json.dumps(
+            oracle.case_inputs(case)
+        ), seed
+        assert repr(revived.rows) == repr(case.rows), seed
+        assert repr(revived.statics) == repr(case.statics), seed
+        a, b = oracle.run_case(case), oracle.run_case(revived)
+        assert (a.kind, a.klass) == (b.kind, b.klass), seed
+
+
+def test_the_subquery_candidate_snapshot_is_whole_and_revivable():
+    """The frozen denominator of the subquery design: 150 phase-1 derived
+    tables and 48 phase-2 CTEs, each replayable without the generator."""
+    import collections
+    import json
+
+    path = (
+        Path(__file__).parents[1] / "fuzz/corpora/subquery-candidates-2026-09-27.jsonl"
+    )
+    header, *lines = [json.loads(ln) for ln in path.read_text("utf-8").splitlines()]
+    assert set(header) == {"provenance"}
+    by = collections.Counter((c["phase"], c["form"]) for c in lines)
+    assert by == {(1, "derived"): 150, (2, "cte"): 48}
+    for c in lines:
+        case = oracle.case_from_inputs(c["seed"], c["sql"], c["inputs"])
+        assert case.sql and case.query is None
