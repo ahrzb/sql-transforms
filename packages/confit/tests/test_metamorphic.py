@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn, compare
-from confit.oracle import Oracle
+from confit import DuckDBInferFn
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from fuzz import metamorphic  # noqa: E402
+from fuzz.parity import assert_parity  # noqa: E402
 
 N = 300
 
@@ -54,12 +54,7 @@ D = pa.table(
 def test_every_spelling_of_a_struct_leaf_is_a_join_key(key):
     sql = f"SELECT a, v FROM __THIS__ LEFT JOIN d ON a = {key}"
     rows = pa.table({"a": pa.array([1, 2, 3, None], pa.int64())})
-    o = Oracle()
-    o.load("d", D)
-    o.load("__THIS__", rows)
-    want = o.answer(sql)
-    got = DuckDBInferFn(sql, row_tables={"__THIS__": ROW}, static_tables={"d": D})
-    compare.assert_rows(got.infer_arrow(rows).to_pylist(), compare.rows(want), ctx=sql)
+    assert_parity(sql, rows, statics={"d": D}, expect="AGREE")
 
 
 def test_a_relation_read_as_a_struct_stays_refused():

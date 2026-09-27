@@ -169,6 +169,9 @@ class Verdict:
     # ORACLE_OUTCOMES. Reporting, not adjudication — a query DuckDB serves and
     # we refuse is not by itself a defect.
     oracle: str = ""
+    # AGREE_TRAP only: DuckDB's whole error (`klass` keeps its first words).
+    # In memory for `fuzz.parity`; not part of the campaign's JSON.
+    oracle_detail: str = ""
 
     def to_json(self):
         out = {
@@ -595,7 +598,13 @@ def run_case(case: G.Case) -> Verdict:
             )
         if trap_cl is not None:
             if duck_out is None:  # both sides error at run time
-                return Verdict("AGREE_TRAP", _first_words(duck_err), trap_cl, t)
+                return Verdict(
+                    "AGREE_TRAP",
+                    _first_words(duck_err),
+                    trap_cl,
+                    t,
+                    oracle_detail=duck_err,
+                )
             return Verdict(
                 "DIVERGE_TRAP",
                 _first_words(trap_cl),

@@ -12,6 +12,27 @@ parameterization is defined by the [oracle](README.md) and
 [serving contract](../specs/serving-contract.md#udf-and-model-boundary); it is not a
 numeric tolerance or a second oracle.
 
+## One verdict for tests and the campaign
+
+**claim: one-verdict.** A test that compares a hand-written query with DuckDB uses
+`fuzz.parity.assert_parity`. That function routes the query through `fuzz.oracle.run_case`,
+which is the verdict every campaign case gets. So the test asserts what the campaign asserts:
+- both backends, agreeing with each other;
+- both DuckDB readings;
+- output names and types;
+- the non-null promise;
+- repr-equal rows.
+
+A test states its expected verdict. `AGREE`, `AGREE_TRAP` with a message regex, and
+`DIVERGE_OPT` all count: the last is where DuckDB's optimizer prunes a trapping column
+that the optimizer-off contract evaluates. `python -m fuzz.probe` gives an ad hoc query
+the same verdict and prints both answers.
+
+*Enforced-by:* `fuzz/parity.py`, `fuzz/probe.py`.
+*Evidence:* `packages/confit/tests/test_parity.py` pins that the harness catches a wrong
+output name, a one-sided trap, a different trap message, and an unexpected refusal.
+Older tests still carry their own helpers; PLANS tracks the migration.
+
 ## Rows and values
 
 **claim: repr-equality.** `confit.compare` is the shared row-comparison vocabulary for
