@@ -200,6 +200,7 @@ pub(super) fn resolve_relation<'q>(
     statics: &[StaticTable],
     this_name: &str,
     many: bool,
+    driving: &Driving,
 ) -> Result<ResolvedRel<'q>, PrepareError> {
     let (raw_name, alias) = match plain_table(factor)? {
         Some(named) => named,
@@ -215,6 +216,9 @@ pub(super) fn resolve_relation<'q>(
         .unwrap_or_else(|| raw_name.bare().to_string());
     let schema = if alias.is_some() { String::new() } else { raw_name.schema() };
     let source = if raw_name.to_string().eq_ignore_ascii_case(this_name) {
+        if let Driving::Derived { .. } = driving {
+            return Err(unsup("joining the request table beside a derived table"));
+        }
         if alias.is_some_and(|a| !a.columns.is_empty()) {
             // Dropping it answered a query with the WRONG names in
             // scope; serving the rename on a self-join is unpinned.
@@ -401,6 +405,7 @@ pub(super) fn bind_from<'a>(
             statics,
             this_name,
             many,
+            &driving,
         )?;
         if let RelSource::SelfJoin = rel.source {
             // Self-join: the build side is the BATCH — a keyless
@@ -597,6 +602,7 @@ pub(super) fn bind_from<'a>(
             statics,
             this_name,
             many,
+            &driving,
         )?;
         let RelSource::Static(table_idx) = rel.source else {
             // Comma self-join = pure cross against the batch; equi

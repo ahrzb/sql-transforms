@@ -244,6 +244,28 @@ alongside it.
 
 A dated reading (N=4) follows PR 3.
 
+## Measured recovery (2026-09-27)
+
+On the frozen candidate snapshot (`fuzz/corpora/subquery-candidates-2026-09-27.jsonl`):
+
+| after | phase 1 (150) | phase 2 (48) |
+|---|---|---|
+| PR 2, derived tables | 132 agree | 0 |
+| PR 3a, joins beside them and CTEs | 132 agree | 42 agree |
+
+Phase 1's other 18 hit refusal classes the derived-table refusal was hiding
+(the i128 literal, UDF widths, `shape='map'` with a WHERE, a failing constant
+cast, a decimal literal).
+
+**Phase 2 was mis-measured.** All 48 of its candidates are CTEs the query
+never reads: the generator's CTE arm drops the join when it cannot form an
+equality, and DuckDB never binds an unread CTE. They agree after PR 3a
+because an unread CTE is ignored, as on DuckDB; the other 6 hit unrelated
+refusals. So the generated grammar holds no case of a static-only CTE or
+derived table actually joined to the request table, and PR 4 (computing one
+at construction) has no measured value yet. Whether to build it, or first
+widen the generator so the class exists, is the owner's call.
+
 ## Review record
 
 Owner review, 2026-09-27, and what changed:
