@@ -173,8 +173,14 @@ impl Binder<'_> {
 
     pub(super) fn bind(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
         match e {
-            SqlExpr::Identifier(ident) => self.column(&ident.value),
-            SqlExpr::CompoundIdentifier(parts) => self.compound(parts),
+            SqlExpr::Identifier(ident) => {
+                reserved_head(ident)?;
+                self.column(&ident.value)
+            }
+            SqlExpr::CompoundIdentifier(parts) => {
+                reserved_head(&parts[0])?;
+                self.compound(parts)
+            }
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Value(v) => literal(&v.value),
             // DuckDB puts << >> & | in ONE flat left-associative tier;
@@ -1498,4 +1504,36 @@ impl Binder<'_> {
             nullable,
         })
     }
+}
+
+/// DuckDB's reserved keywords (`duckdb_keywords()`, category 'reserved',
+/// DuckDB 1.5.5). Unquoted, one cannot START a column reference there: its
+/// grammar rejects `SELECT (from).f0` as a syntax error, where sqlparser
+/// reads an identifier. After a dot any keyword is a label (`t.from`), so
+/// only the head is checked; quoting (`"from"`) makes any name a name.
+const DUCKDB_RESERVED: &[&str] = &[
+    "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "both",
+    "case", "cast", "check", "collate", "column", "constraint", "create", "default",
+    "deferrable", "desc", "describe", "distinct", "do", "else", "end", "except", "false",
+    "fetch", "for", "foreign", "from", "group", "having", "in", "initially", "intersect",
+    "into", "lambda", "lateral", "leading", "limit", "not", "null", "offset", "on", "only",
+    "or", "order", "pivot", "pivot_longer", "pivot_wider", "placing", "primary", "qualify",
+    "references", "returning", "select", "show", "some", "summarize", "symmetric", "table",
+    "then", "to", "trailing", "true", "union", "unique", "unpivot", "using", "variadic",
+    "when", "where", "window", "with",
+];
+
+fn reserved_head(head: &sqlparser::ast::Ident) -> Result<(), PrepareError> {
+    if head.quote_style.is_none()
+        && DUCKDB_RESERVED
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(&head.value))
+    {
+        return Err(PrepareError::Parse(format!(
+            "syntax error at or near \"{}\" (a reserved keyword; quote it to use it \
+             as a name)",
+            head.value
+        )));
+    }
+    Ok(())
 }

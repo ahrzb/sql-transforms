@@ -368,23 +368,46 @@ def test_the_subquery_candidate_snapshot_is_whole_and_revivable():
         assert case.sql and case.query is None
 
 
-def test_a_resource_ceiling_is_excluded_only_where_duckdb_does_not_trap():
-    """Nightly seed 1000308, shrunk: `repeat('a', 2**31 - 1)` traps on the
-    1 GiB string budget (serving contract, exclusion: resource-ceilings).
-    DuckDB builds the 2 GiB string instead, which can outlast the case
-    budget, so it is interrupted at CEILING_DEADLINE and the case is
-    EXCLUDED. Past DuckDB's own 4 GiB bound it traps too, and the case is an
-    ordinary agreement (seeds 30, 33, 1705)."""
+def test_a_resource_ceiling_is_excluded_by_name_and_duckdb_never_runs(monkeypatch):
+    """Nightly seeds 1000308 and 1003321, shrunk: `repeat` or `lpad` to
+    2**31 - 1 characters traps on the 1 GiB string budget (serving contract,
+    exclusion: resource-ceilings). DuckDB would build the multi-gigabyte
+    value instead, for minutes and uninterruptibly, so the case is EXCLUDED
+    before DuckDB runs. Just under the budget is an ordinary comparison."""
     import pyarrow as pa
     from fuzz import parity
 
-    sql = "SELECT repeat('a', c1) AS o0 FROM __THIS__"
+    def no_duckdb(*a, **k):
+        raise AssertionError("DuckDB ran for an excluded case")
+
     big = pa.table({"c1": pa.array([2**31 - 1], pa.int32())})
-    v = parity.verdict(sql, big)
-    assert (v.kind, v.klass) == ("EXCLUDED", "resource-ceiling"), v
+    with monkeypatch.context() as m:
+        m.setattr(oracle, "_duck_run", no_duckdb)
+        for sql in (
+            "SELECT repeat('a', c1) AS o0 FROM __THIS__",
+            "SELECT lpad('x', c1, 'é☃') AS o0 FROM __THIS__",
+        ):
+            v = parity.verdict(sql, big)
+            assert (v.kind, v.klass) == ("EXCLUDED", "resource-ceiling"), v
     assert "EXCLUDED" not in runner.GATED
-    sql2 = "SELECT repeat('abcdefghij', c1) AS o0 FROM __THIS__"
-    huge = pa.table({"c1": pa.array([2**31 - 1], pa.int64())})
-    assert parity.verdict(sql2, huge).kind == "AGREE_TRAP"
     small = pa.table({"c1": pa.array([3], pa.int32())})
+    sql = "SELECT repeat('a', c1) AS o0 FROM __THIS__"
     assert parity.verdict(sql, small).kind == "AGREE"
+
+
+def test_the_generator_quotes_exactly_duckdbs_reserved_keywords():
+    """`_ident` leaves a keyword bare only where DuckDB accepts it as a
+    name; the engine's own list (frontend/expr.rs DUCKDB_RESERVED) is the
+    same measurement."""
+    import duckdb
+
+    reserved = {
+        k
+        for (k,) in duckdb.sql(
+            "SELECT keyword_name FROM duckdb_keywords() "
+            "WHERE keyword_category = 'reserved'"
+        ).fetchall()
+    }
+    assert gen.RESERVED == reserved
+    assert gen._ident("from") == '"from"' and gen._ident("From") == '"From"'
+    assert gen._ident("c0") == "c0"

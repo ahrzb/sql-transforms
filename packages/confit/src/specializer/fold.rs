@@ -438,6 +438,16 @@ pub fn fold(e: SExpr) -> SExpr {
                     }
                 }
             }
+            // A BOOLEAN constant cast to an integer is 0/1, exactly. The
+            // comparison binder wraps each BOOLEAN side this way (it orders
+            // false < true), so without this `TRUE = TRUE` never finished as
+            // a constant and a pure UDF taking it skipped its bind fold
+            // (nightly seed 1004531).
+            if ty.is_int() {
+                if let SKind::Lit(Lit::I1(v)) = inner.kind {
+                    return lit(Lit::I64(v as i64), ty);
+                }
+            }
             // An integer constant cast to DOUBLE is the same exact
             // conversion as the IntToFloat arm above (`CAST(34 AS DOUBLE)`
             // as a pure UDF's argument must finish, or the bind-time UDF

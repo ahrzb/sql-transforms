@@ -65,7 +65,6 @@ import math
 import os
 import re
 import sys
-import threading
 from dataclasses import dataclass
 from dataclasses import field as dfield
 
@@ -108,15 +107,11 @@ KINDS = (
 
 # The runtime traps of the serving contract's resource-ceilings exclusion
 # (docs/specs/serving-contract.md), verbatim. A case whose run hits one on BOTH
-# backends is EXCLUDED unless DuckDB traps too: past the ceiling DuckDB builds
-# the gigabyte value the ceiling exists to refuse, which can outlast a case's
-# whole time budget, so it gets CEILING_DEADLINE and is interrupted after.
-# Anything else, a ceiling on one backend included, still compares.
-# How long DuckDB gets on a case confit trapped on a ceiling, per reading.
-# Where DuckDB traps too (a repeat past its own 4 GiB bound) it does so at
-# once; where it serves, it is building the gigabyte value.
-CEILING_DEADLINE = 5.0
-
+# backends is EXCLUDED and DuckDB is not run: the exclusion is defined by the
+# ceiling, not by DuckDB's answer, and past it DuckDB builds the gigabyte
+# value the ceiling exists to refuse -- minutes per case, and not
+# interruptible inside one vector (nightly seed 1003321, `lpad` to 2^31
+# characters). Anything else, a ceiling on one backend included, compares.
 RESOURCE_CEILINGS = (
     "string builder result exceeds 1 GiB",
     "string column exceeds 2 GiB in one",
@@ -420,11 +415,7 @@ def _exec(con, sql):
         return None, phase, f"{type(e).__name__}: {e}"
 
 
-def _interrupted(duck) -> bool:
-    return duck[0] is None and (duck[2] or "").startswith("InterruptException")
-
-
-def _duck_run(sql, case: G.Case, udf_objs, deadline: float | None = None):
+def _duck_run(sql, case: G.Case, udf_objs):
     """Both readings, on ONE connection: `(optimizer_off, optimizer_on)`.
 
     Sharing the connection is not just a saving (the tables materialise once,
@@ -435,28 +426,12 @@ def _duck_run(sql, case: G.Case, udf_objs, deadline: float | None = None):
 
     The baseline reading needs no pragma of its own: an oracle is
     optimizer-off by construction, and the flip below is the exception.
-
-    `deadline` (seconds, per reading) interrupts a reading that runs longer;
-    it comes back as a run-time InterruptException.
     """
     con = _duck_con(case, udf_objs)
-
-    def timed():
-        if deadline is None:
-            return _exec(con, sql)
-        timer = threading.Timer(deadline, con.con.interrupt)
-        timer.start()
-        try:
-            return _exec(con, sql)
-        finally:
-            timer.cancel()
-
     try:
-        off = timed()
-        if _interrupted(off):
-            return off, off  # the other reading would only wait it out too
+        off = _exec(con, sql)
         con.optimizer_on()
-        on = timed()
+        on = _exec(con, sql)
         return off, on
     finally:
         con.close()
@@ -594,12 +569,13 @@ def run_case(case: G.Case) -> Verdict:
     got_cl, sch_cl, trap_cl = run_fn(fn_cl)
     got_in, sch_in, trap_in = run_fn(fn_in)
 
-    ceiling = (
+    if (
         trap_cl is not None
         and trap_in is not None
         and any(c in trap_cl for c in RESOURCE_CEILINGS)
         and any(c in trap_in for c in RESOURCE_CEILINGS)
-    )
+    ):
+        return Verdict("EXCLUDED", "resource-ceiling", trap_cl, tags)
 
     if (trap_cl is None) != (trap_in is None):
         return Verdict(
@@ -625,14 +601,9 @@ def run_case(case: G.Case) -> Verdict:
     if unsound:
         return Verdict("DIVERGE_VALUE", "unsound-non-null", f"NULL at {unsound}", tags)
 
-    # DuckDB runs after confit, so a resource ceiling can bound its time.
+    # DuckDB runs after confit, so an excluded case never waits on it.
     _phase("oracle")
-    deadline = CEILING_DEADLINE if ceiling else None
-    duck_off, duck_on = _duck_run(sql, case, udf_objs, deadline)
-    if ceiling and (duck_off[0] is not None or _interrupted(duck_off)):
-        # DuckDB serves the value (or is still building it): the excluded
-        # ground. When it traps too, the case compares as usual below.
-        return Verdict("EXCLUDED", "resource-ceiling", trap_cl, tags)
+    duck_off, duck_on = _duck_run(sql, case, udf_objs)
 
     # --- compare, against each reading -----------------------------------
     def against(duck) -> Verdict:
