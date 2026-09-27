@@ -1,7 +1,8 @@
 """DuckDBInferFn vs duckdb-python: the specializer's differential oracle.
 
-`duck_check` runs the same SQL on the same data through both engines and
-asserts the outputs agree row-for-row. Stretch-3 surface: the projection /
+`duck_check` runs the same SQL on the same data through the campaign's
+verdict (`fuzz.parity`): both backends against both DuckDB readings, names,
+types and rows. Stretch-3 surface: the projection /
 WHERE spine plus equi-joins to static tables (INNER and LEFT), which lower
 to map probes.
 """
@@ -10,12 +11,17 @@ from __future__ import annotations
 
 import math
 import sys
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz import parity  # noqa: E402
 
 _ARROW = {
     "int": pa.int64(),
@@ -83,10 +89,24 @@ def duck_check(
     row_schema: dict[str, str],
     row_rows: list[dict[str, Any]],
     statics: dict[str, pa.Table] | None = None,
+    *,
+    optimizer_differs: bool = False,
 ) -> None:
-    got, want = _legs(sql, row_schema, row_rows, statics)
-    # Row order is not part of the contract (a join may reorder).
-    compare.assert_rows(got, want, ctx=sql)
+    """The campaign verdict (fuzz.parity) must be AGREE: both backends, both
+    DuckDB readings, names, types and rows, in any order (a join may
+    reorder). A confit refusal raises its ValueError, as a build would.
+
+    `optimizer_differs=True` states that DuckDB answers differently with its
+    optimizer on, and that confit matches the optimizer-off contract
+    (DIVERGE_OPT). Tables must lie in the campaign vocabulary
+    (`fuzz.parity.spec_of`)."""
+    rows = [{k: _norm(row_schema[k], r.get(k)) for k in row_schema} for r in row_rows]
+    case = parity.case(sql, static(row_schema, rows), statics=statics or {})
+    v = parity.O.run_case(case)
+    if v.kind == "REFUSED":
+        raise ValueError(v.detail)
+    want = "DIVERGE_OPT" if optimizer_differs else "AGREE"
+    assert v.kind == want, f"{v.kind} ({v.klass}): {v.detail[:400]}\n  sql: {sql}"
 
 
 DIM = static(
@@ -248,6 +268,9 @@ def test_substr_edges_differential():
         "substr(s, 1, 0) AS d, substr(s, 9) AS e FROM __THIS__",
         {"s": "str"},
         [{"s": "hello"}, {"s": "x"}],
+        # Optimizer ON, column args is DuckDB's outlier path ('hello' for
+        # `substr('hello', -10, 8)`); see test_substr_constant_fold_divergence.
+        optimizer_differs=True,
     )
 
 
@@ -391,6 +414,7 @@ def test_substr_negative_start_column_path_differential():
             {"s": "ab", "st": -3, "ln": 2},
             {"s": "ab", "st": -5, "ln": 3},
         ],
+        optimizer_differs=True,  # the outlier path, see below
     )
 
 
