@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import pyarrow as pa
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -411,3 +412,21 @@ def test_the_generator_quotes_exactly_duckdbs_reserved_keywords():
     assert gen.RESERVED == reserved
     assert gen._ident("from") == '"from"' and gen._ident("From") == '"From"'
     assert gen._ident("c0") == "c0"
+
+
+# The seeds of the first nightly run's findings (issue ahrzb/sql-transforms#303),
+# replayed through the same checks that flagged them.
+NIGHTLY_303 = {1004531: "AGREE", 1003321: "EXCLUDED"}
+
+
+@pytest.mark.parametrize("seed, kind", NIGHTLY_303.items())
+def test_the_first_nightly_findings_stay_fixed(seed, kind):
+    assert oracle.run_case(gen.gen(seed)).kind == kind
+
+
+@pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879])
+def test_the_first_nightly_spellings_stay_consistent(seed):
+    from fuzz import metamorphic
+
+    _, findings = metamorphic.check(seed)
+    assert not findings, "\n".join(f.line() for f in findings)
