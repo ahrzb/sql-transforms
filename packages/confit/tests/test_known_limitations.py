@@ -488,7 +488,14 @@ def test_every_refusal_family_carries_a_documented_prefix():
 @pytest.mark.parametrize(
     ("sql", "named"),
     [
-        ("SELECT o FROM (SELECT a AS o FROM __THIS__) AS sub", "FROM a derived table"),
+        (
+            "SELECT a FROM __THIS__, (SELECT 1 AS o FROM __THIS__)",
+            "FROM a derived table",
+        ),
+        (
+            "SELECT o FROM (SELECT a AS o FROM __THIS__) AS s, __THIS__",
+            "beside a derived table",
+        ),
         (
             "SELECT a FROM __THIS__ RIGHT JOIN __THIS__ AS b ON true",
             "join type RIGHT JOIN",

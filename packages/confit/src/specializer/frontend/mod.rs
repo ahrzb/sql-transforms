@@ -35,7 +35,7 @@ use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
-    ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Plan, SExpr, SKind,
+    ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Plan, SExpr, SKind, Stage,
     StaticTable, StructCol, StructField, StructNode, bind_foldable, may_trap,
 };
 
@@ -145,6 +145,210 @@ pub fn frontend(
         Statement::Query(q) => q,
         other => return Err(unsup(format!("statement kind: {other}"))),
     };
+    let env = Env {
+        this_name,
+        in_cols,
+        opaque,
+        structs,
+        statics,
+        many,
+        udfs,
+        models,
+        bind_eval,
+    };
+    let q = bind_query(query, &env)?;
+    Ok((
+        Plan { stages: q.stages },
+        q.joins,
+        q.out_cols,
+        q.ctx.regexes,
+        q.wide_outs,
+        q.ctx.model_refs,
+        q.ctx.minted_lanes,
+    ))
+}
+
+/// Everything a query level binds against that does not change between
+/// levels.
+struct Env<'a> {
+    this_name: &'a str,
+    in_cols: &'a [Col],
+    opaque: &'a [(usize, String)],
+    structs: &'a [super::plan::StructCol],
+    statics: &'a [StaticTable],
+    many: bool,
+    udfs: &'a [super::ir::ExternSpec],
+    models: &'a [super::plan::ModelTable],
+    bind_eval: &'a [ExternImpl],
+}
+
+/// One bound SELECT: its joins (indices into the query-wide list are its
+/// positions, see [`bind_query`]), its WHERE, its projection and output.
+struct BoundSelect {
+    joins: Vec<JoinSpec>,
+    pred: Option<SExpr>,
+    project: Vec<(String, SExpr)>,
+    out_cols: Vec<Col>,
+    wide_outs: Vec<super::WideOut>,
+    ctx: QueryCtx,
+}
+
+/// A query bound to the stages that compute it, innermost first.
+struct BoundQuery {
+    stages: Vec<Stage>,
+    joins: Vec<JoinSpec>,
+    out_cols: Vec<Col>,
+    /// Per output column: a constant NULL. DuckDB keeps a bare NULL typed
+    /// SQLNULL through a query level, and a consumer binds against that
+    /// type; confit does not model it, so an outer expression over such a
+    /// column refuses (see [`bind_query`]).
+    null_cols: Vec<bool>,
+    wide_outs: Vec<super::WideOut>,
+    ctx: QueryCtx,
+}
+
+/// Bind `query` and, through its FROM, every level below it. A FROM
+/// naming a derived table binds the subquery first, then this level over
+/// the subquery's output columns, whose references become slots: the
+/// outer level sees only those columns (the inner scope is closed), and
+/// each is computed once per row reaching the inner stage, read or not
+/// (docs/specs/2026-09-26-row-local-subqueries-design.md).
+fn bind_query(query: &sqlparser::ast::Query, env: &Env<'_>) -> Result<BoundQuery, PrepareError> {
+    let select = level_select(query)?;
+    let from = cross_joins_as_commas(&select.from);
+    let Some(TableFactor::Derived {
+        lateral,
+        subquery,
+        alias,
+        sample,
+    }) = from.first().map(|t| &t.relation)
+    else {
+        let b = bind_select(
+            select,
+            env,
+            env.in_cols,
+            env.opaque,
+            env.structs,
+            Driving::Request,
+            QueryCtx::default(),
+        )?;
+        let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
+        return Ok(BoundQuery {
+            stages: vec![Stage {
+                joins: (0..b.joins.len() as u32).collect(),
+                pred: b.pred,
+                project: b.project,
+            }],
+            joins: b.joins,
+            out_cols: b.out_cols,
+            null_cols,
+            wide_outs: b.wide_outs,
+            ctx: b.ctx,
+        });
+    };
+    if *lateral {
+        return Err(unsup("LATERAL subquery"));
+    }
+    if sample.is_some() {
+        return Err(unsup("TABLESAMPLE on a derived table"));
+    }
+    if from.len() > 1 || !from[0].joins.is_empty() {
+        return Err(unsup(
+            "a JOIN or a comma-joined relation beside a derived table",
+        ));
+    }
+    let inner = bind_query(subquery, env)?;
+    if !inner.wide_outs.is_empty() {
+        return Err(unsup("a struct- or list-valued column in a derived table"));
+    }
+    let name = alias
+        .as_ref()
+        .map_or("unnamed_subquery".to_string(), |a| a.name.value.clone());
+    let mut cols = inner.out_cols;
+    if let Some(a) = alias {
+        // A PARTIAL list renames a prefix; the rest keep their names; too
+        // many names is DuckDB's bind error (measured, as for a table).
+        if a.columns.len() > cols.len() {
+            return Err(PrepareError::Bind(format!(
+                "table \"{name}\" has {} columns available but {} columns specified",
+                cols.len(),
+                a.columns.len()
+            )));
+        }
+        for (c, def) in cols.iter_mut().zip(&a.columns) {
+            c.name = def.name.value.clone();
+        }
+    }
+    let mut b = bind_select(
+        select,
+        env,
+        &cols,
+        &[],
+        &[],
+        Driving::Derived { name },
+        inner.ctx,
+    )?;
+    // This level references the subquery only through its columns.
+    let over_null = |e: &mut SExpr| refs_col(e, &|i| inner.null_cols[i as usize]);
+    for (_, e) in b.project.iter_mut() {
+        if !matches!(e.kind, SKind::Col(_)) && over_null(e) {
+            return Err(unsup(
+                "an expression over a bare NULL subquery column",
+            ));
+        }
+    }
+    if let Some(p) = b.pred.as_mut() {
+        if over_null(p) {
+            return Err(unsup(
+                "an expression over a bare NULL subquery column",
+            ));
+        }
+    }
+    for (_, e) in b.project.iter_mut() {
+        slotify(e);
+    }
+    if let Some(p) = b.pred.as_mut() {
+        slotify(p);
+    }
+    let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
+    let mut stages = inner.stages;
+    stages.push(Stage {
+        joins: Vec::new(),
+        pred: b.pred,
+        project: b.project,
+    });
+    Ok(BoundQuery {
+        stages,
+        joins: inner.joins,
+        out_cols: b.out_cols,
+        null_cols,
+        wide_outs: b.wide_outs,
+        ctx: b.ctx,
+    })
+}
+
+/// Whether `e` references an input column `pick` selects.
+fn refs_col(e: &mut SExpr, pick: &dyn Fn(u32) -> bool) -> bool {
+    if let SKind::Col(i) = e.kind {
+        return pick(i);
+    }
+    e.children_mut().into_iter().any(|c| refs_col(c, pick))
+}
+
+/// A level bound over a derived table's columns reads them as slots.
+fn slotify(e: &mut SExpr) {
+    if let SKind::Col(i) = e.kind {
+        e.kind = SKind::Slot(i);
+        return;
+    }
+    for c in e.children_mut() {
+        slotify(c);
+    }
+}
+
+/// The one SELECT a query level may be: every clause confit does not serve
+/// is refused here, by name, at every level alike.
+fn level_select(query: &sqlparser::ast::Query) -> Result<&sqlparser::ast::Select, PrepareError> {
     // Refusals below are a CLASS, not a list of features someone got round to.
     // A clause sqlparser parses and we ignore is a wrong ANSWER — the contract
     // is match-DuckDB-or-refuse, and dropping QUALIFY silently emitted every
@@ -179,8 +383,34 @@ pub fn frontend(
         return Err(unsup("GROUP BY / HAVING / aggregation"));
     }
 
+    Ok(select)
+}
+
+/// One SELECT bound over `in_cols`: the request table's lanes, or a derived
+/// table's output columns (`driving`).
+#[allow(clippy::too_many_arguments)]
+fn bind_select(
+    select: &sqlparser::ast::Select,
+    env: &Env<'_>,
+    in_cols: &[Col],
+    opaque: &[(usize, String)],
+    structs: &[super::plan::StructCol],
+    driving: Driving,
+    ctx: QueryCtx,
+) -> Result<BoundSelect, PrepareError> {
     let (binder, joins, leftover_where) = bind_from(
-        select, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
+        select,
+        env.this_name,
+        in_cols,
+        opaque,
+        structs,
+        env.statics,
+        env.many,
+        env.udfs,
+        env.models,
+        env.bind_eval,
+        driving,
+        ctx,
     )?;
 
     let mut out_cols = Vec::new();
@@ -365,20 +595,19 @@ pub fn frontend(
         filter = Some(pred);
     }
 
-    let named = out_cols
+    let project = out_cols
         .iter()
         .map(|c| c.name.clone())
         .zip(exprs)
         .collect::<Vec<_>>();
-    Ok((
-        Plan::single(joins.len(), filter, named),
+    Ok(BoundSelect {
         joins,
+        pred: filter,
+        project,
         out_cols,
-        binder.regexes.into_inner(),
         wide_outs,
-        binder.model_refs.into_inner(),
-        binder.minted_lanes.into_inner(),
-    ))
+        ctx: binder.into_ctx(),
+    })
 }
 
 /// One joined static table in scope: how it is named, which of its columns
@@ -497,6 +726,40 @@ struct Binder<'a> {
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.
+/// What every query level's binder shares: the design's query context. IDs
+/// and tables that must be unique across the whole query (the regex table,
+/// model references, UDF call sites, minted input lanes) are handed from
+/// one level's binder to the next, append-only, so a level never renumbers
+/// what an earlier one allocated.
+#[derive(Default)]
+struct QueryCtx {
+    regexes: Vec<super::ir::ReSpec>,
+    model_refs: Vec<u32>,
+    sites: u32,
+    minted_lanes: Vec<super::plan::InputLane>,
+}
+
+/// What a query level reads.
+enum Driving {
+    /// The request table (FROM names it, maybe aliased).
+    Request,
+    /// A derived table in scope as `name`; the binder's `in_cols` are its
+    /// output columns, and a column reference binds to a slot.
+    Derived { name: String },
+}
+
+impl Binder<'_> {
+    /// The query context this binder accumulated, for the next level.
+    fn into_ctx(self) -> QueryCtx {
+        QueryCtx {
+            regexes: self.regexes.into_inner(),
+            model_refs: self.model_refs.into_inner(),
+            sites: self.sites.get(),
+            minted_lanes: self.minted_lanes.into_inner(),
+        }
+    }
+}
+
 struct GuardScope<'x>(&'x std::cell::Cell<u32>);
 
 impl Drop for GuardScope<'_> {

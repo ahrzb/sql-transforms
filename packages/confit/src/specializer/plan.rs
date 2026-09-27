@@ -26,19 +26,6 @@ pub struct Stage {
     pub project: Vec<(String, SExpr)>,
 }
 
-impl Plan {
-    /// The single-level plan every query binds to today.
-    pub fn single(joins: usize, pred: Option<SExpr>, project: Vec<(String, SExpr)>) -> Plan {
-        Plan {
-            stages: vec![Stage {
-                joins: (0..joins as u32).collect(),
-                pred,
-                project,
-            }],
-        }
-    }
-}
-
 /// A static (prepare-time-known) table's schema, as given to `prepare`.
 /// Value-column nullability is deliberately ignored here: arrow schemas
 /// default to nullable, so the real check — no NULL in a value column —
@@ -711,6 +698,85 @@ pub enum SKind {
         ret: u32,
         whole: bool,
     },
+}
+
+impl SExpr {
+    /// Every direct sub-expression, mutably, in evaluation order. The one
+    /// generic walk over the tree: a pass that only cares about some leaves
+    /// (a rewrite, a reference scan) recurses through this instead of
+    /// restating all forty-odd kinds, so a new kind is one arm here.
+    pub fn children_mut(&mut self) -> Vec<&mut SExpr> {
+        match &mut self.kind {
+            SKind::Col(_)
+            | SKind::Slot(_)
+            | SKind::StaticCol { .. }
+            | SKind::Lit(_)
+            | SKind::NullOf
+            | SKind::JoinHit(_) => Vec::new(),
+            SKind::Arith { a, b, .. }
+            | SKind::Cmp { a, b, .. }
+            | SKind::And { a, b }
+            | SKind::Or { a, b }
+            | SKind::Concat { a, b }
+            | SKind::Str2 { a, b, .. }
+            | SKind::MathF2 { a, b, .. }
+            | SKind::Trim { a, chars: b, .. }
+            | SKind::Round2 { a, n: b, .. }
+            | SKind::Str2i { a, n: b, .. } => vec![a.as_mut(), b.as_mut()],
+            SKind::IntToFloat(a)
+            | SKind::DecToFloat(a)
+            | SKind::IntToDec { a, .. }
+            | SKind::IntToFloat32(a)
+            | SKind::Not(a)
+            | SKind::IsNull { inner: a, .. }
+            | SKind::Cast { inner: a, .. }
+            | SKind::StrCase { a, .. }
+            | SKind::Abs(a)
+            | SKind::Round(a)
+            | SKind::SLen { a, .. }
+            | SKind::ReMatch { a, .. }
+            | SKind::ReExtract { a, .. }
+            | SKind::ReReplace { a, .. }
+            | SKind::MathF1 { a, .. }
+            | SKind::Sord { a, .. }
+            | SKind::StripAccents(a)
+            | SKind::Reverse(a) => vec![a.as_mut()],
+            SKind::Case { arms, default } => {
+                let mut out: Vec<&mut SExpr> = Vec::new();
+                for (c, r) in arms.iter_mut() {
+                    out.push(c);
+                    out.push(r);
+                }
+                if let Some(d) = default {
+                    out.push(d.as_mut());
+                }
+                out
+            }
+            SKind::Substr { a, start, len } => {
+                let mut out = vec![a.as_mut(), start.as_mut()];
+                if let Some(l) = len {
+                    out.push(l.as_mut());
+                }
+                out
+            }
+            SKind::Like { a, p, esc, .. } => {
+                let mut out = vec![a.as_mut(), p.as_mut()];
+                if let Some(e) = esc {
+                    out.push(e.as_mut());
+                }
+                out
+            }
+            SKind::Str3 { a, b, c, .. } => vec![a.as_mut(), b.as_mut(), c.as_mut()],
+            SKind::Spad { a, len, pad, .. } => vec![a.as_mut(), len.as_mut(), pad.as_mut()],
+            SKind::Sslice { a, lo, hi } => vec![a.as_mut(), lo.as_mut(), hi.as_mut()],
+            SKind::TreePredict { id, feats, .. } => {
+                let mut out = vec![id.as_mut()];
+                out.extend(feats.iter_mut());
+                out
+            }
+            SKind::ExternCall { args, .. } => args.iter_mut().collect(),
+        }
+    }
 }
 
 /// Can evaluating this expression trap — overflow, division by zero, a

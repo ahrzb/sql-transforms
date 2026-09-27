@@ -23,3 +23,33 @@ sitting under a paragraph explaining why it is fine.
 strict=True is the load-bearing part. A pin that silently starts passing is
 worse than no pin: it certifies work nobody did.
 """
+
+import pyarrow as pa
+import pytest
+from confit import DuckDBInferFn
+from confit.oracle import Oracle
+
+_S = pa.schema([pa.field("a", pa.int64()), pa.field("s", pa.string())])
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="an UNALIASED expression's output name: DuckDB prints the bound "
+    "expression, parenthesizing operators ('(a + 1)', '-(a)', "
+    "'((a * 2) + 1)'); confit echoes the SQL text ('a + 1', '-a', "
+    "'a * 2 + 1'). Found serving derived tables, where the name is what an "
+    "outer level references; it holds at the top level too.",
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a + 1, -a, a * 2 + 1 FROM __THIS__",
+        "SELECT * FROM (SELECT a + 1, -a FROM __THIS__)",
+    ],
+)
+def test_unaliased_expression_names(sql):
+    o = Oracle()
+    o.load("__THIS__", pa.table({"a": [1], "s": ["x"]}, schema=_S))
+    want = o.answer(sql).schema.names
+    got = DuckDBInferFn(sql, row_tables={"__THIS__": _S}, static_tables={})
+    assert got.output_schema.names == want
