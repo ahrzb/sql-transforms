@@ -56,3 +56,69 @@ def test_dead_arm_over_fold_serves_calls_duckdb_refuses(consumer, oracle):
         oracle.answer(sql)
     with pytest.raises(ValueError):
         DuckDBInferFn(sql, row_tables={"__THIS__": _D_SCHEMA}, static_tables={})
+
+
+class _FloatStructUdf:
+    """A pure struct UDF over one DOUBLE: None on a NULL argument."""
+
+    name = "fu"
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.struct([("f0", pa.int64()), ("f2", pa.float64())])
+
+    def __call__(self, x):
+        return None if x is None else (1, x + 0.5)
+
+
+@pytest.mark.parametrize(
+    ("arg", "want_ty"),
+    [
+        # fuzz seed 40473: the integer-constant cast must finish in the fold,
+        # or the call stays at run time and `.f2` keeps its declared DOUBLE.
+        ("CAST(NULL AS DOUBLE)", pa.int32()),
+        ("CAST(34 AS DOUBLE)", pa.float64()),
+    ],
+)
+def test_a_udf_over_a_cast_integer_constant_folds_at_bind(arg, want_ty, oracle):
+    sql = f"SELECT (fu({arg})).f2 AS o0 FROM __THIS__"
+    u = _FloatStructUdf()
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _D_SCHEMA}, static_tables={}, udfs=[u]
+    )
+    got = fn.infer_rows([{"x": 1.0}])
+
+    oracle.create_function(
+        "fu",
+        lambda x: None if (r := u(x)) is None else {"f0": r[0], "f2": r[1]},
+        ["DOUBLE"],
+        duckdb.struct_type({"f0": "BIGINT", "f2": "DOUBLE"}),
+        null_handling="special",
+    )
+    oracle.table("__THIS__", "x DOUBLE", [(1.0,)])
+    want = oracle.answer(sql)
+    assert want.schema.field("o0").type == want_ty, "oracle moved -- remeasure"
+    compare.assert_schema(fn.output_schema, want.schema, ctx=sql)
+    compare.assert_rows(got, compare.rows(want), ctx=sql)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # fuzz seed 16617, shrunk: floor() over a constant NULL folds to NULL
+        # at bind, so the division is NULL and the trapping CASE never runs.
+        "(CASE WHEN 0.75e0 THEN CAST('' AS DOUBLE) END) "
+        "/ floor(TRY_CAST('%_' AS DOUBLE))",
+        "CAST('' AS DOUBLE) / sqrt(TRY_CAST('x' AS DOUBLE))",
+        "floor(TRY_CAST('x' AS DOUBLE)) || 'a'",
+        "floor(TRY_CAST('x' AS DOUBLE)) + 1",
+        "ceil(CAST(NULL AS DOUBLE))",
+    ],
+)
+def test_a_math_call_over_a_constant_null_folds_to_null(expr, oracle):
+    sql = f"SELECT {expr} AS o0 FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _D_SCHEMA}, static_tables={})
+    got = fn.infer_rows([{"x": 1.0}, {"x": None}])
+
+    oracle.table("__THIS__", "x DOUBLE", [(1.0,), (None,)])
+    want = oracle.answer(sql)
+    compare.assert_schema(fn.output_schema, want.schema, ctx=sql)
+    compare.assert_rows(got, compare.rows(want), ctx=sql)

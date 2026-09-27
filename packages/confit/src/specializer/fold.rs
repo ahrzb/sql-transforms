@@ -182,9 +182,15 @@ pub fn fold(e: SExpr) -> SExpr {
             // Fneg alone folds: a sign-bit flip is total and exact, so the
             // constant equals what the instruction would produce bit for
             // bit. The libm-backed members stay run-time, one rounding.
+            // A constant NULL argument folds for every member: they all
+            // take DuckDB's default NULL handling, which binds a call over a
+            // constant NULL to a NULL of its return type without running
+            // anything, so a trap elsewhere under the same NULL-collapsing
+            // parent never runs either (fuzz seed 16617:
+            // `x / floor(TRY_CAST('%_' AS DOUBLE))`).
             match (op, as_const(&a)) {
                 (NumOp1::Fneg, Some(K::Val(Lit::F64(v)))) => lit(Lit::F64(-v), ty),
-                (NumOp1::Fneg, Some(K::Null)) => null(ty),
+                (_, Some(K::Null)) => null(ty),
                 _ => e(SKind::MathF1 { op, a: Box::new(a) }),
             }
         }
@@ -412,6 +418,15 @@ pub fn fold(e: SExpr) -> SExpr {
                     if fits {
                         return lit(Lit::I64(v), ty);
                     }
+                }
+            }
+            // An integer constant cast to DOUBLE is the same exact
+            // conversion as the IntToFloat arm above (`CAST(34 AS DOUBLE)`
+            // as a pure UDF's argument must finish, or the bind-time UDF
+            // fold passes and a NULL result keeps its declared field type).
+            if ty == Ty::F64 && inner.ty.is_int() {
+                if let SKind::Lit(Lit::I64(v)) = inner.kind {
+                    return lit(Lit::F64(v as f64), ty);
                 }
             }
             // A cast of a string literal to a number is evaluated here, as

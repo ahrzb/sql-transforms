@@ -5434,10 +5434,8 @@ impl Binder<'_> {
             match r {
                 None => null_of(unified),
                 Some(e) if e.ty.is_int() && unified == Ty::F64 => promote_f64(e),
-                Some(mut e) if e.ty.is_int() && unified.is_int() && e.ty != unified => {
-                    // Width-only retype; the payload lane is shared.
-                    e.ty = unified;
-                    e
+                Some(e) if e.ty.is_int() && unified.is_int() && e.ty != unified => {
+                    widen_int(e, unified)
                 }
                 Some(e) => e,
             }
@@ -7400,9 +7398,11 @@ impl Binder<'_> {
                     .map(|mut e| {
                         if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
+                        } else if e.ty.is_int() && unified.is_int() {
+                            // Fold may select this arm whole, and the OUTPUT
+                            // width is the unified one.
+                            widen_int(e, unified)
                         } else {
-                            // Width-only retype: fold may select this arm
-                            // whole, and the OUTPUT width is the unified one.
                             e.ty = unified;
                             e
                         }
@@ -7497,8 +7497,9 @@ impl Binder<'_> {
                     .map(|mut e| {
                         if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
+                        } else if e.ty.is_int() && unified.is_int() {
+                            widen_int(e, unified)
                         } else {
-                            // Width-only retype (see COALESCE above).
                             e.ty = unified;
                             e
                         }
@@ -9006,6 +9007,30 @@ fn duck_ty_name(t: Ty) -> String {
         Ty::Str => "VARCHAR".into(),
         Ty::Dec(p, s) => format!("DECIMAL({p},{s})"),
         t => duck_int_name(t).into(),
+    }
+}
+
+/// Widen an integer arm to the unified width, the way DuckDB does: it casts
+/// the arm's FINISHED result and never re-types the arm's operands. Setting
+/// `ty` on a computed node would move its own range check to the wider width
+/// (`c0 * c0` over TINYINT would stop overflowing at 127), so a computed arm
+/// is wrapped in a width-only cast; a literal or typed NULL, which carries no
+/// check, is re-typed in place.
+fn widen_int(e: SExpr, to: Ty) -> SExpr {
+    if e.ty == to {
+        return e;
+    }
+    if matches!(e.kind, SKind::NullOf | SKind::Lit(_)) {
+        return SExpr { ty: to, ..e };
+    }
+    let nullable = e.nullable;
+    SExpr {
+        kind: SKind::Cast {
+            inner: Box::new(e),
+            trying: false,
+        },
+        ty: to,
+        nullable,
     }
 }
 
