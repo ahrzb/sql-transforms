@@ -6,16 +6,10 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Live defects from the 50k-seed campaign** (report
-   `docs/reports/2026-09-26-change-cost-review.md`, section 4), each pinned
-   first: an overflow check on a NULL row's payload (seed 22366); CASE and
-   COALESCE unification casting a narrow arm's operands instead of its result
-   (seed 5008); `udf(NULL, …).f` typed DOUBLE (seed 40473); a constant CASE
-   that traps under a NULL divisor (seed 16617).
-2. **Change-cost review, steps 2–4** (same report): gate speed, metamorphic
+1. **Change-cost review, steps 2–4** (same report): gate speed, metamorphic
    spelling suite, parity harness and `confit.probe`, nightly deep campaign,
    `frontend.rs` split, one relation resolver, explicit Cranelift fallback.
-3. **Row-local derived tables and CTEs**, PRs 0–4 of the approved design
+2. **Row-local derived tables and CTEs**, PRs 0–4 of the approved design
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`), under its
    acceptance gate.
 
@@ -71,6 +65,9 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 - Zero-row shapes with trapping constants (`WHERE FALSE`, empty input) refuse
   at build where DuckDB serves `[]` (deliberate). Optional: make `fold`
   fallible and delete the duplicate `eval_i32_literal` walker.
+- A constant `CAST` that fails refuses at build even where a NULL-folded
+  sibling makes the whole expression NULL on DuckDB
+  (`CAST('' AS DOUBLE) / sqrt(NULL)` serves NULL there).
 - `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
   (DuckDB converts at execution; a bind-time conversion is over-eager).
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.

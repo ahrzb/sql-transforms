@@ -87,6 +87,11 @@ The live defects, each minimized with `fuzz.shrink`:
    DOUBLE))` (seed 16617): DuckDB returns NULL without evaluating the CASE;
    confit traps.
 
+**Addendum (2026-09-27).** All five classes are fixed. The list above missed
+a fifth: a zero or NULL divisor of `%` or `//` skipped evaluating the dividend,
+hiding its trap (seeds 23097, 20523, 46043). Every `DIVERGE_TRAP` and
+`DIVERGE_VALUE` seed of the 50k run now agrees.
+
 Recommendations:
 
 1. Run the campaign deep and on a schedule (nightly 50k–100k), findings shrunk

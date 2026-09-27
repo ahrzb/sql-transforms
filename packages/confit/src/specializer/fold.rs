@@ -182,9 +182,15 @@ pub fn fold(e: SExpr) -> SExpr {
             // Fneg alone folds: a sign-bit flip is total and exact, so the
             // constant equals what the instruction would produce bit for
             // bit. The libm-backed members stay run-time, one rounding.
+            // A constant NULL argument folds for every member: they all
+            // take DuckDB's default NULL handling, which binds a call over a
+            // constant NULL to a NULL of its return type without running
+            // anything, so a trap elsewhere under the same NULL-collapsing
+            // parent never runs either (fuzz seed 16617:
+            // `x / floor(TRY_CAST('%_' AS DOUBLE))`).
             match (op, as_const(&a)) {
                 (NumOp1::Fneg, Some(K::Val(Lit::F64(v)))) => lit(Lit::F64(-v), ty),
-                (NumOp1::Fneg, Some(K::Null)) => null(ty),
+                (_, Some(K::Null)) => null(ty),
                 _ => e(SKind::MathF1 { op, a: Box::new(a) }),
             }
         }
@@ -278,6 +284,16 @@ pub fn fold(e: SExpr) -> SExpr {
             let (a, b) = (fold(*a), fold(*b));
             match (as_const(&a), as_const(&b)) {
                 (Some(K::Null), Some(_)) | (Some(_), Some(K::Null)) => null(ty),
+                // Both constant and a zero divisor: NULL, as the runtime flag
+                // answers (`super::plan::zero_divisor_nulls`). Only when the
+                // dividend is constant too -- a live dividend must still run.
+                (Some(K::Val(_)), Some(K::Val(y)))
+                    if super::plan::zero_divisor_nulls(op, ty)
+                        && (matches!(y, Lit::I64(0))
+                            || matches!(y, Lit::F64(v) if v == 0.0)) =>
+                {
+                    null(ty)
+                }
                 // MIN % -1 at a NARROW width overflows DuckDB's checked
                 // division even though the i64 value (0) is fine, so the
                 // fold must not hide it from the runtime guard.
@@ -400,6 +416,14 @@ pub fn fold(e: SExpr) -> SExpr {
         }
         SKind::Cast { inner, trying } => {
             let inner = fold(*inner);
+            // A cast of a constant NULL is a NULL of the target type, CAST or
+            // TRY_CAST alike: nothing to convert, nothing to trap. Without
+            // it `||`'s to_varchar wrapper hid a folded NULL operand
+            // (`TRY_CAST('x' AS DOUBLE) || 'a'` typed VARCHAR where DuckDB's
+            // binder collapses it to SQLNULL).
+            if matches!(inner.kind, SKind::NullOf) {
+                return null(ty);
+            }
             // A width-only cast of a folded integer constant collapses:
             // the node existed as the NON-literal provenance mark for the
             // value-fits promotion (frontend::int_literal_value), and by
@@ -412,6 +436,15 @@ pub fn fold(e: SExpr) -> SExpr {
                     if fits {
                         return lit(Lit::I64(v), ty);
                     }
+                }
+            }
+            // An integer constant cast to DOUBLE is the same exact
+            // conversion as the IntToFloat arm above (`CAST(34 AS DOUBLE)`
+            // as a pure UDF's argument must finish, or the bind-time UDF
+            // fold passes and a NULL result keeps its declared field type).
+            if ty == Ty::F64 && inner.ty.is_int() {
+                if let SKind::Lit(Lit::I64(v)) = inner.kind {
+                    return lit(Lit::F64(v as f64), ty);
                 }
             }
             // A cast of a string literal to a number is evaluated here, as
@@ -540,8 +573,8 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x.checked_sub(*y).map(Lit::I64),
             ArithOp::Mul => x.checked_mul(*y).map(Lit::I64),
             ArithOp::Rem => x.checked_rem(*y).map(Lit::I64),
-            // Zero/MIN//-1 stay unfolded; the frontend's CASE guard turns
-            // the zero row into NULL at runtime, never reaching the fold.
+            // MIN//-1 stays unfolded (it traps); a zero divisor is NULLed
+            // by the Arith arm above before reaching here.
             ArithOp::IDiv => x.checked_div(*y).map(Lit::I64),
             ArithOp::Div => unreachable!("/ is promoted to f64 by the frontend"),
             // Trapping shifts stay unfolded (None) exactly when the
@@ -557,9 +590,8 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x - y,
             ArithOp::Mul => x * y,
             ArithOp::Div => x / y,
-            // `//` on doubles is plain division (wave-3 pins); the zero-
-            // divisor NULL comes from the frontend's CASE guard, which is
-            // never folded — this arm only sees the guarded default.
+            // `//` on doubles is plain division (wave-3 pins); a zero
+            // divisor is NULLed by the Arith arm above before reaching here.
             ArithOp::IDiv => x / y,
             // IEEE, exactly as exec/interp.rs: x % 0.0 is NaN, never traps.
             ArithOp::Rem => x % y,

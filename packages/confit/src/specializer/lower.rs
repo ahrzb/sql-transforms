@@ -946,7 +946,7 @@ impl<'a> FB<'a> {
                     (ArithOp::Mul, Ty::F64) => BinOp::Fmul,
                     (ArithOp::Div, Ty::F64) => BinOp::Fdiv,
                     // `//` on doubles is PLAIN division (wave-3 pins); the
-                    // zero-divisor NULL guard is the frontend's CASE wrap.
+                    // zero-divisor NULL is the result flag set below.
                     (ArithOp::IDiv, Ty::F64) => BinOp::Fdiv,
                     (ArithOp::Rem, Ty::F64) => BinOp::Frem,
                     (ArithOp::Shl, Ty::I64) => BinOp::Ishl,
@@ -961,19 +961,57 @@ impl<'a> FB<'a> {
                         )))
                     }
                 };
-                // Integer arithmetic traps (overflow, % edge cases): mask
-                // nullable payloads so garbage under a false flag can never
-                // fire the trap. Float ops are total — no masking needed.
-                let (va, vb) = if e.ty.lane() == Ty::I64 {
-                    (self.masked(la, Ty::I64), self.masked(lb, Ty::I64))
+                // Integer arithmetic traps (overflow, shift ranges, % edge
+                // cases): when EITHER operand is NULL, mask BOTH payloads, so
+                // a NULL row computes 0 op 0 (0 op 1 for / and %) and can
+                // never fire the trap. Masking each operand by its own flag
+                // is not enough: a NULL left operand masked to 0 still
+                // overflows `0 - i64::MIN` and still traps `0 << -1`, where
+                // DuckDB answers NULL. A zero divisor clears the flag below,
+                // so the masked divisor is 1, never 0. Float ops are total —
+                // no masking.
+                let flag = self.combine_flags(la.flag, lb.flag);
+                // Integer `%` and `//` on either lane answer NULL for a zero
+                // divisor: the divisor's non-zero test joins the result
+                // flag, so the masking below feeds the op 0 / 1, never 0 / 0.
+                // Both operands were evaluated above whatever the divisor, as
+                // DuckDB evaluates them, so a trap in the dividend still fires.
+                let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
+                    || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
+                let flag = if plan::zero_divisor_nulls(*op, e.ty) && !nonzero_lit {
+                    let lane = e.ty.lane();
+                    let zero = self.const_lit(if lane == Ty::F64 {
+                        Lit::F64(0.0)
+                    } else {
+                        Lit::I64(0)
+                    });
+                    let nz = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: CmpPred::Ne,
+                        ty: lane,
+                        dst: nz,
+                        a: lb.val,
+                        b: zero,
+                    });
+                    self.combine_flags(flag, Some(nz))
                 } else {
-                    (la.val, lb.val)
+                    flag
+                };
+                let (va, vb) = match (e.ty.lane(), flag) {
+                    (Ty::I64, Some(f)) => {
+                        let safe_b = if matches!(ir_op, BinOp::Idiv | BinOp::Irem) {
+                            1
+                        } else {
+                            0
+                        };
+                        let da = self.const_lit(Lit::I64(0));
+                        let db = self.const_lit(Lit::I64(safe_b));
+                        (self.select_of(f, la.val, da), self.select_of(f, lb.val, db))
+                    }
+                    _ => (la.val, lb.val),
                 };
                 let val = self.bin(ir_op, va, vb);
-                let lane = Lane {
-                    flag: self.combine_flags(la.flag, lb.flag),
-                    val,
-                };
+                let lane = Lane { flag, val };
                 // MIN % -1 at a NARROW width. DuckDB computes the modulo
                 // through the checked division, which overflows at the
                 // width even though the mathematical result (0) is in range —
