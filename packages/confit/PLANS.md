@@ -10,20 +10,29 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    runs `fuzz.nightly` (100k fresh seeds plus the metamorphic suite) and files
    red runs as a "Nightly campaign findings" issue. Watch the first runs for
    runner time and flaky TIMEOUTs; triage each filed class to a fix, a named
-   exclusion, or an open-divergence pin.
-2. **Parity migration.** On the campaign verdict: `duck_check` (about 550
+   exclusion, or an open-divergence pin. Open from #305: seed 1159605
+   (OPT_EMULATED, owner ruling) and the TIMEOUT class (EXCLUDED
+   ratification). Seed 18995 (a constant-NULL `repeat()` argument hides a
+   constant INT64 overflow DuckDB still folds) is on master too, queued.
+2. **Campaign speed.** A case costs ~18 ms, and ~60% of it is opening,
+   loading and closing a fresh DuckDB connection (`fuzz.oracle._duck_con`;
+   connect alone ~8 ms). Reusing one connection per worker, with exact
+   per-case cleanup, should roughly halve campaign time. The generator is
+   ~0.6 ms and confit build plus run ~1 ms, so a Rust port of the fuzzer
+   would save under 5%.
+3. **Parity migration.** On the campaign verdict: `duck_check` (about 550
    calls across the `test_duckdb_*` files, the shrinker's pin template),
    `test_null_operands`, `test_arm_widening`, `test_derived_tables`,
    `test_metamorphic`. Still on their own helpers: `test_integer_widths`,
    `test_join_keys`, `test_infer_arrow`, `test_struct_column_access`,
    `test_params_joins`, `test_udfs`, `duck_check_ulp` (ulp tolerance) and the
    UDF helpers (`fuzz.parity` has no UDF input yet).
-3. **Subquery design, PR 4** (static-only subqueries computed at
+4. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
-4. **Unaliased expression names** (`tests/test_open_divergences.py`):
+5. **Unaliased expression names** (`tests/test_open_divergences.py`):
    DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
    echoes the SQL text. Needs DuckDB's expression printer for the output
    name, at the top level and at every subquery boundary.
@@ -102,6 +111,7 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 - **No debug-build pytest pass.** Lowering invariants are `debug_assert!`s the
   release extension compiles out.
 - **IR generator coverage.** `ir::gen::gen_program` never emits `Dtof`, `Itod`,
+  the decimal-expression opcodes (`Dop`, `Dcast`, `DcastOk`, `Dunary`, `Dtos`),
   `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`, `ExternCall`,
   `ProbeRange`, `ProbeRead`; add them and a totality test beside the
   differential in `src/specializer/exec/tests.rs`.
@@ -119,6 +129,13 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 - **Serving vs the Python twin.** 1.20–1.80x slower at n=64 on a fresh
   release wheel. Bisect against `a6fa318` (regression vs the twin's change of
   identity). Record the n=64 ratio; the n=1 twin cell swings 2x.
+- **Decimal kernels.** Checked decimal casts, capped-width arithmetic and
+  the rounding builtins are one helper call per row on the JIT; a DECIMAL
+  query costs ~110 ns/row where its DOUBLE spelling costs ~55
+  (`docs/reports/2026-09-28-decimal-expressions.md`). Inlining the checks
+  is the next step if decimals show up in serving profiles.
+- **`scripts/bench_specializer.py` is stale**: it passes a pydantic model
+  where `DuckDBInferFn` now takes an Arrow schema, so it errors at build.
 - **Vectorized `apply_batch`** for `infer_arrow` (UDFs are called per row).
 - **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
