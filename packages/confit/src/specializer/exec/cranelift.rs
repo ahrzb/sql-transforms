@@ -1541,6 +1541,25 @@ fn translate_inst(
             let v = call_h(b, module, "h_dec_to_f64", &[lo, hi, scv]).unwrap();
             vals.insert(dst.0, V::S(v));
         }
+        // An uncapped width cannot overflow (`kernels::dec_arith` checks
+        // nothing there), so `+ - *` are plain i128 instructions — the
+        // same values the kernel computes, without the call.
+        Inst::Dop {
+            op: op @ (DecOp::Add | DecOp::Sub | DecOp::Mul),
+            check: 0,
+            dst,
+            a,
+            b: rhs,
+            ..
+        } => {
+            let (x, y) = (vals[&a.0].s(), vals[&rhs.0].s());
+            let v = match op {
+                DecOp::Add => b.ins().iadd(x, y),
+                DecOp::Sub => b.ins().isub(x, y),
+                _ => b.ins().imul(x, y),
+            };
+            vals.insert(dst.0, V::S(v));
+        }
         Inst::Dop {
             op, check, dst, a, b: rhs, ..
         } => {

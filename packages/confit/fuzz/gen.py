@@ -4,9 +4,10 @@ The AST — not the SQL string — is what the shrinker edits, so every node is 
 mutable dataclass with a `kids`/`swap` protocol. Generation is type-directed
 (`expr(rng, env, ty, depth)`) over the SEMANTIC vocabulary
 (int/float/str/bool) and weighted toward the expression spine; exotic
-productions (refused clauses, hostile identifiers, bare decimal literals) run
-at low weight so a divergence in one of them surfaces as one deduped class
-instead of drowning the campaign.
+productions (refused clauses, hostile identifiers) run at low weight so a
+divergence in one of them surfaces as one deduped class instead of drowning
+the campaign. A float literal renders bare (`2.5`, a DECIMAL) often: decimal
+expressions are served, not exotic.
 
 Two axes, deliberately separate. A column's SEMANTIC type picks the
 operators; its STORAGE type (`SCALARS`, plus `Struct`, plus `OPAQUE`) is what
@@ -597,7 +598,12 @@ def lit(rng: random.Random, ty: str) -> Lit:
     if rng.random() < 0.06:
         return Lit(None, ty)
     v = _finite(rng, ty)
-    bare = ty == "float" and rng.random() < 0.05  # DECIMAL-typed on duck
+    # A bare `2.5` is DECIMAL(2,1) on DuckDB and here; `2.5e0` is DOUBLE.
+    # Decimal expressions are served, so the grammar reaches them often:
+    # every `+ - * %`, cast, comparison and rounding builtin over a bare
+    # literal is a DECIMAL one. Only the threshold moves, never the draw
+    # count, so a seed keeps its query shape.
+    bare = ty == "float" and rng.random() < 0.3
     return Lit(v, ty, bare_decimal=bare)
 
 
@@ -841,9 +847,8 @@ def _rlit(v, ty, bare=False) -> str:
         return str(v)
     if ty == "float":
         s = repr(v)
-        # `e0` forces DOUBLE typing on DuckDB; a bare 2.5 is DECIMAL(2,1)
-        # there (its own divergence class, generated deliberately at low
-        # weight via bare_decimal). repr may already carry an exponent.
+        # `e0` forces DOUBLE typing; a bare 2.5 is DECIMAL(2,1) (see `lit`).
+        # repr may already carry an exponent, which keeps it DOUBLE.
         return s if (bare or "e" in s) else s + "e0"
     if ty == "bool":
         return "TRUE" if v else "FALSE"
