@@ -78,6 +78,23 @@ impl Binder<'_> {
                     || self.all_null_spelling(e)
             }
             SqlExpr::Case { .. } => self.all_null_spelling(e),
+            // A DECIMAL operator over a constant NULL operand, typed or bare,
+            // and unary minus over a NULL DECIMAL, bind SQLNULL (measured:
+            // `- (NULL * 2.5)` is BIGINT, `coalesce(1.75 + 41.7, NULL -
+            // 1.75)` DECIMAL(6,3)).
+            SqlExpr::BinaryOp {
+                left,
+                op:
+                    BinaryOperator::Plus
+                    | BinaryOperator::Minus
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Modulo,
+                right,
+            } => self.dec_null_operator(&[left, right]),
+            SqlExpr::UnaryOp {
+                op: UnaryOperator::Minus,
+                expr,
+            } => self.dec_null_operator(&[expr]),
             _ => false,
         }
     }
@@ -124,6 +141,31 @@ impl Binder<'_> {
             }
             _ => false,
         }
+    }
+
+    /// Whether these operands bind a DECIMAL operator (one is a DECIMAL,
+    /// the rest DECIMALs, integers or bare NULLs) and one of them is a
+    /// constant NULL. A DOUBLE operand makes it the DOUBLE operator, which
+    /// keeps its type.
+    fn dec_null_operator(&self, operands: &[&SqlExpr]) -> bool {
+        let bound: Vec<Option<SExpr>> = match operands
+            .iter()
+            .map(|e| self.expr_or_null(e))
+            .collect::<Result<_, _>>()
+        {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let any_dec = bound.iter().flatten().any(|e| e.ty.dec().is_some());
+        let all_dec_or_int = bound
+            .iter()
+            .flatten()
+            .all(|e| e.ty.dec().is_some() || e.ty.is_int());
+        let any_null = bound.iter().any(|e| {
+            e.as_ref()
+                .is_none_or(|e| bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf))
+        });
+        any_dec && all_dec_or_int && any_null
     }
 
     /// Whether `f` is `nullif(NULL, x)` — which propagates DuckDB's

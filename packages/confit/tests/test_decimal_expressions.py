@@ -111,6 +111,23 @@ def test_a_constant_null_operand_is_sqlnull():
     assert_parity(sql, ROWS, expect="AGREE")
 
 
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # SQLNULL re-promotes by signature: unary minus makes it BIGINT,
+        # COALESCE and CASE skip it when unifying (campaign seeds 4166,
+        # 6442, 10376, 15873).
+        "- (NULL * 75.129)",
+        "struct_pack(f0 := (- (-0.5 * NULL)))",
+        "coalesce((1.75 + 41.724), (NULL - 1.75))",
+        "coalesce((NULL * a), 0.75)",
+        "CASE WHEN a > 0 THEN 2.5 ELSE NULL % 0.5 END",
+    ],
+)
+def test_a_decimal_operator_over_null_is_an_adoptable_null(expr):
+    assert_parity(_q(expr), ROWS, expect="AGREE")
+
+
 def test_a_decimal_remainder_by_zero_is_null():
     assert_parity(_q("a % 0.0"), ROWS, expect="AGREE")
 
