@@ -323,7 +323,7 @@ impl Binder<'_> {
                     if is_null {
                         return Ok(null_of(Ty::I32));
                     }
-                    return Ok(fold(self.dec_negate(inner)));
+                    return Ok(bind_fold(self.dec_negate(inner)));
                 }
                 if inner.ty == Ty::F64 {
                     // The shared strict-NULL rule (`fold_operand`), which
@@ -1133,7 +1133,7 @@ impl Binder<'_> {
         // the fold and the runtime cannot drift) and refuse a failure by
         // name. TRY_CAST stays lazy: it yields NULL. A numeric string that
         // parses-and-rounds ('1.5', '0x1A', '150e-1') SERVES.
-        let inner = fold(inner);
+        let inner = bind_fold(inner);
         if !trying && self.in_guarded.get() == 0 {
             if let SKind::Lit(Lit::Str(s)) = &inner.kind {
                 let ok = match to {
@@ -1509,7 +1509,7 @@ impl Binder<'_> {
         // every operator; any other VARCHAR only under = and <> (measured).
         let str_lit = |e: &SExpr| matches!(e.kind, SKind::Lit(Lit::Str(_)));
         let (a_lit, b_lit) = (str_lit(&a), str_lit(&b));
-        let (a, b) = (fold(a), fold(b));
+        let (a, b) = (bind_fold(a), bind_fold(b));
         let equality = matches!(pred, CmpPred::Eq | CmpPred::Ne);
         let castable = |t: Ty| t.is_int() || t == Ty::F64 || t == Ty::I1;
         let (a, b) = match (a.ty, b.ty) {

@@ -59,6 +59,19 @@ pub fn is_builtin(name: &str) -> bool {
 const DECIMAL_OVERLOADS: &[&str] = &["abs", "ceil", "ceiling", "floor", "trunc", "round"];
 
 impl Binder<'_> {
+    /// One argument of a call whose foldable NULL argument makes it NULL,
+    /// bound as a guarded arm. DuckDB's fold swallows an argument whose
+    /// evaluation errors, so a trapping constant must not refuse before a
+    /// NULL sibling makes the call NULL (measured:
+    /// `repeat(CAST(NULL AS VARCHAR), 9223372036854775807 * 34)` is NULL). In
+    /// a live call it stays a per-row trap, which is when DuckDB raises it:
+    /// never over zero rows.
+    fn null_call_arg(&self, a: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        self.in_guarded.set(self.in_guarded.get() + 1);
+        let _guard = GuardScope(&self.in_guarded);
+        self.expr_or_null(a)
+    }
+
     /// The signature-table resolution head for `WholeCallNull` rows: arity,
     /// eager argument binding, the bare-NULL whole-call short-circuit,
     /// per-arg type checks (byte-identical error strings), promotion into
@@ -91,7 +104,7 @@ impl Binder<'_> {
         }
         let mut bound: Vec<Option<SExpr>> = Vec::with_capacity(args.len());
         for a in args {
-            bound.push(self.expr_or_null(a)?);
+            bound.push(self.null_call_arg(a)?);
         }
         if bound.iter().any(Option::is_none) {
             // A bare NULL adopts the result type; Arg(_) rows adopt BIGINT
@@ -805,7 +818,7 @@ impl Binder<'_> {
                         "{name} takes exactly 2 arguments"
                     )));
                 };
-                let (bs, bn) = (self.expr_or_null(s)?, self.expr_or_null(n)?);
+                let (bs, bn) = (self.null_call_arg(s)?, self.null_call_arg(n)?);
                 // A bare NULL string picks DuckDB's BLOB overload,
                 // so the answer is BLOB there and string here — and every
                 // OUTER call binding the result splits (strpos/ltrim/lower/
@@ -888,9 +901,9 @@ impl Binder<'_> {
                     )));
                 };
                 let (bs, bl, bp) = (
-                    self.expr_or_null(s)?,
-                    self.expr_or_null(l)?,
-                    self.expr_or_null(pad)?,
+                    self.null_call_arg(s)?,
+                    self.null_call_arg(l)?,
+                    self.null_call_arg(pad)?,
                 );
                 // DuckDB's {l,r}pad count is INTEGER and its binder
                 // does NOT downcast — a BIGINT count is a binder error

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn, compare
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity, table  # noqa: E402
 
 # Bind-time folding folds only what DuckDB's binder folds.
 #
@@ -45,6 +52,119 @@ def test_dead_arm_column_over_folds_past_the_concat_gate(expr, oracle):
     compare.assert_rows(got, compare.rows(want), ctx=sql)
 
 
+# The same gate holds for an operand that a CAST, a comparison, a UDF call
+# or a DECIMAL operator folded on its way up: the column is still in
+# DuckDB's tree, so a default-NULL-handling call over it is not replaced by
+# a NULL at bind. It runs per row, and a sibling argument that traps still
+# traps (none over zero rows).
+#
+# Measured on DuckDB 1.5.5, optimizer off, PREPARE and EXECUTE apart: the
+# binder's fold (function_binder.cpp) walks the arguments in order, skips
+# one naming a column, SWALLOWS an argument whose evaluation errors, and
+# makes the call NULL on the first one that folds to NULL. So a trapping
+# constant loses to a NULL sibling in either order, and there is no
+# plan-time error to refuse: a trapping constant fails per row, and not at
+# all over zero rows.
+_T = {"c1": "str", "c2": "int"}
+_T_ROWS = [{"c1": "a", "c2": 1}, {"c1": "b", "c2": 2}]
+_BIG = "(9223372036854775807 * 34)"
+_DEAD_STR = "CAST((CASE WHEN FALSE THEN c1 END) AS VARCHAR)"
+_DEAD_DEC = "(CASE WHEN FALSE THEN CAST(c2 AS DECIMAL(4,2)) END)"
+
+
+@pytest.mark.parametrize(
+    ("expr", "over_rows"),
+    [
+        (f"repeat(CAST(NULL AS VARCHAR), {_BIG})", "AGREE"),
+        (f"repeat(CAST({_BIG} AS VARCHAR), CAST(NULL AS BIGINT))", "AGREE"),
+        ("repeat(CAST(NULL AS VARCHAR), CAST('nope' AS BIGINT))", "AGREE"),
+        (
+            f"repeat(CAST(NULL AS VARCHAR), CASE WHEN TRUE THEN {_BIG} ELSE c2 END)",
+            "AGREE",
+        ),
+        (f"repeat({_DEAD_STR}, {_BIG})", "AGREE_TRAP"),
+        (f"repeat({_DEAD_STR}, c2 + 9223372036854775807)", "AGREE_TRAP"),
+        (f"repeat({_DEAD_STR}, c2)", "AGREE"),
+        ("repeat('x', CAST('nope' AS BIGINT))", "AGREE_TRAP"),
+        ("lpad(CAST(NULL AS VARCHAR), CAST('nope' AS INTEGER), 'a')", "AGREE"),
+        ("upper(CAST((9223372036854775807 * 34) AS VARCHAR))", "AGREE_TRAP"),
+        (
+            "replace(CAST(NULL AS VARCHAR), CAST((9223372036854775807 * 34) "
+            "AS VARCHAR), 'a')",
+            "AGREE",
+        ),
+        # The other consumers of the fold: arithmetic's NULL shortcut, ||.
+        # (The optimizer folds the dead arm and answers NULL; the oracle is
+        # optimizer-off DuckDB.)
+        (
+            "CAST((CASE WHEN FALSE THEN c1 END) AS BIGINT) "
+            "+ (c2 + 9223372036854775807)",
+            "DIVERGE_OPT",
+        ),
+        ("CAST(NULL AS BIGINT) + (c2 + 9223372036854775807)", "AGREE"),
+        (f"{_DEAD_STR} || 'y'", "AGREE"),
+        (f"abs({_DEAD_DEC}) || 'y'", "AGREE"),
+        (f"(-{_DEAD_DEC}) || 'y'", "AGREE"),
+        (f"TRY_CAST({_DEAD_DEC} AS DECIMAL(3,1)) || 'y'", "AGREE"),
+        (
+            f"repeat(CAST(abs({_DEAD_DEC}) AS VARCHAR), c2 + 9223372036854775807)",
+            "AGREE_TRAP",
+        ),
+        (
+            f"repeat(CAST((-{_DEAD_DEC}) AS VARCHAR), c2 + 9223372036854775807)",
+            "AGREE_TRAP",
+        ),
+    ],
+)
+@pytest.mark.parametrize("n_rows", [2, 0])
+def test_a_default_null_call_folds_only_over_a_foldable_null(expr, over_rows, n_rows):
+    sql = f"SELECT {expr} AS o FROM __THIS__"
+    expect = over_rows if n_rows else "AGREE"
+    assert_parity(sql, table(_T, _T_ROWS[:n_rows]), expect=expect)
+
+
+def test_a_decimal_round_precision_must_be_foldable():
+    # DuckDB requires round(DECIMAL, n)'s precision to fold at bind; a CASE
+    # naming a column does not, even with its arm decided.
+    sql = (
+        "SELECT round(CAST(c2 AS DECIMAL(9,4)), "
+        "CASE WHEN TRUE THEN 1 ELSE {} END) AS o FROM __THIS__"
+    )
+    rows = table(_T, _T_ROWS)
+    v = assert_parity(sql.format("CAST(c2 AS INTEGER)"), rows, expect="REFUSED")
+    assert "non-constant precision" in v.detail
+    assert_parity(sql.format("2"), rows, expect="AGREE")
+
+
+_OVERFLOW_CASE = (
+    "(CASE WHEN (2.5e0 IS NULL) THEN (-9 + c2) "
+    "WHEN ('  pad  ' LIKE '%') THEN (9223372036854775807 * 34) ELSE c2 END)"
+)
+_SEED_SCHEMA = {"c0": "int32?", "c1": "int32", "c2": "int16?"}
+_SEED_ROWS = [{"c0": 20, "c1": 0, "c2": None}, {"c0": 0, "c1": -31, "c2": 1}]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # fuzz seed 18995, as generated.
+        "SELECT length('abcdefghijabcdefghijabcdefghij') AS o0, "
+        "repeat(CAST((CASE WHEN FALSE THEN c1 END) AS VARCHAR), "
+        f"{_OVERFLOW_CASE}) AS o1, 0.0e0 AS o2 FROM __THIS__ "
+        "WHERE (('%_' NOT LIKE 'a_c') AND (FALSE OR TRUE))",
+        "SELECT repeat(CAST(((CASE WHEN FALSE THEN c1 END) = 1) AS VARCHAR), "
+        f"{_OVERFLOW_CASE}) AS o FROM __THIS__",
+    ],
+)
+@pytest.mark.parametrize("n_rows", [2, 0])
+def test_a_dead_arm_column_argument_keeps_the_call_live(sql, n_rows):
+    rows = table(_SEED_SCHEMA, _SEED_ROWS[:n_rows])
+    if n_rows:
+        assert_parity(sql, rows, trap="Overflow in multiplication of INT64")
+    else:
+        assert_parity(sql, rows, expect="AGREE")
+
+
 @pytest.mark.parametrize("consumer", ["abs", "-"])
 def test_dead_arm_over_fold_serves_calls_duckdb_refuses(consumer, oracle):
     inner = f"(- {_DEAD_ARM}) || 'y'"
@@ -76,6 +196,9 @@ class _FloatStructUdf:
         # or the call stays at run time and `.f2` keeps its declared DOUBLE.
         ("CAST(NULL AS DOUBLE)", pa.int32()),
         ("CAST(34 AS DOUBLE)", pa.float64()),
+        # A column-holding argument is not DuckDB-foldable: the call stays
+        # at run time even though every row is NULL.
+        ("CASE WHEN false THEN x END", pa.float64()),
     ],
 )
 def test_a_udf_over_a_cast_integer_constant_folds_at_bind(arg, want_ty, oracle):
