@@ -1372,9 +1372,23 @@ impl Binder<'_> {
                         )));
                     }
                     let args = self.bind_udf_args(f, spec)?;
+                    // A pure udf over constant args folds at bind (see
+                    // `try_extern_bind_fold`). A NULL result is a typed NULL
+                    // constant there, so a strict parent collapses without
+                    // running its other operand: `udf0(NULL) * (a + 1)` is
+                    // NULL on DuckDB, not an overflow (nightly seed
+                    // 1118442). Measured: the constant keeps the declared
+                    // type. A non-NULL result stays a run-time call; the
+                    // value is the same either way.
+                    let site = self.fresh_site();
+                    if let Some(Ok(lanes)) = self.site_bind_fold(site, ext as usize, spec, &args) {
+                        if lanes.is_none_or(|l| l.first().is_none_or(Option::is_none)) {
+                            return Ok(null_of(spec.rets[0]));
+                        }
+                    }
                     return Ok(SExpr {
                         kind: SKind::ExternCall {
-                            site: self.fresh_site(),
+                            site,
                             ext,
                             args,
                             ret: 0,

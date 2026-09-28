@@ -83,6 +83,23 @@ impl Binder<'_> {
         Some((eval.fun)(&vals))
     }
 
+    /// [`Self::try_extern_bind_fold`], at most once per call site.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn site_bind_fold(
+        &self,
+        site: u32,
+        ext: usize,
+        spec: &super::super::ir::ExternSpec,
+        args: &[SExpr],
+    ) -> Option<Result<Option<Vec<Option<ScalarVal>>>, String>> {
+        if let Some((_, r)) = self.bind_folds.borrow().iter().find(|(s, _)| *s == site) {
+            return r.clone();
+        }
+        let r = self.try_extern_bind_fold(ext, spec, args);
+        self.bind_folds.borrow_mut().push((site, r.clone()));
+        r
+    }
+
     /// Bind-fold one || operand, on top of [`Self::try_extern_bind_fold`].
     /// `(_, true)` = the operand folds to NULL, so the whole || collapses
     /// to SQLNULL. Otherwise the (possibly rewritten) operand comes back:
@@ -121,6 +138,7 @@ impl Binder<'_> {
             }
         }
         if let SKind::ExternCall {
+            site,
             ext,
             ref args,
             whole: false,
@@ -129,7 +147,7 @@ impl Binder<'_> {
         {
             if let Some(spec) = self.udfs.get(ext as usize) {
                 if spec.rets.len() == 1 {
-                    match self.try_extern_bind_fold(ext as usize, spec, args) {
+                    match self.site_bind_fold(site, ext as usize, spec, args) {
                         Some(Ok(None)) => return (e, true),
                         Some(Ok(Some(lanes))) => match lanes.into_iter().next() {
                             Some(Some(v)) => {
