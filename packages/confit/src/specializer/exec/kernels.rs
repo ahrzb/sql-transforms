@@ -84,8 +84,20 @@ pub fn int_to_dec(v: i64, scale: u8) -> i128 {
     (v as i128) * 10i128.pow(scale as u32)
 }
 
+/// `10^0 ..= 10^38` as i128, built at compile time: the decimal kernels
+/// run per row, and `i128::pow` is a multiply loop.
+const POW10_I128: [i128; 39] = {
+    let mut t = [1i128; 39];
+    let mut i = 1;
+    while i < 39 {
+        t[i] = t[i - 1] * 10;
+        i += 1;
+    }
+    t
+};
+
 fn dpow10(n: u8) -> i128 {
-    10i128.pow(n as u32)
+    POW10_I128[n as usize]
 }
 
 /// `Decimal::ToString`: the scaled integer with its point, every scale
@@ -116,7 +128,7 @@ pub fn dec_arith(op: DecOp, check: u8, a: i128, b: i128) -> Result<i128, String>
     };
     let fits = |r: i128| match check {
         18 => r.unsigned_abs() < 1_000_000_000_000_000_000,
-        38 => r.unsigned_abs() < dpow10(38).unsigned_abs(),
+        38 => r.unsigned_abs() < POW10_I128[38].unsigned_abs(),
         _ => true,
     };
     match r {
