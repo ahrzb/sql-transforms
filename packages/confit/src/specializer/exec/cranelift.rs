@@ -32,7 +32,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use super::super::ir::{
+use super::super::ir::{DecOp, DecUnary, 
     BinOp, CmpPred, Inst, Lit, NumOp1, Program, RoundMode, StaticTy, StrOp1, StrOp2, Term,
     TrimSide, Ty,
 };
@@ -834,6 +834,91 @@ extern "C" fn h_dec_to_f64(lo: i64, hi: i64, scale: i64) -> f64 {
     kernels::dec_to_f64(v, scale as u8)
 }
 
+/// A type as one i64 across the helper ABI: the integer widths by their
+/// bit count, `Dec(p, s)` as `1000 + 100 p + s`.
+fn ty_code(t: Ty) -> i64 {
+    match t {
+        Ty::I8 => 8,
+        Ty::I16 => 16,
+        Ty::I32 => 32,
+        Ty::Dec(p, s) => 1000 + 100 * p as i64 + s as i64,
+        _ => 64,
+    }
+}
+
+fn ty_of_code(c: i64) -> Ty {
+    match c {
+        8 => Ty::I8,
+        16 => Ty::I16,
+        32 => Ty::I32,
+        64 => Ty::I64,
+        c => Ty::Dec(((c - 1000) / 100) as u8, ((c - 1000) % 100) as u8),
+    }
+}
+
+fn i128_of(lo: i64, hi: i64) -> i128 {
+    (((hi as u64 as u128) << 64) | (lo as u64 as u128)) as i128
+}
+
+/// Mirrors interp: `kernels::dec_arith`, a trap on the capped width.
+extern "C" fn h_dec_arith(
+    p: *mut Cx,
+    alo: i64,
+    ahi: i64,
+    blo: i64,
+    bhi: i64,
+    op_check: i64,
+    out: *mut Cell,
+) {
+    let op = match op_check / 100 {
+        0 => DecOp::Add,
+        1 => DecOp::Sub,
+        2 => DecOp::Mul,
+        _ => DecOp::Rem,
+    };
+    let r = kernels::dec_arith(op, (op_check % 100) as u8, i128_of(alo, ahi), i128_of(blo, bhi))
+        .unwrap_or_else(|m| {
+            unsafe { cx(p) }.set_trap(m);
+            0
+        });
+    unsafe { *out = dec_cell(r) };
+}
+
+/// Mirrors interp: `kernels::dec_cast`. An integer result lands in the
+/// cell's low half.
+extern "C" fn h_dec_cast(p: *mut Cx, lo: i64, hi: i64, from: i64, to: i64, out: *mut Cell) {
+    let r = kernels::dec_cast(i128_of(lo, hi), ty_of_code(from), ty_of_code(to))
+        .unwrap_or_else(|m| {
+            unsafe { cx(p) }.set_trap(m);
+            0
+        });
+    unsafe { *out = dec_cell(r) };
+}
+
+extern "C" fn h_dec_unary(lo: i64, hi: i64, op_k_m: i64, out: *mut Cell) {
+    let op = match op_k_m / 10000 {
+        0 => DecUnary::Abs,
+        1 => DecUnary::Ceil,
+        2 => DecUnary::Floor,
+        3 => DecUnary::Round,
+        _ => DecUnary::Trunc,
+    };
+    let (k, m) = (((op_k_m / 100) % 100) as u8, (op_k_m % 100) as u8);
+    unsafe { *out = dec_cell(kernels::dec_unary(op, i128_of(lo, hi), k, m)) };
+}
+
+extern "C" fn h_dec_cast_ok(lo: i64, hi: i64, from: i64, to: i64) -> i8 {
+    kernels::dec_cast(i128_of(lo, hi), ty_of_code(from), ty_of_code(to)).is_ok() as i8
+}
+
+extern "C" fn h_dtos(p: *mut Cx, lo: i64, hi: i64, scale: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let text = kernels::dec_to_string(i128_of(lo, hi), scale as u8);
+    let r = c.arena().push_fmt(format_args!("{text}"));
+    unsafe { *len_out = r.len as i64 };
+    r.off as i64
+}
+
 extern "C" fn h_int_to_dec(v: i64, scale: i64, out: *mut Cell) {
     unsafe { *out = dec_cell(kernels::int_to_dec(v, scale as u8)) };
 }
@@ -1455,6 +1540,80 @@ fn translate_inst(
             let scv = icon(b, *sc as i64);
             let v = call_h(b, module, "h_dec_to_f64", &[lo, hi, scv]).unwrap();
             vals.insert(dst.0, V::S(v));
+        }
+        Inst::Dop {
+            op, check, dst, a, b: rhs, ..
+        } => {
+            let (alo, ahi) = b.ins().isplit(vals[&a.0].s());
+            let (blo, bhi) = b.ins().isplit(vals[&rhs.0].s());
+            let opc = match op {
+                DecOp::Add => 0,
+                DecOp::Sub => 1,
+                DecOp::Mul => 2,
+                DecOp::Rem => 3,
+            };
+            let oc = icon(b, opc * 100 + *check as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            call_h(b, module, "h_dec_arith", &[cxp, alo, ahi, blo, bhi, oc, lp]);
+            trap_check(b);
+            vals.insert(dst.0, V::S(b.ins().stack_load(types::I128, slot_out, 0)));
+        }
+        Inst::Dcast { from, to, dst, a } => {
+            let x = vals[&a.0].s();
+            let wide = if from.dec().is_some() {
+                x
+            } else {
+                b.ins().sextend(types::I128, x)
+            };
+            let (lo, hi) = b.ins().isplit(wide);
+            let fc = icon(b, ty_code(*from));
+            let tc = icon(b, ty_code(*to));
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            call_h(b, module, "h_dec_cast", &[cxp, lo, hi, fc, tc, lp]);
+            trap_check(b);
+            let t = if to.dec().is_some() {
+                types::I128
+            } else {
+                types::I64
+            };
+            vals.insert(dst.0, V::S(b.ins().stack_load(t, slot_out, 0)));
+        }
+        Inst::Dunary {
+            op, k, m, dst, a, ..
+        } => {
+            let (lo, hi) = b.ins().isplit(vals[&a.0].s());
+            let opc = match op {
+                DecUnary::Abs => 0,
+                DecUnary::Ceil => 1,
+                DecUnary::Floor => 2,
+                DecUnary::Round => 3,
+                DecUnary::Trunc => 4,
+            };
+            let c = icon(b, opc * 10000 + *k as i64 * 100 + *m as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            call_h(b, module, "h_dec_unary", &[lo, hi, c, lp]);
+            vals.insert(dst.0, V::S(b.ins().stack_load(types::I128, slot_out, 0)));
+        }
+        Inst::DcastOk { from, to, dst, a } => {
+            let x = vals[&a.0].s();
+            let wide = if from.dec().is_some() {
+                x
+            } else {
+                b.ins().sextend(types::I128, x)
+            };
+            let (lo, hi) = b.ins().isplit(wide);
+            let fc = icon(b, ty_code(*from));
+            let tc = icon(b, ty_code(*to));
+            let v = call_h(b, module, "h_dec_cast_ok", &[lo, hi, fc, tc]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::Dtos { s: sc, dst, a, .. } => {
+            let (lo, hi) = b.ins().isplit(vals[&a.0].s());
+            let scv = icon(b, *sc as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(b, module, "h_dtos", &[cxp, lo, hi, scv, lp]).unwrap();
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
         }
         Inst::Itod { s: sc, dst, a, .. } => {
             let x = vals[&a.0].s();
@@ -2284,6 +2443,11 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_store_dec", h_store_dec as *const u8),
     ("h_dec_to_f64", h_dec_to_f64 as *const u8),
     ("h_int_to_dec", h_int_to_dec as *const u8),
+    ("h_dec_arith", h_dec_arith as *const u8),
+    ("h_dec_cast", h_dec_cast as *const u8),
+    ("h_dtos", h_dtos as *const u8),
+    ("h_dec_unary", h_dec_unary as *const u8),
+    ("h_dec_cast_ok", h_dec_cast_ok as *const u8),
     ("h_sload", h_sload as *const u8),
     ("h_probe", h_probe as *const u8),
     ("h_predict", h_predict as *const u8),
@@ -2380,6 +2544,11 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_store_dec" => (&[ptr, I64, I8, I64, I64], None),
         "h_dec_to_f64" => (&[I64, I64, I64], Some(F64)),
         "h_int_to_dec" => (&[I64, I64, ptr], None),
+        "h_dec_arith" => (&[ptr, I64, I64, I64, I64, I64, ptr], None),
+        "h_dec_cast" => (&[ptr, I64, I64, I64, I64, ptr], None),
+        "h_dtos" => (&[ptr, I64, I64, I64, ptr], Some(I64)),
+        "h_dec_unary" => (&[I64, I64, I64, ptr], None),
+        "h_dec_cast_ok" => (&[I64, I64, I64, I64], Some(I8)),
         "h_sload" => (&[ptr, I64, I64, I64], None),
         "h_probe" => (&[ptr, I64, I64, I64], Some(I8)),
         "h_predict" => (&[ptr, I64, I64, I64, I64], Some(F64)),

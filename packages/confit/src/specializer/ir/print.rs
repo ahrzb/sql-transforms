@@ -152,6 +152,30 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Itod { p: dp, s: ds, a, .. } => {
             let _ = write!(s, "itod({dp},{ds}) {}", val(*a));
         }
+        Inst::Dop {
+            op, check, ty, a, b, ..
+        } => {
+            let _ = write!(
+                s,
+                "dop.{} {check} {} {}, {}",
+                op.name(),
+                ty.name(),
+                val(*a),
+                val(*b)
+            );
+        }
+        Inst::Dcast { from, to, a, .. } => {
+            let _ = write!(s, "dcast {} {} {}", from.name(), to.name(), val(*a));
+        }
+        Inst::Dunary { op, k, m, ty, a, .. } => {
+            let _ = write!(s, "dunary.{} {k} {m} {} {}", op.name(), ty.name(), val(*a));
+        }
+        Inst::DcastOk { from, to, a, .. } => {
+            let _ = write!(s, "dcast.ok {} {} {}", from.name(), to.name(), val(*a));
+        }
+        Inst::Dtos { p: dp, s: ds, a, .. } => {
+            let _ = write!(s, "dtos({dp},{ds}) {}", val(*a));
+        }
         Inst::Itof { narrow, a, .. } => {
             let n = if *narrow { ".f32" } else { "" };
             let _ = write!(s, "itof{n} {}", val(*a));

@@ -1032,6 +1032,59 @@ fn compile_inst(
                 Ok(())
             })
         }
+        Inst::Dop {
+            op, check, dst, a, b, ..
+        } => {
+            let (dst, a, b) = (sl(slots, dst), sl(slots, a), sl(slots, b));
+            Box::new(move |ctx| {
+                let r = super::kernels::dec_arith(op, check, as_dec(ctx.regs[a]), as_dec(ctx.regs[b]))
+                    .map_err(Trap)?;
+                ctx.regs[dst] = RegVal::Dec(r);
+                Ok(())
+            })
+        }
+        Inst::Dcast { from, to, dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let v = match ctx.regs[a] {
+                    RegVal::Dec(v) => v,
+                    r => as_i64(r) as i128,
+                };
+                let r = super::kernels::dec_cast(v, from, to).map_err(Trap)?;
+                ctx.regs[dst] = if to.dec().is_some() {
+                    RegVal::Dec(r)
+                } else {
+                    RegVal::I64(r as i64)
+                };
+                Ok(())
+            })
+        }
+        Inst::Dunary { op, k, m, dst, a, .. } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::Dec(super::kernels::dec_unary(op, as_dec(ctx.regs[a]), k, m));
+                Ok(())
+            })
+        }
+        Inst::DcastOk { from, to, dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let v = match ctx.regs[a] {
+                    RegVal::Dec(v) => v,
+                    r => as_i64(r) as i128,
+                };
+                ctx.regs[dst] = RegVal::I1(super::kernels::dec_cast(v, from, to).is_ok());
+                Ok(())
+            })
+        }
+        Inst::Dtos { s: sc, dst, a, .. } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let text = super::kernels::dec_to_string(as_dec(ctx.regs[a]), sc);
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_fmt(format_args!("{text}")));
+                Ok(())
+            })
+        }
         Inst::Ftoi { mode, dst, a } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {

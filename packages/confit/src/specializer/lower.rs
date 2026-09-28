@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 
 use super::frontend::PrepareError;
-use super::ir::{
+use super::ir::{DecOp, 
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
     StrOp2, Term, Ty, Value,
 };
@@ -888,6 +888,125 @@ impl<'a> FB<'a> {
                 let l = self.emit(inner, live)?;
                 let dst = self.fresh();
                 self.inst(Inst::Dtof { p, s, dst, a: l.val });
+                Ok(Lane {
+                    val: dst,
+                    flag: l.flag,
+                })
+            }
+            SKind::DecArith { op, check, a, b } => {
+                let la = self.emit(a, live)?;
+                live.push((la, a.ty));
+                let lb = self.emit(b, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let flag = self.combine_flags(la.flag, lb.flag);
+                // `%` by a zero DECIMAL is NULL, the integer `%` rule.
+                let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::Dec(n, ..)) if n != 0);
+                let (bp, bs) = b.ty.dec().expect("decimal operand");
+                let flag = if *op == DecOp::Rem && !nonzero_lit {
+                    let zero = self.const_lit(Lit::Dec(0, bp, bs));
+                    let nz = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: CmpPred::Ne,
+                        ty: b.ty,
+                        dst: nz,
+                        a: lb.val,
+                        b: zero,
+                    });
+                    self.combine_flags(flag, Some(nz))
+                } else {
+                    flag
+                };
+                // A NULL row computes 0 op 0 (0 % 1), which never traps.
+                let (va, vb) = match flag {
+                    Some(f) => {
+                        let (ap, asc) = a.ty.dec().expect("decimal operand");
+                        let da = self.const_lit(Lit::Dec(0, ap, asc));
+                        let safe = if *op == DecOp::Rem { 10i128.pow(bs as u32) } else { 0 };
+                        let db = self.const_lit(Lit::Dec(safe, bp, bs));
+                        (self.select_of(f, la.val, da), self.select_of(f, lb.val, db))
+                    }
+                    None => (la.val, lb.val),
+                };
+                let dst = self.fresh();
+                self.inst(Inst::Dop {
+                    op: *op,
+                    check: *check,
+                    ty: e.ty,
+                    dst,
+                    a: va,
+                    b: vb,
+                });
+                Ok(Lane { flag, val: dst })
+            }
+            SKind::DecCast(inner) => {
+                let l = self.emit(inner, live)?;
+                let dst = self.fresh();
+                if e.ty == Ty::Str {
+                    let (p, s) = inner.ty.dec().expect("dtos operand is a decimal");
+                    self.inst(Inst::Dtos {
+                        p,
+                        s,
+                        dst,
+                        a: l.val,
+                    });
+                } else {
+                    // Mask the payload under a NULL flag: 0 converts to
+                    // anything, so a NULL row never traps.
+                    let a = match l.flag {
+                        Some(f) => {
+                            let d = self.default_of(inner.ty);
+                            self.select_of(f, l.val, d)
+                        }
+                        None => l.val,
+                    };
+                    self.inst(Inst::Dcast {
+                        from: inner.ty.lane(),
+                        to: e.ty,
+                        dst,
+                        a,
+                    });
+                }
+                Ok(Lane {
+                    val: dst,
+                    flag: l.flag,
+                })
+            }
+            SKind::DecTryCast(inner) => {
+                let l = self.emit(inner, live)?;
+                let a = match l.flag {
+                    Some(f) => {
+                        let d = self.default_of(inner.ty);
+                        self.select_of(f, l.val, d)
+                    }
+                    None => l.val,
+                };
+                let (from, to) = (inner.ty.lane(), e.ty);
+                let ok = self.fresh();
+                self.inst(Inst::DcastOk { from, to, dst: ok, a });
+                // A failing row converts 0 instead, and its flag says NULL.
+                let zero = self.default_of(inner.ty);
+                let safe = self.select_of(ok, a, zero);
+                let dst = self.fresh();
+                self.inst(Inst::Dcast {
+                    from,
+                    to,
+                    dst,
+                    a: safe,
+                });
+                let flag = self.combine_flags(l.flag, Some(ok));
+                Ok(Lane { val: dst, flag })
+            }
+            SKind::DecUnary { op, k, m, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Dunary {
+                    op: *op,
+                    k: *k,
+                    m: *m,
+                    ty: e.ty,
+                    dst,
+                    a: l.val,
+                });
                 Ok(Lane {
                     val: dst,
                     flag: l.flag,

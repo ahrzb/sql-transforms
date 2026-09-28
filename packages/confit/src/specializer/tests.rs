@@ -303,7 +303,8 @@ fn unary_minus_and_literals() {
         batch(1, vec![c_i64(&[Some(3)])]),
     )
     .unwrap();
-    assert_eq!(got, rows(&[&["-3", "1.5", "x", "true"]]));
+    // `1.5` is DECIMAL(2,1) on DuckDB; the harness shows the scaled lane.
+    assert_eq!(got, rows(&[&["-3", "15", "x", "true"]]));
 }
 
 #[test]
@@ -427,7 +428,7 @@ fn case_forms_null_conditions_and_type_unification() {
     // Searched, no ELSE -> NULL; int/float branch unification -> DOUBLE
     // (measured: CASE WHEN 1=0 THEN 1/0 ELSE -1 END -> -1.0).
     let got = run_sql(
-        "SELECT CASE WHEN a > 1 THEN 1 WHEN a = 1 THEN 2.5 END AS u, \
+        "SELECT CASE WHEN a > 1 THEN 1 WHEN a = 1 THEN 2.5e0 END AS u, \
          CASE a WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END AS s \
          FROM __THIS__",
         &schema,
@@ -2336,8 +2337,8 @@ fn abs_and_round_semantics() {
     // away from zero; integer round is identity (type preserved).
     let schema = cols(&[("a", Ty::I64, false)]);
     let got = run_sql(
-        "SELECT abs(-5) AS ai, abs(a) AS av, round(2.5) AS r1, \
-         round(-2.5) AS r2, round(a) AS ri FROM __THIS__",
+        "SELECT abs(-5) AS ai, abs(a) AS av, round(2.5e0) AS r1, \
+         round(-2.5e0) AS r2, round(a) AS ri FROM __THIS__",
         &schema,
         batch(1, vec![c_i64(&[Some(-3)])]),
     )
@@ -2413,7 +2414,7 @@ fn coalesce_binds_lazily_and_unifies() {
     // The CAST in the untaken arm must not trap when n is non-NULL.
     let got = run_sql(
         "SELECT coalesce(n, CAST('nope' AS BIGINT)) AS a, \
-         coalesce(NULL, 1, 2) AS b, coalesce(n, 2.5) AS c FROM __THIS__",
+         coalesce(NULL, 1, 2) AS b, coalesce(n, 2.5e0) AS c FROM __THIS__",
         &schema,
         batch(1, vec![c_i64(&[Some(4)])]),
     )

@@ -505,6 +505,76 @@ impl CmpPred {
 /// DuckDB's DOUBLE->BIGINT cast does — not the same thing as the SQL
 /// `round()` builtin, which is half-away-from-zero and lowers through
 /// [`NumOp1::Fround`] instead.
+/// DECIMAL arithmetic over scaled integers (docs/specs/decimal-expressions.md
+/// §3-§6). Both operands are already at the types DuckDB's binder casts them
+/// to, so the op is plain integer arithmetic plus the capped-width check.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DecOp {
+    Add,
+    Sub,
+    Mul,
+    /// Truncated remainder, the dividend's sign (C++ `%`). A zero divisor is
+    /// the lowering's NULL flag, never this op's input.
+    Rem,
+}
+
+impl DecOp {
+    pub fn name(self) -> &'static str {
+        match self {
+            DecOp::Add => "add",
+            DecOp::Sub => "sub",
+            DecOp::Mul => "mul",
+            DecOp::Rem => "rem",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DecOp> {
+        Some(match s {
+            "add" => DecOp::Add,
+            "sub" => DecOp::Sub,
+            "mul" => DecOp::Mul,
+            "rem" => DecOp::Rem,
+            _ => return None,
+        })
+    }
+}
+
+/// The DECIMAL overloads of the rounding builtins, on the scaled integer
+/// (extension/core_functions/scalar/math/numeric.cpp). `k` is the power of
+/// ten divided out, `m` the one multiplied back (`round(x, -2)`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DecUnary {
+    Abs,
+    Ceil,
+    Floor,
+    /// Half away from zero.
+    Round,
+    Trunc,
+}
+
+impl DecUnary {
+    pub fn name(self) -> &'static str {
+        match self {
+            DecUnary::Abs => "abs",
+            DecUnary::Ceil => "ceil",
+            DecUnary::Floor => "floor",
+            DecUnary::Round => "round",
+            DecUnary::Trunc => "trunc",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DecUnary> {
+        Some(match s {
+            "abs" => DecUnary::Abs,
+            "ceil" => DecUnary::Ceil,
+            "floor" => DecUnary::Floor,
+            "round" => DecUnary::Round,
+            "trunc" => DecUnary::Trunc,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RoundMode {
     Trunc,
@@ -780,6 +850,54 @@ pub enum Inst {
     /// was capped at 38 (cast_operators.cpp's per-row failure); the
     /// frontend refuses that shape today, so `trap` is false in practice.
     Itod {
+        p: u8,
+        s: u8,
+        dst: Value,
+        a: Value,
+    },
+    /// `dop.OP.CHECK` — DECIMAL arithmetic on the i128 lane, `a` and `b`
+    /// of Dec types, `dst` of `ty`. `check` is 18 or 38 when DuckDB's binder
+    /// capped the width and checks overflow against that storage bound, 0
+    /// when the width cannot overflow (`kernels::dec_arith`).
+    Dop {
+        op: DecOp,
+        check: u8,
+        ty: Ty,
+        dst: Value,
+        a: Value,
+        b: Value,
+    },
+    /// `dcast FROM -> TO` — a checked conversion with a DECIMAL on at least
+    /// one side: integer -> Dec, Dec -> Dec (rescale), Dec -> integer (half
+    /// away from zero). `from` is the operand's lane type; `to` may be a
+    /// narrow integer, whose range the conversion checks while `dst` stays
+    /// on the i64 lane (`kernels::dec_cast`).
+    Dcast {
+        from: Ty,
+        to: Ty,
+        dst: Value,
+        a: Value,
+    },
+    /// `dunary.OP K M` — a DECIMAL rounding builtin on the scaled integer
+    /// (`kernels::dec_unary`), total. `dst` is of `ty`.
+    Dunary {
+        op: DecUnary,
+        k: u8,
+        m: u8,
+        ty: Ty,
+        dst: Value,
+        a: Value,
+    },
+    /// `dcast.ok FROM TO` — whether `dcast FROM TO` would succeed: TRY_CAST's
+    /// validity (I1).
+    DcastOk {
+        from: Ty,
+        to: Ty,
+        dst: Value,
+        a: Value,
+    },
+    /// `dtos(p,s)` — Dec -> VARCHAR, DuckDB's decimal formatting.
+    Dtos {
         p: u8,
         s: u8,
         dst: Value,
@@ -1130,6 +1248,11 @@ impl Inst {
             | Inst::Ftoi { dst, .. }
             | Inst::Dtof { dst, .. }
             | Inst::Itod { dst, .. }
+            | Inst::Dop { dst, .. }
+            | Inst::Dcast { dst, .. }
+            | Inst::Dunary { dst, .. }
+            | Inst::DcastOk { dst, .. }
+            | Inst::Dtos { dst, .. }
             | Inst::Itos { dst, .. }
             | Inst::Ftos { dst, .. }
             | Inst::Sconcat { dst, .. }
@@ -1204,6 +1327,10 @@ impl Inst {
             | Inst::Ftoi { dst, a, .. }
             | Inst::Dtof { dst, a, .. }
             | Inst::Itod { dst, a, .. }
+            | Inst::Dcast { dst, a, .. }
+            | Inst::Dunary { dst, a, .. }
+            | Inst::DcastOk { dst, a, .. }
+            | Inst::Dtos { dst, a, .. }
             | Inst::Str1 { dst, a, .. }
             | Inst::SLen { dst, a, .. }
             | Inst::Sord { dst, a, .. }
@@ -1224,6 +1351,7 @@ impl Inst {
             | Inst::Str2i { dst, a, n: b, .. }
             | Inst::Round2f { dst, a, n: b, .. }
             | Inst::Round2i { dst, a, n: b, .. }
+            | Inst::Dop { dst, a, b, .. }
             | Inst::Sconcat { dst, a, b } => {
                 *dst = m(*dst);
                 *a = m(*a);

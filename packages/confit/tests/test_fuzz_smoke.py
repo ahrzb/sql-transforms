@@ -77,9 +77,8 @@ def test_planted_over_modifier_diverges_or_refuses():
 
 
 def _decimal_lit_case(pack: bool) -> gen.Case:
-    """A bare decimal literal: DuckDB types `1.5` as DECIMAL(2,1) and we map
-    it to f64, decimal arithmetic being unshipped. `pack` puts the literal in
-    a struct lane, so the nested delta is exercised too."""
+    """A bare decimal literal: DuckDB types `1.5` as DECIMAL(2,1), and so do
+    we. `pack` puts the literal in a struct lane."""
     e: gen.Node = gen.Lit(1.5, "float", bare_decimal=True)
     if pack:
         e = gen.StructPack([("f", e)])
@@ -87,15 +86,16 @@ def _decimal_lit_case(pack: bool) -> gen.Case:
     return gen.Case(-2, {"k": "int"}, [{"k": 1}], {}, [], None, q, None, None, [])
 
 
-def test_an_unshipped_lane_is_classified_and_never_value_compared():
-    """Casting DuckDB's DECIMAL answer down to our f64 so the values could
-    still be compared would manufacture 1-ulp artifacts and grade an
-    unshipped feature as agreement. An unshipped width gets its own verdict,
-    and no comparison at all."""
+def test_a_decimal_literal_agrees_in_its_own_width():
+    """Decimals shipped, so the UNSHIPPED exit is gone for them: a bare
+    decimal literal agrees as DECIMAL(2,1), top level and in a struct lane,
+    and a decimal-vs-double delta would be a schema divergence."""
     for pack in (False, True):
         v = oracle.run_case(_decimal_lit_case(pack))
-        assert (v.kind, v.klass) == ("UNSHIPPED", "decimals"), v
-        assert "decimal" in v.detail, v
+        assert v.kind == "AGREE", v
+    duck = pa.schema([("o0", pa.decimal128(2, 1))])
+    delta = oracle._schema_delta(duck, pa.schema([("o0", pa.float64())]))
+    assert delta is not None and delta[0] == "diff", delta
 
 
 def _static_decimal_lit_case() -> gen.Case:
@@ -289,29 +289,11 @@ def test_a_verdict_line_carries_its_inputs_not_just_a_seed():
         assert inputs["shape"] == case.shape
 
 
-def test_unshipped_reach_is_read_off_the_construct_not_the_bucket():
-    """Reachability is a property of the generated SQL, so an empty UNSHIPPED
-    bucket can be told apart from a generator that never emits the width."""
-    reach = oracle.unshipped_reach
-    assert reach("SELECT 2.5 AS o0 FROM __THIS__") == {"decimals"}
-    assert reach("SELECT -0.25 * c0 AS o0 FROM __THIS__") == {"decimals"}
-    for sql in (
-        "SELECT 2.5e0 AS o0 FROM __THIS__",
-        "SELECT c1.f0 AS o0 FROM __THIS__",
-        "SELECT '1.5' AS o0 FROM __THIS__",
-        "SELECT 1e-300 AS o0 FROM __THIS__",
-    ):
-        assert reach(sql) == set(), sql
-    seed = next(
-        (
-            seed
-            for seed in range(PARITY_SEEDS)
-            if reach(gen.render(gen.gen(seed).query))
-        ),
-        None,
-    )
-    assert seed is not None, "the generator no longer reaches a bare decimal literal"
-    assert "reaches:decimals" in oracle.run_case_json(seed)["tags"]
+def test_no_feature_is_unshipped():
+    """The UNSHIPPED machinery stays for the next unshipped width, but
+    nothing takes it today: decimals, the last one, shipped."""
+    assert oracle.UNSHIPPED_FEATURES == ()
+    assert oracle.unshipped_reach("SELECT 2.5 AS o0 FROM __THIS__") == set()
 
 
 def test_a_case_marks_each_phase_on_stderr_before_it_runs(capsys):

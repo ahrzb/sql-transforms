@@ -1,6 +1,7 @@
 # Decimal expressions: DuckDB's rules, read from source
 
-Status: rules verified, implementation not started. Source: DuckDB `v1.5.5`
+Status: served (`src/specializer/frontend/decimal.rs`, `kernels::dec_*`),
+pinned by `tests/test_decimal_expressions.py` and `tests/test_decimals.py`. Source: DuckDB `v1.5.5`
 (commit `d8cdaa33`), the version the oracle runs. Every rule below is fixed-width
 integer arithmetic: a `DECIMAL(p,s)` value is an integer `v` meaning `v / 10^s`,
 with `1 <= p <= 38`. Nothing is arbitrary precision and nothing is floating
@@ -118,20 +119,34 @@ Unchecked widths cannot overflow by construction.
   the target width.
 - DECIMAL to DOUBLE: served today (`DecToFloat`, DuckDB's own algorithm).
 
-## What confit has, and the plan
+## 9. The rounding builtins
 
-Already present: the `Ty::Dec(p,s)` IR type and `i128` lane, DECIMAL output
-columns (`OutCol::Dec`, Arrow `decimal128`), integer-to-decimal promotion for
-comparisons, decimal-to-DOUBLE, and static-table decimal columns.
+`extension/core_functions/scalar/math/numeric.cpp`. `abs`, `ceil`,
+`floor`, `trunc` and `round` have DECIMAL overloads. Every other numeric
+builtin (`ln`, `sqrt`, `pow`, `sign`, the trigonometric family) reads a
+DECIMAL as DOUBLE, DuckDB's implicit decimal->double cast.
 
-Missing (listed in PLANS as "Decimal expressions"): §1, §3–§6, the full §7, and
-§8 apart from DOUBLE. These must land together, because typing literals as
-decimals before arithmetic is served would turn today's `c * 0.5` into a
-refusal. Suggested order, one PR each:
+- `abs`: the scaled integer's absolute value, same type (`DecimalUnaryOpBind`).
+- `ceil`/`floor`/`round`/`trunc`: `DECIMAL(w, 0)`, dividing out `10^s`.
+  Ceil truncates at or below zero and otherwise gives `(v - 1) / 10^s + 1`.
+  Floor mirrors it. Round adds or subtracts `10^s / 2`, so it is half away
+  from zero (`BindGenericRoundFunctionDecimal`).
+- `round(x, n)`/`trunc(x, n)` (`BindDecimalRoundPrecision`): `n` must fold to
+  a constant at bind, or DuckDB raises `NotImplementedException`.
+  - `n >= s` changes nothing.
+  - `0 <= n < s` gives `DECIMAL(w, n)`.
+  - `n < 0` gives `DECIMAL(w, 0)` with the value a multiple of `10^-n`. When
+    `n <= -(w - s)` the result is a constant 0, even for a NULL row.
+- A constant NULL argument binds SQLNULL (INTEGER), as the operators do.
 
-1. Decimal-typed literals, `+ - * %` with §6's checks, unary minus, and the
-   §8 casts.
-2. The full §7 common type in CASE, COALESCE and IN, plus `round`, `abs` and
-   `sign` over decimals (each needs its own source read).
-3. The generator emits decimal arithmetic, and the `decimals` feature leaves
-   `UNSHIPPED`.
+## What confit has
+
+The IR carries `Dec(p,s)` on an `i128` lane. `Dop` does §3-§6, `Dcast` does
+§8 (`DcastOk` gives TRY_CAST its NULL), `Dunary` does §9, and `Dtos` formats
+a decimal. Each has one kernel in `exec/kernels.rs` that both backends call.
+The binder rules are in `frontend/decimal.rs`.
+
+Refused by name: casts from DOUBLE, VARCHAR or BOOLEAN into a DECIMAL
+(DuckDB's double->decimal rounding and its string parser), a DECIMAL join key
+expression against a non-DOUBLE build key, and `IN`/`BETWEEN` families
+capped at 38 digits.

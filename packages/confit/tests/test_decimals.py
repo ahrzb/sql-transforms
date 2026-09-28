@@ -8,9 +8,8 @@ scaled i128 from ingest through the join and emitted as decimal128(p,s).
 Every expectation here is the LIVE oracle: an optimizer-off DuckDB
 connection with the same arrow fixtures registered, compared on ROWS AND on
 SCHEMA through `confit.compare`. A wrong row is impossible to write.
-Expressions OVER a decimal (arithmetic, casts to int/varchar, mixed
-coalesce) refuse by name; those refusals are pinned on their message
-text.
+Expressions over a decimal (arithmetic, casts, unification) serve
+exactly, per docs/specs/decimal-expressions.md.
 """
 
 from __future__ import annotations
@@ -354,9 +353,6 @@ def test_cast_a_decimal_static_to_double():
     )
 
 
-_UNSERVED = "decimal arithmetic and casts are not served"
-
-
 def _refuses(sql: str, statics: dict[str, pa.Table], *needles: str) -> None:
     with pytest.raises(ValueError) as ei:
         DuckDBInferFn(sql, row_tables={"__THIS__": _DEC_SCHEMA}, static_tables=statics)
@@ -365,43 +361,53 @@ def _refuses(sql: str, statics: dict[str, pa.Table], *needles: str) -> None:
         assert n in msg, f"{sql}: {n!r} not in {msg!r}"
 
 
-@pytest.mark.parametrize("expr", ["d + 1", "d - 1", "d * 2", "d / 2", "d % 2"])
-def test_decimal_arithmetic_refuses_by_name(expr):
-    """Cells G7/G8: arithmetic over a decimal was a silently wrong double."""
-    _refuses(
-        _JOIN.format(f"{expr} AS o"),
-        {"p": _dec62(["0.50"])},
-        "DECIMAL(6,2)",
-        "'d'",
-        _UNSERVED,
-    )
-
-
-@pytest.mark.parametrize("target", ["BIGINT", "INTEGER", "VARCHAR"])
-def test_a_decimal_cast_to_integer_or_varchar_refuses_by_name(target):
-    """Cells G10/G11 - WRONG VALUES on master (0.50::BIGINT was 0, DuckDB
-    says 1; '0.5' vs '0.50'), so the trade is the ladder's own preference."""
-    _refuses(
-        _JOIN.format(f"CAST(d AS {target}) AS o"),
-        {"p": _dec62(["0.50"])},
-        "DECIMAL(6,2)",
-        "'d'",
-        _UNSERVED,
-    )
+_ROWS4 = [{"gid": g} for g in "abcd"]
+_P4 = {"p": _dec62(["0.50", "1.25", "-2.25", None])}
 
 
 @pytest.mark.parametrize(
-    "expr", ["coalesce(d, 0)", "CASE WHEN d > 0 THEN d ELSE 0 END"]
+    "expr", ["d + 1", "d - 1", "d * 2", "d / 2", "d % 2", "d * d", "-d", "d + 0.125"]
 )
-def test_coalesce_mixing_a_decimal_with_an_integer_refuses_by_name(expr):
-    """Cells G12/G13: DuckDB unifies these to a WIDER decimal; we refuse."""
-    _refuses(
-        _JOIN.format(f"{expr} AS o"),
-        {"p": _dec62(["0.50"])},
-        "DECIMAL(6,2)",
-        "'d'",
-        _UNSERVED,
-    )
+def test_decimal_arithmetic_serves_exactly(expr):
+    """Cells G7/G8: arithmetic over a decimal stays a DECIMAL of DuckDB's
+    bound (p, s), `/` alone going through DOUBLE
+    (docs/specs/decimal-expressions.md §3-§5)."""
+    _check(_JOIN.format(f"{expr} AS o"), _DEC_SCHEMA, _ROWS4, _P4)
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["BIGINT", "INTEGER", "TINYINT", "VARCHAR", "DECIMAL(4,1)", "DECIMAL(9,4)"],
+)
+def test_a_decimal_cast_serves_with_duckdbs_rounding(target):
+    """Cells G10/G11: 0.50::BIGINT is 1 and -2.25::DECIMAL(4,1) is -2.3
+    (half away from zero), and '0.50' keeps its scale (§8)."""
+    _check(_JOIN.format(f"CAST(d AS {target}) AS o"), _DEC_SCHEMA, _ROWS4, _P4)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "coalesce(d, 0)",
+        "CASE WHEN d > 0 THEN d ELSE 0 END",
+        "CASE WHEN d > 0 THEN d ELSE 0.125 END",
+        "greatest(d, 1)",
+        "d IN (0.5, 1)",
+    ],
+)
+def test_a_decimal_unifies_at_duckdbs_common_type(expr):
+    """Cells G12/G13: DuckDB unifies these to a WIDER decimal (§7)."""
+    _check(_JOIN.format(f"{expr} AS o"), _DEC_SCHEMA, _ROWS4, _P4)
+
+
+def test_a_decimal_overflow_traps_like_duckdb():
+    """A capped width checks overflow at its storage bound (§6)."""
+    static = {"p": _dec62(["9999.99"])}
+    sql = _JOIN.format("CAST(d AS DECIMAL(4,2)) AS o")
+    with pytest.raises(ValueError, match="out of range"):
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _DEC_SCHEMA}, static_tables=static
+        ).infer_arrow(pa.Table.from_pylist(_GID_ROWS, schema=_DEC_SCHEMA))
 
 
 def test_a_decimal256_static_column_refuses_by_name():

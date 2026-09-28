@@ -17,7 +17,7 @@
 //!   width-only cast of an integer literal collapses because it cannot trap
 //!   and its provenance mark is already spent by fold time.
 
-use super::ir::{CmpPred, Lit, NumOp1, Ty};
+use super::ir::{CmpPred, DecOp, Lit, NumOp1, Ty};
 use super::plan::{ArithOp, SExpr, SKind};
 
 /// A constant operand: a payload or a typed NULL.
@@ -88,6 +88,93 @@ pub fn fold(e: SExpr) -> SExpr {
                 }
                 (Some(K::Null), _) => null(ty),
                 _ => e(SKind::DecToFloat(Box::new(inner))),
+            }
+        }
+        // Scaled-integer arithmetic over constants is exact, and the kernel
+        // is the one both backends run; a constant that would trap stays a
+        // run-time node, as DuckDB with its optimizer off traps per row.
+        SKind::DecArith { op, check, a, b } => {
+            let (a, b) = (fold(*a), fold(*b));
+            match (as_const(&a), as_const(&b)) {
+                (Some(K::Null), _) | (_, Some(K::Null)) => null(ty),
+                (_, Some(K::Val(Lit::Dec(0, ..)))) if op == DecOp::Rem => null(ty),
+                (Some(K::Val(Lit::Dec(x, ..))), Some(K::Val(Lit::Dec(y, ..)))) => {
+                    match (super::exec::kernels::dec_arith(op, check, x, y), ty) {
+                        (Ok(r), Ty::Dec(dp, ds)) => lit(Lit::Dec(r, dp, ds), ty),
+                        _ => e(SKind::DecArith {
+                            op,
+                            check,
+                            a: Box::new(a),
+                            b: Box::new(b),
+                        }),
+                    }
+                }
+                _ => e(SKind::DecArith {
+                    op,
+                    check,
+                    a: Box::new(a),
+                    b: Box::new(b),
+                }),
+            }
+        }
+        SKind::DecCast(inner) => {
+            let inner = fold(*inner);
+            let v = match as_const(&inner) {
+                Some(K::Null) => return null(ty),
+                Some(K::Val(Lit::Dec(v, ..))) => Some(v),
+                Some(K::Val(Lit::I64(v))) => Some(v as i128),
+                _ => None,
+            };
+            let folded = v.and_then(|v| match ty {
+                Ty::Str => inner.ty.dec().map(|(_, sc)| {
+                    Lit::Str(super::exec::kernels::dec_to_string(v, sc))
+                }),
+                _ => super::exec::kernels::dec_cast(v, inner.ty.lane(), ty)
+                    .ok()
+                    .map(|r| match ty {
+                        Ty::Dec(dp, ds) => Lit::Dec(r, dp, ds),
+                        _ => Lit::I64(r as i64),
+                    }),
+            });
+            match folded {
+                Some(l) => lit(l, ty),
+                None => e(SKind::DecCast(Box::new(inner))),
+            }
+        }
+        SKind::DecTryCast(inner) => {
+            let inner = fold(*inner);
+            let v = match as_const(&inner) {
+                Some(K::Null) => return null(ty),
+                Some(K::Val(Lit::Dec(v, ..))) => Some(v),
+                Some(K::Val(Lit::I64(v))) => Some(v as i128),
+                _ => None,
+            };
+            match v.map(|v| super::exec::kernels::dec_cast(v, inner.ty.lane(), ty)) {
+                Some(Ok(r)) => lit(
+                    match ty {
+                        Ty::Dec(dp, ds) => Lit::Dec(r, dp, ds),
+                        _ => Lit::I64(r as i64),
+                    },
+                    ty,
+                ),
+                Some(Err(_)) => null(ty),
+                None => e(SKind::DecTryCast(Box::new(inner))),
+            }
+        }
+        SKind::DecUnary { op, k, m, a } => {
+            let a = fold(*a);
+            match (as_const(&a), ty) {
+                (Some(K::Null), _) => null(ty),
+                (Some(K::Val(Lit::Dec(v, ..))), Ty::Dec(dp, ds)) => lit(
+                    Lit::Dec(super::exec::kernels::dec_unary(op, v, k, m), dp, ds),
+                    ty,
+                ),
+                _ => e(SKind::DecUnary {
+                    op,
+                    k,
+                    m,
+                    a: Box::new(a),
+                }),
             }
         }
         SKind::IntToDec { s: sc, a: inner } => {
@@ -640,6 +727,8 @@ fn cmp(pred: CmpPred, a: &Lit, b: &Lit) -> bool {
         (Lit::Str(x), Lit::Str(y)) => ord(x.cmp(y)),
         // DuckDB DOUBLE order, exactly as exec/interp.rs computes it.
         (Lit::F64(x), Lit::F64(y)) => ord(super::exec::duck_fcmp(*x, *y)),
+        // Both sides at one (p, s): the scaled integers order as the values.
+        (Lit::Dec(x, ..), Lit::Dec(y, ..)) => ord(x.cmp(y)),
         _ => unreachable!("cmp operands share a type; i1 cmp rejected at bind"),
     }
 }

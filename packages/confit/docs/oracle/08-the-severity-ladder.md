@@ -27,8 +27,8 @@ agrees with the optimizer-off oracle.
 **claim: retainable-open-defect.** A rung-1 or rung-2 mismatch may stay open while it
 is worked. That accepts no defect as a result — a retained rung-1 or rung-2 mismatch is
 still a contract violation, not agreement, not an approved exception, and not a
-satisfied target. Decimal literal typing and rounding are severity-2 features in flight
-on exactly those terms.
+satisfied target. Decimal literal typing and rounding were severity-2 features in
+flight on exactly those terms until decimal expressions shipped.
 
 *Decision:* [oracle policy](../decisions/closed/oracle-policy.md#limits-on-process-rules).
 

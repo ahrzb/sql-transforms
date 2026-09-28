@@ -214,7 +214,9 @@ def test_refusal_quality_is_reported_as_shares_of_all_refusals(tmp_path, capsys)
     ]
 
 
-def test_unshipped_widths_are_reported_with_their_reach(tmp_path, capsys):
+def test_unshipped_widths_are_reported_with_their_reach(tmp_path, capsys, monkeypatch):
+    # No width is unshipped today; the machinery is exercised on a stand-in.
+    monkeypatch.setattr(runner, "UNSHIPPED_FEATURES", ("decimals",))
     results = [
         _r(1, "UNSHIPPED", "decimals", tags=["reaches:decimals"]),
         _r(2, "REFUSED", "unsupported: x", "serves", tags=["reaches:decimals"]),
@@ -227,7 +229,8 @@ def test_unshipped_widths_are_reported_with_their_reach(tmp_path, capsys):
     )
 
 
-def test_an_unreached_width_is_not_reported_as_support(tmp_path, capsys):
+def test_an_unreached_width_is_not_reported_as_support(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(runner, "UNSHIPPED_FEATURES", ("decimals",))
     runner.report([_r(1, "AGREE")], tmp_path / "f.jsonl")
     sec = _section(capsys.readouterr().out, "unshipped features")
     assert "decimals" in sec and "not reached" in sec

@@ -23,7 +23,7 @@ outranks the bracket because no value comparison occurred; neither reading can t
 evidence about an optimizer pass.
 
 *Enforced-by:* `fuzz.oracle._duck_run` and `fuzz.oracle.run_case`.
-*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_opt_emulated_is_final_and_no_self_leg_replaces_it`.
 
 ## Verdict meanings
 

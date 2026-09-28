@@ -53,6 +53,11 @@ pub fn is_builtin(name: &str) -> bool {
     BUILTIN_NAMES.contains(&lower.as_str())
 }
 
+/// The builtins DuckDB overloads for DECIMAL itself, returning a DECIMAL
+/// (extension/core_functions/scalar/math/numeric.cpp); every other numeric
+/// builtin reads a DECIMAL as DOUBLE.
+const DECIMAL_OVERLOADS: &[&str] = &["abs", "ceil", "ceiling", "floor", "trunc", "round"];
+
 impl Binder<'_> {
     /// The signature-table resolution head for `WholeCallNull` rows: arity,
     /// eager argument binding, the bare-NULL whole-call short-circuit,
@@ -100,6 +105,19 @@ impl Binder<'_> {
         let mut out = Vec::with_capacity(bound.len());
         for (p, e) in sig.params.iter().zip(bound) {
             let e = e.expect("checked above");
+            // A DECIMAL argument: DuckDB casts it to DOUBLE for the
+            // DOUBLE-only math functions (decimal->double is its implicit
+            // cast). The functions with a DECIMAL overload of their own
+            // (numeric.cpp: abs, ceil, floor, trunc, round) return a DECIMAL
+            // there, which is not served.
+            let e = if e.ty.dec().is_some() && matches!(p, ArgTy::Num | ArgTy::Exact(Ty::F64)) {
+                if DECIMAL_OVERLOADS.contains(&name) || sig.ret != Ret::Fixed(Ty::F64) {
+                    return Err(self.dec_refusal(name, &e));
+                }
+                dec_to_float(e)
+            } else {
+                e
+            };
             if !sig::arg_ok(*p, e.ty) {
                 return Err(PrepareError::Bind(format!(
                     "no function matches {name}({})",
@@ -184,6 +202,15 @@ impl Binder<'_> {
             match a {
                 FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => args.push(e),
                 _ => return Err(unsup(format!("function {} argument form", f.name))),
+            }
+        }
+        // The builtins with a DECIMAL overload of their own take a DECIMAL
+        // argument here, before any DOUBLE reading of it.
+        if DECIMAL_OVERLOADS.contains(&name.as_str()) && !args.is_empty() {
+            if let Some(Some(e)) = args.first().map(|a| self.expr_or_null(a)).transpose()? {
+                if e.ty.dec().is_some() {
+                    return self.dec_overload(&name, e, &args[1..]);
+                }
             }
         }
         // Names with a WholeCallNull signature row resolve here
@@ -350,6 +377,7 @@ impl Binder<'_> {
                         // Measured: integer trunc is identity, WIDTH preserved.
                         t if t.is_int() => Ok(inner),
                         Ty::F64 => Ok(math1_node(NumOp1::Ftrunc, inner)),
+                        Ty::Dec(..) => Err(self.dec_refusal("trunc", &inner)),
                         other => Err(PrepareError::Bind(format!(
                             "no function matches trunc({})",
                             other.name()
@@ -393,6 +421,7 @@ impl Binder<'_> {
                                 nullable,
                             })
                         }
+                        Ty::Dec(..) => Err(self.dec_refusal("round", &inner)),
                         other => Err(PrepareError::Bind(format!(
                             "no function matches round({})",
                             other.name()
@@ -532,6 +561,9 @@ impl Binder<'_> {
                                 }
                                 (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                                 (Ty::F64, t) if t.is_int() => Ty::F64,
+                                (u, t) if dec_common(u, t).is_some() => {
+                                    dec_common(u, t).expect("checked")
+                                }
                                 (u, t) => {
                                     if let Some(d) =
                                         bound.iter().chain([&e]).find(|x| x.ty.dec().is_some())
@@ -561,7 +593,9 @@ impl Binder<'_> {
                 let mut bound: Vec<SExpr> = bound
                     .into_iter()
                     .map(|mut e| {
-                        if e.ty.is_int() && unified == Ty::F64 {
+                        if unified.dec().is_some() || (unified == Ty::F64 && e.ty.dec().is_some()) {
+                            to_common(e, unified)
+                        } else if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
                         } else if e.ty.is_int() && unified.is_int() {
                             // Fold may select this arm whole, and the OUTPUT
@@ -637,6 +671,7 @@ impl Binder<'_> {
                         }
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
+                        (u, t) if dec_common(u, t).is_some() => dec_common(u, t).expect("checked"),
                         (u, t) => {
                             if let Some((d, _)) =
                                 bound.iter().find(|(x, _)| x.ty.dec().is_some())
@@ -660,7 +695,9 @@ impl Binder<'_> {
                     .into_iter()
                     .map(|(e, _)| e)
                     .map(|mut e| {
-                        if e.ty.is_int() && unified == Ty::F64 {
+                        if unified.dec().is_some() || (unified == Ty::F64 && e.ty.dec().is_some()) {
+                            to_common(e, unified)
+                        } else if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
                         } else if e.ty.is_int() && unified.is_int() {
                             widen_int(e, unified)
@@ -1469,6 +1506,9 @@ impl Binder<'_> {
         let Some(subject) = self.expr_or_null(x)? else {
             return Ok(null_of(Ty::I64));
         };
+        if subject.ty.dec().is_some() {
+            return Err(self.dec_refusal(name, &subject));
+        }
         if !subject.ty.is_int() && subject.ty != Ty::F64 {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}({}, digits)",
@@ -1508,6 +1548,13 @@ impl Binder<'_> {
         let inner = match inner.ty {
             Ty::F64 => inner,
             t if t.is_int() => promote_f64(inner),
+            // floor/ceil (sqlparser's FLOOR/CEIL forms land here) have a
+            // DECIMAL overload of their own; the rest read it as DOUBLE,
+            // DuckDB's implicit decimal->double cast.
+            Ty::Dec(..) if DECIMAL_OVERLOADS.contains(&name) => {
+                return self.dec_overload(name, inner, &[])
+            }
+            Ty::Dec(..) => dec_to_float(inner),
             other => {
                 return Err(PrepareError::Bind(format!(
                     "no function matches {name}({})",
@@ -1542,6 +1589,7 @@ impl Binder<'_> {
             match e.ty {
                 Ty::F64 => Ok(e),
                 t if t.is_int() => Ok(promote_f64(e)),
+                Ty::Dec(..) => Ok(dec_to_float(e)),
                 other => Err(PrepareError::Bind(format!(
                     "no function matches {name}({})",
                     other.name()

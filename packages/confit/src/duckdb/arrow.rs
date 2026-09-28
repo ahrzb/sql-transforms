@@ -677,11 +677,9 @@ pub fn emit(
                     // `string`, not `large_string` — see the scalar lane
                     // below for why.
                     crate::specializer::ir::Ty::Str => pa.call_method0("string"),
-                    // A struct_pack / UDF child over a DECIMAL refuses at
-                    // bind.
-                    crate::specializer::ir::Ty::Dec(..) => {
-                        unreachable!("a wide field child is never a decimal")
-                    }
+                    // A struct_pack field can be a DECIMAL expression; a UDF
+                    // return never is.
+                    crate::specializer::ir::Ty::Dec(p, s) => pa.call_method1("decimal128", (p, s)),
                 };
                 // Unnamed extern: list<elem>; named extern: struct keyed by
                 // the declared names, matching DuckDB's output.

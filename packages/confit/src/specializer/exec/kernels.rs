@@ -10,7 +10,7 @@
 //! Every function here is oracle-pinned; changing one changes what the
 //! engine SERVES, on both backends at once.
 
-use super::super::ir::{BinOp, NumOp1, StrOp2, TrimSide, Ty};
+use super::super::ir::{BinOp, DecOp, DecUnary, NumOp1, StrOp2, TrimSide, Ty};
 use super::{OutCol, ScalarVal, Trap};
 
 
@@ -82,6 +82,191 @@ pub fn dec_to_f64(v: i128, scale: u8) -> f64 {
 /// i128 here.
 pub fn int_to_dec(v: i64, scale: u8) -> i128 {
     (v as i128) * 10i128.pow(scale as u32)
+}
+
+fn dpow10(n: u8) -> i128 {
+    10i128.pow(n as u32)
+}
+
+/// `Decimal::ToString`: the scaled integer with its point, every scale
+/// digit kept (`2.50` stays `2.50`, zero at scale 2 is `0.00`).
+pub fn dec_to_string(v: i128, scale: u8) -> String {
+    if scale == 0 {
+        return v.to_string();
+    }
+    let p = dpow10(scale).unsigned_abs();
+    let a = v.unsigned_abs();
+    let sign = if v < 0 { "-" } else { "" };
+    format!("{sign}{}.{:0w$}", a / p, a % p, w = scale as usize)
+}
+
+/// DECIMAL `+ - * %` over operands already at their bound types
+/// (docs/specs/decimal-expressions.md §3-§6). `check` is the width DuckDB's
+/// binder capped the result at (18 or 38); the result must then lie inside
+/// that storage bound (`TryDecimalAdd` and friends, add.cpp:226-264,
+/// multiply.cpp:281-312). An uncapped width cannot overflow, so `check` is
+/// 0 and the op is plain.
+pub fn dec_arith(op: DecOp, check: u8, a: i128, b: i128) -> Result<i128, String> {
+    let r = match op {
+        DecOp::Add => a.checked_add(b),
+        DecOp::Sub => a.checked_sub(b),
+        DecOp::Mul => a.checked_mul(b),
+        // The lowering masks a zero divisor to 1 under the NULL flag.
+        DecOp::Rem => a.checked_rem(b),
+    };
+    let fits = |r: i128| match check {
+        18 => r.unsigned_abs() < 1_000_000_000_000_000_000,
+        38 => r.unsigned_abs() < dpow10(38).unsigned_abs(),
+        _ => true,
+    };
+    match r {
+        Some(r) if fits(r) => Ok(r),
+        _ => Err(match (op, check) {
+            (DecOp::Add, 18) => format!(
+                "Overflow in addition of DECIMAL(18) ({a} + {b}). You might want to add an \
+                 explicit cast to a bigger decimal."
+            ),
+            (DecOp::Sub, 18) => format!(
+                "Overflow in subtract of DECIMAL(18) ({a} - {b}). You might want to add an \
+                 explicit cast to a bigger decimal."
+            ),
+            (DecOp::Mul, 18) => format!(
+                "Overflow in multiplication of DECIMAL(18) ({a} * {b}). You might want to add \
+                 an explicit cast to a bigger decimal."
+            ),
+            (DecOp::Add, _) => format!("Overflow in addition of DECIMAL(38) ({a} + {b});"),
+            (DecOp::Sub, _) => format!("Overflow in subtract of DECIMAL(38) ({a} - {b});"),
+            (DecOp::Mul, _) => format!(
+                "Overflow in multiplication of DECIMAL(38) ({a} * {b}). You might want to add \
+                 an explicit cast to a decimal with a smaller scale."
+            ),
+            (DecOp::Rem, _) => format!("Overflow in modulo of DECIMAL ({a} % {b})"),
+        }),
+    }
+}
+
+/// The DECIMAL rounding builtins on the scaled integer
+/// (extension/core_functions/scalar/math/numeric.cpp): divide out `10^k`,
+/// multiply back `10^m`. Total: DuckDB checks nothing here.
+pub fn dec_unary(op: DecUnary, v: i128, k: u8, m: u8) -> i128 {
+    let pow = dpow10(k);
+    let r = match op {
+        DecUnary::Abs => return v.abs(),
+        // CeilDecimalOperator: at or below 0 truncate, above it round up.
+        DecUnary::Ceil => {
+            if v <= 0 {
+                v / pow
+            } else {
+                (v - 1) / pow + 1
+            }
+        }
+        // FloorDecimalOperator.
+        DecUnary::Floor => {
+            if v < 0 {
+                (v + 1) / pow - 1
+            } else {
+                v / pow
+            }
+        }
+        // RoundDecimalOperator and the precision forms: half away from zero.
+        DecUnary::Round => {
+            let add = pow / 2;
+            (if v < 0 { v - add } else { v + add }) / pow
+        }
+        DecUnary::Trunc => v / pow,
+    };
+    r * dpow10(m)
+}
+
+/// DuckDB's physical type name for an integer target, as its cast errors
+/// spell it (`GetTypeId<DST>()`).
+fn int_phys_name(t: Ty) -> &'static str {
+    match t {
+        Ty::I8 => "INT8",
+        Ty::I16 => "INT16",
+        Ty::I32 => "INT32",
+        _ => "INT64",
+    }
+}
+
+/// A checked conversion with a DECIMAL on at least one side
+/// (docs/specs/decimal-expressions.md §8). `v` is the operand: the scaled
+/// integer of a Dec, or the value of an integer. Integer results come back
+/// as i128 and fit the target width.
+///
+/// - integer -> Dec: `StandardNumericToDecimalCast`
+///   (cast_operators.cpp:2188-2199), `|v| < 10^(p-s)`.
+/// - Dec -> Dec, scale up: `TemplatedDecimalScaleUp` (decimal_cast.cpp:72-98),
+///   checked only when the source width reaches the target's integer
+///   digits.
+/// - Dec -> Dec, scale down: `DecimalScaleDownOperator` and
+///   `CanScaleDownDecimal` (decimal_cast.cpp:100-185), half away from zero.
+/// - Dec -> integer: `TryCastDecimalToNumeric` (cast_operators.cpp:2568-2583),
+///   half away from zero, then the target's range.
+pub fn dec_cast(v: i128, from: Ty, to: Ty) -> Result<i128, String> {
+    match (from, to) {
+        (f, Ty::Dec(tp, ts)) if f.is_int() => {
+            let lim = dpow10(tp - ts);
+            if v >= lim || v <= -lim {
+                return Err(format!("Could not cast value {v} to DECIMAL({tp},{ts})"));
+            }
+            Ok(v * dpow10(ts))
+        }
+        (Ty::Dec(sp, ss), Ty::Dec(tp, ts)) => {
+            let out_of_range = || {
+                format!(
+                    "Casting value \"{}\" to type DECIMAL({tp},{ts}) failed: value is out of range!",
+                    dec_to_string(v, ss)
+                )
+            };
+            if ts >= ss {
+                let diff = ts - ss;
+                let target_width = tp - diff;
+                if sp >= target_width {
+                    let lim = dpow10(target_width);
+                    if v >= lim || v <= -lim {
+                        return Err(out_of_range());
+                    }
+                }
+                Ok(v * dpow10(diff))
+            } else {
+                let diff = ss - ts;
+                let factor = dpow10(diff);
+                let target_width = tp + diff;
+                if sp >= target_width {
+                    let lim = if target_width > 38 {
+                        i128::MAX
+                    } else {
+                        dpow10(target_width)
+                    };
+                    let mut rounded = v.abs();
+                    if (v % factor).abs() >= factor / 2 {
+                        rounded += factor;
+                    }
+                    if rounded >= lim {
+                        return Err(out_of_range());
+                    }
+                }
+                let mut x = v / (factor / 2);
+                x += if x < 0 { -1 } else { 1 };
+                Ok(x / 2)
+            }
+        }
+        (Ty::Dec(_, ss), t) if t.is_int() => {
+            let power = dpow10(ss);
+            let rounding = if v < 0 { -power } else { power } / 2;
+            let r = (v + rounding) / power;
+            let (lo, hi) = t.int_range().unwrap_or((i64::MIN, i64::MAX));
+            if r < lo as i128 || r > hi as i128 {
+                return Err(format!(
+                    "Failed to cast decimal value {r} to type {}",
+                    int_phys_name(t)
+                ));
+            }
+            Ok(r)
+        }
+        (f, t) => Err(format!("dcast {} -> {} is not a decimal conversion", f.name(), t.name())),
+    }
 }
 
 /// Execute one extern (UDF) call and enforce the declared return shape —

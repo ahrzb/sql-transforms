@@ -6,12 +6,11 @@ pub(super) fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
-/// The ONE refusal for everything over a DECIMAL this build does not
-/// serve: arithmetic, a cast to anything but DOUBLE, and family
-/// unification with a non-identical type. Served as doubles, each of these
-/// would be silently WRONG (0.50::BIGINT would be 0, 1 on DuckDB; '0.5'
-/// where DuckDB says '0.50'), so refusing is the severity ladder's own
-/// preference.
+/// The ONE refusal for what this build does not serve over a DECIMAL:
+/// the builtins with DECIMAL overloads of their own (abs, round, ...),
+/// which return a DECIMAL on DuckDB and would be silently wrong served
+/// through DOUBLE, and the unifications docs/specs/decimal-expressions.md
+/// names. Refusing is the severity ladder's own preference.
 pub(super) fn refuse_dec(op: &str, ty: Ty, col: Option<&str>) -> PrepareError {
     let (p, s) = ty.dec().unwrap_or((38, 0));
     let where_ = match col {
@@ -19,9 +18,8 @@ pub(super) fn refuse_dec(op: &str, ty: Ty, col: Option<&str>) -> PrepareError {
         None => String::new(),
     };
     unsup(format!(
-        "{op} over DECIMAL({p},{s}){where_} -- decimal arithmetic and casts \
-         are not served; DECIMAL statics serve, compare, and are emitted \
-         unchanged"
+        "{op} over DECIMAL({p},{s}){where_} -- DECIMAL arithmetic, casts and \
+         comparisons serve; this operation over a DECIMAL does not"
     ))
 }
 
