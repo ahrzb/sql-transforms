@@ -144,16 +144,26 @@ restrictions without ratifying every existing limit.
 *Evidence:* `packages/confit/docs/known-limitations.md` §§1-2 and
 `packages/confit/tests/known_divergences/test_arrow_boundary.py`.
 
-**claim: refusal-absorb.** The campaign executes both DuckDB readings before returning
-a confit refusal. `REFUSED` keeps the optimizer-off reading's outcome — `serves`,
-`rejects` (bind/build), or `traps` (run time) — as its `oracle` field, carries a class
-derived from the first six message words, and stays absent from `INTERESTING`. The
-report groups refusals by that outcome, then by class, so "DuckDB serves, confit
-refuses" is visible per refusal class without being promoted to a finding.
+**claim: refusal-absorb.** When confit refuses, the campaign still runs the
+optimizer-off reading. `REFUSED` keeps that reading's outcome — `serves`, `rejects`
+(bind/build), or `traps` (run time) — as its `oracle` field, carries a class derived
+from the first six message words, and stays absent from `INTERESTING`. The report groups
+refusals by that outcome, then by class, so "DuckDB serves, confit refuses" is visible
+per refusal class without being promoted to a finding.
 
-*Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle._oracle_outcome`, and
+The reading cannot change the verdict, so it never decides one. A campaign worker sends
+the `REFUSED` verdict first and the reading after it, and the runner waits for the
+reading under its own budget (`--report-timeout`, 5 s). A reading that outruns the
+budget, or kills its worker, leaves the outcome `over-budget` or `died` and replaces
+the worker. It is never a `TIMEOUT` or `PANIC`. The budget matters because a refused
+query can make DuckDB build a multi-gigabyte string for minutes (a refused 2 GiB `lpad`).
+
+*Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle.refusal_outcome`,
+`fuzz.oracle._oracle_outcome`, `fuzz.worker`, `fuzz.runner._drive`, and
 `fuzz.runner.report`.
-*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_keeps_the_oracle_outcome_it_already_computed`
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_keeps_the_oracle_outcome_it_already_computed`,
+`packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_is_decided_before_duckdb_runs`,
+`packages/confit/tests/test_fuzz_runner.py::test_a_refusal_reading_costs_at_most_its_outcome`,
 and `packages/confit/tests/test_fuzz_report.py::test_refusals_are_summarized_by_oracle_outcome_and_class`.
 
 **claim: refusal-outcome-reporting.** A refusal retains the oracle outcome the campaign
@@ -195,10 +205,10 @@ The worker writes a phase marker to stderr before each stage — `harness:startu
 reads the last marker a killed worker wrote: the finding's `side` is `oracle`, `confit`,
 `harness` or `unknown`, and its class is `timeout:<side>` / `panic:<side>`. The SQL and
 inputs are regenerated from the seed in the parent, so they are preserved even though
-the worker never returned. Oracle-side and confit-side timeouts imply opposite problems:
-a generated 2 GiB `lpad` makes DuckDB spend seconds building it while confit refuses
-immediately under its 1 GiB budget. The markers are internal audit
-vocabulary, not a public API.
+the worker never returned. Oracle-side and confit-side timeouts imply opposite problems.
+In nightly seed 1102717, confit traps immediately on an INT32 overflow. DuckDB spends
+seconds building a 2 GiB `repeat` before it reaches the same overflow. The markers are
+internal audit vocabulary, not a public API.
 
 *Enforced-by:* `fuzz.oracle._phase`, `fuzz.worker`, `fuzz.runner.side_of`, and
 `fuzz.runner.blame`.

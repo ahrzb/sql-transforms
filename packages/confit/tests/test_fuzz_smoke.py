@@ -16,6 +16,7 @@ below; they are the reason this file exists as much as the machinery ones.
 
 from __future__ import annotations
 
+import functools
 import sys
 from pathlib import Path
 
@@ -261,6 +262,143 @@ def test_a_refusal_keeps_the_oracle_outcome_it_already_computed():
         else:
             assert v.oracle == "", v
     assert "serves" in outcomes, outcomes
+
+
+@functools.cache
+def _refused_seed() -> int:
+    return next(
+        s
+        for s in range(N)
+        if oracle.run_case(gen.gen(s), report=False).kind == "REFUSED"
+    )
+
+
+def test_a_refusal_is_decided_before_duckdb_runs(monkeypatch):
+    """The campaign worker sends a REFUSED verdict before the reading that
+    only feeds the report, then `refusal_json` to complete it: the two
+    together are exactly the in-process line."""
+    seed = _refused_seed()
+    whole = oracle.run_case_json(seed)
+
+    def no_duckdb(*a, **k):
+        raise AssertionError("DuckDB ran before the refusal was sent")
+
+    with monkeypatch.context() as m:
+        m.setattr(oracle, "_duck_run", no_duckdb)
+        first = oracle.run_case_json(seed, report=False)
+    assert first["kind"] == "REFUSED" and "oracle" not in first
+    assert {**first, **oracle.refusal_json(seed)} == whole
+
+
+def test_a_refusal_reading_that_raises_is_the_same_skip_either_way(monkeypatch):
+    """An exception in the reading is the oracle's own bug: SKIP in-process,
+    and the same SKIP when `refusal_json` completes the worker's line."""
+    seed = _refused_seed()
+
+    def boom(*a, **k):
+        raise KeyError("planted")
+
+    monkeypatch.setattr(oracle, "_duck_run", boom)
+    whole = oracle.run_case_json(seed)
+    assert (whole["kind"], whole["klass"]) == ("SKIP", "oracle:KeyError"), whole
+    first = oracle.run_case_json(seed, report=False)
+    assert {**first, **oracle.refusal_json(seed)} == whole
+
+
+# --- one oracle database per process (fuzz.oracle.reuse_oracle) --------------
+
+
+@pytest.fixture
+def reused(monkeypatch):
+    """Reuse switched on for one test, and its database closed after it."""
+    monkeypatch.setattr(oracle._Reuse, "on", True)
+    monkeypatch.setattr(oracle._Reuse, "con", None)
+    monkeypatch.setattr(oracle._Reuse, "served", 0)
+    yield oracle._Reuse
+    oracle._discard()
+
+
+def _count(con, sql: str) -> int:
+    return con.execute(sql).fetchone()[0]
+
+
+def test_a_reused_oracle_answers_like_a_fresh_one(reused):
+    """Kind, class, detail and a refusal's outcome, case for case."""
+    seeds = range(0, N, 2)
+    reused.on = False
+    fresh = [oracle.run_case(gen.gen(s)).to_json() for s in seeds]
+    reused.on = True
+    again = [oracle.run_case(gen.gen(s)).to_json() for s in seeds]
+    assert again == fresh
+    assert reused.served > 1  # the cases did share a database
+
+
+def test_a_reused_oracle_is_emptied_and_a_leftover_discards_it(reused):
+    case = next(c for c in map(gen.gen, range(PARITY_SEEDS)) if c.statics and c.udfs)
+    sql = gen.render(case.query)
+    oracle._duck_run(sql, case, oracle._udf_objs(case))
+    con = reused.con
+    assert _count(con, "SELECT count(*) FROM duckdb_tables()") == 0
+    names = ", ".join(f"'{u.name}'" for u in case.udfs)
+    in_use = f"SELECT count(*) FROM duckdb_functions() WHERE function_name IN ({names})"
+    assert _count(con, in_use) == 0
+
+    # Something the case did not make is still there after it: not reused.
+    con.execute("CREATE TABLE stray AS SELECT 1 AS x")
+    oracle._duck_run(sql, case, oracle._udf_objs(case))
+    assert reused.con is None
+    oracle._duck_run(sql, case, oracle._udf_objs(case))
+    assert reused.con is not None and reused.con is not con
+
+
+def test_a_failed_load_leaves_nothing_for_the_next_case(reused, monkeypatch):
+    """A load that raises is the oracle's own bug (SKIP), and what the case
+    had loaded before it does not reach the next case."""
+    case = next(c for c in map(gen.gen, range(PARITY_SEEDS)) if c.statics)
+    sql = gen.render(case.query)
+    real = oracle.Oracle.load
+
+    def load(self, name, table):
+        if name == "__THIS__":
+            raise RuntimeError("planted")
+        return real(self, name, table)
+
+    monkeypatch.setattr(oracle.Oracle, "load", load)
+    with pytest.raises(RuntimeError, match="planted"):
+        oracle._duck_run(sql, case, oracle._udf_objs(case))
+    monkeypatch.setattr(oracle.Oracle, "load", real)
+    oracle._duck_run(sql, case, oracle._udf_objs(case))  # same names load again
+    assert _count(reused.con, "SELECT count(*) FROM duckdb_tables()") == 0
+
+
+def test_a_reused_oracle_reads_the_next_baseline_with_the_optimizer_off(reused):
+    """The bracket's second reading leaves the optimizer on; the next case's
+    baseline reading must not inherit it. `WHERE 1 = 0` plans as
+    EMPTY_RESULT only when the optimizer runs."""
+
+    def optimized(con) -> bool:
+        plan = con.execute("EXPLAIN SELECT 1 AS x WHERE 1 = 0").fetchall()
+        return "EMPTY_RESULT" in plan[0][1]
+
+    con = oracle._take()
+    assert not optimized(con)
+    con.optimizer_on()
+    assert optimized(con)
+    oracle._give_back(con, [], [])
+    again = oracle._take()
+    assert again is con and not optimized(again)
+    oracle._give_back(again, [], [])
+
+
+def test_a_reused_oracle_retires_after_its_cases(reused, monkeypatch):
+    monkeypatch.setattr(oracle._Reuse, "CASES", 2)
+    case = gen.gen(0)
+    sql = gen.render(case.query)
+    seen = []
+    for _ in range(5):
+        oracle._duck_run(sql, case, oracle._udf_objs(case))
+        seen.append(reused.con)
+    assert seen[0] is seen[1] and seen[1] is not seen[2] and seen[2] is seen[3]
 
 
 def test_a_broken_non_null_promise_is_a_divergence(monkeypatch):

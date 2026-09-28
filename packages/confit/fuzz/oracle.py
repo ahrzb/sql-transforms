@@ -59,6 +59,7 @@ doc suffices.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import decimal
 import math
@@ -371,10 +372,94 @@ _DUCK_BUILD_ERRS = (
 )
 
 
-def _duck_con(case: G.Case, udf_objs):
-    """The oracle, with the case's UDFs registered and its tables loaded as
-    NATIVE tables. Both readings share it, so `_duck_run` owns closing it."""
-    con = Oracle()
+# ONE DATABASE PER PROCESS, for a process that opts in
+#
+# Opening an oracle builds a whole in-memory DuckDB database -- catalog,
+# builtins, thread pool -- and that was most of a campaign case's wall time:
+# 20 of 27 ms under four workers, where the two readings took 2. A process
+# that runs case after case (the campaign worker, the shrinker) calls
+# `reuse_oracle()` and keeps ONE database, giving each case fresh TABLES in
+# it. Everything else -- the tests, `fuzz.parity`, `fuzz.probe`, the
+# snapshot -- still opens a database per case, so no test shares one.
+#
+# A reused database answers like a fresh one because nothing a case reads
+# outlives the case:
+#   * its tables are created for it and dropped after it, so the per-column
+#     statistics `statistics_propagation` reads have the same insert history
+#     as in a fresh database;
+#   * its UDFs are registered for it and removed after it;
+#   * the optimizer is switched off again before it (the bracket's second
+#     reading leaves it on).
+# The database is kept only once that is VERIFIED: no table and no view left,
+# and every function removed. Anything else -- a leftover, an error while
+# cleaning up, a database DuckDB invalidated -- discards it, and the next case
+# opens a fresh one. A database also retires after `_Reuse.CASES` cases,
+# which bounds whatever a long-lived one could accumulate out of the
+# catalog's sight.
+
+
+class _Reuse:
+    """This process's one oracle database, once `reuse_oracle` switched it on."""
+
+    CASES = 1000  # cases a database serves before it retires
+    on = False
+    con: Oracle | None = None
+    served = 0
+
+
+def reuse_oracle() -> None:
+    """Keep one oracle database for the rest of this process (see above)."""
+    _Reuse.on = True
+
+
+def _take() -> Oracle:
+    """The oracle a case loads into, optimizer off: a fresh one, or this
+    process's reused one."""
+    if not _Reuse.on:
+        return Oracle()
+    if _Reuse.con is not None and _Reuse.served < _Reuse.CASES:
+        try:
+            _Reuse.con.execute("PRAGMA disable_optimizer")
+            _Reuse.served += 1
+            return _Reuse.con
+        except Exception:  # noqa: BLE001, S110 -- unusable: a fresh one below
+            pass
+    _discard()
+    _Reuse.con, _Reuse.served = Oracle(), 1
+    return _Reuse.con
+
+
+def _discard() -> None:
+    con, _Reuse.con = _Reuse.con, None
+    if con is not None:
+        with contextlib.suppress(Exception):
+            con.close()
+
+
+def _give_back(con: Oracle, tables: list[str], udfs: list[str]) -> None:
+    """End a case: close a fresh oracle; empty the reused one, and keep it
+    only if its catalog then shows it empty."""
+    if con is not _Reuse.con:
+        con.close()
+        return
+    try:
+        for name in tables:
+            con.execute(f'DROP TABLE IF EXISTS "{name}"')
+        for name in udfs:
+            con.remove_function(name)  # raises if it was never registered
+        (left,) = con.execute(
+            "SELECT (SELECT count(*) FROM duckdb_tables())"
+            " + (SELECT count(*) FROM duckdb_views() WHERE NOT internal)"
+        ).fetchone()
+        if left:
+            _discard()
+    except Exception:  # noqa: BLE001 -- any doubt about it: never reuse it
+        _discard()
+
+
+def _load(con: Oracle, case: G.Case, udf_objs) -> None:
+    """The case's UDFs registered in `con` and its tables loaded as NATIVE
+    tables."""
     for u in udf_objs:
         params = [_DUCK_T[t] for t in u.takes.types]
         if hasattr(u, "instances"):
@@ -385,7 +470,6 @@ def _duck_con(case: G.Case, udf_objs):
     for name, (sch, rows) in case.statics.items():
         con.load(name, _arrow_table(sch, rows))
     con.load("__THIS__", _arrow_table(case.row_schema, case.rows))
-    return con
 
 
 def _exec(con, sql):
@@ -406,8 +490,10 @@ def _exec(con, sql):
         return None, phase, f"{type(e).__name__}: {e}"
 
 
-def _duck_run(sql, case: G.Case, udf_objs):
+def _duck_run(sql, case: G.Case, udf_objs, *, bracket: bool = True):
     """Both readings, on ONE connection: `(optimizer_off, optimizer_on)`.
+    Without the `bracket` only the baseline runs, as `(optimizer_off, None)`:
+    what a refusal's report needs.
 
     Sharing the connection is not just a saving (the tables materialise once,
     so the second execute is nearly free) — it is also what makes the pair
@@ -418,14 +504,16 @@ def _duck_run(sql, case: G.Case, udf_objs):
     The baseline reading needs no pragma of its own: an oracle is
     optimizer-off by construction, and the flip below is the exception.
     """
-    con = _duck_con(case, udf_objs)
+    con = _take()
     try:
+        _load(con, case, udf_objs)
         off = _exec(con, sql)
+        if not bracket:
+            return off, None
         con.optimizer_on()
-        on = _exec(con, sql)
-        return off, on
+        return off, _exec(con, sql)
     finally:
-        con.close()
+        _give_back(con, [*case.statics, "__THIS__"], [u.name for u in udf_objs])
 
 
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
@@ -476,22 +564,52 @@ def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
     return "diff"
 
 
-def run_case(case: G.Case) -> Verdict:
+def _sql(case: G.Case) -> str:
+    return case.sql if case.sql is not None else G.render(case.query)
+
+
+def _udf_objs(case: G.Case) -> list:
+    objs = [make_udf(u) for u in case.udfs]
+    if case.tree is not None:
+        objs.append(trees.make_tree(case.tree, case.seed))
+    return objs
+
+
+def refusal_outcome(case: G.Case) -> str:
+    """What the baseline reading does with a query confit refused: one of
+    ORACLE_OUTCOMES.
+
+    It never decides the verdict -- that was REFUSED before DuckDB ran -- and
+    it can cost more than all the rest of a case together: a refused
+    `lpad(.., 2147483647, ..)` has DuckDB build the multi-gigabyte string,
+    for minutes and uninterruptibly (seed 1011037: 172 s; seed 1014384 grows
+    by ~160 MB/s until it is killed). So it is its own step, one the campaign
+    worker runs after it has already reported the verdict, under a budget of
+    its own (`fuzz.runner`): running out of it can cost the report its
+    outcome, never turn the case into a gated TIMEOUT.
+    """
+    _phase("oracle")
+    off, _ = _duck_run(_sql(case), case, _udf_objs(case), bracket=False)
+    return _oracle_outcome(off)
+
+
+def run_case(case: G.Case, *, report: bool = True) -> Verdict:
     """One case's verdict: build both backends, run both DuckDB readings,
     classify, then the boundary legs.
+
+    A REFUSED verdict carries `refusal_outcome` unless `report` is off, in
+    which case its `oracle` is left empty for the caller to fill (the
+    campaign worker does, under its own budget).
 
     Refusals, traps and disagreements all come back AS a Verdict. An
     exception escaping here is the oracle's own bug, and `run_case_json`
     turns that into SKIP rather than blaming the engine.
     """
-    sql = case.sql if case.sql is not None else G.render(case.query)
+    sql = _sql(case)
     tags = list(case.tags)
     schema = _arrow_schema(case.row_schema)
     statics = {n: _arrow_table(sch, rows) for n, (sch, rows) in case.statics.items()}
-    udf_objs = [make_udf(u) for u in case.udfs]
-    if case.tree is not None:
-        tree_obj = trees.make_tree(case.tree, case.seed)
-        udf_objs.append(tree_obj)
+    udf_objs = _udf_objs(case)
 
     # `case.output` is not forwarded: dict rows are the only output mode, so
     # the field gen.py still fills has nothing to select.
@@ -524,12 +642,12 @@ def run_case(case: G.Case) -> Verdict:
         )
 
     if fn_cl is None:
-        # Run both readings anyway and keep the baseline's outcome, so the
-        # report can say what each refusal costs.
-        _phase("oracle")
-        duck_off, _ = _duck_run(sql, case, udf_objs)
-        klass = _refusal_class(cl_err)
-        return Verdict("REFUSED", klass, cl_err, tags, _oracle_outcome(duck_off))
+        # Keep the baseline's outcome anyway, so the report can say what each
+        # refusal costs.
+        v = Verdict("REFUSED", _refusal_class(cl_err), cl_err, tags)
+        if report:
+            v.oracle = refusal_outcome(case)
+        return v
     if fn_cl.backend != "cranelift":
         tags.append("fallback")
     if fn_in.backend != "interpreter":
@@ -909,16 +1027,36 @@ def case_from_inputs(seed: int, sql: str, inputs: dict) -> G.Case:
     )
 
 
-def run_case_json(seed: int) -> dict:
+def _skip(case: G.Case, e: Exception) -> Verdict:
+    """The verdict when the oracle itself raised: its own bug, not the
+    engine's."""
+    return Verdict("SKIP", f"oracle:{type(e).__name__}", str(e), case.tags)
+
+
+def run_case_json(seed: int, *, report: bool = True) -> dict:
     """`gen(seed)` through `run_case`, as the JSON line the worker prints:
-    the verdict, the SQL, and the case's inputs."""
+    the verdict, the SQL, and the case's inputs. With `report` off, a
+    REFUSED line has no `oracle` yet and `refusal_json` completes it."""
     case = G.gen(seed)
     try:
-        v = run_case(case)
+        v = run_case(case, report=report)
     except Exception as e:  # noqa: BLE001 — oracle's own bug, not the engine's
-        v = Verdict("SKIP", f"oracle:{type(e).__name__}", str(e), case.tags)
+        v = _skip(case, e)
     sql = G.render(case.query)
     out = {"seed": seed, "sql": sql, **v.to_json(), "inputs": case_inputs(case)}
     out["tags"] = out["tags"] + [f"reaches:{f}" for f in sorted(unshipped_reach(sql))]
     out["triples"] = sorted(coverage.key(t) for t in coverage.triples(case.query))
     return out
+
+
+def refusal_json(seed: int) -> dict:
+    """What completes `run_case_json(seed, report=False)`'s REFUSED line, as
+    keys to merge into it: `{"oracle": outcome}`, or -- when the reading
+    raised -- the SKIP that in-process `run_case_json` would have made of
+    the whole case."""
+    case = G.gen(seed)
+    try:
+        return {"oracle": refusal_outcome(case)}
+    except Exception as e:  # noqa: BLE001 — oracle's own bug, not the engine's
+        v = _skip(case, e).to_json()
+        return {k: v[k] for k in ("kind", "klass", "detail")}
