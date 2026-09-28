@@ -530,7 +530,19 @@ pub fn fold(e: SExpr) -> SExpr {
                 _ => e(SKind::Abs(Box::new(a))),
             }
         }
-        SKind::Round(a) => e(SKind::Round(Box::new(fold(*a)))),
+        SKind::Round(a) => {
+            let a = fold(*a);
+            // `round()` over a constant is `f64::round`, the very kernel
+            // both backends run (`NumOp1::Fround`), so it folds exactly. A
+            // pure UDF taking `round(1.0e0)` must see a constant, or its
+            // bind-time fold passes and a NULL result keeps its declared
+            // field type (nightly seed 1120562).
+            match as_const(&a) {
+                Some(K::Val(Lit::F64(v))) => lit(Lit::F64(v.round()), ty),
+                Some(K::Null) => null(ty),
+                _ => e(SKind::Round(Box::new(a))),
+            }
+        }
         SKind::Concat { a, b } => e(SKind::Concat {
             a: Box::new(fold(*a)),
             b: Box::new(fold(*b)),

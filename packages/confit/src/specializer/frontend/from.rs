@@ -387,6 +387,7 @@ pub(super) fn bind_from<'a>(
         // Per level: the same call text at two levels has different
         // arguments, so it is a different call site.
         extern_sites: std::cell::RefCell::new(Vec::new()),
+        bind_folds: std::cell::RefCell::new(Vec::new()),
         in_guarded: std::cell::Cell::new(0),
         minted_lanes: std::cell::RefCell::new(ctx.minted_lanes),
     };

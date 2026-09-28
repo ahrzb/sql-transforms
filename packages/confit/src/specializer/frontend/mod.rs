@@ -788,6 +788,11 @@ struct Binder<'a> {
     /// — the confit twin of DuckDB's common-subexpression elimination,
     /// which is what keeps call counts equal on both paths.
     extern_sites: std::cell::RefCell<Vec<(sqlparser::ast::Function, u32)>>,
+    /// Bind-fold results by call site: one call site executes its pure
+    /// callable ONCE at bind, however many contexts consult the fold
+    /// (the scalar bind, then the || operand fold).
+    #[allow(clippy::type_complexity)]
+    bind_folds: std::cell::RefCell<Vec<(u32, Option<Result<Option<Vec<Option<ScalarVal>>>, String>>)>>,
     /// Depth of CASE/COALESCE arms being bound. DuckDB's plan-time constant
     /// evaluation SKIPS guarded arms (the coalesce lazy-bind pin: an
     /// untaken `CAST('nope' AS BIGINT)` must not fire), so the

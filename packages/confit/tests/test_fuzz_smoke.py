@@ -424,6 +424,17 @@ def test_the_first_nightly_findings_stay_fixed(seed, kind):
     assert oracle.run_case(gen.gen(seed)).kind == kind
 
 
+# Issue ahrzb/sql-transforms#305: a pure UDF over constant args folds at
+# bind, so `udf0(NULL) * (overflow)` is NULL and `udf0(NULL, round(1.0e0),
+# ..).f1` is DuckDB's SQLNULL.
+NIGHTLY_305 = {1118442: "AGREE", 1120562: "AGREE"}
+
+
+@pytest.mark.parametrize("seed, kind", NIGHTLY_305.items())
+def test_the_second_nightly_findings_stay_fixed(seed, kind):
+    assert oracle.run_case(gen.gen(seed)).kind == kind
+
+
 @pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879])
 def test_the_first_nightly_spellings_stay_consistent(seed):
     from fuzz import metamorphic
