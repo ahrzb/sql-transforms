@@ -177,7 +177,12 @@ def _drive(seeds, results, timeout, lock, report_timeout):
     reading that completes it (`fuzz.oracle.refusal_json`) is read under
     `report_timeout` instead: a worker that outruns that or dies in it is
     replaced too, and the verdict stays REFUSED with an `UNFINISHED`
-    outcome. The reading cannot change the verdict, so it cannot gate.
+    outcome, which never gates. Only an exception in the reading changes the
+    verdict: to the SKIP it would be in-process.
+
+    A worker the timer fired on is replaced even when its line did arrive:
+    the kill is already on its way, and the next seed must not be blamed
+    for a PANIC it never caused.
     """
     proc, err = _spawn()
     while True:
@@ -197,15 +202,17 @@ def _drive(seeds, results, timeout, lock, report_timeout):
         if line:
             r = json.loads(line)
             if r["kind"] == "REFUSED":
-                rest, over = _read(proc, report_timeout)
+                rest, over = ("", True) if fired else _read(proc, report_timeout)
                 if rest:
                     r.update(json.loads(rest))
                 else:
                     r["oracle"] = "over-budget" if over else "died"
-                    proc.kill()
-                    err.close()
-                    proc, err = _spawn()
+                fired = fired or over or not rest
             results.append(r)
+            if fired:
+                proc.kill()
+                err.close()
+                proc, err = _spawn()
             continue
         kind = "TIMEOUT" if fired else "PANIC"
         stderr = _stderr_all(err)

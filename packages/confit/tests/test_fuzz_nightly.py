@@ -57,8 +57,8 @@ def _gated(seed, cases=1, kind="DIVERGE_VALUE", klass="values"):
 
 def _merge(tmp_path, summaries, k) -> tuple[int, str]:
     dirs = []
-    for s in summaries:
-        d = tmp_path / f"shard-{s['shard'][0]}"
+    for n, s in enumerate(summaries):
+        d = tmp_path / f"artifact-{n}"
         d.mkdir()
         (d / "summary.json").write_text(json.dumps(s), encoding="utf-8")
         dirs.append(str(d))
@@ -116,6 +116,58 @@ def test_a_missing_shard_is_named_and_fails_the_night(tmp_path):
     assert "(2 of 3 shards)" in report
     assert "**Missing:** shard 1/3 (seeds 5010..5019) left no summary" in report
     assert "**FAIL**" in report
+
+
+def test_a_summary_of_another_window_is_left_out_and_fails_the_night(tmp_path):
+    """A stale artifact, or a shard run by hand with another --seed/--n, is
+    not a shard of this night: summed in, the report would claim seeds the
+    night never ran."""
+    night, stale = (1_000, 40), (5_000, 40)
+    summaries = [_summary(0, 2, night), _summary(1, 2, night), _summary(1, 2, stale)]
+    status, report = _merge(tmp_path, summaries, 2)
+    assert status == 1
+    assert report.startswith("# Nightly campaign, seeds 1000..1039 (2 of 2 shards)")
+    assert (
+        "**Left out:** shard 1/2 (seeds 5020..5039) is from window 5000+40 in 2 "
+        "shards, not window 1000+40 in 2 shards" in report
+    )
+    assert "| AGREE | 40 |" in report and "**FAIL**" in report
+
+
+def test_a_second_summary_for_a_shard_counts_once_and_fails_the_night(tmp_path):
+    night = (1_000, 40)
+    summaries = [_summary(0, 2, night), _summary(1, 2, night), _summary(1, 2, night)]
+    status, report = _merge(tmp_path, summaries, 2)
+    assert status == 1
+    assert (
+        "**Left out:** shard 1/2 (seeds 1020..1039) is a second summary for shard 1"
+        in report
+    )
+    assert "| AGREE | 40 |" in report
+
+
+def test_a_summary_of_another_shard_count_is_left_out(tmp_path):
+    night = (1_000, 40)
+    summaries = [_summary(0, 2, night), _summary(1, 2, night), _summary(0, 4, night)]
+    status, report = _merge(tmp_path, summaries, 2)
+    assert status == 1
+    assert "shard 0/4 (seeds 1000..1009) is from window 1000+40 in 4 shards" in report
+    assert "| AGREE | 40 |" in report
+
+
+def test_a_night_owns_n_seeds_whatever_a_run_takes(tmp_path):
+    """The stride between nights is N, not `--n`: a run's `--n` only takes a
+    prefix of tonight's window, and one that would reach into the next
+    night's must name a window of its own."""
+    import datetime as dt
+
+    assert nightly.window(nightly.EPOCH + dt.timedelta(days=3)) == (
+        nightly.BASE + 3 * nightly.N
+    )
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit):
+        nightly.main(["--n", str(nightly.N + 1), "--out", str(out)])
+    assert not out.exists()
 
 
 def test_a_shard_outside_the_count_is_refused(tmp_path):

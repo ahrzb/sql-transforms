@@ -376,26 +376,14 @@ _DUCK_BUILD_ERRS = (
 #
 # Opening an oracle builds a whole in-memory DuckDB database -- catalog,
 # builtins, thread pool -- and that was most of a campaign case's wall time:
-# 20 of 27 ms under four workers, where the two readings took 2. A process
+# 20 of 27 ms under four workers, where the two readings took 2. So a process
 # that runs case after case (the campaign worker, the shrinker) calls
-# `reuse_oracle()` and keeps ONE database, giving each case fresh TABLES in
+# `reuse_oracle()` and keeps ONE database, giving each case fresh tables in
 # it. Everything else -- the tests, `fuzz.parity`, `fuzz.probe`, the
-# snapshot -- still opens a database per case, so no test shares one.
-#
-# A reused database answers like a fresh one because nothing a case reads
-# outlives the case:
-#   * its tables are created for it and dropped after it, so the per-column
-#     statistics `statistics_propagation` reads have the same insert history
-#     as in a fresh database;
-#   * its UDFs are registered for it and removed after it;
-#   * the optimizer is switched off again before it (the bracket's second
-#     reading leaves it on).
-# The database is kept only once that is VERIFIED: no table and no view left,
-# and every function removed. Anything else -- a leftover, an error while
-# cleaning up, a database DuckDB invalidated -- discards it, and the next case
-# opens a fresh one. A database also retires after `_Reuse.CASES` cases,
-# which bounds whatever a long-lived one could accumulate out of the
-# catalog's sight.
+# snapshot -- still opens a database per case, so no test shares one. Why a
+# reused database answers as a fresh one does, what `_give_back` verifies
+# before each reuse, and the one residue it cannot see: docs/oracle/04,
+# claim: oracle-reuse.
 
 
 class _Reuse:
@@ -579,8 +567,9 @@ def refusal_outcome(case: G.Case) -> str:
     """What the baseline reading does with a query confit refused: one of
     ORACLE_OUTCOMES.
 
-    It never decides the verdict -- that was REFUSED before DuckDB ran -- and
-    it can cost more than all the rest of a case together: a refused
+    Its outcome never changes the verdict -- that was REFUSED before DuckDB
+    ran; only an exception here does, into the oracle's own SKIP -- and it
+    can cost more than all the rest of a case together: a refused
     `lpad(.., 2147483647, ..)` has DuckDB build the multi-gigabyte string,
     for minutes and uninterruptibly (seed 1011037: 172 s; seed 1014384 grows
     by ~160 MB/s until it is killed). So it is its own step, one the campaign

@@ -5,10 +5,13 @@
     uv run python -m fuzz.nightly --merge shard0/ shard1/ shard2/ shard3/ \\
         --shards 4 --out nightly/
 
-Each night takes the next window of seeds (`--seed` overrides), so seeds that
-earlier nights have not reached get covered. `--shard I/K` runs the I-th of K
-contiguous shards of the window, so one night can spread over K machines
-(the workflow runs four). Each shard gets two checks:
+Each night owns the next window of `N` seeds, so seeds that earlier nights
+have not reached get covered. `--n` only chooses how many of them a run
+takes, from the start of the window, so a shorter manual run is a prefix of
+the scheduled one and never reaches another night's seeds; `--seed` names a
+window of the run's own instead. `--shard I/K` runs the I-th of K contiguous
+shards of the run's seeds, so one night can spread over K machines (the
+workflow runs four). Each shard gets two checks:
 - the strict oracle campaign (`fuzz.runner`, the acceptance gate);
 - the metamorphic spelling suite (`fuzz.metamorphic`).
 
@@ -16,9 +19,10 @@ For each finding class, one representative seed is shrunk by `fuzz.shrink`.
 That runs in a subprocess with a time cap, because a finding can be a panic
 or a hang. A shard writes what it found to `<out>/summary.json` and renders
 it as `<out>/report.md`. `--merge` renders the shards' summaries as the
-night's ONE report, written to be filed as an issue, and names any shard that
-left none. The exit status is 1 when anything gated, when the metamorphic
-suite found anything, or when a shard is missing.
+night's ONE report, written to be filed as an issue. It names any shard that
+left no summary, and leaves out, by name, any summary that is not a shard of
+the same run. The exit status is 1 when anything gated, when the metamorphic
+suite found anything, or when a shard is missing or left out.
 """
 
 from __future__ import annotations
@@ -37,14 +41,16 @@ from pathlib import Path
 # (0..~60k), so the nightly never re-covers them.
 EPOCH = dt.date(2026, 9, 27)
 BASE = 1_000_000
-# Seeds in a night's window, all shards together. The workflow does not pass
-# `--n`, so tonight's window is the same seeds wherever it is computed.
+# A night's seeds, all shards together, and the stride between nights: night d
+# owns BASE + d*N .. BASE + (d+1)*N - 1, whatever `--n` a run takes of it.
+# Changing N moves every later window; moving forward skips seeds for good,
+# which costs nothing, since every seed is a fresh case.
 N = 400_000
 
 
-def window(n: int, today: dt.date | None = None) -> int:
-    """The first seed of tonight's window of `n` seeds."""
-    return BASE + ((today or dt.date.today()) - EPOCH).days * n
+def window(today: dt.date | None = None) -> int:
+    """The first seed of tonight's window."""
+    return BASE + ((today or dt.date.today()) - EPOCH).days * N
 
 
 def shard(start: int, n: int, i: int, k: int) -> range:
@@ -126,17 +132,47 @@ def run(seeds: range, workers: int, timeout: float, shrink_cap: float, out: Path
     }
 
 
-def failed(summaries: list[dict], missing) -> bool:
+def night_of(summaries: list[dict], k: int) -> tuple[list[dict], list[str]]:
+    """The summaries that are shards of ONE run, and why each other one was
+    left out. The run is `k` shards of the window most of them share. A
+    summary of another window or shard count (a stale artifact, a shard run
+    by hand) or a second summary for a shard already counted is not summed:
+    its seeds are not the run's, and counting them would report seeds the
+    run never checked."""
+    windows = collections.Counter(
+        tuple(s["window"]) for s in summaries if s["shard"][1] == k
+    )
+    night = windows.most_common(1)[0][0] if windows else None
+    want = f"window {night[0]}+{night[1]} in {k} shards" if night else f"{k} shards"
+    kept: list[dict] = []
+    left_out: list[str] = []
+    for s in sorted(summaries, key=lambda s: s["shard"][0]):
+        (i, sk), (lo, hi) = s["shard"], s["seeds"]
+        name = f"shard {i}/{sk} (seeds {lo}..{hi})"
+        if sk != k or tuple(s["window"]) != night:
+            got = f"window {s['window'][0]}+{s['window'][1]} in {sk} shards"
+            left_out.append(f"{name} is from {got}, not {want}")
+        elif any(x["shard"][0] == i for x in kept):
+            left_out.append(f"{name} is a second summary for shard {i}")
+        else:
+            kept.append(s)
+    return kept, left_out
+
+
+def failed(summaries: list[dict], missing, left_out=()) -> bool:
     return bool(
-        missing or any(s["gated"] or s["metamorphic"]["findings"] for s in summaries)
+        missing
+        or left_out
+        or any(s["gated"] or s["metamorphic"]["findings"] for s in summaries)
     )
 
 
-def render(summaries: list[dict], k: int = 1, missing=()) -> str:
+def render(summaries: list[dict], k: int = 1, missing=(), left_out=()) -> str:
     """The report for a night's shard summaries, however many: verdicts
     summed, one shrunk representative per gated class (from the shard with
     the smallest seeds, so the smallest seed of the class), one metamorphic
-    example per rewrite, and each shard in `missing` by name."""
+    example per rewrite, each shard in `missing` by name, and each summary
+    `night_of` left out, with why."""
     summaries = sorted(summaries, key=lambda s: s["seeds"][0])
     kinds: collections.Counter = collections.Counter()
     gated: dict[tuple, dict] = {}
@@ -160,7 +196,7 @@ def render(summaries: list[dict], k: int = 1, missing=()) -> str:
         title += f", seeds {summaries[0]['seeds'][0]}..{summaries[-1]['seeds'][1]}"
     if k > 1:
         title += f" ({len(summaries)} of {k} shards)"
-    status = "FAIL" if failed(summaries, missing) else "pass"
+    status = "FAIL" if failed(summaries, missing, left_out) else "pass"
     lines = [
         title,
         "",
@@ -186,6 +222,8 @@ def render(summaries: list[dict], k: int = 1, missing=()) -> str:
             "went unchecked; see the run.",
             "",
         ]
+    for why in left_out:
+        lines += [f"**Left out:** {why}; none of its counts are in this report.", ""]
     lines += [
         "| verdict | cases |",
         "|---|---|",
@@ -216,7 +254,7 @@ def main(argv=None) -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--n", type=int, default=N, help="seeds in the window, all shards together"
+        "--n", type=int, default=N, help="seeds to run, all shards together"
     )
     ap.add_argument("--seed", type=int, help="window start (default: tonight's)")
     ap.add_argument(
@@ -238,6 +276,11 @@ def main(argv=None) -> int:
     i, k = (int(x) for x in a.shard.split("/"))
     if not 0 <= i < k:
         ap.error(f"--shard {a.shard}: need 0 <= I < K")
+    if a.seed is None and a.n > N:
+        ap.error(
+            f"--n {a.n} is more than a night's {N} seeds and would reach into "
+            "the next night's window; pass --seed for a window of its own"
+        )
     a.out.mkdir(parents=True, exist_ok=True)
 
     if a.merge:
@@ -246,9 +289,10 @@ def main(argv=None) -> int:
             json.loads(p.read_text(encoding="utf-8")) for p in paths if p.is_file()
         ]
         k = a.shards or max((s["shard"][1] for s in summaries), default=1)
+        summaries, left_out = night_of(summaries, k)
         missing = sorted(set(range(k)) - {s["shard"][0] for s in summaries})
     else:
-        start = a.seed if a.seed is not None else window(a.n)
+        start = a.seed if a.seed is not None else window()
         summary = run(
             shard(start, a.n, i, k), a.workers, a.timeout, a.shrink_cap, a.out
         )
@@ -256,12 +300,12 @@ def main(argv=None) -> int:
         (a.out / "summary.json").write_text(
             json.dumps(summary, indent=1), encoding="utf-8"
         )
-        summaries, missing = [summary], []
+        summaries, missing, left_out = [summary], [], []
 
-    report = render(summaries, k, missing)
+    report = render(summaries, k, missing, left_out)
     (a.out / "report.md").write_text(report, encoding="utf-8")
     print(report)
-    return 1 if failed(summaries, missing) else 0
+    return 1 if failed(summaries, missing, left_out) else 0
 
 
 if __name__ == "__main__":

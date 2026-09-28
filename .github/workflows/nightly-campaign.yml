@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       n:
-        description: seeds in the window, all shards together (empty = nightly.py's default)
+        description: seeds to run, all shards together (empty = a whole night, nightly.N; more needs a seed)
         default: ""
       seed:
         description: window start (empty = tonight's)
