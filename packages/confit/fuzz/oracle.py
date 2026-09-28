@@ -371,21 +371,55 @@ _DUCK_BUILD_ERRS = (
 )
 
 
-def _duck_con(case: G.Case, udf_objs):
+# One oracle connection per process, handed from case to case: opening one is
+# about half a case's cost. A case hands it on only in the state a fresh
+# `Oracle()` starts in -- its tables dropped, its UDFs removed, the optimizer
+# off again -- and only when no statement on it raised and the query was
+# SELECTs alone. Otherwise it is closed and the next case opens a fresh one:
+# an INTERNAL error invalidates the whole database (DuckDB's
+# client_context.cpp), an interrupted or half-fetched query leaves its result
+# behind, and a statement with effects of its own would outlive the case. A
+# worker the runner's watchdog kills takes its connection with it. What a
+# SELECT alone can still change, such as `setseed()` reseeding `random()`, no
+# generated query does, and a nondeterministic answer compares nothing anyway.
+_idle: Oracle | None = None
+
+
+def _duck_con(case: G.Case, udf_objs) -> Oracle:
     """The oracle, with the case's UDFs registered and its tables loaded as
-    NATIVE tables. Both readings share it, so `_duck_run` owns closing it."""
-    con = Oracle()
-    for u in udf_objs:
-        params = [_DUCK_T[t] for t in u.takes.types]
-        if hasattr(u, "instances"):
-            params = ["BIGINT", *params]
-        con.create_function(
-            u.name, _scalar_form(u), params, _duck_ret(u), null_handling="special"
-        )
-    for name, (sch, rows) in case.statics.items():
-        con.load(name, _arrow_table(sch, rows))
-    con.load("__THIS__", _arrow_table(case.row_schema, case.rows))
+    NATIVE tables. Both readings share it, and `_duck_run` hands it back."""
+    global _idle
+    con, _idle = _idle or Oracle(), None
+    try:
+        for u in udf_objs:
+            params = [_DUCK_T[t] for t in u.takes.types]
+            if hasattr(u, "instances"):
+                params = ["BIGINT", *params]
+            con.create_function(
+                u.name, _scalar_form(u), params, _duck_ret(u), null_handling="special"
+            )
+        for name, (sch, rows) in case.statics.items():
+            con.load(name, _arrow_table(sch, rows))
+        con.load("__THIS__", _arrow_table(case.row_schema, case.rows))
+    except BaseException:
+        con.close()
+        raise
     return con
+
+
+def _hand_back(con: Oracle, case: G.Case, udf_objs, reuse: bool) -> None:
+    """Undo what `_duck_con` and the readings did to `con` and keep it for the
+    next case, or close it when `reuse` is False."""
+    global _idle
+    if not reuse:
+        con.close()
+        return
+    for name in (*case.statics, "__THIS__"):
+        con.execute(f'DROP TABLE "{name}"')
+    for u in udf_objs:
+        con.remove_function(u.name)
+    con.execute("PRAGMA disable_optimizer")
+    _idle = con
 
 
 def _exec(con, sql):
@@ -419,13 +453,22 @@ def _duck_run(sql, case: G.Case, udf_objs):
     optimizer-off by construction, and the flip below is the exception.
     """
     con = _duck_con(case, udf_objs)
+    reuse = False
     try:
         off = _exec(con, sql)
         con.optimizer_on()
         on = _exec(con, sql)
+        reuse = (
+            off[0] is not None
+            and on[0] is not None
+            and all(
+                s.type == duckdb.StatementType.SELECT
+                for s in con.extract_statements(sql)
+            )
+        )
         return off, on
     finally:
-        con.close()
+        _hand_back(con, case, udf_objs, reuse)
 
 
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):

@@ -310,6 +310,57 @@ def test_a_case_marks_each_phase_on_stderr_before_it_runs(capsys):
     assert phases[:3] == ["confit:build", "confit:run", "oracle"], phases
 
 
+def _udf_case(ret) -> gen.Case:
+    """A UDF, a static table and the request table, all under fixed names,
+    so a second case trips over anything the first one left behind."""
+    return gen.Case(
+        -4,
+        {"k": "int"},
+        [{"k": 1}],
+        {"s0": ({"a": "int64"}, [{"a": 1}])},
+        [gen.UdfSpec("u0", [("x", "int")], ret)],
+        None,
+        None,
+        None,
+        None,
+        sql="SELECT u0(k) AS o0 FROM __THIS__",
+    )
+
+
+def test_the_oracle_connection_is_handed_on_as_a_fresh_one_starts():
+    """Cases share one DuckDB connection, and each hands it on with no
+    tables, no UDFs and the optimizer off. The second case re-registers `u0`
+    with another signature and reloads both tables under the same names."""
+    assert oracle.run_case(_udf_case(("scalar", "float"))).kind == "AGREE"
+    con = oracle._idle
+    assert con is not None
+    assert oracle.run_case(_udf_case(("scalar", "str"))).kind == "AGREE"
+    assert oracle._idle is con
+    assert con.execute("SELECT count(*) FROM duckdb_tables()").fetchall() == [(0,)]
+    udfs = "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'u0'"
+    assert con.execute(udfs).fetchall() == [(0,)]
+    plan = con.execute("EXPLAIN SELECT 1 AS x WHERE 1 = 1").fetchall()[0][1]
+    assert "FILTER" in plan  # the rewriter would fold it: the optimizer is off
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # DuckDB refuses it at bind
+        "SELECT nosuch AS o0 FROM __THIS__",
+        # both readings serve rows, but the SET outlives the case
+        "SET threads = 1; SELECT k AS o0 FROM __THIS__",
+    ],
+)
+def test_a_reading_that_raised_or_had_effects_closes_the_connection(sql):
+    from fuzz import parity
+
+    oracle.run_case(_udf_case(("scalar", "float")))
+    assert oracle._idle is not None
+    parity.verdict(sql, pa.table({"k": pa.array([1], pa.int64())}))
+    assert oracle._idle is None
+
+
 def test_a_case_revived_from_its_stored_inputs_answers_like_the_original():
     """`case_from_inputs` is what makes a stored case independent of the
     generator revision: the revived case must carry the same inputs, value
