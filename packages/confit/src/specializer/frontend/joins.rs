@@ -347,6 +347,15 @@ pub(super) fn bind_on<'e>(
 pub(super) fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareError> {
     let col_ty = st.cols[col as usize].ty.ty;
     match (key.ty, col_ty) {
+        // A DECIMAL probe expression (`ON d.k = a * 0.5`): against a
+        // DOUBLE build key DuckDB casts the probe to DOUBLE; every other
+        // pairing needs a decimal probe lane the key path does not have.
+        (Ty::Dec(..), Ty::F64) => Ok(dec_to_float(key)),
+        (Ty::Dec(p, s), b) => Err(unsup(format!(
+            "a DECIMAL({p},{s}) join key expression against {} -- DECIMAL probe \
+             keys are served against DOUBLE build keys only",
+            b.name()
+        ))),
         (a, b) if a == b => Ok(key),
         // Integer widths share the key lane; the map stores i64 bits.
         (a, b) if a.is_int() && b.is_int() => Ok(key),
@@ -742,7 +751,8 @@ pub(super) fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool
         SKind::Cmp { a, b, .. }
         | SKind::And { a, b }
         | SKind::Or { a, b }
-        | SKind::Arith { a, b, .. } => {
+        | SKind::Arith { a, b, .. }
+        | SKind::DecArith { a, b, .. } => {
             scan_residual(a, j, right, left, known);
             scan_residual(b, j, right, left, known);
         }
@@ -751,6 +761,9 @@ pub(super) fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool
         | SKind::IntToFloat(a)
         | SKind::DecToFloat(a)
         | SKind::IntToDec { a, .. }
+        | SKind::DecCast(a)
+        | SKind::DecTryCast(a)
+        | SKind::DecUnary { a, .. }
         | SKind::IntToFloat32(a)
         // A DOUBLE unary minus is plain arithmetic and is scanned through.
         // The libm-backed f64 unaries are not classifiable.

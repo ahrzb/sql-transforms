@@ -50,12 +50,14 @@ mod regexp;
 mod udf;
 mod functions;
 mod typing;
+mod decimal;
 
 use self::refusal::*;
 use self::from::*;
 use self::joins::*;
 use self::star::*;
 use self::typing::*;
+use self::decimal::*;
 
 pub use self::functions::{is_builtin, BUILTIN_NAMES};
 

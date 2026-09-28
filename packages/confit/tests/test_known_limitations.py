@@ -273,8 +273,6 @@ def test_unqualified_exclude_of_a_using_key_serves():
         "FLOAT",
         "REAL",
         "FLOAT4",
-        "DECIMAL(3,1)",
-        "NUMERIC",
         "INTERVAL",
         "DATE",
     ],
@@ -283,7 +281,8 @@ def test_unqualified_exclude_of_a_using_key_serves():
 def test_a_cast_target_without_a_lane_refuses(target, form):
     # Computing these in the nearest lane served values DuckDB does not:
     # CAST(-1 AS UINTEGER) errors there, CAST(16777217 AS FLOAT) rounds to
-    # 16777216, CAST(1.25 AS DECIMAL(3,1)) is 1.3, INTERVAL is no integer.
+    # 16777216, INTERVAL is no integer. DECIMAL has its own lane
+    # (docs/specs/decimal-expressions.md).
     rejects(f"SELECT {form.format(e='a', t=target)} FROM __THIS__", "CAST target type")
 
 

@@ -43,11 +43,13 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
   float-reduction bound's algorithm and edge domain
   (`docs/oracle/05-the-comparison-contract.md`).
-- **Decimal expressions.** Arithmetic, casts to anything but DOUBLE and
-  unification over DECIMAL refuse; bare decimal literals serve as f64 (the
-  `UNSHIPPED` bucket). Needs DuckDB's per-operator scale rules and `Dec(p,s)`
-  through the expression tree. A `RowTy` newtype belongs with making DECIMAL
-  a row lane.
+- **Decimal remainders.** Decimal expressions serve
+  (docs/specs/decimal-expressions.md). Still refused by name: casts from
+  DOUBLE/VARCHAR/BOOLEAN into a DECIMAL (DuckDB's double->decimal rounding
+  and its string parser), a DECIMAL join key expression against a
+  non-DOUBLE build key, `IN`/`BETWEEN` families capped at 38 digits, and
+  DECIMAL ROW columns (a `RowTy` newtype belongs with making DECIMAL a row
+  lane).
 - **i128 lane.** HUGEINT/UHUGEINT and the unsigned family (columns, statics,
   CAST targets) refuse. Needs i128 arithmetic and traps on both backends and
   exact `sum`/`product` at decimal128(38,0). The literal 9223372036854775808

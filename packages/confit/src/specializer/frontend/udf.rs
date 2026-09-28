@@ -323,6 +323,8 @@ impl Binder<'_> {
                 // lane is shared) — DuckDB's implicit INTEGER -> BIGINT.
                 (a, Ty::I64) if a.is_int() => widen_int(bound, Ty::I64),
                 (a, Ty::F64) if a.is_int() => promote_f64(bound),
+                // decimal->double, DuckDB's implicit cast to a DOUBLE param.
+                (Ty::Dec(..), Ty::F64) => dec_to_float(bound),
                 (a, b) => {
                     return Err(PrepareError::Bind(format!(
                         "udf '{}' argument {} is {}, declared {}",
@@ -532,6 +534,7 @@ impl Binder<'_> {
                     // DuckDB's implicit widening, exactly as `bind_udf_args`
                     // does it for every other UDF.
                     (Ty::I64, Ty::F64) => promote_f64(e),
+                    (Ty::Dec(..), Ty::F64) => dec_to_float(e),
                     // How an integer reaches the compare depends on the grid
                     // the model set declared.
                     //

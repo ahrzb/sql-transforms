@@ -78,6 +78,23 @@ impl Binder<'_> {
                     || self.all_null_spelling(e)
             }
             SqlExpr::Case { .. } => self.all_null_spelling(e),
+            // A DECIMAL operator over a constant NULL operand, typed or bare,
+            // and unary minus over a NULL DECIMAL, bind SQLNULL (measured:
+            // `- (NULL * 2.5)` is BIGINT, `coalesce(1.75 + 41.7, NULL -
+            // 1.75)` DECIMAL(6,3)).
+            SqlExpr::BinaryOp {
+                left,
+                op:
+                    BinaryOperator::Plus
+                    | BinaryOperator::Minus
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Modulo,
+                right,
+            } => self.dec_null_operator(&[left, right]),
+            SqlExpr::UnaryOp {
+                op: UnaryOperator::Minus,
+                expr,
+            } => self.dec_null_operator(&[expr]),
             _ => false,
         }
     }
@@ -124,6 +141,31 @@ impl Binder<'_> {
             }
             _ => false,
         }
+    }
+
+    /// Whether these operands bind a DECIMAL operator (one is a DECIMAL,
+    /// the rest DECIMALs, integers or bare NULLs) and one of them is a
+    /// constant NULL. A DOUBLE operand makes it the DOUBLE operator, which
+    /// keeps its type.
+    fn dec_null_operator(&self, operands: &[&SqlExpr]) -> bool {
+        let bound: Vec<Option<SExpr>> = match operands
+            .iter()
+            .map(|e| self.expr_or_null(e))
+            .collect::<Result<_, _>>()
+        {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let any_dec = bound.iter().flatten().any(|e| e.ty.dec().is_some());
+        let all_dec_or_int = bound
+            .iter()
+            .flatten()
+            .all(|e| e.ty.dec().is_some() || e.ty.is_int());
+        let any_null = bound.iter().any(|e| {
+            e.as_ref()
+                .is_none_or(|e| bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf))
+        });
+        any_dec && all_dec_or_int && any_null
     }
 
     /// Whether `f` is `nullif(NULL, x)` — which propagates DuckDB's
@@ -273,6 +315,16 @@ impl Binder<'_> {
                 {
                     return Ok(null_of(Ty::I32));
                 }
+                if inner.ty.dec().is_some() {
+                    // DECIMAL negation keeps the type (`-2.5` is
+                    // DECIMAL(2,1)); a constant NULL is SQLNULL (measured:
+                    // `-(NULL::DECIMAL(3,1))` is INTEGER).
+                    let (inner, is_null) = fold_operand(inner);
+                    if is_null {
+                        return Ok(null_of(Ty::I32));
+                    }
+                    return Ok(fold(self.dec_negate(inner)));
+                }
                 if inner.ty == Ty::F64 {
                     // The shared strict-NULL rule (`fold_operand`), which
                     // `arith` applies to every other operator: the negate is
@@ -328,7 +380,7 @@ impl Binder<'_> {
                 None => Ok(null_of(Ty::I64)),
                 // DuckDB's + is a real unary function over numerics only:
                 // +'a' / +TRUE are binder errors there.
-                Some(e) if e.ty.is_int() || e.ty == Ty::F64 => Ok(e),
+                Some(e) if e.ty.is_int() || e.ty == Ty::F64 || e.ty.dec().is_some() => Ok(e),
                 Some(e) => Err(PrepareError::Bind(format!(
                     "no function matches +({})",
                     e.ty.name()
@@ -978,6 +1030,7 @@ impl Binder<'_> {
                 }
                 Some(u) if u.is_int() && r.ty == Ty::F64 => Ty::F64,
                 Some(Ty::F64) if r.ty.is_int() => Ty::F64,
+                Some(u) if dec_common(u, r.ty).is_some() => dec_common(u, r.ty).expect("checked"),
                 Some(u) => {
                     if let Some(d) = &dec_arm {
                         return Err(refuse_dec(
@@ -1011,6 +1064,9 @@ impl Binder<'_> {
         let coerce = |r: Option<SExpr>| -> SExpr {
             match r {
                 None => null_of(unified),
+                Some(e) if unified.dec().is_some() || (unified == Ty::F64 && e.ty.dec().is_some()) => {
+                    to_common(e, unified)
+                }
                 Some(e) if e.ty.is_int() && unified == Ty::F64 => promote_f64(e),
                 Some(e) if e.ty.is_int() && unified.is_int() && e.ty != unified => {
                     widen_int(e, unified)
@@ -1064,14 +1120,10 @@ impl Binder<'_> {
             }
             return Ok(inner);
         }
-        // DECIMAL -> DOUBLE is served (DuckDB's div/mod algorithm); every
-        // other target refuses by name — served as doubles they would be
-        // wrong values.
-        if inner.ty.dec().is_some() {
-            if to == Ty::F64 {
-                return Ok(dec_to_float(inner));
-            }
-            return Err(self.dec_refusal(&format!("CAST to {}", duck_int_name(to)), &inner));
+        // A DECIMAL on either side: the checked conversions of
+        // docs/specs/decimal-expressions.md §8.
+        if inner.ty.dec().is_some() || to.dec().is_some() {
+            return self.dec_cast_expr(inner, to, trying);
         }
         // A constant cast that FAILS is a plan-time error
         // on DuckDB — measured to fire even over zero rows and under a
@@ -1210,13 +1262,43 @@ impl Binder<'_> {
         let (a, a_null) = fold_operand(a);
         let (b, b_null) = fold_operand(b);
         let null_operand = a_null || b_null;
-        // Decimal ARITHMETIC is not served. Refuse by name here,
-        // before the promotion below turns it into the generic
-        // "arithmetic needs numeric operands" — the column and its (p,s)
-        // are what the reader needs.
-        if let Some(d) = dec_operand(&a, &b) {
-            return Err(self.dec_refusal(&format!("{} ", arith_sym(op)).trim(), d));
-        }
+        // DECIMAL arithmetic (docs/specs/decimal-expressions.md): `+ - * %`
+        // against a DECIMAL or an integer stay DECIMAL; against a DOUBLE,
+        // and under `/` and `//` (plain division, measured `2.5 // 2` is
+        // 1.25), the DECIMAL side becomes a DOUBLE and the float path below
+        // takes over. A constant NULL operand of the DECIMAL overloads, typed
+        // or bare, binds DuckDB's SQLNULL (measured: `2.5 + CAST(NULL AS
+        // DECIMAL(9,4))` is INTEGER).
+        let (a, b) = if dec_operand(&a, &b).is_some() {
+            let float = a.ty == Ty::F64 || b.ty == Ty::F64;
+            match op {
+                ArithOp::Add | ArithOp::Sub | ArithOp::Mul | ArithOp::Rem if !float => {
+                    if null_operand {
+                        return Ok(null_of(Ty::I32));
+                    }
+                    return self.dec_arith(op, a, b);
+                }
+                ArithOp::Add
+                | ArithOp::Sub
+                | ArithOp::Mul
+                | ArithOp::Rem
+                | ArithOp::Div
+                | ArithOp::IDiv => {
+                    let f = |e: SExpr| if e.ty.dec().is_some() { dec_to_float(e) } else { e };
+                    (f(a), f(b))
+                }
+                _ => {
+                    return Err(PrepareError::Bind(format!(
+                        "No function matches the given name and argument types '{}({}, {})'",
+                        arith_sym(op),
+                        duck_ty_name(a.ty),
+                        duck_ty_name(b.ty)
+                    )))
+                }
+            }
+        } else {
+            (a, b)
+        };
         if matches!(
             op,
             ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor
@@ -1440,13 +1522,17 @@ impl Binder<'_> {
             // the comparison stays in the decimal's scale. The one shape it
             // refuses is the CAPPED width, where the integer's per-row cast
             // can fail — reproducing that needs a row-time trap.
-            (Ty::Dec(p, s), y) if y.is_int() => (a, promote_dec(b, p, s)?),
-            (x, Ty::Dec(p, s)) if x.is_int() => (promote_dec(a, p, s)?, b),
-            // DECIMAL vs DOUBLE: only decimal->double is a legal implicit
-            // cast (cast_rules.cpp:196-204), so the DECIMAL side casts DOWN
-            // and the comparison is lossy — DuckDB's loss, reproduced.
-            (Ty::Dec(..), Ty::F64) => (dec_to_float(a), b),
-            (Ty::F64, Ty::Dec(..)) => (a, dec_to_float(b)),
+            // DECIMAL vs DECIMAL, DOUBLE or an integer: both sides at the
+            // common type (docs/specs/decimal-expressions.md §7). Against a
+            // DOUBLE only decimal->double is a legal implicit cast
+            // (cast_rules.cpp:196-204), so the DECIMAL side casts DOWN and
+            // the comparison is lossy — DuckDB's loss, reproduced. Against
+            // an integer at a capped width the integer's cast can fail per
+            // row, as it does on DuckDB.
+            (x, y) if dec_common(x, y).is_some() => {
+                let t = dec_common(x, y).expect("checked");
+                (to_common(a, t), to_common(b, t))
+            }
             // BOOLEAN vs an integer: DuckDB casts the BOOLEAN to INTEGER
             // (EXPLAIN: `CAST(a AS INTEGER) = i`), so it compares as 0/1 in
             // the integer lane. Against DOUBLE it refuses at bind, below.

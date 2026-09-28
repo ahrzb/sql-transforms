@@ -200,6 +200,11 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::Ftoi { dst, .. } => vec![(*dst, Ty::I64)],
         Inst::Dtof { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Itod { p: dp, s: ds, dst, .. } => vec![(*dst, Ty::Dec(*dp, *ds))],
+        Inst::Dop { ty, dst, .. } => vec![(*dst, *ty)],
+        Inst::Dcast { to, dst, .. } => vec![(*dst, to.lane())],
+        Inst::Dtos { dst, .. } => vec![(*dst, Ty::Str)],
+        Inst::Dunary { ty, dst, .. } => vec![(*dst, *ty)],
+        Inst::DcastOk { dst, .. } => vec![(*dst, Ty::I1)],
         Inst::Itos { dst, .. }
         | Inst::Ftos { dst, .. }
         | Inst::Sconcat { dst, .. }
@@ -345,6 +350,27 @@ fn want(
     }
 }
 
+/// Like [`want`], for an operand that may be a DECIMAL of any (p, s).
+fn want_dec(
+    in_scope: &HashMap<u32, Ty>,
+    def_types: &HashMap<u32, (Ty, usize)>,
+    v: Value,
+    bi: usize,
+    ii: Option<usize>,
+    errs: &mut Vec<VerifyError>,
+) {
+    if let Some(actual) = scope_ty(in_scope, def_types, v, "operand", bi, ii, errs) {
+        if actual.dec().is_none() {
+            err(
+                errs,
+                Some(bi),
+                ii,
+                format!("operand %v{} must be a decimal, got {}", v.0, actual.name()),
+            );
+        }
+    }
+}
+
 /// Second pass, per block: scoping (uses see only same-block earlier defs or
 /// own params) and per-instruction operand typing.
 fn check_block(
@@ -432,6 +458,32 @@ fn check_block(
                 errs,
             ),
             Inst::Itod { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
+            Inst::Dop { ty, a, b: rhs, .. } => {
+                if ty.dec().is_none() {
+                    err(errs, Some(bi), i, format!("dop result must be a decimal, got {}", ty.name()));
+                }
+                for v in [a, rhs] {
+                    want_dec(&in_scope, def_types, *v, bi, i, errs);
+                }
+            }
+            Inst::Dcast { from, to, a, .. } => {
+                if from.dec().is_none() && to.dec().is_none() {
+                    err(errs, Some(bi), i, "dcast needs a decimal side".to_string());
+                }
+                want(&in_scope, def_types, *a, *from, "operand", bi, i, errs);
+            }
+            Inst::Dunary { ty, a, .. } => {
+                if ty.dec().is_none() {
+                    err(errs, Some(bi), i, format!("dunary result must be a decimal, got {}", ty.name()));
+                }
+                want_dec(&in_scope, def_types, *a, bi, i, errs);
+            }
+            Inst::DcastOk { from, a, .. } => {
+                want(&in_scope, def_types, *a, *from, "operand", bi, i, errs)
+            }
+            Inst::Dtos { p: dp, s: ds, a, .. } => {
+                want(&in_scope, def_types, *a, Ty::Dec(*dp, *ds), "operand", bi, i, errs)
+            }
             Inst::Ftoi { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
             Inst::Itos { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
             Inst::Ftos { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),

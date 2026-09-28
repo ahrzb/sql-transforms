@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use super::{
-    BinOp, Block, BlockId, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode, StaticTy,
+    BinOp, Block, DecOp, DecUnary, BlockId, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode, StaticTy,
     StrOp1, StrOp2, StrOp2i, StrOp3, Term, TrimSide, Ty, Value,
 };
 
@@ -1092,6 +1092,80 @@ impl Parser {
                 Inst::Const {
                     dst: def!(0),
                     lit: Lit::Dec(v, dp, ds),
+                }
+            }
+            "dop.add" | "dop.sub" | "dop.mul" | "dop.rem" => {
+                want_dsts(1, self)?;
+                let op = DecOp::parse(&opcode["dop.".len()..]).expect("matched above");
+                let check = self.int_literal("an overflow-check width")?;
+                if ![0, 18, 38].contains(&check) {
+                    return Err(self.err(format!("bad decimal overflow check {check}")));
+                }
+                let ty = self.ty()?;
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let b = self.use_value()?;
+                Inst::Dop {
+                    op,
+                    check: check as u8,
+                    ty,
+                    dst: def!(0),
+                    a,
+                    b,
+                }
+            }
+            "dunary.abs" | "dunary.ceil" | "dunary.floor" | "dunary.round" | "dunary.trunc" => {
+                want_dsts(1, self)?;
+                let op = DecUnary::parse(&opcode["dunary.".len()..]).expect("matched above");
+                let k = self.int_literal("a scale shift")?;
+                let m = self.int_literal("a scale shift")?;
+                if !(0..=38).contains(&k) || !(0..=38).contains(&m) {
+                    return Err(self.err(format!("bad dunary shift {k} {m}")));
+                }
+                let ty = self.ty()?;
+                let a = self.use_value()?;
+                Inst::Dunary {
+                    op,
+                    k: k as u8,
+                    m: m as u8,
+                    ty,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "dcast.ok" => {
+                want_dsts(1, self)?;
+                let from = self.ty()?;
+                let to = self.ty()?;
+                let a = self.use_value()?;
+                Inst::DcastOk {
+                    from,
+                    to,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "dcast" => {
+                want_dsts(1, self)?;
+                let from = self.ty()?;
+                let to = self.ty()?;
+                let a = self.use_value()?;
+                Inst::Dcast {
+                    from,
+                    to,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "dtos" => {
+                want_dsts(1, self)?;
+                let (dp, ds) = self.dec_params()?;
+                let a = self.use_value()?;
+                Inst::Dtos {
+                    p: dp,
+                    s: ds,
+                    dst: def!(0),
+                    a,
                 }
             }
             "dtof" | "itod" => {

@@ -3,7 +3,7 @@
 //! scan/filter/project ribbon over the dynamic table, and joins to static
 //! tables are not tree nodes at all (see [`Rel`]).
 
-use super::ir::{ColTy, CmpPred, Col, Lit, TrimSide, Ty};
+use super::ir::{ColTy, CmpPred, Col, DecOp, DecUnary as DecUnaryOp, Lit, TrimSide, Ty};
 
 /// The bound query as an ordered pipeline of stages, innermost first: one
 /// stage per query level (docs/specs/2026-09-26-row-local-subqueries-design.md).
@@ -503,6 +503,33 @@ pub enum SKind {
         s: u8,
         a: Box<SExpr>,
     },
+    /// DECIMAL `+ - * %` (docs/specs/decimal-expressions.md §3-§6). The
+    /// operands already carry the types DuckDB's binder casts them to, so
+    /// this is scaled-integer arithmetic; `check` is the width the binder
+    /// capped the result at (18 or 38), whose overflow traps, 0 when the
+    /// width cannot overflow. `%` by zero is NULL.
+    DecArith {
+        op: DecOp,
+        check: u8,
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
+    /// A checked conversion with a DECIMAL on one side (§8): integer ->
+    /// Dec, Dec -> Dec, Dec -> integer (half away from zero), and Dec ->
+    /// VARCHAR. Source and target are the operand's and the node's types.
+    DecCast(Box<SExpr>),
+    /// TRY_CAST with a DECIMAL on one side: the checked conversion, NULL
+    /// where [`SKind::DecCast`] would trap.
+    DecTryCast(Box<SExpr>),
+    /// A DECIMAL rounding builtin (abs, ceil, floor, round, trunc) on the
+    /// scaled integer: divide out `10^k`, multiply back `10^m`
+    /// (`kernels::dec_unary`). Total.
+    DecUnary {
+        op: DecUnaryOp,
+        k: u8,
+        m: u8,
+        a: Box<SExpr>,
+    },
     /// i64 -> f64 VIA f32 — `n as f32 as f64`, one rounding, not two.
     /// Only ever wraps a `tree_predict` feature: sklearn narrows an integer
     /// feature array to float32 in a single step, and above 2**53 that is a
@@ -722,10 +749,14 @@ impl SExpr {
             | SKind::MathF2 { a, b, .. }
             | SKind::Trim { a, chars: b, .. }
             | SKind::Round2 { a, n: b, .. }
+            | SKind::DecArith { a, b, .. }
             | SKind::Str2i { a, n: b, .. } => vec![a.as_mut(), b.as_mut()],
             SKind::IntToFloat(a)
             | SKind::DecToFloat(a)
             | SKind::IntToDec { a, .. }
+            | SKind::DecCast(a)
+            | SKind::DecTryCast(a)
+            | SKind::DecUnary { a, .. }
             | SKind::IntToFloat32(a)
             | SKind::Not(a)
             | SKind::IsNull { inner: a, .. }
@@ -855,12 +886,16 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         | SKind::MathF2 { a, b, .. }
         | SKind::Str2i { a, n: b, .. }
         | SKind::Round2 { a, n: b, .. }
+        | SKind::DecArith { a, b, .. }
         | SKind::Trim { a, chars: b, .. } => bind_foldable(a) && bind_foldable(b),
         SKind::Not(a)
         | SKind::IsNull { inner: a, .. }
         | SKind::IntToFloat(a)
         | SKind::DecToFloat(a)
         | SKind::IntToDec { a, .. }
+        | SKind::DecCast(a)
+        | SKind::DecTryCast(a)
+        | SKind::DecUnary { a, .. }
         | SKind::IntToFloat32(a)
         | SKind::Cast { inner: a, .. }
         | SKind::StrCase { a, .. }

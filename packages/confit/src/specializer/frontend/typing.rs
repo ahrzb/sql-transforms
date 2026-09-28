@@ -2,33 +2,6 @@
 
 use super::*;
 
-/// An integer-lane expression as the scaled i128 of scale `s`. Refuses the
-/// one shape DuckDB caps: `int_dec_width + s > 38` makes the comparison
-/// width DECIMAL(38,s), where the integer's cast can fail PER ROW
-/// (measured: `CAST(1 AS DECIMAL(38,30)) = 10000000000::BIGINT` is a
-/// Conversion Error while `= 1::BIGINT` is true).
-pub(super) fn promote_dec(e: SExpr, p: u8, s: u8) -> Result<SExpr, PrepareError> {
-    if u32::from(int_dec_width(e.ty)) + u32::from(s) > 38 {
-        return Err(PrepareError::Bind(format!(
-            "cannot compare {} with a DECIMAL of scale {s}: DuckDB compares these \
-             as DECIMAL(38,{s}) and the integer cast can fail per row",
-            e.ty.name()
-        )));
-    }
-    // The precision is presentation only on this path: the comparison is
-    // between scaled INTEGERS at one scale, and taking the column's own
-    // (p, s) is what makes the two operand types identical for the
-    // verifier. A probe value wider than p compares correctly all the same
-    // — it simply is not equal to anything the column can hold, which is
-    // also DuckDB's answer at its wider comparison width.
-    let nullable = e.nullable;
-    Ok(SExpr {
-        kind: SKind::IntToDec { s, a: Box::new(e) },
-        ty: Ty::Dec(p, s),
-        nullable,
-    })
-}
-
 pub(super) fn dec_to_float(e: SExpr) -> SExpr {
     let nullable = e.nullable;
     SExpr {
@@ -364,20 +337,66 @@ pub(super) fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareEr
             Ty::Str
         }
         "BOOLEAN" | "BOOL" | "LOGICAL" => Ty::I1,
+        // DECIMAL(p,s); DECIMAL(p) is scale 0 and a bare DECIMAL is DuckDB's
+        // default DECIMAL(18,3) (`LogicalType::DECIMAL` defaults).
+        "DECIMAL" | "NUMERIC" | "DEC" => {
+            let args: Vec<u32> = name
+                .split_once('(')
+                .map(|(_, rest)| {
+                    rest.trim_end_matches(')')
+                        .split(',')
+                        .filter_map(|x| x.trim().parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (p, sc) = match args[..] {
+                [] => (18, 3),
+                [p] => (p, 0),
+                [p, sc] => (p, sc),
+                _ => return Err(PrepareError::Bind(format!("bad DECIMAL type {name}"))),
+            };
+            if !(1..=38).contains(&p) {
+                return Err(PrepareError::Bind("Width must be between 1 and 38!".into()));
+            }
+            if sc > p {
+                return Err(PrepareError::Bind("Scale cannot be bigger than width".into()));
+            }
+            Ty::Dec(p as u8, sc as u8)
+        }
         _ => {
             return Err(unsup(format!(
                 "CAST target type {name} -- served targets are TINYINT, SMALLINT, \
-                 INTEGER, BIGINT, DOUBLE, VARCHAR and BOOLEAN"
+                 INTEGER, BIGINT, DOUBLE, DECIMAL, VARCHAR and BOOLEAN"
             )))
         }
     })
 }
 
+/// DuckDB's typing of a numeric literal with a point and no exponent
+/// (transform_constant.cpp, `T_PGFloat`): DECIMAL(digits, digits after
+/// the point) when it has at most 38 digits, leading zeros included and
+/// underscores not. `None` for anything else (DOUBLE or an integer).
+fn decimal_literal(text: &str) -> Option<(Lit, Ty)> {
+    if text.contains(['e', 'E']) {
+        return None;
+    }
+    let (int, frac) = text.split_once('.')?;
+    let int: String = int.chars().filter(|c| *c != '_').collect();
+    let frac: String = frac.chars().filter(|c| *c != '_').collect();
+    let (p, s) = (int.len() + frac.len(), frac.len());
+    if p == 0 || p > 38 {
+        return None;
+    }
+    let v: i128 = format!("{int}{frac}").parse().ok()?;
+    Some((Lit::Dec(v, p as u8, s as u8), Ty::Dec(p as u8, s as u8)))
+}
+
 pub(super) fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
     let (lit, ty) = match v {
         SqlValue::Number(text, _) => {
-            if text.contains('.') || text.to_ascii_lowercase().contains('e') {
-                // DuckDB types this DECIMAL; here it collapses to f64.
+            if let Some(d) = decimal_literal(text) {
+                d
+            } else if text.contains('.') || text.to_ascii_lowercase().contains('e') {
                 let f = text
                     .parse::<f64>()
                     .map_err(|_| PrepareError::Bind(format!("bad numeric literal '{text}'")))?;
@@ -721,19 +740,26 @@ impl Binder<'_> {
     /// exec-time cast semantics we don't model — clean-unsupported.
     pub(super) fn unify_family(&self, exprs: &[&SqlExpr]) -> Result<Vec<SqlExpr>, PrepareError> {
         let (mut any_f64, mut any_num) = (false, false);
-        // A DECIMAL arm unifies with a WIDER decimal on DuckDB
-        // (CombineEqualTypes / DecimalSizeCheck); we serve one (p,s) per
-        // value, so a family mixing a decimal with anything not identical
-        // to it refuses by name.
+        // A DECIMAL member unifies the family at the common DECIMAL
+        // (docs/specs/decimal-expressions.md §7). Each comparison below
+        // meets its own pair's common type, which reads the same values
+        // exactly as the family-wide one does, EXCEPT at a family capped at
+        // 38 digits (scale truncated), which refuses by name. A DOUBLE
+        // family is cast to DOUBLE whole, below.
         let mut any_dec: Option<SExpr> = None;
-        let mut all_dec: Option<Ty> = None;
-        let mut mixed_dec = false;
+        let mut family: Option<Ty> = None;
         for e in exprs {
             if let Some(b) = self.expr_or_null(e)? {
-                match (all_dec, b.ty) {
-                    (None, t) => all_dec = Some(t),
-                    (Some(prev), t) if prev != t => mixed_dec = true,
-                    _ => {}
+                if b.ty.is_int() || b.ty == Ty::F64 || b.ty.dec().is_some() {
+                    family = Some(match family {
+                        None => b.ty,
+                        Some(f) if f == b.ty => f,
+                        Some(f) if f.is_int() && b.ty.is_int() => Ty::I64,
+                        Some(f) => match dec_common(f, b.ty) {
+                            Some(t) => t,
+                            None => Ty::F64,
+                        },
+                    });
                 }
                 match b.ty {
                     Ty::F64 => (any_f64, any_num) = (true, true),
@@ -744,8 +770,31 @@ impl Binder<'_> {
             }
         }
         if let Some(d) = any_dec {
-            if mixed_dec {
-                return Err(self.dec_refusal("family unification", &d));
+            let capped = |t: Option<Ty>| {
+                exprs.iter().any(|e| {
+                    self.expr_or_null(e).ok().flatten().is_some_and(|b| {
+                        matches!((b.ty, t), (Ty::Dec(p, s), Some(Ty::Dec(_, fs))) if fs < s || p - s > 38)
+                    })
+                })
+            };
+            // A DOUBLE family casts every member to DOUBLE below, decimals
+            // included, which is DuckDB's own reading.
+            if family != Some(Ty::F64) && capped(family) {
+                return Err(self.dec_refusal("BETWEEN/IN unification at 38 digits", &d));
+            }
+            // A string or boolean member would convert to the DECIMAL
+            // (DuckDB's VARCHAR -> DECIMAL parse), which is not served.
+            if !any_f64 {
+                for e in exprs {
+                    if let Some(b) = self.expr_or_null(e)? {
+                        if matches!(b.ty, Ty::Str | Ty::I1) {
+                            return Err(self.dec_refusal(
+                                "BETWEEN/IN mixing a string or boolean with",
+                                &d,
+                            ));
+                        }
+                    }
+                }
             }
         }
         // pins-wave5/: mixing casts the string/bool side to the NUMERIC

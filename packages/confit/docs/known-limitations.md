@@ -137,11 +137,13 @@ bool. Measured consequences:
   `2^63+1` — an ordinary fit-time `sum(BIGINT)` produces that, which is
   why the lane is i128 and not i64. `decimal32`/`decimal64` inputs
   normalise to `decimal128(p,s)` output because DuckDB exports every tier
-  as 128-bit arrow. What refuses, by name: EXPRESSIONS over a
-  decimal — arithmetic, `CAST` to anything but `DOUBLE`, and
-  `COALESCE`/`CASE`/`greatest` unifying it with a non-identical type (each
-  would otherwise compute a wrong double).
-  Comparisons, joins, `CAST(d AS DOUBLE)` and `SELECT *` all serve.
+  as 128-bit arrow. Expressions over a decimal serve exactly, with
+  DuckDB's types (docs/specs/decimal-expressions.md): `+ - * %`, the
+  casts, comparisons, `CASE`/`COALESCE`/`greatest`/`IN` unification, and
+  the DECIMAL overloads of `abs`/`ceil`/`floor`/`round`/`trunc`. What
+  refuses, by name: a DECIMAL join key EXPRESSION against anything but a
+  DOUBLE build key, casts between a DECIMAL and a DOUBLE/VARCHAR/BOOLEAN
+  in the INTO direction, and `IN`/`BETWEEN` families capped at 38 digits.
   `decimal256` statics refuse (DuckDB itself refuses them at arrow
   register, at any precision), and decimal ROW columns are opaque.
 - **Structs of scalars SERVE**: struct row and static columns are
@@ -162,15 +164,13 @@ bool. Measured consequences:
   star. Referenced, they refuse by name. Lists also gate
   `regexp_extract_all` / `regexp_split_to_array` / the STRUCT form of
   `regexp_extract` (`list-valued, non-scalar`).
-- **DECIMAL literals are f64** — a documented divergence: DuckDB types
-  `1.5` as `DECIMAL(2,1)` and does decimal arithmetic; we map to f64.
-  Values agree on every corpus case; exact-decimal accumulation semantics
-  are not reproduced. One visible consequence: `CAST(-2.5 AS BIGINT)` on
-  the bare literal is a DECIMAL cast in DuckDB (half away from zero, `-3`)
-  and a DOUBLE cast for us (half to even, `-2`). Casting a DOUBLE *column*
-  agrees exactly — measure DOUBLE cast behaviour with a DOUBLE column or an
-  explicit `::DOUBLE`, never with a literal, or you will pin the wrong
-  rounding mode.
+- **DECIMAL literals are DECIMAL**, as on DuckDB: `1.5` is
+  `DECIMAL(2,1)`, and arithmetic over it is exact
+  (docs/specs/decimal-expressions.md). A literal with an exponent
+  (`1.5e0`) or more than 38 digits is DOUBLE. When pinning DOUBLE
+  behaviour, spell the operand DOUBLE (`-2.5e0`, `::DOUBLE`): a bare
+  `CAST(-2.5 AS BIGINT)` is a DECIMAL cast (half away from zero, `-3`),
+  a DOUBLE one rounds half to even (`-2`).
 - Integer widths: the engine TYPES in DuckDB's lattice (TINYINT..BIGINT —
   literals are INTEGER by magnitude, `::SMALLINT` is real, `ascii` returns
   INTEGER, `infer_arrow` emits int8/int16/int32 from the type) but
@@ -186,7 +186,7 @@ bool. Measured consequences:
   static-column entry above). The same holds for CAST targets: only
   TINYINT, SMALLINT, INTEGER, BIGINT, DOUBLE, VARCHAR and BOOLEAN (and
   DuckDB's aliases for them) are served; every other target — HUGEINT, the
-  unsigned family, FLOAT/REAL, DECIMAL/NUMERIC, INTERVAL, dates — refuses
+  unsigned family, FLOAT/REAL, INTERVAL, dates — refuses
   with `CAST target type <T>`.
 
 ## 4. Semantics descoped after measurement

@@ -150,26 +150,17 @@ _DUCK_T = {
 
 # THE UNSHIPPED-FEATURE VERDICT, and why it is not a comparison
 #
-# One feature is not shipped: decimals (Dec(p,s) arithmetic). DuckDB types
-# `1.5` as DECIMAL(2,1); we map it to f64. That is a WIDTH difference, and
-# there is no honest value comparison across it — casting DuckDB's answer
-# down to f64 so the rows could still be checked manufactures 1-ulp
-# artifacts and grades the gap as agreement. A feature we have not shipped
-# either fails or says so by name. So the case gets its OWN verdict,
+# A feature whose output WIDTH is not shipped gets its own verdict,
 # UNSHIPPED, carrying the class and the lane that differs, and no value
-# comparison happens at all.
+# comparison: casting DuckDB's answer down to our width so the rows could
+# still be checked manufactures artifacts and grades the gap as agreement.
+# `_type_delta` holds one arm per such feature, and `_UNSHIPPED_REACH` one
+# reach pattern.
 #
-# The class covers the LITERAL-derived case ONLY:
-# packages/confit/docs/known-limitations.md's "DECIMAL literals are f64" row.
-# A decimal STATIC column serves exactly as decimal128(p,s), so a
-# decimal-vs-double delta THERE is a REGRESSION, not a known gap — and since
-# gen.py emits both spellings, the UNSHIPPED bucket stays checkable by hand:
-# every entry should trace to a literal.
-#
-# When decimal arithmetic lands the schemas match, `_type_delta`'s decimal
-# arm goes dead, the bucket empties, and any decimal divergence left over
-# rings as the real thing. Deleting the dead arm is then the feature's own
-# housekeeping, not a suppression anyone has to remember to lift.
+# No feature is unshipped today. The last one, decimals (DuckDB types `1.5`
+# as DECIMAL(2,1), which served as f64), shipped with decimal expressions
+# (docs/specs/decimal-expressions.md); its arm was deleted, so a
+# decimal-vs-double delta is now a divergence like any other.
 
 
 @dataclass
@@ -466,9 +457,7 @@ def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
     DuckDB's, and `run_case` checks it against our own rows instead."""
     if same_type(duck, ours):
         return None
-    # One arm per unshipped feature; delete when it ships (see note above).
-    if pa.types.is_decimal(duck) and ours == pa.float64():
-        return "decimals"
+    # One arm per unshipped feature; none today (see note above).
     if (
         pa.types.is_struct(duck)
         and pa.types.is_struct(ours)
@@ -808,11 +797,9 @@ def _first_words(s: str, n: int = 6) -> str:
 # Generator reach, per unshipped feature: does the SQL contain the construct
 # that yields the width? Read off the rendered text, string literals removed,
 # so a verdict of any kind still says whether the width was in play.
-# `decimals`: a bare decimal literal (`2.5`, DECIMAL on DuckDB), not `2.5e0`.
+# None today: decimals, the last one, shipped.
 _STRING_LIT = re.compile(r"'(?:[^']|'')*'")
-_UNSHIPPED_REACH = {
-    "decimals": re.compile(r"(?<![\w.])\d+\.\d+(?![\w.])"),
-}
+_UNSHIPPED_REACH: dict[str, re.Pattern] = {}
 UNSHIPPED_FEATURES = tuple(_UNSHIPPED_REACH)
 
 

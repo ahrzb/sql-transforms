@@ -110,24 +110,24 @@ difference in another field outranks the exempt width. Confit-only boundary self
 still run because an unshipped DuckDB width cannot excuse internal inconsistency.
 
 `UNSHIPPED` also outranks the optimizer bracket: without a value comparison, neither
-DuckDB reading says anything about optimizer rewriting. `_type_delta` has one
-unshipped arm: DuckDB decimal versus confit float64.
+DuckDB reading says anything about optimizer rewriting. `_type_delta` has no
+unshipped arm today: the last one, DuckDB decimal versus confit float64, was deleted
+when decimal expressions shipped, so that delta is now a divergence.
 
 *Enforced-by:* `fuzz.oracle.run_case`, `_schema_delta`, and `_type_delta`.
-*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_decimal_literal_agrees_in_its_own_width`
 and `::test_a_real_schema_difference_is_still_a_divergence`.
 
 **claim: unshipped-reach.** An empty `UNSHIPPED` bucket is not evidence of support, so
 the campaign reports each unshipped feature's generator reach beside it. Every verdict
 line is tagged `reaches:<feature>` when its SQL contains the construct that yields the
-width (for `decimals`, a bare decimal literal such as `2.5`, string literals excluded),
-and the report prints, per feature, how many cases reached it and their verdicts, or
-says the feature was not reached. Reach is construct presence, not output width: a
-decimal literal in a `WHERE` clause reaches the feature and may still `AGREE`.
+width (string literals excluded), and the report prints, per feature, how many cases
+reached it and their verdicts, or says the feature was not reached. Reach is construct
+presence, not output width. No feature is unshipped today.
 
 *Enforced-by:* `fuzz.oracle.unshipped_reach`, `fuzz.oracle.run_case_json`, and
 `fuzz.runner.report`.
-*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_unshipped_reach_is_read_off_the_construct_not_the_bucket`,
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_no_feature_is_unshipped`,
 `packages/confit/tests/test_fuzz_report.py::test_unshipped_widths_are_reported_with_their_reach`,
 and `::test_an_unreached_width_is_not_reported_as_support`.
 
@@ -207,8 +207,7 @@ subtracts from `-0.0`, preserving exact IEEE negation; integer negation retains 
 and its `i64::MIN` trap.
 
 Regression pins use DOUBLE spellings such as `-0.0e0`. Bare `-0.0` is
-`DECIMAL(2,1)` in DuckDB and has no sign; divergence involving that literal belongs to
-divergence: decimal-literal-typing, not a relaxation of signed-zero equality.
+`DECIMAL(2,1)` in DuckDB and confit alike, and a DECIMAL has no sign.
 
 *Evidence:* `packages/confit/tests/known_divergences/test_literal_typing.py::test_negative_zero_keeps_its_sign`
 and `packages/confit/tests/test_compare.py::test_multiset_keeps_signed_zero_distinct`.

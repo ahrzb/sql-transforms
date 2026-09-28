@@ -383,6 +383,38 @@ b0:
     assert!(printed.contains("dtof(6,2)"), "{printed}");
 }
 
+/// The decimal-expression opcodes (`dop`, `dcast`, `dcast.ok`, `dunary`,
+/// `dtos`) round-trip through the text form, their types in the text.
+#[test]
+fn decimal_expression_opcodes_round_trip_through_the_text_form() {
+    let text = r#"fn f(in: batch{a: i64}, out: batch{x: dec(12,1), y: i64, z: str, w: dec(12,0), v: i1}) {
+b0:
+  %a = load in.a
+  %d = dcast i64 dec(12,1) %a
+  %h = const.dec(2,1) 25
+  %m = dop.mul 0 dec(12,1) %d, %h
+  %s = dop.add 18 dec(12,1) %m, %d
+  %i = dcast dec(12,1) i8 %s
+  %ok = dcast.ok dec(12,1) i8 %s
+  %r = dunary.round 1 0 dec(12,0) %s
+  %t = dtos(12,1) %s
+  store out.x, %s
+  store out.y, %i
+  store out.z, %t
+  store out.w, %r
+  store out.v, %ok
+  emit
+}"#;
+    let p = verified(text);
+    let printed = print(&p);
+    let p2 = parsed(&printed);
+    assert_eq!(p2, p, "decimal round-trip changed the program:\n{printed}");
+    assert_eq!(print(&p2), printed, "printing is not a fixpoint");
+    for needle in ["dop.mul 0 dec(12,1)", "dcast dec(12,1) i8", "dunary.round 1 0", "dtos(12,1)"] {
+        assert!(printed.contains(needle), "{needle}: {printed}");
+    }
+}
+
 #[test]
 fn extern_call_width_two_round_trips() {
     let text = r#"extern @0: "wide" (f64) -> (f64, f64)

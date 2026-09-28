@@ -108,7 +108,7 @@ DuckDB 1.5.5.
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
 | More than one join under `shape='many'` | 2 inside, refused | named rejection |
-| Decimal expressions and decimal-literal arithmetic | 2 inside, refused | exact decimal arithmetic not reproduced |
+| Casts into DECIMAL from DOUBLE/VARCHAR/BOOLEAN, DECIMAL join key expressions against a non-DOUBLE key, `IN`/`BETWEEN` capped at 38 digits | 2 inside, refused | named rejection; decimal expressions otherwise serve exactly |
 | `f32` row columns, lists, whole-struct output, bracket field access, `HUGEINT`/unsigned | 2 inside, refused | type not served |
 | `decimal256` static columns | 4 invalid | DuckDB refuses them at Arrow registration |
 | All-NULL `CASE`/`COALESCE`/`least`/`greatest`, bare `NULL` as `repeat`'s string (BLOB) | 2 inside, refused | DuckDB binds them; the engine has no BLOB type |

@@ -48,7 +48,8 @@ divergence. Completing it replaces the strict xfail with a parity test, removes 
 limitation and fuzzer marker, and is certified only by a campaign run after the
 suppression is gone. The visible `UNSHIPPED` bucket is not independently gated; see
 [the comparison contract](05-the-comparison-contract.md). Decimal literal typing and
-decimal cast rounding are features in flight on these terms.
+decimal cast rounding were features in flight on these terms; both closed when decimal
+expressions shipped.
 
 ## Divergence index
 
@@ -77,8 +78,8 @@ where readers expect it.
 | **divergence: trap-elision** | optimizer-on contract gap / 1 | kept | unruled |
 | **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../decisions/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
-| **divergence: decimal-literal-typing** | feature in flight / 2 | open severity-2 defect; not an approved exception | unruled |
-| **divergence: decimal-cast-rounding** | same literal-typing mechanism / 2 | tied to parent | unruled |
+| **divergence: decimal-literal-typing** | closed | shipped: literals are DECIMAL | n/a |
+| **divergence: decimal-cast-rounding** | closed | shipped: DECIMAL casts round half away from zero | n/a |
 | **divergence: bind-time-constant-refusals** | conservative refusal / 4 | kept | unruled |
 | **divergence: regex-size-guard** | one-sided safety guard / 4 | kept | unruled |
 | **divergence: string-builder-budget** | resource refusal / 4 | kept | unruled |
@@ -137,11 +138,11 @@ Slugs are stable when multiple entries describe one mechanism.
   implies a 2 GiB-per-batch ceiling. `infer_arrow` raises
   `infer_arrow: string column exceeds 2 GiB in one ...` in `src/duckdb/arrow.rs`; no test
   exercises it. Evidence: the comment in `known_divergences/test_arrow_boundary.py`.
-- **divergence: decimal-literal-typing / decimal-cast-rounding.** The row path types
-  DECIMAL literals as f64, producing an `UNSHIPPED` schema difference and, for
-  `CAST(-2.5 AS BIGINT)`, `-2` instead of DuckDB DECIMAL's `-3`. The casts agree when
-  given the same input type. Evidence: `known-limitations.md` §3;
-  `fuzz.oracle._type_delta`.
+- **divergence: decimal-literal-typing / decimal-cast-rounding (closed).** The row
+  path typed DECIMAL literals as f64, producing an `UNSHIPPED` schema difference and,
+  for `CAST(-2.5 AS BIGINT)`, `-2` instead of DuckDB DECIMAL's `-3`. Closed by decimal
+  expressions (`docs/specs/decimal-expressions.md`); the `_type_delta` arm is deleted.
+  Evidence: `tests/test_decimal_expressions.py`.
 
 ## Executable-twin coverage
 
