@@ -85,6 +85,17 @@ _DEAD_DEC = "(CASE WHEN FALSE THEN CAST(c2 AS DECIMAL(4,2)) END)"
         (f"repeat({_DEAD_STR}, {_BIG})", "AGREE_TRAP"),
         (f"repeat({_DEAD_STR}, c2 + 9223372036854775807)", "AGREE_TRAP"),
         (f"repeat({_DEAD_STR}, c2)", "AGREE"),
+        # Foldability is read off DuckDB's BOUND tree, not the SQL: a bare
+        # NULL makes replace() a constant NULL at bind although it names c1,
+        # so the calls around it fold too and the trapping sibling never
+        # runs. A "the argument's SQL names no column" test would trap here.
+        ("repeat(replace(c1, 'a', NULL), c2 + 9223372036854775807)", "AGREE"),
+        ("repeat(upper(replace(c1, 'a', NULL)), c2 + 9223372036854775807)", "AGREE"),
+        (
+            "lpad(upper(replace(c1, 'a', NULL)), "
+            "CAST(c2 AS INTEGER) + 2147483647, 'a')",
+            "AGREE",
+        ),
         ("repeat('x', CAST('nope' AS BIGINT))", "AGREE_TRAP"),
         ("lpad(CAST(NULL AS VARCHAR), CAST('nope' AS INTEGER), 'a')", "AGREE"),
         ("upper(CAST((9223372036854775807 * 34) AS VARCHAR))", "AGREE_TRAP"),
