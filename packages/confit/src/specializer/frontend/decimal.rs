@@ -192,7 +192,7 @@ impl Binder<'_> {
         };
         let node = |op, k: u8, m: u8, ty: Ty, e: SExpr| {
             let nullable = e.nullable;
-            fold(SExpr {
+            bind_fold(SExpr {
                 kind: SKind::DecUnary {
                     op,
                     k,
@@ -218,7 +218,7 @@ impl Binder<'_> {
                 let Some(n) = self.expr_or_null(n)? else {
                     return not_const();
                 };
-                let n = fold(n);
+                let n = bind_fold(n);
                 let SKind::Lit(Lit::I64(n)) = n.kind else {
                     return not_const();
                 };
@@ -268,7 +268,7 @@ impl Binder<'_> {
                 if matches!(inner.kind, SKind::NullOf) {
                     return Ok(null_of(to));
                 }
-                Ok(fold(SExpr {
+                Ok(bind_fold(SExpr {
                     kind: SKind::DecTryCast(Box::new(inner)),
                     ty: to,
                     nullable: true,

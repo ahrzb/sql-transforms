@@ -77,12 +77,24 @@ pub(super) fn empty_for_nonnull(subject: SExpr) -> SExpr {
 /// VARCHAR. Such an operand stays live here; the projection's own fold
 /// still simplifies it after typing.
 pub(super) fn fold_operand(e: SExpr) -> (SExpr, bool) {
-    if !bind_foldable(&e) {
-        return (e, false);
-    }
-    let e = fold(e);
+    let e = bind_fold(e);
     let is_null = matches!(e.kind, SKind::NullOf);
     (e, is_null)
+}
+
+/// `fold`, for an operand the binder keeps building on: only what DuckDB's
+/// binder can fold is folded, so a column erased by dead-arm elimination
+/// cannot reach a later `bind_foldable` test (the whole-call NULL, the
+/// `||` collapse, a pure UDF's bind-time call) as a foldable NULL.
+/// Measured, fuzz seed 18995:
+/// `repeat(CAST((CASE WHEN FALSE THEN c1 END) AS VARCHAR), <overflow>)`
+/// runs per row on DuckDB and traps; a folding CAST made it a NULL call.
+pub(super) fn bind_fold(e: SExpr) -> SExpr {
+    if bind_foldable(&e) {
+        fold(e)
+    } else {
+        e
+    }
 }
 
 pub(super) fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {

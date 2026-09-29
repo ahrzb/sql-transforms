@@ -315,7 +315,7 @@ impl Binder<'_> {
         for (i, (arg, &pt)) in raw.iter().zip(&spec.params).enumerate() {
             let bound = match self.expr_or_null(arg)? {
                 None => null_of(pt),
-                Some(e) => fold(e),
+                Some(e) => bind_fold(e),
             };
             let bound = match (bound.ty, pt) {
                 (a, b) if a == b => bound,
