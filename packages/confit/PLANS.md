@@ -7,32 +7,30 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
-   runs `fuzz.nightly` (100k fresh seeds plus the metamorphic suite) and files
-   red runs as a "Nightly campaign findings" issue. Watch the first runs for
-   runner time and flaky TIMEOUTs; triage each filed class to a fix, a named
-   exclusion, or an open-divergence pin. Open from #305: seed 1159605
-   (OPT_EMULATED, owner ruling) and the TIMEOUT class (EXCLUDED
-   ratification). Seed 18995 (a constant-NULL `repeat()` argument hides a
-   constant INT64 overflow DuckDB still folds) is on master too, queued.
-2. **Campaign speed.** A case costs ~18 ms, and ~60% of it is opening,
-   loading and closing a fresh DuckDB connection (`fuzz.oracle._duck_con`;
-   connect alone ~8 ms). Reusing one connection per worker, with exact
-   per-case cleanup, should roughly halve campaign time. The generator is
-   ~0.6 ms and confit build plus run ~1 ms, so a Rust port of the fuzzer
-   would save under 5%.
-3. **Parity migration.** On the campaign verdict: `duck_check` (about 550
+   runs `fuzz.nightly` (400k fresh seeds in four parallel shards, plus the
+   metamorphic suite) and files red runs as a "Nightly campaign findings"
+   issue. Watch the first sharded runs for runner time and flaky TIMEOUTs;
+   triage each filed class to a fix, a named exclusion, or an open-divergence
+   pin. Open from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
+   TIMEOUT class where confit traps first while DuckDB builds a 2 GiB string
+   (seed 1102717, EXCLUDED ratification). Most of #305's timeouts were a
+   different class, which no longer times out: a refused query's report-only
+   DuckDB reading (6 of the 7 in the window's first 20k seeds). Seed 18995 (a
+   constant-NULL `repeat()` argument hides a constant INT64 overflow DuckDB
+   still folds) is on master too, queued.
+2. **Parity migration.** On the campaign verdict: `duck_check` (about 550
    calls across the `test_duckdb_*` files, the shrinker's pin template),
    `test_null_operands`, `test_arm_widening`, `test_derived_tables`,
    `test_metamorphic`. Still on their own helpers: `test_integer_widths`,
    `test_join_keys`, `test_infer_arrow`, `test_struct_column_access`,
    `test_params_joins`, `test_udfs`, `duck_check_ulp` (ulp tolerance) and the
    UDF helpers (`fuzz.parity` has no UDF input yet).
-4. **Subquery design, PR 4** (static-only subqueries computed at
+3. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
-5. **Unaliased expression names** (`tests/test_open_divergences.py`):
+4. **Unaliased expression names** (`tests/test_open_divergences.py`):
    DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
    echoes the SQL text. Needs DuckDB's expression printer for the output
    name, at the top level and at every subquery boundary.

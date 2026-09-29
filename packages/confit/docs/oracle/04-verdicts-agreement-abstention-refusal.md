@@ -10,9 +10,10 @@ Unexpected construction exceptions and backend splits exit before DuckDB runs;
 otherwise the order is:
 
 1. construct both confit backends;
-2. execute optimizer-off and optimizer-on DuckDB on one connection;
-3. classify construction refusal or execute both confit backends;
-4. settle backend agreement;
+2. classify construction refusal (its DuckDB reading is report-only, see claim:
+   refusal-absorb) or execute both confit backends;
+3. settle backend agreement;
+4. execute optimizer-off and optimizer-on DuckDB on one connection;
 5. compare confit separately with each DuckDB reading;
 6. form the optimizer bracket; and
 7. for eligible row-path results, run confit-only boundary and ordering legs.
@@ -24,6 +25,32 @@ evidence about an optimizer pass.
 
 *Enforced-by:* `fuzz.oracle._duck_run` and `fuzz.oracle.run_case`.
 *Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_opt_emulated_is_final_and_no_self_leg_replaces_it`.
+
+**claim: oracle-reuse.** A campaign worker and the shrinker keep one oracle database for
+many cases (`fuzz.oracle.reuse_oracle`). Every other caller opens a fresh one per case.
+A reused database answers as a fresh one would, because nothing a verdict reads outlives
+its case:
+
+- each case's tables are created for it and dropped after it, so the per-column
+  statistics the optimizer-on reading consults have the insert history they would have
+  in a fresh database;
+- its UDFs are registered for it and removed after it;
+- the optimizer is switched off again before the next case's baseline.
+
+The database is reused only after its catalog is verified empty: no table, no
+non-internal view, every UDF removed. Any failure while emptying it discards it, and a
+database retires after 1000 cases anyway. What the catalog does not show is process
+memory: buffer pool and allocator state after a case that built something huge. That
+could at most move a `memory_limit` trap, and retirement bounds it.
+
+*Enforced-by:* `fuzz.oracle.reuse_oracle`, `fuzz.oracle._take` and
+`fuzz.oracle._give_back`, used by `fuzz.worker` and `fuzz.shrink`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_reused_oracle_answers_like_a_fresh_one`,
+`::test_a_reused_oracle_is_emptied_and_a_leftover_discards_it`,
+`::test_a_failed_load_leaves_nothing_for_the_next_case`, and
+`::test_a_reused_oracle_reads_the_next_baseline_with_the_optimizer_off`. A 20,000-seed
+campaign agreed with fresh databases case for case on every verdict the reuse could
+touch (PR #310).
 
 ## Verdict meanings
 
@@ -144,16 +171,34 @@ restrictions without ratifying every existing limit.
 *Evidence:* `packages/confit/docs/known-limitations.md` §§1-2 and
 `packages/confit/tests/known_divergences/test_arrow_boundary.py`.
 
-**claim: refusal-absorb.** The campaign executes both DuckDB readings before returning
-a confit refusal. `REFUSED` keeps the optimizer-off reading's outcome — `serves`,
-`rejects` (bind/build), or `traps` (run time) — as its `oracle` field, carries a class
-derived from the first six message words, and stays absent from `INTERESTING`. The
-report groups refusals by that outcome, then by class, so "DuckDB serves, confit
-refuses" is visible per refusal class without being promoted to a finding.
+**claim: refusal-absorb.** When confit refuses, the campaign still runs the
+optimizer-off reading. `REFUSED` keeps that reading's outcome — `serves`, `rejects`
+(bind/build), or `traps` (run time) — as its `oracle` field, carries a class derived
+from the first six message words, and stays absent from `INTERESTING`. The report groups
+refusals by that outcome, then by class, so "DuckDB serves, confit refuses" is visible
+per refusal class without being promoted to a finding.
 
-*Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle._oracle_outcome`, and
-`fuzz.runner.report`.
-*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_keeps_the_oracle_outcome_it_already_computed`
+A campaign worker sends the `REFUSED` verdict first and the reading after it. The runner
+waits for the reading under its own budget (`--report-timeout`, 5 s). The reading ends in
+one of three ways:
+
+- It finishes, and fills in the outcome.
+- It outruns the budget or kills its worker. The outcome is `over-budget` or `died` and
+  the worker is replaced. This is never a `TIMEOUT` or `PANIC`.
+- It raises. That is the oracle's own bug, so the case becomes `SKIP` and gates, exactly
+  as it does in-process.
+
+The budget matters because a refused query can make DuckDB build a multi-gigabyte string
+for minutes (a refused 2 GiB `lpad`). An outcome near the budget can depend on machine
+load, which is acceptable for a reading that only feeds the report.
+
+*Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle.refusal_outcome`,
+`fuzz.oracle.refusal_json`, `fuzz.oracle._oracle_outcome`, `fuzz.worker`,
+`fuzz.runner._drive`, and `fuzz.runner.report`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_keeps_the_oracle_outcome_it_already_computed`,
+`packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_is_decided_before_duckdb_runs`,
+`packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_reading_that_raises_is_the_same_skip_either_way`,
+`packages/confit/tests/test_fuzz_runner.py::test_a_refusal_reading_costs_at_most_its_outcome`,
 and `packages/confit/tests/test_fuzz_report.py::test_refusals_are_summarized_by_oracle_outcome_and_class`.
 
 **claim: refusal-outcome-reporting.** A refusal retains the oracle outcome the campaign
@@ -195,10 +240,10 @@ The worker writes a phase marker to stderr before each stage — `harness:startu
 reads the last marker a killed worker wrote: the finding's `side` is `oracle`, `confit`,
 `harness` or `unknown`, and its class is `timeout:<side>` / `panic:<side>`. The SQL and
 inputs are regenerated from the seed in the parent, so they are preserved even though
-the worker never returned. Oracle-side and confit-side timeouts imply opposite problems:
-a generated 2 GiB `lpad` makes DuckDB spend seconds building it while confit refuses
-immediately under its 1 GiB budget. The markers are internal audit
-vocabulary, not a public API.
+the worker never returned. Oracle-side and confit-side timeouts imply opposite problems.
+In nightly seed 1102717, confit traps immediately on an INT32 overflow. DuckDB spends
+seconds building a 2 GiB `repeat` before it reaches the same overflow. The markers are
+internal audit vocabulary, not a public API.
 
 *Enforced-by:* `fuzz.oracle._phase`, `fuzz.worker`, `fuzz.runner.side_of`, and
 `fuzz.runner.blame`.

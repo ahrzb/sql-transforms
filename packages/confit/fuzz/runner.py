@@ -5,9 +5,12 @@
 
 Each worker is a subprocess reading seeds line-by-line; a dead or hung worker
 is killed, blamed for its in-flight seed (PANIC/TIMEOUT finding, stderr tail
-attached), and replaced. Verdict counts, refusal classes, the unshipped-
-feature bucket, and a construct-coverage histogram over AGREE cases print at
-the end — a grammar hole should be visible, not silent.
+attached), and replaced. A refused query's DuckDB reading is reporting only,
+so it runs after the verdict, under its own --report-timeout, and running
+out of that costs the report an outcome, not a finding. Verdict counts,
+refusal classes, the unshipped-feature bucket, and a construct-coverage
+histogram over AGREE cases print at the end — a grammar hole should be
+visible, not silent.
 """
 
 from __future__ import annotations
@@ -94,6 +97,19 @@ _CATEGORY_NOTE = {
     "unresolved": "no verdict: neither agreement nor a confirmed defect",
 }
 
+# A REFUSED verdict's oracle outcome when its report-only reading did not
+# finish (see `_drive`), beside oracle.ORACLE_OUTCOMES for one that did.
+_UNFINISHED_NOTE = {
+    "over-budget": "the reading ran past --report-timeout",
+    "died": "the worker died in the reading",
+}
+UNFINISHED = tuple(_UNFINISHED_NOTE)
+
+# Seconds a refused query's report-only reading may take. A typical one takes
+# milliseconds; the ones past this build multi-gigabyte strings, at ~160 MB/s
+# (seed 1014384), so the budget also bounds a worker's memory.
+REPORT_TIMEOUT = 5.0
+
 
 def _spawn():
     """A worker subprocess and the temp file holding its stderr, as
@@ -134,12 +150,39 @@ def side_of(stderr: str) -> str:
     return "oracle" if last == "oracle" else "confit"
 
 
-def _drive(seeds, results, timeout, lock):
+def _read(proc, timeout: float) -> tuple[str, bool]:
+    """`(line, timed_out)`: one line from the worker, or "" when it died or
+    ran past `timeout` seconds and was killed."""
+    fired = threading.Event()
+
+    def _kill(p=proc, f=fired):
+        f.set()
+        p.kill()
+
+    timer = threading.Timer(timeout, _kill)
+    timer.start()
+    line = proc.stdout.readline()
+    timer.cancel()
+    return line, fired.is_set()
+
+
+def _drive(seeds, results, timeout, lock, report_timeout):
     """One worker thread: seeds off the shared iterator (`lock` guards it)
     into a subprocess, verdict dicts onto `results`.
 
     `timeout` is per seed, in seconds. A worker that dies or outruns it is
     killed, blamed for the seed it was holding, and replaced.
+
+    A REFUSED verdict arrives before DuckDB has run, and the report-only
+    reading that completes it (`fuzz.oracle.refusal_json`) is read under
+    `report_timeout` instead: a worker that outruns that or dies in it is
+    replaced too, and the verdict stays REFUSED with an `UNFINISHED`
+    outcome, which never gates. Only an exception in the reading changes the
+    verdict: to the SKIP it would be in-process.
+
+    A worker the timer fired on is replaced even when its line did arrive:
+    the kill is already on its way, and the next seed must not be blamed
+    for a PANIC it never caused.
     """
     proc, err = _spawn()
     while True:
@@ -155,20 +198,23 @@ def _drive(seeds, results, timeout, lock):
             proc, err = _spawn()
             proc.stdin.write(f"{seed}\n")
             proc.stdin.flush()
-        fired = threading.Event()
-
-        def _kill(p=proc, f=fired):
-            f.set()
-            p.kill()
-
-        timer = threading.Timer(timeout, _kill)
-        timer.start()
-        line = proc.stdout.readline()
-        timer.cancel()
+        line, fired = _read(proc, timeout)
         if line:
-            results.append(json.loads(line))
+            r = json.loads(line)
+            if r["kind"] == "REFUSED":
+                rest, over = ("", True) if fired else _read(proc, report_timeout)
+                if rest:
+                    r.update(json.loads(rest))
+                else:
+                    r["oracle"] = "over-budget" if over else "died"
+                fired = fired or over or not rest
+            results.append(r)
+            if fired:
+                proc.kill()
+                err.close()
+                proc, err = _spawn()
             continue
-        kind = "TIMEOUT" if fired.is_set() else "PANIC"
+        kind = "TIMEOUT" if fired else "PANIC"
         stderr = _stderr_all(err)
         results.append(blame(seed, kind, stderr[-800:], stderr))
         proc.kill()
@@ -278,7 +324,14 @@ def provenance(start: int, n: int) -> dict:
     }
 
 
-def campaign(start: int, n: int, workers: int, timeout: float, out: Path):
+def campaign(
+    start: int,
+    n: int,
+    workers: int,
+    timeout: float,
+    out: Path,
+    report_timeout: float = REPORT_TIMEOUT,
+):
     """Seeds `start .. start + n - 1` across `workers` subprocesses: reports,
     writes the findings to `out`, and returns every verdict dict."""
     prov = provenance(start, n)  # stamped at the start: the run's date
@@ -286,7 +339,9 @@ def campaign(start: int, n: int, workers: int, timeout: float, out: Path):
     results: list[dict] = []
     lock = threading.Lock()
     threads = [
-        threading.Thread(target=_drive, args=(seeds, results, timeout, lock))
+        threading.Thread(
+            target=_drive, args=(seeds, results, timeout, lock, report_timeout)
+        )
         for _ in range(workers)
     ]
     for t in threads:
@@ -345,7 +400,8 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
     by_outcome = collections.Counter(r.get("oracle", "unknown") for r in refused)
     print("\n== refusals by oracle outcome ==")
     for outcome, n in by_outcome.most_common():
-        print(f"  {outcome:14} {n}")
+        note = _UNFINISHED_NOTE.get(outcome, "")
+        print(f"  {outcome:14} {n}" + (f"  {note}" if note else ""))
         classes = collections.Counter(
             r["klass"] for r in refused if r.get("oracle", "unknown") == outcome
         )
@@ -496,6 +552,12 @@ def main():
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument(
+        "--report-timeout",
+        type=float,
+        default=REPORT_TIMEOUT,
+        help="seconds for a refused query's report-only DuckDB reading",
+    )
     ap.add_argument("--out", type=Path, default=Path("findings.jsonl"))
     ap.add_argument("--cases", type=Path, help="write every seed's verdict here")
     ap.add_argument(
@@ -507,7 +569,9 @@ def main():
         help="exit 1 on a gated verdict or a lost baseline agreement",
     )
     a = ap.parse_args()
-    results = campaign(a.seed, a.n, a.workers, a.timeout, a.out)
+    results = campaign(
+        a.seed, a.n, a.workers, a.timeout, a.out, report_timeout=a.report_timeout
+    )
     if a.cases is not None:
         write_cases(results, a.cases)
     fails = gate(results, a.baseline)

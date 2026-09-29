@@ -17,7 +17,9 @@ from . import oracle
 
 
 def _sig(case: G.Case):
-    v = oracle.run_case(case)
+    # No refusal report: the signature does not carry it, and a refused
+    # candidate could spend the whole shrink budget in DuckDB for it.
+    v = oracle.run_case(case, report=False)
     return (v.kind, v.klass)
 
 
@@ -175,6 +177,7 @@ def _replace(case: G.Case, kind: str, idx, path, new: G.Node):
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    oracle.reuse_oracle()  # a shrink replays one case hundreds of times
     seed = int(sys.argv[1])
     case = G.gen(seed)
     v0 = oracle.run_case(case)

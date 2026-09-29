@@ -2,16 +2,17 @@ name: Nightly campaign
 
 # The deep differential campaign (packages/confit/fuzz/nightly.py): a fresh
 # window of seeds each night through the strict oracle campaign and the
-# metamorphic spelling suite. A red run files its report as an issue, or
-# comments on the open one.
+# metamorphic spelling suite, split into shards that run side by side, one
+# runner each. The report job merges the shards into one report; a red night
+# files it as an issue, or comments on the open one.
 on:
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       n:
-        description: seeds in the window
-        default: "100000"
+        description: seeds to run, all shards together (empty = a whole night, nightly.N; more needs a seed)
+        default: ""
       seed:
         description: window start (empty = tonight's)
         default: ""
@@ -24,10 +25,18 @@ concurrency:
   group: nightly-campaign
   cancel-in-progress: false
 
+env:
+  SHARDS: 4 # the matrix below lists 0 .. SHARDS - 1
+
 jobs:
   campaign:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    strategy:
+      # A shard that finds something must not cancel the others' seeds.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v5
 
@@ -46,16 +55,48 @@ jobs:
       - name: Build extension + install deps
         run: uv sync --locked
 
-      - name: Campaign
-        id: run
+      - name: Campaign shard
         working-directory: packages/confit
         env:
-          N: ${{ inputs.n || '100000' }}
+          N: ${{ inputs.n }}
           SEED: ${{ inputs.seed }}
+          SHARD: ${{ matrix.shard }}
         run: |
-          uv run --no-sync python -m fuzz.nightly --n "$N" ${SEED:+--seed "$SEED"} --out nightly
+          uv run --no-sync python -m fuzz.nightly ${N:+--n "$N"} ${SEED:+--seed "$SEED"} \
+            --shard "$SHARD/$SHARDS" --out nightly
 
-      - name: Upload report and verdicts
+      - name: Upload the shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-shard-${{ matrix.shard }}
+          path: packages/confit/nightly/
+          retention-days: 30
+
+  report:
+    needs: campaign
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Merging is stdlib only: no extension to build here.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Download the shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-shard-*
+          path: packages/confit/shards
+
+      - name: Merge the shards
+        id: merge
+        working-directory: packages/confit
+        run: |
+          uv run --no-project python -m fuzz.nightly --merge shards/* --shards "$SHARDS" --out nightly
+
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -64,7 +105,7 @@ jobs:
           retention-days: 30
 
       - name: File findings
-        if: failure() && steps.run.outcome == 'failure'
+        if: failure() && steps.merge.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

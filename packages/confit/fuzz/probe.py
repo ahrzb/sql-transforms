@@ -58,11 +58,7 @@ def _answers(c) -> tuple[str, str]:
             ours = f"traps: {type(e).__name__}: {e}"
     except Exception as e:  # noqa: BLE001
         ours = f"refuses: {type(e).__name__}: {e}"
-    con = O._duck_con(c, [])
-    try:
-        got, phase, err = O._exec(con, c.sql)
-    finally:
-        con.close()
+    (got, phase, err), _ = O._duck_run(c.sql, c, [], bracket=False)
     if got is None:
         duck = f"{'rejects' if phase == 'build' else 'traps'}: {err}"
     else:
