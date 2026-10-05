@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**20 of 68** in-scope transformers are native (84 listed by sklearn).
+**23 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -53,8 +53,8 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `NeighborhoodComponentsAnalysis` | not yet |  |
 | `Normalizer` | native | bit-exact |
 | `Nystroem` | not yet |  |
-| `OneHotEncoder` | not yet |  |
-| `OrdinalEncoder` | not yet |  |
+| `OneHotEncoder` | native | bit-exact |
+| `OrdinalEncoder` | native | bit-exact |
 | `PCA` | not yet |  |
 | `PLSCanonical` | not yet |  |
 | `PLSRegression` | not yet |  |
@@ -87,7 +87,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `StackingRegressor` | composition | a final estimator over parts' predictions |
 | `StandardScaler` | native | bit-exact |
 | `TSNE` | out of scope | no transform: the embedding is of the fit data only |
-| `TargetEncoder` | not yet |  |
+| `TargetEncoder` | native | bit-exact |
 | `TfidfTransformer` | out of scope | input is a sparse count matrix |
 | `TruncatedSVD` | not yet |  |
 | `VarianceThreshold` | native | bit-exact |

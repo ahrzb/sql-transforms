@@ -38,9 +38,12 @@ from sklearn.preprocessing import (
     MaxAbsScaler,
     MinMaxScaler,
     Normalizer,
+    OneHotEncoder,
+    OrdinalEncoder,
     PolynomialFeatures,
     RobustScaler,
     StandardScaler,
+    TargetEncoder,
 )
 from threadpoolctl import threadpool_limits
 
@@ -54,10 +57,12 @@ from sql_transform.native import (
 )
 
 # An imputer whose fit saw a column only missing warns at every transform
-# that it drops it, and numpy warns when a twin overflows on an edge row;
-# the fixtures make both on purpose.
+# that it drops it, an encoder warns of an unseen category, and numpy warns
+# when a twin overflows on an edge row; the fixtures make all three on
+# purpose.
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Skipping features without any observed values:UserWarning",
+    "ignore:Found unknown categories:UserWarning",
     "ignore:overflow encountered:RuntimeWarning",
     "ignore:invalid value encountered:RuntimeWarning",
 )
@@ -154,12 +159,43 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
         lambda: PolynomialFeatures(degree=(2, 3)),
         lambda: PolynomialFeatures(degree=(2, 2), include_bias=False),
     ],
+    OrdinalEncoder: [
+        OrdinalEncoder,
+        lambda: OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-1,
+            encoded_missing_value=-2,
+        ),
+        lambda: OrdinalEncoder(
+            handle_unknown="use_encoded_value", unknown_value=-1, min_frequency=3
+        ),
+    ],
+    OneHotEncoder: [
+        lambda: OneHotEncoder(sparse_output=False),
+        lambda: OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+        lambda: OneHotEncoder(
+            sparse_output=False, drop="first", handle_unknown="ignore"
+        ),
+        lambda: OneHotEncoder(
+            sparse_output=False, min_frequency=3, handle_unknown="infrequent_if_exist"
+        ),
+        lambda: OneHotEncoder(sparse_output=False, drop="if_binary"),
+    ],
+    TargetEncoder: [TargetEncoder, lambda: TargetEncoder(target_type="continuous")],
 }
 
+# A string feature's fitted values, and the unseen ones serving adds.
+VOCAB = ["a", "b", "c", "d", "é", "日本"]
+UNSEEN = ["zz", "", "A"]
 # Serving values beyond the fit's range: signed zeros, extremes.
 EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324]
 # A row of only these has a norm under sklearn's zero-scale threshold.
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
+# The widest step drawn, in output lanes. confit's build time grows faster
+# than the lanes read (PLANS, "Needs from confit"), and a wider fixture
+# checks the same translation, only slower: a 1,351-lane PolynomialFeatures
+# draw took 115 s.
+MAX_LANES = 300
 
 
 def _fit_matrix(
@@ -177,7 +213,18 @@ def _fit_matrix(
     one, "all" for everywhere. `marker` spells missing."""
     n = int(rng.integers(5, 60))
     cols = []
+    strings = [t == pa.string() for t in types]
     for kind, t, hole in zip(kinds, types, holes, strict=True):
+        if t == pa.string():
+            # The step's share of VOCAB for this feature: kind - 3 of them.
+            c = rng.choice(np.array(VOCAB[: kind - 3], dtype=object), n)
+            if hole == "all":
+                c[:] = None
+            elif hole == "some":
+                c[rng.random(n) < 0.2] = None
+                c[rng.integers(n)] = None
+            cols.append(c)
+            continue
         if kind == 0:
             c = rng.normal(rng.uniform(-100, 100), rng.uniform(0.01, 50), n)
         elif kind == 1:
@@ -200,13 +247,23 @@ def _fit_matrix(
         cols.append(c)
     y = (rng.random(n) < 0.5).astype(int)
     y[:4] = (0, 1, 0, 1)  # two of each class, for a 2-fold split
+    if any(strings):
+        # A string beside numbers makes an object matrix, as the step's
+        # rows reach `transform`.
+        X = np.empty((n, len(cols)), dtype=object)
+        for j, c in enumerate(cols):
+            X[:, j] = c if strings[j] else [float(v) for v in c]
+        return X, y
     return np.column_stack(cols), y
 
 
-def _step(cls_factory, seed: int) -> PythonTransform:
-    rng = np.random.default_rng(seed)
+def _step(cls_factory, seed: int, variant: int = 0) -> PythonTransform:
+    # Each of a class's configurations (`variant`) draws shapes of its own,
+    # so a class's seeds are not the same few shapes for every one.
+    rng = np.random.default_rng([seed, variant])
     # A shape the estimator cannot fit (a selector asked for more features
-    # than the step has) or that keeps no lane is drawn again.
+    # than the step has), that keeps no lane or that is wider than
+    # MAX_LANES is drawn again.
     for _ in range(20):
         step = _draw(rng, cls_factory)
         if step is not None:
@@ -222,10 +279,18 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
     kinds = [int(rng.integers(5)) for _ in range(n_features)]
+    proto = cls_factory()
+    if proto.__sklearn_tags__().input_tags.categorical:
+        # Categories: few distinct values per feature, about half of them
+        # strings (kind 5..8: two to five of VOCAB).
+        for j in range(n_features):
+            if rng.random() < 0.5:
+                types[j], kinds[j] = pa.string(), int(rng.integers(5, 9))
+            else:
+                kinds[j] = 4
     takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
     # Missing values in the fit data, for an estimator that takes them: an
     # imputer's own `missing_values`, or NaN where sklearn says it allows it.
-    proto = cls_factory()
     marker = float(getattr(proto, "missing_values", np.nan))
     holes: list[str | None] = [None] * n_features
     if (
@@ -255,7 +320,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
                 instances[k], width = est, w
         except ValueError:
             return None
-    if width == 0:
+    if width == 0 or width > MAX_LANES:
         return None
     if width == 1:
         returns = pa.float64()
@@ -291,6 +356,15 @@ def _rows(step: PythonTransform, seed: int) -> pa.Table:
     )
     cols: dict[str, pa.Array] = {"__iid": pa.array(ids, pa.int64())}
     for f in step.takes:
+        if f.type == pa.string():
+            strs = [
+                None
+                if g == "nulls" and rng.random() < 0.3
+                else rng.choice(VOCAB + UNSEEN)
+                for g in regimes
+            ]
+            cols[f.name] = pa.array(strs, pa.string())
+            continue
         vals = [_value(rng, g) for g in regimes]
         if f.type == pa.int64():
             vals = [
@@ -314,7 +388,7 @@ def test_every_entry_has_fixtures():
     ],
 )
 def test_an_entry_matches_its_twin(cls, j, seed):
-    step = _step(FIXTURES[cls][j], seed)
+    step = _step(FIXTURES[cls][j], seed, j)
     try:
         native = to_native(step, strict=True)
     except NotNative as e:
@@ -372,6 +446,39 @@ def test_an_unknown_id_raises_as_the_twin_does():
         assert "not in the fitted instances" in str(o.try_answer(sql))
 
 
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+        lambda: OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+        TargetEncoder,
+    ],
+    ids=["OrdinalEncoder", "OneHotEncoder", "TargetEncoder"],
+)
+def test_an_encoder_reads_a_string_feature_missing_at_fit(make):
+    # Its categories are [None], which says nothing of its kind: the
+    # declared type does (read as a number, it once answered wrongly).
+    X = np.empty((8, 2), dtype=object)
+    X[:, 0] = None
+    X[:, 1] = ["a", "b", "a", "b", None, "a", "b", "a"]
+    est = make().fit(X, np.array([0, 1, 0, 1, 0, 1, 1, 0]))
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.string()), ("x1", pa.string())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * 5, pa.int64()),
+            "x0": pa.array([None, "a", "zz", None, "b"], pa.string()),
+            "x1": pa.array(["a", None, "b", "zz", "a"], pa.string()),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == 5
+
+
 def test_a_null_id_is_a_null_struct():
     # The whole struct, as DuckDB reads it from each definition (confit
     # serves field reads, which are NULL either way).
@@ -403,7 +510,7 @@ def test_a_reordered_translation_is_caught(monkeypatch):
     from sql_transform.native import _registry
     from sql_transform.native._helpers import f64
 
-    def reordered(est, x):
+    def reordered(est, x, types):
         terms = zip(x, est.mean_, est.scale_, strict=True)
         return [(xi - f64(m)) * f64(1.0 / s) for xi, m, s in terms]
 

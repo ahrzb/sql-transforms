@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 from confit import sql as S
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.utils._mask import _get_mask
@@ -35,7 +36,7 @@ def _indicate(miss: list[S.Expr], features: Any) -> list[S.Expr]:
 
 
 @translates(SimpleImputer)
-def _simple(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _simple(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: the mask is computed first; features whose statistic is NaN
     # (no observed value at fit) are dropped unless keep_empty_features;
     # each missing value of a kept feature becomes its statistic, cast to
@@ -61,7 +62,7 @@ def _simple(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 @translates(MissingIndicator)
-def _indicator(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _indicator(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: the mask's columns that had a missing value at fit
     # (features="missing-only"; with error_on_new a new one raises in the
     # twin), or all of them, as booleans.

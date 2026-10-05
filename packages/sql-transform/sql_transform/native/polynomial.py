@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pyarrow as pa
 from confit import sql as S
 from sklearn.preprocessing import PolynomialFeatures
 
@@ -14,7 +15,7 @@ from sql_transform.native._registry import NotNative, translates
 
 
 @translates(PolynomialFeatures)
-def _polynomial(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _polynomial(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn fills its output column by column: a bias of 1, the features,
     # then for each degree d >= 2 and each feature f, the degree d-1 terms
     # from f's block on (with interaction_only, from the block after f's),
