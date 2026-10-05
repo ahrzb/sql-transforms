@@ -17,7 +17,14 @@ asserts:
 
 Inputs are Arrow tables. Their types must lie in the campaign's storage
 vocabulary (`fuzz.oracle._ARROW` plus structs); anything else raises
-TypeError, and such a test keeps a helper of its own.
+TypeError, and such a test keeps a helper of its own. `udfs=` takes UDF
+protocol objects, registered on both engines as given.
+
+Deliberately on their own helpers: Arrow-boundary fixtures
+(`tests/test_infer_arrow.py`), whose crafted buffers a rebuilt table would
+lose; `duck_check_ulp`, a float tolerance by design; and call-count checks
+(`udf_check(after_engine=...)`), since the verdict runs the engine more
+than once.
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ def case(
     *,
     statics: dict[str, pa.Table] | None = None,
     shape: str | None = None,
+    udfs: list | None = None,
 ) -> G.Case:
     row_schema, row_list = _spec_table(rows)
     return G.Case(
@@ -71,12 +79,14 @@ def case(
         shape=shape,
         output=None,
         sql=sql,
+        udf_objs=list(udfs or []),
     )
 
 
-def verdict(sql, rows, *, statics=None, shape=None) -> O.Verdict:
-    """The campaign verdict for one query over the given inputs."""
-    return O.run_case(case(sql, rows, statics=statics, shape=shape))
+def verdict(sql, rows, *, statics=None, shape=None, udfs=None) -> O.Verdict:
+    """The campaign verdict for one query over the given inputs. `udfs` are
+    UDF protocol objects, registered on both engines as given."""
+    return O.run_case(case(sql, rows, statics=statics, shape=shape, udfs=udfs))
 
 
 def table(schema: dict, rows: list[dict]) -> pa.Table:
@@ -91,6 +101,7 @@ def assert_parity(
     *,
     statics: dict[str, pa.Table] | None = None,
     shape: str | None = None,
+    udfs: list | None = None,
     expect: str | tuple[str, ...] = AGREEMENT,
     trap: str | None = None,
 ) -> O.Verdict:
@@ -106,7 +117,7 @@ def assert_parity(
     if trap is not None and expect == AGREEMENT:
         expect = "AGREE_TRAP"
     expect = (expect,) if isinstance(expect, str) else expect
-    v = verdict(sql, rows, statics=statics, shape=shape)
+    v = verdict(sql, rows, statics=statics, shape=shape, udfs=udfs)
     assert v.kind in expect, (
         f"{v.kind} ({v.klass}), expected {' or '.join(expect)}\n"
         f"  sql: {sql}\n  detail: {v.detail[:400]}"

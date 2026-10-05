@@ -557,7 +557,7 @@ def _sql(case: G.Case) -> str:
 
 
 def _udf_objs(case: G.Case) -> list:
-    objs = [make_udf(u) for u in case.udfs]
+    objs = [make_udf(u) for u in case.udfs] + list(case.udf_objs)
     if case.tree is not None:
         objs.append(trees.make_tree(case.tree, case.seed))
     return objs

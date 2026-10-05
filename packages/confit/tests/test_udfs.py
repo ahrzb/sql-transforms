@@ -16,7 +16,7 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
-from test_duckdb_interpreter import _row_schema, static
+from test_duckdb_interpreter import _row_schema, parity, static
 
 
 @pytest.mark.parametrize("name", ["least", "upper", "ROUND", "Coalesce", "abs"])
@@ -237,9 +237,20 @@ _DUCK_T = {
 
 
 def udf_check(sql, row_schema, row_rows, statics, udfs, after_engine=None):
-    """Differential: engine with udfs= vs DuckDB with the same objects
-    registered. Returns the engine rows (dicts) for extra assertions.
-    ``after_engine`` runs between the two legs (call-count attribution)."""
+    """The campaign verdict (fuzz.parity) must be AGREE, with the same UDF
+    objects on both engines. Returns the engine rows (dicts) for extra
+    assertions.
+
+    ``after_engine`` runs between one engine leg and one DuckDB leg, for
+    call-count attribution; the verdict runs the engine several times, so
+    such a check keeps the single-leg comparison below."""
+    if after_engine is None:
+        v = parity.verdict(
+            sql, static(row_schema, row_rows), statics=statics, udfs=udfs
+        )
+        assert v.kind == "AGREE", (
+            f"{v.kind} ({v.klass}): {v.detail[:400]}\n  sql: {sql}"
+        )
     schema = _row_schema(row_schema)
     fn = DuckDBInferFn(
         sql,
@@ -248,8 +259,9 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, after_engine=None):
         udfs=udfs,
     )
     got = fn.infer_rows(row_rows)
-    if after_engine is not None:
-        after_engine()
+    if after_engine is None:
+        return got
+    after_engine()
 
     o = Oracle()
     for u in udfs:
