@@ -140,6 +140,7 @@ fn arrow_field_to_row_field(
         "uint8" => Ty::U8,
         "uint16" => Ty::U16,
         "uint32" => Ty::U32,
+        "uint64" => Ty::U64,
         "double" => Ty::F64,
         "string" => Ty::Str,
         // Two catalogue extras survive, because both are MEASURED
@@ -159,12 +160,12 @@ fn arrow_field_to_row_field(
         // serve-where-DuckDB-refuses. It stays opaque, which refuses by
         // name on reference and costs nothing unreferenced.
         //
-        // float32 and the unsigned widths do NOT ride here either: both
-        // DIVERGE (measured). float32 in value AND type
+        // float32 does NOT ride here either: it DIVERGES in value AND type
         // (s.v * 3.0 is 0.30000001192092896/FLOAT on DuckDB, f64 arithmetic
-        // here), unsigned in type (uint64 stays UINT64 there, int64 here).
-        // The row path refuses them; a catalogue that widened them silently
-        // instead would be the third mode the contract forbids.
+        // here). The row path refuses it; a catalogue that widened it
+        // silently instead would be the third mode the contract forbids.
+        // The unsigned widths are lanes of their own (uint64 is UBIGINT on
+        // the i128 lane).
         n if n.starts_with("decimal") => match decimal_ps(n) {
             Some((p, s)) => Ty::Dec(p, s),
             None => return Ok(RowField::Opaque(name)),

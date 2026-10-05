@@ -175,21 +175,6 @@ def test_list_valued_regexp_forms_reject():
     rejects("SELECT regexp_split_to_array(s, 'a') FROM __THIS__", "regexp_split")
 
 
-def test_ubigint_static_payloads_reject():
-    """Refused at the TYPE, not at the value's range.
-
-    Riding a uint64 static on the i64 lane would catch only a payload past
-    i64 — while every in-range one would emit int64 where DuckDB emits
-    UINT64, a schema divergence with no refusal. Refusing the type refuses
-    both, and names it."""
-    big = pa.table({"id": pa.array([2**64 - 1], pa.uint64()), "v": [1]})
-    rejects(
-        "SELECT v FROM __THIS__ JOIN d ON a = d.id",
-        "has type uint64",
-        {"d": big},
-    )
-
-
 # ---- 4. Semantics descoped after measurement -------------------------------
 
 
@@ -264,9 +249,8 @@ def test_unqualified_exclude_of_a_using_key_serves():
 @pytest.mark.parametrize(
     "target",
     [
-        # UTINYINT/USMALLINT/UINTEGER serve (tests/test_unsigned.py).
-        "UBIGINT",
-        "HUGEINT",
+        # Every other integer width serves (tests/test_unsigned.py,
+        # tests/test_hugeint.py).
         "UHUGEINT",
         "FLOAT",
         "REAL",

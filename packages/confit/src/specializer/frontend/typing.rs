@@ -21,6 +21,8 @@ pub(super) fn int_dec_width(t: Ty) -> u8 {
         Ty::U8 => 3,
         Ty::U16 => 5,
         Ty::U32 => 10,
+        Ty::U64 => 20,
+        Ty::I128 => 38,
         _ => 19,
     }
 }
@@ -160,6 +162,7 @@ pub(super) fn eval_closed(
         OutCol::Str(v) => v[0].0.then(|| ScalarVal::Str(st.arena.get(v[0].1).to_string())),
         OutCol::Dec(v) => match e.ty {
             Ty::Dec(p, s) => v[0].0.then(|| ScalarVal::Dec(v[0].1, p, s)),
+            Ty::I128 | Ty::U64 => v[0].0.then(|| ScalarVal::I128(v[0].1)),
             _ => return None,
         },
     })
@@ -264,7 +267,7 @@ pub(super) fn lit_i64(n: i64) -> SExpr {
 pub(super) fn bool_context(e: SExpr, what: &str) -> Result<SExpr, PrepareError> {
     match e.ty {
         Ty::I1 => Ok(e),
-        t if t.is_int() || t == Ty::F64 => {
+        t if t.is_integer() || t == Ty::F64 => {
             if matches!(e.kind, SKind::NullOf) {
                 return Ok(null_of(Ty::I1));
             }
@@ -313,6 +316,7 @@ pub(super) fn scalar_lit(v: ScalarVal, ty: Ty) -> SExpr {
         ScalarVal::F64(x) => Lit::F64(x),
         ScalarVal::Str(x) => Lit::Str(x),
         ScalarVal::Dec(x, p, s) => Lit::Dec(x, p, s),
+        ScalarVal::I128(x) => Lit::I128(x),
     };
     SExpr {
         kind: SKind::Lit(lit),
@@ -406,11 +410,10 @@ pub(super) fn null_context_ty(op: &BinaryOperator, other: Ty) -> Ty {
 pub(super) fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareError> {
     let name = dt.to_string().to_uppercase();
     // DuckDB's spellings of the widths that have a lane, matched exactly
-    // (INT8 is BIGINT: eight BYTES). Every other target -- HUGEINT, the
-    // unsigned family, FLOAT/REAL (f32), DECIMAL/NUMERIC, INTERVAL, dates --
-    // refuses: computing it in the nearest lane serves values DuckDB does
-    // not (measured: CAST(-1 AS UINTEGER) errors there, CAST(16777217 AS
-    // FLOAT) rounds to 16777216, CAST(1.25 AS DECIMAL(3,1)) is 1.3).
+    // (INT8 is BIGINT: eight BYTES; INT128 is HUGEINT). Every other target
+    // -- UHUGEINT, FLOAT/REAL (f32), INTERVAL, dates -- refuses: computing
+    // it in the nearest lane serves values DuckDB does not (measured:
+    // CAST(16777217 AS FLOAT) rounds to 16777216).
     let base = name.split('(').next().unwrap_or("").trim();
     Ok(match base {
         "TINYINT" | "INT1" => Ty::I8,
@@ -420,6 +423,8 @@ pub(super) fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareEr
         "UTINYINT" | "UINT8" => Ty::U8,
         "USMALLINT" | "UINT16" => Ty::U16,
         "UINTEGER" | "UINT32" => Ty::U32,
+        "UBIGINT" | "UINT64" => Ty::U64,
+        "HUGEINT" | "INT128" => Ty::I128,
         "DOUBLE" | "DOUBLE PRECISION" | "FLOAT8" => Ty::F64,
         "VARCHAR" | "TEXT" | "STRING" | "CHAR" | "CHARACTER" | "CHARACTER VARYING" | "BPCHAR" => {
             Ty::Str
@@ -454,7 +459,8 @@ pub(super) fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareEr
         _ => {
             return Err(unsup(format!(
                 "CAST target type {name} -- served targets are TINYINT, SMALLINT, \
-                 INTEGER, BIGINT, DOUBLE, DECIMAL, VARCHAR and BOOLEAN"
+                 INTEGER, BIGINT, HUGEINT, their unsigned widths but UHUGEINT, DOUBLE, \
+                 DECIMAL, VARCHAR and BOOLEAN"
             )))
         }
     })
@@ -490,21 +496,46 @@ pub(super) fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
                     .map_err(|_| PrepareError::Bind(format!("bad numeric literal '{text}'")))?;
                 (Lit::F64(f), Ty::F64)
             } else {
-                let i = text
-                    .parse::<i64>()
-                    .map_err(|_| PrepareError::Bind(format!("bad integer literal '{text}'")))?;
-                // DuckDB types a bare integer literal by magnitude: INTEGER
-                // when it fits (never narrower), else BIGINT. `-2147483648`
-                // parses as -(2147483648) and stays BIGINT there too — that
-                // falls out of unary minus binding, not of this rule.
-                let ty = if i32::try_from(i).is_ok() { Ty::I32 } else { Ty::I64 };
-                (Lit::I64(i), ty)
+                return integer_text_literal(text);
             }
         }
         SqlValue::SingleQuotedString(s) => (Lit::Str(s.clone()), Ty::Str),
         SqlValue::Boolean(b) => (Lit::I1(*b), Ty::I1),
         SqlValue::Null => unreachable!("NULL handled by expr_or_null"),
         other => return Err(unsup(format!("literal {other}"))),
+    };
+    Ok(SExpr {
+        kind: SKind::Lit(lit),
+        ty,
+        nullable: false,
+    })
+}
+
+/// An integer literal's spelling (an optional leading `-`, then digits),
+/// typed by magnitude as DuckDB does: INTEGER when it fits (never
+/// narrower), else BIGINT, else HUGEINT; past HUGEINT it is UHUGEINT,
+/// which refuses by name, and past that a DOUBLE (measured:
+/// 340282366920938463463374607431768211456 and
+/// -170141183460469231731687303715884105729 are DOUBLE). `-2147483648`
+/// parses as -(2147483648) and stays BIGINT there too — that falls out of
+/// unary minus binding, not of this rule.
+pub(super) fn integer_text_literal(text: &str) -> Result<SExpr, PrepareError> {
+    let (lit, ty) = if let Ok(i) = text.parse::<i64>() {
+        let ty = if i32::try_from(i).is_ok() { Ty::I32 } else { Ty::I64 };
+        (Lit::I64(i), ty)
+    } else if let Ok(i) = text.parse::<i128>() {
+        (Lit::I128(i), Ty::I128)
+    } else if text.parse::<u128>().is_ok() {
+        return Err(unsup(format!("integer literal {text} (UHUGEINT on DuckDB)")));
+    } else {
+        let digits = text.strip_prefix('-').unwrap_or(text);
+        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(PrepareError::Bind(format!("bad integer literal '{text}'")));
+        }
+        let f = text
+            .parse::<f64>()
+            .map_err(|_| PrepareError::Bind(format!("bad integer literal '{text}'")))?;
+        (Lit::F64(f), Ty::F64)
     };
     Ok(SExpr {
         kind: SKind::Lit(lit),
@@ -551,9 +582,9 @@ pub(super) fn numeric_promote(
     op: ArithOp,
     a: SExpr,
     b: SExpr,
-    lits: (Option<i64>, Option<i64>),
+    lits: (Option<i128>, Option<i128>),
 ) -> Result<(SExpr, SExpr, Ty), PrepareError> {
-    let numeric = |e: &SExpr| e.ty.is_int() || e.ty == Ty::F64;
+    let numeric = |e: &SExpr| e.ty.is_integer() || e.ty == Ty::F64;
     if !numeric(&a) || !numeric(&b) {
         return Err(PrepareError::Bind(format!(
             "arithmetic needs numeric operands, got {} and {}",
@@ -576,6 +607,7 @@ pub(super) fn numeric_promote(
         // promote_f64 is identity on an already-F64 operand.
         Ok((promote_f64(a), promote_f64(b), Ty::F64))
     } else {
+        let (a, b) = onto_lane(a, b, ty);
         Ok((a, b, ty))
     }
 }
@@ -585,22 +617,24 @@ pub(super) fn width_rank(t: Ty) -> u8 {
         Ty::I8 | Ty::U8 => 0,
         Ty::I16 | Ty::U16 => 1,
         Ty::I32 | Ty::U32 => 2,
+        Ty::I128 => 4,
         _ => 3,
     }
 }
 
 /// The literal half of DuckDB's integer promotion (measured): a syntactic
 /// literal whose VALUE fits a non-literal side takes that side's type, so
-/// `c8 + 127` is TINYINT and `u8 + 1` UTINYINT, while `c8 + 128` and
-/// `u8 + (-1)` keep the literal's INTEGER. `None` when it does not apply.
-fn literal_fit(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Option<Ty> {
+/// `c8 + 127` is TINYINT, `u8 + 1` UTINYINT and `u64 + 1` UBIGINT, while
+/// `c8 + 128` and `u8 + (-1)` keep the literal's INTEGER. `None` when it
+/// does not apply.
+fn literal_fit(a_ty: Ty, a_lit: Option<i128>, b_ty: Ty, b_lit: Option<i128>) -> Option<Ty> {
+    // A literal narrower than its partner fits it too when that partner is
+    // UBIGINT (`u64 + 1` is UBIGINT, measured), where the width rule would
+    // otherwise mix signed with unsigned into HUGEINT.
+    let reaches = |lit: Ty, other: Ty| width_rank(lit) >= width_rank(other) || other == Ty::U64;
     match (a_lit, b_lit) {
-        (Some(v), None) if fits_width(b_ty, v) && width_rank(a_ty) >= width_rank(b_ty) => {
-            Some(b_ty)
-        }
-        (None, Some(v)) if fits_width(a_ty, v) && width_rank(b_ty) >= width_rank(a_ty) => {
-            Some(a_ty)
-        }
+        (Some(v), None) if fits_width(b_ty, v) && reaches(a_ty, b_ty) => Some(b_ty),
+        (None, Some(v)) if fits_width(a_ty, v) && reaches(b_ty, a_ty) => Some(a_ty),
         _ => None,
     }
 }
@@ -610,9 +644,15 @@ fn literal_fit(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Op
 /// keep; a literal that fits the other side narrows to it
 /// ([`literal_fit`]); signed with signed, the wider; unsigned with
 /// unsigned, the wider; signed with unsigned, the signed side when it is
-/// strictly wider, else BIGINT (`u8 + i8` and `u16 + i16` are BIGINT,
-/// `u8 + i16` SMALLINT).
-pub(super) fn int_width_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Ty {
+/// strictly wider, else BIGINT, or HUGEINT for a UBIGINT (`u8 + i8` and
+/// `u16 + i16` are BIGINT, `u8 + i16` SMALLINT, `u64 + i64` and `u64 + i8`
+/// HUGEINT, `u32 + i64` BIGINT).
+pub(super) fn int_width_promote(
+    a_ty: Ty,
+    a_lit: Option<i128>,
+    b_ty: Ty,
+    b_lit: Option<i128>,
+) -> Ty {
     if a_ty == b_ty {
         return a_ty;
     }
@@ -631,6 +671,8 @@ pub(super) fn int_width_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: O
             let (signed, unsigned) = if s_u { (b_ty, a_ty) } else { (a_ty, b_ty) };
             if width_rank(signed) > width_rank(unsigned) {
                 signed
+            } else if unsigned == Ty::U64 {
+                Ty::I128
             } else {
                 Ty::I64
             }
@@ -641,8 +683,14 @@ pub(super) fn int_width_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: O
 /// The same step for a FAMILY (CASE / COALESCE / greatest / least):
 /// identical but for signed with unsigned, which takes the smallest signed
 /// type holding both (`coalesce(u8, i8)` is SMALLINT, `coalesce(u16, i8)`
-/// INTEGER, `coalesce(u32, i8)` BIGINT; measured).
-pub(super) fn int_family_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Ty {
+/// INTEGER, `coalesce(u32, i8)` BIGINT, `coalesce(u64, i8)` HUGEINT;
+/// measured).
+pub(super) fn int_family_promote(
+    a_ty: Ty,
+    a_lit: Option<i128>,
+    b_ty: Ty,
+    b_lit: Option<i128>,
+) -> Ty {
     if a_ty == b_ty || a_ty.is_unsigned() == b_ty.is_unsigned() {
         return int_width_promote(a_ty, a_lit, b_ty, b_lit);
     }
@@ -658,7 +706,8 @@ pub(super) fn int_family_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: 
         8 => Ty::I8,
         16 => Ty::I16,
         32 => Ty::I32,
-        _ => Ty::I64,
+        64 => Ty::I64,
+        _ => Ty::I128,
     }
 }
 
@@ -728,24 +777,37 @@ pub(super) fn ast_decimal_typed(e: &SqlExpr) -> bool {
 /// family returns, `0 - N` user spellings, retyped degenerations), so the
 /// hint comes from the spelling alone. This is DuckDB's own notion for
 /// its value-fits promotion.
-pub(super) fn ast_int_literal(e: &SqlExpr) -> Option<i64> {
+pub(super) fn ast_int_literal(e: &SqlExpr) -> Option<i128> {
     match e {
         SqlExpr::Value(v) => match &v.value {
-            SqlValue::Number(text, _) => text.parse::<i64>().ok(),
+            SqlValue::Number(text, _) => text.parse::<i128>().ok(),
             _ => None,
         },
         SqlExpr::Nested(inner) => ast_int_literal(inner),
         SqlExpr::UnaryOp {
             op: UnaryOperator::Minus,
             expr,
-        } => ast_int_literal(expr).and_then(i64::checked_neg),
+        } => ast_int_literal(expr).and_then(i128::checked_neg),
         _ => None,
     }
 }
 
-/// Whether `v` is representable at width `t` (always true for lane types).
-pub(super) fn fits_width(t: Ty, v: i64) -> bool {
-    t.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(&v))
+/// Whether `v` is representable at width `t` (always true for DOUBLE and
+/// the other non-integer types).
+pub(super) fn fits_width(t: Ty, v: impl Into<i128>) -> bool {
+    let v = v.into();
+    t.int_range128().is_none_or(|(lo, hi)| (lo..=hi).contains(&v))
+}
+
+/// Whether DuckDB's VARCHAR -> integer cast parses `s` into width `t`:
+/// the int64 parse plus `t`'s range, or the parse of a width with a store
+/// of its own (the unsigned widths and HUGEINT, `hugeint::duck_ston`).
+pub(super) fn duck_parses_as(s: &str, t: Ty) -> bool {
+    if t.is_unsigned() || t.is_wide() {
+        super::super::exec::hugeint::duck_ston(s, t).is_some()
+    } else {
+        super::super::exec::kernels::duck_stoi(s).is_some_and(|v| fits_width(t, v))
+    }
 }
 
 /// DuckDB's name for an integer width, for refusal messages.
@@ -757,6 +819,8 @@ pub(super) fn duck_int_name(t: Ty) -> &'static str {
         Ty::U8 => "UTINYINT",
         Ty::U16 => "USMALLINT",
         Ty::U32 => "UINTEGER",
+        Ty::U64 => "UBIGINT",
+        Ty::I128 => "HUGEINT",
         Ty::F64 => "DOUBLE",
         _ => "BIGINT",
     }
@@ -820,6 +884,14 @@ pub(super) fn widen_int(e: SExpr, to: Ty) -> SExpr {
     if e.ty == to {
         return e;
     }
+    // A literal moving onto the i128 lane changes its payload's lane too.
+    if let (SKind::Lit(Lit::I64(v)), Ty::I128) = (&e.kind, to.lane()) {
+        return SExpr {
+            kind: SKind::Lit(Lit::I128(i128::from(*v))),
+            ty: to,
+            ..e
+        };
+    }
     if matches!(e.kind, SKind::NullOf | SKind::Lit(_)) {
         return SExpr { ty: to, ..e };
     }
@@ -854,6 +926,18 @@ pub(super) fn promote_f64(e: SExpr) -> SExpr {
     }
 }
 
+/// Integer operands of an operator whose result `ty` lives on the i128
+/// lane, moved onto it: DuckDB casts both sides to the result type, which
+/// holds each exactly (`u64 + i64` is HUGEINT). On the i64 lane every width
+/// already shares the lane, so nothing moves.
+pub(super) fn onto_lane(a: SExpr, b: SExpr, ty: Ty) -> (SExpr, SExpr) {
+    if ty.lane() != Ty::I128 {
+        return (a, b);
+    }
+    let up = |e: SExpr| if e.ty.lane() == Ty::I128 { e } else { widen_int(e, Ty::I128) };
+    (up(a), up(b))
+}
+
 /// Turn a just-built `promote_f64` node into the f32-narrowing one, so an
 /// integer `tree_predict` feature rounds ONCE the way sklearn does.
 /// Anything else — an f64 expression, a typed NULL, a folded
@@ -875,7 +959,7 @@ impl Binder<'_> {
     /// f64 side promotes all sides. Numeric-with-string/bool mixing has
     /// exec-time cast semantics we don't model — clean-unsupported.
     pub(super) fn unify_family(&self, exprs: &[&SqlExpr]) -> Result<Vec<SqlExpr>, PrepareError> {
-        let (mut any_f64, mut any_num) = (false, false);
+        let (mut any_f64, mut any_num, mut any_wide) = (false, false, false);
         // A DECIMAL member unifies the family at the common DECIMAL
         // (docs/specs/decimal-expressions.md §7). Each comparison below
         // meets its own pair's common type, which reads the same values
@@ -886,11 +970,11 @@ impl Binder<'_> {
         let mut family: Option<Ty> = None;
         for e in exprs {
             if let Some(b) = self.expr_or_null(e)? {
-                if b.ty.is_int() || b.ty == Ty::F64 || b.ty.dec().is_some() {
+                if b.ty.is_integer() || b.ty == Ty::F64 || b.ty.dec().is_some() {
                     family = Some(match family {
                         None => b.ty,
                         Some(f) if f == b.ty => f,
-                        Some(f) if f.is_int() && b.ty.is_int() => Ty::I64,
+                        Some(f) if f.is_integer() && b.ty.is_integer() => Ty::I64,
                         Some(f) => match dec_common(f, b.ty) {
                             Some(t) => t,
                             None => Ty::F64,
@@ -901,6 +985,7 @@ impl Binder<'_> {
                     Ty::F64 => (any_f64, any_num) = (true, true),
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => any_num = true,
                     Ty::Dec(..) => any_dec = Some(b.clone()),
+                    Ty::I128 | Ty::U64 => (any_num, any_wide) = (true, true),
                     Ty::Str | Ty::I1 => {}
                 }
             }
@@ -948,6 +1033,15 @@ impl Binder<'_> {
                 continue;
             }
             let lit = match b.map(|b| b.kind) {
+                // The conversion below rounds through f64 to BIGINT, which
+                // has neither the unsigned sign rule nor 128-bit precision:
+                // `u64 IN ('-1', 3)` errors on DuckDB.
+                Some(SKind::Lit(Lit::Str(_))) if any_wide && !any_f64 => {
+                    return Err(unsup(
+                        "BETWEEN/IN mixing string literals with UBIGINT or HUGEINT \
+                         (DuckDB parses them at the 128-bit or unsigned type)",
+                    ));
+                }
                 Some(SKind::Lit(Lit::Str(s))) => {
                     // Non-numeric strings convert (and fail) at EXECUTION
                     // time in DuckDB — an empty input succeeds — so a

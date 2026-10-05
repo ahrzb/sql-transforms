@@ -134,6 +134,9 @@ _ARROW = {
     "uint8": pa.uint8(),
     "uint16": pa.uint16(),
     "uint32": pa.uint32(),
+    # UBIGINT, the narrow width of the i128 lane (HUGEINT has no arrow
+    # input type: DuckDB exports it as decimal128(38, 0)).
+    "uint64": pa.uint64(),
     "decimal(4,2)": pa.decimal128(4, 2),
     "decimal(9,4)": pa.decimal128(9, 4),
     "decimal(18,6)": pa.decimal128(18, 6),

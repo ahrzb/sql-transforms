@@ -91,14 +91,18 @@ The first five are ruled, in this order; the rest follow.
   generator carries one on every seed 3 (mod 7), observable through star
   expansion and the row boundary, and keys that seed's first ON join on it
   (tag `decimal-key`), since decimals are not in the expression grammar yet.
-- **i128 lane.** UTINYINT/USMALLINT/UINTEGER serve on the i64 lane
-  (`tests/test_unsigned.py`; the generator makes some narrow columns and
-  casts unsigned on every seed 6 (mod 11), tag `unsigned`), refusing by name
-  unary minus, shifts, and DOUBLE-to-unsigned casts. HUGEINT, UBIGINT and
-  UHUGEINT (columns, statics, CAST targets) refuse. Needs i128 arithmetic
-  and traps on both backends and exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
-  (it is BIGINT on DuckDB); the bare 9223372036854775808, and the minimum
-  negated twice, are HUGEINT and refuse.
+- **i128 lane.** Every integer width but UHUGEINT serves: UTINYINT..UINTEGER
+  on the i64 lane (`tests/test_unsigned.py`, seed gate 6 mod 11, tag
+  `unsigned`), HUGEINT on an i128 lane with UBIGINT as its narrow width
+  (`tests/test_hugeint.py`, seed gate 5 mod 13, tag `wide`). Still refused
+  by name: unary minus over an unsigned width (DuckDB wraps it), shifts over
+  an unsigned width or HUGEINT, a CAST from DOUBLE to UTINYINT..UINTEGER
+  (range-checked before rounding, 255.5 wraps), `round`/`trunc` with digits
+  over UBIGINT/HUGEINT, UHUGEINT (literals past HUGEINT, CAST targets), and a
+  HUGEINT join key against a DECIMAL build key. Left: exact `sum`/`product`
+  at decimal128(38,0) belong to per-row aggregation, not to this lane; the
+  i128 ops are one helper call each on the JIT (inline `iadd.i128` with an
+  overflow check is the next step if HUGEINT shows up in serving profiles).
 - **Non-scalar values.** Whole structs, struct literals, bracket access, lists
   and list-valued regex forms (served so far: a list literal read by a
   constant index or projected whole, with elements of one type,
@@ -142,6 +146,10 @@ The first five are ruled, in this order; the rest follow.
   (`CAST('' AS DOUBLE) / sqrt(NULL)` serves NULL there).
 - `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
   (DuckDB converts at execution; a bind-time conversion is over-eager).
+  A numeric string member converts through f64 and rounds to BIGINT, so past
+  2^53 it is the wrong integer (`b IN ('9007199254740993')` over a BIGINT
+  `b`); parse it with the integer kernels at the family's type instead.
+  Beside UBIGINT/HUGEINT such members refuse by name for this reason.
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
 - **Wrapped-query refusals** the metamorphic suite allowlists
   (rewrite tolerances in `fuzz/exclusions.py`): a struct- or list-valued column inside a

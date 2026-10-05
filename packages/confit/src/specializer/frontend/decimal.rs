@@ -22,7 +22,7 @@ fn storage(p: u8) -> u8 {
 pub(super) fn dec_props(t: Ty) -> Option<(u8, u8)> {
     match t {
         Ty::Dec(p, s) => Some((p, s)),
-        t if t.is_int() => Some((int_dec_width(t), 0)),
+        t if t.is_integer() => Some((int_dec_width(t), 0)),
         _ => None,
     }
 }
@@ -264,7 +264,11 @@ impl Binder<'_> {
             (Ty::Dec(..), Ty::F64) => Ok(dec_to_float(inner)),
             (Ty::Dec(..), Ty::Str) => Ok(dec_cast_node(inner, to)),
             // A TRY_CAST that can fail: NULL where CAST would trap.
-            (f, t) if trying && (f.dec().is_some() || f.is_int()) && (t.dec().is_some() || t.is_int()) => {
+            (f, t)
+                if trying
+                    && (f.dec().is_some() || f.is_integer())
+                    && (t.dec().is_some() || t.is_integer()) =>
+            {
                 if matches!(inner.kind, SKind::NullOf) {
                     return Ok(null_of(to));
                 }
@@ -274,8 +278,8 @@ impl Binder<'_> {
                     nullable: true,
                 }))
             }
-            (Ty::Dec(..), t) if t.is_int() || t.dec().is_some() => Ok(dec_cast_node(inner, to)),
-            (f, Ty::Dec(..)) if f.is_int() => Ok(dec_cast_node(inner, to)),
+            (Ty::Dec(..), t) if t.is_integer() || t.dec().is_some() => Ok(dec_cast_node(inner, to)),
+            (f, Ty::Dec(..)) if f.is_integer() => Ok(dec_cast_node(inner, to)),
             (f, t) => refuse(format!(
                 "CAST from {} to {} -- DECIMAL casts served are to and from the \
                  integer widths and other DECIMALs, and out to DOUBLE and VARCHAR",
@@ -302,7 +306,7 @@ pub(super) fn dec_common(x: Ty, y: Ty) -> Option<Ty> {
             }
             Some(Ty::Dec(p, s))
         }
-        (Ty::Dec(p, s), i) | (i, Ty::Dec(p, s)) if i.is_int() => {
+        (Ty::Dec(p, s), i) | (i, Ty::Dec(p, s)) if i.is_integer() => {
             let w = int_dec_width(i);
             Some(if w > p - s {
                 Ty::Dec((w + s).min(38), s)
@@ -320,7 +324,7 @@ pub(super) fn to_common(e: SExpr, to: Ty) -> SExpr {
     match (e.ty, to) {
         (x, y) if x == y => e,
         (Ty::Dec(..), Ty::F64) => dec_to_float(e),
-        (x, Ty::F64) if x.is_int() => promote_f64(e),
+        (x, Ty::F64) if x.is_integer() => promote_f64(e),
         _ => dec_cast_node(e, to),
     }
 }

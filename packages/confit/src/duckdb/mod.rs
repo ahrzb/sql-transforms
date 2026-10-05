@@ -46,6 +46,9 @@ pub(super) fn arrow_ty_name(t: Ty) -> std::borrow::Cow<'static, str> {
         Ty::U8 => Cow::Borrowed("uint8"),
         Ty::U16 => Cow::Borrowed("uint16"),
         Ty::U32 => Cow::Borrowed("uint32"),
+        Ty::U64 => Cow::Borrowed("uint64"),
+        // No arrow type reads back as HUGEINT; DuckDB exports one as this.
+        Ty::I128 => Cow::Borrowed("decimal128(38, 0)"),
         Ty::F64 => Cow::Borrowed("double"),
         Ty::Str => Cow::Borrowed("string"),
         // pyarrow's own `str()` spelling, space and all, so a refusal
@@ -162,6 +165,36 @@ fn push_input_cell(
                     if !(lo..=hi).contains(&v) {
                         return Err(range_err(&v));
                     }
+                }
+                v
+            });
+        }
+        // UBIGINT (HUGEINT has no input lane): a Python int in [0, 2^64).
+        ColData::I128 { valid, data } => {
+            valid.push(!null);
+            data.push(if null {
+                0
+            } else {
+                if attr.is_instance_of::<PyBool>() {
+                    return Err(type_err("int"));
+                }
+                let range_err = |v: &dyn std::fmt::Display| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "column '{}' value {v} is outside its {} range",
+                        name,
+                        arrow_ty_name(ty.ty)
+                    ))
+                };
+                let v: i128 = attr.extract::<i128>().map_err(|e| {
+                    if e.is_instance_of::<PyOverflowError>(attr.py()) {
+                        range_err(attr)
+                    } else {
+                        type_err("int")
+                    }
+                })?;
+                let (lo, hi) = ty.ty.int_range128().expect("an integer width");
+                if !(lo..=hi).contains(&v) {
+                    return Err(range_err(&v));
                 }
                 v
             });
@@ -303,6 +336,10 @@ pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
         Ty::Dec(p, s) => ColData::Dec {
             p,
             s,
+            valid: Vec::with_capacity(cap),
+            data: Vec::with_capacity(cap),
+        },
+        Ty::I128 | Ty::U64 => ColData::I128 {
             valid: Vec::with_capacity(cap),
             data: Vec::with_capacity(cap),
         },
@@ -463,8 +500,16 @@ fn rescale(m: i128, from: u8, to: u8) -> Option<i128> {
     }
 }
 
+/// An i128 payload as Python: a DECIMAL as `decimal.Decimal` at its scale,
+/// HUGEINT as `decimal.Decimal` too (what `to_pylist` makes of the
+/// decimal128(38, 0) DuckDB exports it as), UBIGINT as an int.
 fn dec_py(py: Python<'_>, v: i128, ty: Ty) -> PyResult<Py<PyAny>> {
-    let (_, s) = ty.dec().expect("a Dec lane carries a Dec type");
+    use pyo3::IntoPyObjectExt;
+    let s = match ty {
+        Ty::U64 => return v.into_py_any(py),
+        Ty::I128 => 0,
+        t => t.dec().expect("a Dec lane carries a Dec type").1,
+    };
     Ok(PyModule::import(py, "decimal")?
         .getattr("Decimal")?
         .call1((dec_text(v, s),))?
@@ -870,8 +915,9 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                                 Some(ScalarVal::Str(x)) => {
                                     x.into_py_any(py).map_err(|e| e.to_string())?
                                 }
-                                // A UDF over DECIMAL refuses at bind.
-                                Some(ScalarVal::Dec(..)) => {
+                                // A UDF over DECIMAL or the i128 lane
+                                // refuses at bind.
+                                Some(ScalarVal::Dec(..) | ScalarVal::I128(_)) => {
                                     return Err(format!(
                                         "udf '{name}' was handed a DECIMAL argument, which \
                                          this build does not serve"
@@ -926,7 +972,7 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                                 Ty::Str => ScalarVal::Str(item.extract().map_err(bad)?),
                                 // A UDF over DECIMAL refuses at bind, so
                                 // no declaration reaches here carrying one.
-                                Ty::Dec(..) => {
+                                Ty::Dec(..) | Ty::I128 | Ty::U64 => {
                                     return Err(format!(
                                         "udf '{name}' declares a DECIMAL return, which                                          this build does not serve"
                                     ))
@@ -1019,17 +1065,29 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                 // (measured: ' 3' matches 3). A value that cannot convert
                 // errors on EVERY query there, zero request rows included,
                 // so it fails the build.
-                if (ty.is_int() || ty == Ty::F64) && v.is_instance_of::<pyo3::types::PyString>() {
+                if (ty.is_integer() || ty == Ty::F64) && v.is_instance_of::<pyo3::types::PyString>() {
                     let s: String = v.extract()?;
                     use crate::specializer::exec::kernels::{duck_stof, duck_stoi};
-                    let kb = if ty == Ty::F64 {
-                        duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
+                    // Parsed at the PROBE's own type, not the key lane's: an
+                    // unsigned probe takes the unsigned sign rule and its
+                    // range ('-1' and '-0.4' fail against UBIGINT and
+                    // UTINYINT alike), whatever lane the key rides.
+                    let p = k.probe_ty;
+                    let parsed = if ty == Ty::F64 {
+                        None
+                    } else if p.is_unsigned() || p.is_wide() {
+                        crate::specializer::exec::hugeint::duck_ston(&s, p)
                     } else {
                         duck_stoi(&s)
-                            .filter(|i| {
-                                k.probe_ty.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i))
-                            })
-                            .map(KeyBits::I64)
+                            .filter(|i| p.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i)))
+                            .map(i128::from)
+                    };
+                    let kb = if ty == Ty::F64 {
+                        duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
+                    } else if ty.lane() == Ty::I128 {
+                        parsed.map(KeyBits::I128)
+                    } else {
+                        parsed.map(|i| KeyBits::I64(i as i64))
                     };
                     return match kb {
                         Some(kb) => Ok(Some(kb)),
@@ -1045,6 +1103,8 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                                 Ty::U8 => "UTINYINT",
                                 Ty::U16 => "USMALLINT",
                                 Ty::U32 => "UINTEGER",
+                                Ty::U64 => "UBIGINT",
+                                Ty::I128 => "HUGEINT",
                                 _ => "BIGINT",
                             }
                         ))),
@@ -1088,6 +1148,34 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                             crate::specializer::exec::kernels::dec_to_f64(m, s).to_bits(),
                         )
                     }
+                    // The i128 lane: an integer build value at the key's
+                    // common type, exactly (`promote_key` already made it
+                    // one that holds both sides).
+                    Ty::I128 | Ty::U64 if is_dec(v)? => {
+                        let (m, s) = decimal_parts(
+                            v,
+                            &format!("static table '{}' key column '{name}'", spec.table),
+                        )?;
+                        let (lo, hi) = ty.int_range128().expect("an integer width");
+                        match rescale(m, s, 0).filter(|i| (lo..=hi).contains(i)) {
+                            Some(i) => KeyBits::I128(i),
+                            None => return Ok(None),
+                        }
+                    }
+                    Ty::I128 | Ty::U64 => {
+                        let i: i128 = v.extract().map_err(|_| {
+                            build_err(format!(
+                                "unsupported: static table '{}' key column '{name}' value {v} \
+                                 is not an integer",
+                                spec.table
+                            ))
+                        })?;
+                        let (lo, hi) = ty.int_range128().expect("an integer width");
+                        if !(lo..=hi).contains(&i) {
+                            return Ok(None);
+                        }
+                        KeyBits::I128(i)
+                    }
                     Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
                     Ty::Str => KeyBits::Str(v.extract()?),
                     // A DECIMAL probe lane is already the common type
@@ -1104,8 +1192,8 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                         }
                     }
                     Ty::Dec(p, to) => {
-                        let i: i64 = v.extract()?;
-                        match rescale(i128::from(i), 0, to) {
+                        let i: i128 = v.extract()?;
+                        match rescale(i, 0, to) {
                             Some(x) => KeyBits::Dec(x, p, to),
                             None => return Ok(None),
                         }
@@ -1158,6 +1246,7 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                             spec.table
                         ))
                     })?),
+                    Ty::I128 | Ty::U64 => ScalarVal::I128(v.extract()?),
                     Ty::F64 => ScalarVal::F64(v.extract()?),
                     Ty::Str => ScalarVal::Str(v.extract()?),
                     // The whole point: the scaled i128, exactly, no f64 on

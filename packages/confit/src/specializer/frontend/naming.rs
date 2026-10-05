@@ -201,6 +201,19 @@ fn type_name(t: &DataType) -> Option<String> {
         {
             format!("\"{base}\"")
         }
+        // The aliases print as the type they bind to (measured:
+        // `CAST(i AS UINT64)` is named `CAST(i AS "UBIGINT")`).
+        "UINT8" | "UINT16" | "UINT32" | "UINT64" | "INT128" | "UINT128" if args.is_empty() => {
+            let canon = match base.as_str() {
+                "UINT8" => "UTINYINT",
+                "UINT16" => "USMALLINT",
+                "UINT32" => "UINTEGER",
+                "UINT64" => "UBIGINT",
+                "INT128" => "HUGEINT",
+                _ => "UHUGEINT",
+            };
+            format!("\"{canon}\"")
+        }
         _ => return None,
     })
 }

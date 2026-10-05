@@ -95,7 +95,8 @@
 //! col       := (IDENT | STRING) ":" col_ty        // STRING for non-ident names
 //! col_ty    := ty ["?"]
 //! ty        := "i1" | "i8" | "i16" | "i32" | "i64" | "f64" | "str"
-//!            | "dec" "(" INT "," INT ")"   // i8/i16/i32 in headers only
+//!            | "u8" | "u16" | "u32" | "u64" | "i128"
+//!            | "dec" "(" INT "," INT ")"   // narrow widths in headers only
 //! block     := IDENT ["(" VALUE ":" ty ("," VALUE ":" ty)* ")"] ":" inst* term
 //! inst      := [VALUE ("," VALUE)* "="] OPCODE operands
 //!              // only store/store.opt omit the dests; everything else
@@ -118,6 +119,11 @@
 //! %d = const.f64 FLOAT         %d = const.str STRING
 //! %d = const.dec(P,S) INT                     // the SCALED integer
 //! %d = iadd|isub|imul|idiv|irem %a, %b        // i64; idiv/irem trap on 0 or overflow
+//! %d = hadd|hsub|hmul|hdiv|hrem %a, %b        // i128, checked; hand|hor|hxor total
+//! %d = const.i128 INT                         // HUGEINT
+//! %d = hcmp.P %a, %b                          // i128 operands -> i1
+//! %d = htof %a | ftoh %a | htos %a            // i128 <-> f64, i128 -> str
+//! %f, %d = ston.opt TO %a                     // parse at TO's own store type
 //! %d = fadd|fsub|fmul|fdiv %a, %b             // f64, IEEE (inf/nan flow, no trap)
 //! %d = and|or|xor %a, %b                      // i1
 //! %d = not %a                                 // i1
@@ -174,6 +180,9 @@ mod tests;
 /// | `I16` | `int16` | `SMALLINT` |
 /// | `I32` | `int32` | `INTEGER` |
 /// | `I64` | `int64` | `BIGINT` |
+/// | `U8` / `U16` / `U32` | `uint8` / `uint16` / `uint32` | `UTINYINT` .. `UINTEGER` |
+/// | `U64` | `uint64` | `UBIGINT` |
+/// | `I128` | `decimal128(38,0)` (out only) | `HUGEINT` |
 /// | `F64` | `double` | `DOUBLE` |
 /// | `Str` | `string` | `VARCHAR` |
 /// | `Dec(p,s)` | `decimal128(p,s)` | `DECIMAL(p,s)` |
@@ -188,19 +197,21 @@ mod tests;
 /// Three types cannot cross faithfully in either direction and must refuse
 /// AT THE BOUNDARY rather than get a variant: `TIMETZ` (Arrow drops the
 /// offset), `BIT` (becomes its internal byte encoding), and `UHUGEINT`
-/// (does not survive the trip). `HUGEINT`, `UUID`, `ENUM` and `JSON` keep
-/// their value but lose their logical type, so they are refusals of a
-/// milder kind. Everything else in DuckDB's type list — including
+/// (does not survive the trip). `HUGEINT` keeps its value but loses its
+/// logical type (DuckDB exports it as `decimal128(38,0)`): it has a lane,
+/// and leaves the way DuckDB's own export does. `UUID`, `ENUM` and `JSON`
+/// lose their type the same way and are refusals of a milder kind. Everything else in DuckDB's type list — including
 /// `DECIMAL(p,s)` at every precision, which is `decimal128(p,s)` exactly —
 /// round-trips bit-for-bit.
 ///
 /// # Narrow widths erase
 ///
-/// I8/I16/I32 are real in the frontend and in column headers, ERASED to the
-/// i64 lane for SSA values and payloads — DuckDB's narrow ints are
-/// checked-never-wrapping, so i64 compute + range trap + narrow emit is
-/// bit-identical. An SSA value or payload with a narrow type is a verifier
-/// error; `lane()` is the erasure.
+/// I8/I16/I32 (and U8/U16/U32) are real in the frontend and in column
+/// headers, ERASED to the i64 lane for SSA values and payloads — DuckDB's
+/// narrow ints are checked-never-wrapping, so i64 compute + range trap +
+/// narrow emit is bit-identical. U64 erases to the i128 lane the same way.
+/// An SSA value or payload with a narrow type is a verifier error; `lane()`
+/// is the erasure.
 ///
 /// # Dec is a lane of its own
 ///
@@ -224,6 +235,13 @@ pub enum Ty {
     U8,
     U16,
     U32,
+    /// HUGEINT: a lane of its own, the i128 register a DECIMAL also uses,
+    /// but an integer: checked i128 arithmetic, exported as
+    /// decimal128(38,0) the way DuckDB exports it.
+    I128,
+    /// UBIGINT: the narrow width of the i128 lane, as U8..U32 are of the
+    /// i64 one -- computed on i128, range-checked to `[0, 2^64)`.
+    U64,
     F64,
     Str,
     /// DECIMAL(p, s): `p` in 1..=38, `s` <= `p`.
@@ -244,6 +262,8 @@ impl Ty {
             Ty::U8 => Cow::Borrowed("u8"),
             Ty::U16 => Cow::Borrowed("u16"),
             Ty::U32 => Cow::Borrowed("u32"),
+            Ty::I128 => Cow::Borrowed("i128"),
+            Ty::U64 => Cow::Borrowed("u64"),
             Ty::F64 => Cow::Borrowed("f64"),
             Ty::Str => Cow::Borrowed("str"),
             Ty::Dec(p, s) => Cow::Owned(format!("dec({p},{s})")),
@@ -254,8 +274,41 @@ impl Ty {
     pub fn lane(self) -> Ty {
         match self {
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16 | Ty::U32 => Ty::I64,
+            Ty::U64 => Ty::I128,
             t => t,
         }
+    }
+
+    /// Inclusive value range of every integer width, both lanes: the
+    /// i64 lane's widths, UBIGINT, and HUGEINT itself.
+    pub fn int_range128(self) -> Option<(i128, i128)> {
+        match self {
+            Ty::U64 => Some((0, u64::MAX as i128)),
+            Ty::I128 => Some((i128::MIN, i128::MAX)),
+            Ty::I64 => Some((i64::MIN as i128, i64::MAX as i128)),
+            t => t.int_range().map(|(lo, hi)| (lo as i128, hi as i128)),
+        }
+    }
+
+    /// An integer of either lane: [`Ty::is_int`] (the i64 lane) or
+    /// UBIGINT / HUGEINT. Kept apart because DuckDB does not narrow a
+    /// HUGEINT implicitly: a function taking a BIGINT refuses one.
+    pub fn is_integer(self) -> bool {
+        self.is_int() || self.is_wide()
+    }
+
+    /// The wider of two integer lanes (the i128 one when either is).
+    pub fn max_lane(self, other: Ty) -> Ty {
+        if self.lane() == Ty::I128 || other.lane() == Ty::I128 {
+            Ty::I128
+        } else {
+            self.lane()
+        }
+    }
+
+    /// UBIGINT or HUGEINT: a width of the i128 lane.
+    pub fn is_wide(self) -> bool {
+        matches!(self, Ty::U64 | Ty::I128)
     }
 
     /// Inclusive value range of a narrow integer width; None for lane types.
@@ -276,16 +329,17 @@ impl Ty {
     }
 
     pub fn is_unsigned(self) -> bool {
-        matches!(self, Ty::U8 | Ty::U16 | Ty::U32)
+        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64)
     }
 
-    /// Bits of an integer width (the lane's 64 for I64).
+    /// Bits of an integer width, either lane.
     pub fn int_bits(self) -> Option<u32> {
         match self {
             Ty::I8 | Ty::U8 => Some(8),
             Ty::I16 | Ty::U16 => Some(16),
             Ty::I32 | Ty::U32 => Some(32),
-            Ty::I64 => Some(64),
+            Ty::I64 | Ty::U64 => Some(64),
+            Ty::I128 => Some(128),
             _ => None,
         }
     }
@@ -370,6 +424,8 @@ pub enum Lit {
     /// A DECIMAL literal: the SCALED integer plus the (p, s) it is scaled
     /// at, so `const.dec(6,2) 50` is 0.50 and prints back as itself.
     Dec(i128, u8, u8),
+    /// A HUGEINT literal (`const.i128 INT`).
+    I128(i128),
 }
 
 impl PartialEq for Lit {
@@ -383,6 +439,7 @@ impl PartialEq for Lit {
             }
             (Lit::Str(a), Lit::Str(b)) => a == b,
             (Lit::Dec(a, ap, asc), Lit::Dec(b, bp, bsc)) => a == b && ap == bp && asc == bsc,
+            (Lit::I128(a), Lit::I128(b)) => a == b,
             _ => false,
         }
     }
@@ -397,6 +454,7 @@ impl Lit {
             Lit::F64(_) => Ty::F64,
             Lit::Str(_) => Ty::Str,
             Lit::Dec(_, p, s) => Ty::Dec(*p, *s),
+            Lit::I128(_) => Ty::I128,
         }
     }
 }
@@ -442,6 +500,18 @@ pub enum BinOp {
     Iand,
     Ior,
     Ixor,
+    /// The i128 lane's `+ - * // %`: checked at i128 (DuckDB's HUGEINT
+    /// overflow), `//` and `%` truncated, a zero divisor the lowering's
+    /// NULL flag; MIN // -1 and MIN % -1 trap, as on DuckDB.
+    Hadd,
+    Hsub,
+    Hmul,
+    Hdiv,
+    Hrem,
+    /// The i128 lane's `&` / `|` / xor(): total.
+    Hand,
+    Hor,
+    Hxor,
     And,
     Or,
     Xor,
@@ -461,6 +531,14 @@ impl BinOp {
             | BinOp::Iand
             | BinOp::Ior
             | BinOp::Ixor => (Ty::I64, Ty::I64),
+            BinOp::Hadd
+            | BinOp::Hsub
+            | BinOp::Hmul
+            | BinOp::Hdiv
+            | BinOp::Hrem
+            | BinOp::Hand
+            | BinOp::Hor
+            | BinOp::Hxor => (Ty::I128, Ty::I128),
             BinOp::Fadd
             | BinOp::Fsub
             | BinOp::Fmul
@@ -497,6 +575,14 @@ impl BinOp {
             BinOp::Iand => "iand",
             BinOp::Ior => "ior",
             BinOp::Ixor => "ixor",
+            BinOp::Hadd => "hadd",
+            BinOp::Hsub => "hsub",
+            BinOp::Hmul => "hmul",
+            BinOp::Hdiv => "hdiv",
+            BinOp::Hrem => "hrem",
+            BinOp::Hand => "hand",
+            BinOp::Hor => "hor",
+            BinOp::Hxor => "hxor",
             BinOp::And => "and",
             BinOp::Or => "or",
             BinOp::Xor => "xor",
@@ -754,6 +840,8 @@ impl TrimSide {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NumOp1 {
     Iabs,
+    /// abs on the i128 lane; traps on i128::MIN like `Iabs`.
+    Habs,
     Fabs,
     Fneg,
     Fround,
@@ -780,6 +868,7 @@ impl NumOp1 {
     pub fn sig(self) -> Ty {
         match self {
             NumOp1::Iabs => Ty::I64,
+            NumOp1::Habs => Ty::I128,
             _ => Ty::F64,
         }
     }
@@ -787,6 +876,7 @@ impl NumOp1 {
     pub fn name(self) -> &'static str {
         match self {
             NumOp1::Iabs => "iabs",
+            NumOp1::Habs => "habs",
             NumOp1::Fabs => "fabs",
             NumOp1::Fneg => "fneg",
             NumOp1::Fround => "fround",
@@ -894,10 +984,12 @@ pub enum Inst {
         b: Value,
     },
     /// `dcast FROM -> TO` — a checked conversion with a DECIMAL on at least
-    /// one side: integer -> Dec, Dec -> Dec (rescale), Dec -> integer (half
-    /// away from zero). `from` is the operand's lane type; `to` may be a
-    /// narrow integer, whose range the conversion checks while `dst` stays
-    /// on the i64 lane (`kernels::dec_cast`).
+    /// one side, or between two integer widths: integer -> Dec, Dec -> Dec
+    /// (rescale), Dec -> integer (half away from zero), and integer ->
+    /// integer (the target's range; across the i64 and i128 lanes, or onto
+    /// UBIGINT within the i128 one). `from` is the operand's lane type; `to` may be a narrow
+    /// width, whose range the conversion checks while `dst` stays on its
+    /// lane (`kernels::dec_cast`).
     Dcast {
         from: Ty,
         to: Ty,
@@ -930,6 +1022,39 @@ pub enum Inst {
         a: Value,
     },
     Itos {
+        dst: Value,
+        a: Value,
+    },
+    /// `htof` — i128 lane -> f64, `Hugeint::TryCast<double>`
+    /// (`kernels::hugeint_to_f64`): the two 64-bit halves round apart, so
+    /// it is not `as f64`. On a UBIGINT value it IS the correctly rounded
+    /// conversion, which is DuckDB's `uint64 -> double`. Total.
+    Htof {
+        dst: Value,
+        a: Value,
+    },
+    /// `ftoh` — f64 -> i128 lane: `nearbyint` (half to even), then exact.
+    /// The lowering range-checks first (`-2^127 < x < 2^127` for HUGEINT,
+    /// `0 <= x < 2^64` for UBIGINT, NaN out) and feeds this an in-range
+    /// value; anything else saturates. Total.
+    Ftoh {
+        dst: Value,
+        a: Value,
+    },
+    /// `htos` — i128 lane -> VARCHAR, plain decimal digits.
+    Htos {
+        dst: Value,
+        a: Value,
+    },
+    /// `ston.opt TO` — VARCHAR -> an integer width DuckDB parses with a
+    /// store type of its own (`TryIntegerCast`): HUGEINT (the
+    /// `HugeIntCastData` parser), UBIGINT (`uint64_t` store), and the
+    /// narrow unsigned widths (a minus sign followed by anything but
+    /// zeros fails). `%f` is false on failure or out of `TO`'s range;
+    /// `dst` is `TO`'s lane.
+    StonOpt {
+        to: Ty,
+        flag: Value,
         dst: Value,
         a: Value,
     },
@@ -1280,6 +1405,9 @@ impl Inst {
             | Inst::DcastOk { dst, .. }
             | Inst::Dtos { dst, .. }
             | Inst::Itos { dst, .. }
+            | Inst::Htof { dst, .. }
+            | Inst::Ftoh { dst, .. }
+            | Inst::Htos { dst, .. }
             | Inst::Ftos { dst, .. }
             | Inst::Sconcat { dst, .. }
             | Inst::Str1 { dst, .. }
@@ -1304,6 +1432,7 @@ impl Inst {
             | Inst::Sload { dst, .. } => vec![*dst],
             Inst::StoiOpt { flag, dst, .. }
             | Inst::StofOpt { flag, dst, .. }
+            | Inst::StonOpt { flag, dst, .. }
             | Inst::LoadOpt { flag, dst, .. }
             | Inst::SloadOpt { flag, dst, .. } => vec![*flag, *dst],
             Inst::Probe { hit, dsts, .. } => {
@@ -1348,6 +1477,9 @@ impl Inst {
                 *dst = m(*dst)
             }
             Inst::Itos { dst, a }
+            | Inst::Htof { dst, a }
+            | Inst::Ftoh { dst, a }
+            | Inst::Htos { dst, a }
             | Inst::Ftos { dst, a }
             | Inst::Itof { dst, a, .. }
             | Inst::Ftoi { dst, a, .. }
@@ -1424,7 +1556,9 @@ impl Inst {
                 *a = m(*a);
                 *b = m(*b);
             }
-            Inst::StoiOpt { flag, dst, a } | Inst::StofOpt { flag, dst, a } => {
+            Inst::StoiOpt { flag, dst, a }
+            | Inst::StofOpt { flag, dst, a }
+            | Inst::StonOpt { flag, dst, a, .. } => {
                 *flag = m(*flag);
                 *dst = m(*dst);
                 *a = m(*a);
