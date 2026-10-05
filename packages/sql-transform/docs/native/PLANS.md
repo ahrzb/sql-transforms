@@ -9,8 +9,7 @@ Easiest first; each is one family, one PR.
 
 1. **`KBinsDiscretizer`** (`encode="ordinal"`, `"onehot-dense"`).
 2. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
-   `standardize`), `QuantileTransformer` (interpolation over quantiles),
-   `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
+   `standardize`), `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`.
 3. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
@@ -49,6 +48,18 @@ Easiest first; each is one family, one PR.
   steps of at most 300 lanes meanwhile (`MAX_LANES`). Sent to the confit
   loop 2026-10-05, with a repro.
 
+- **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
+  far slower than `-1.0 * x`, which is the same double: a 32-feature
+  `QuantileTransformer` (3 quantiles) built in 2.8 s and served 64 rows in
+  32 ms with `-x`, against 0.35 s and 1.1 ms with the product (master
+  b926e88). The entry spells the product meanwhile. Sent with the PR that
+  added it, 2026-10-05.
+- **`QuantileTransformer` against build time in the lanes read** (the
+  item above): at 1,000 total quantiles a step builds in 2-3 s whatever
+  its width, but two features at the default 1,000 take 5.4 s, four
+  14.6 s, 64 features of 62 45 s and 128 of 31 83 s (master b926e88). The
+  entry serves at most 2,000 quantiles per estimator meanwhile.
+
 Served since this catalog began (#336–#339, #341, #346): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
@@ -83,6 +94,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `Normalizer(norm="max")` over more than 8 features, and any norm whose
   body confit does not build, until a subexpression is shared within a call
   (above).
+- `QuantileTransformer(output_distribution="normal")`: scipy's
+  `norm.ppf` has no SQL twin. Past 2,000 quantiles per estimator (summed
+  over its features), until confit's build is linear in the lanes read
+  (above). Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
+  feature missing everywhere is served), quantiles further apart than a
+  double spans, or a platform whose `np.interp` fuses its multiply-add
+  (`quantile.interp_is_numpys` probes it).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

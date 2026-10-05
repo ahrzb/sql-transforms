@@ -41,6 +41,7 @@ from sklearn.preprocessing import (
     OneHotEncoder,
     OrdinalEncoder,
     PolynomialFeatures,
+    QuantileTransformer,
     RobustScaler,
     StandardScaler,
     TargetEncoder,
@@ -183,6 +184,17 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
     ],
     TargetEncoder: [TargetEncoder, lambda: TargetEncoder(target_type="continuous")],
 }
+
+# QuantileTransformer: the fits have 5 to 60 rows, so n_quantiles_ is the
+# row count past it; few distinct values (kind 4) make runs of equal
+# quantiles. quantile_test.py serves the default 1,000 quantiles.
+FIXTURES[QuantileTransformer] = [
+    QuantileTransformer,
+    lambda: QuantileTransformer(n_quantiles=2),
+    lambda: QuantileTransformer(n_quantiles=7),
+    lambda: QuantileTransformer(n_quantiles=40),
+    lambda: QuantileTransformer(n_quantiles=4, subsample=5, random_state=0),
+]
 
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]
