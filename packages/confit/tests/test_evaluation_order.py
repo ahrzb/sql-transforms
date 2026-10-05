@@ -175,3 +175,12 @@ def test_a_double_key_projects_the_static_sides_bits(shape):
         statics=statics,
         expect="AGREE",
     )
+
+
+def test_an_evaluated_constant_over_a_try_cast_builds():
+    # Evaluating `-42.286e0 + TRY_CAST(TRUE AS DOUBLE)` at bind gives a
+    # value; the node must keep its nullability, since the TRY_CAST under it
+    # still lowers with a flag (campaign seed 5001244 panicked).
+    rows = table({"c0": "int8?"}, [{"c0": 1}])
+    sql = "SELECT (-42.286e0 + TRY_CAST(TRUE AS DOUBLE)) AS o FROM __THIS__"
+    assert_parity(sql, rows, expect="AGREE")

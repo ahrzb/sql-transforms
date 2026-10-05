@@ -277,6 +277,48 @@ impl Binder<'_> {
                 op: UnaryOperator::Minus,
                 expr,
             } => {
+                // DuckDB's grammar folds a minus into an integer literal too
+                // big for INTEGER (it lexes as a numeric string), so
+                // `-9223372036854775808` is the BIGINT i64::MIN, parens or
+                // spaces between notwithstanding; 9223372036854775808 alone
+                // is HUGEINT.
+                let mut lit = &**expr;
+                while let SqlExpr::Nested(i) = lit {
+                    lit = i;
+                }
+                // Folded twice, `- -9223372036854775808` is 9223372036854775808
+                // again: HUGEINT, which confit does not serve.
+                if let SqlExpr::UnaryOp {
+                    op: UnaryOperator::Minus,
+                    expr: inner,
+                } = lit
+                {
+                    let mut l = &**inner;
+                    while let SqlExpr::Nested(i) = l {
+                        l = i;
+                    }
+                    if let SqlExpr::Value(v) = l {
+                        if let SqlValue::Number(text, _) = &v.value {
+                            if text.parse::<i64>().is_err() && format!("-{text}").parse::<i64>().is_ok() {
+                                return Err(unsup(format!(
+                                    "integer literal {text} (HUGEINT on DuckDB: its grammar folds \
+                                     both minuses into the literal)"
+                                )));
+                            }
+                        }
+                    }
+                }
+                if let SqlExpr::Value(v) = lit {
+                    if let SqlValue::Number(text, _) = &v.value {
+                        if text.parse::<i64>().is_err() && format!("-{text}").parse::<i64>().is_ok() {
+                            return Ok(SExpr {
+                                kind: SKind::Lit(Lit::I64(i64::MIN)),
+                                ty: Ty::I64,
+                                nullable: false,
+                            });
+                        }
+                    }
+                }
                 // A DOUBLE negates with Fneg, a sign-bit flip; no
                 // subtraction reproduces it (`NumOp1` in ir/mod.rs).
                 // Integers keep 0 - x and its i64::MIN trap, which is
