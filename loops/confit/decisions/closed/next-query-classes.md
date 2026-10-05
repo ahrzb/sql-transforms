@@ -30,12 +30,12 @@ outer query or a subquery over the request table):
 | `WITH` | 94 | 88 |
 
 A row-local derived table or CTE is inside the model (the
-[serving contract](../../specs/serving-contract.md#restriction-inventory-by-class)
+[serving contract](../../../../packages/confit/docs/specs/serving-contract.md#restriction-inventory-by-class)
 class 2); these 238 are the recoverable part.
 
 **Ruling (owner, 2026-09-27), partial.** Derived tables and row-local CTEs
 first, per the approved
-[design](../../specs/2026-09-26-row-local-subqueries-design.md): phase 1 over
+[design](../../../../packages/confit/docs/specs/2026-09-26-row-local-subqueries-design.md): phase 1 over
 the request table, phase 2 over static tables (projection only).
 
 **Ruling (owner, 2026-10-05).** The owner left the order to the maintainer:

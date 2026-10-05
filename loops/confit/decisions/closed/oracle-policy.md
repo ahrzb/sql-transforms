@@ -5,7 +5,7 @@ evidence?
 
 **Ruling.** The rules below. They keep a small core contract rather than make current
 limitations or documentation machinery part of its definition. Where the
-implementation differs, the [oracle chapters](../../oracle/README.md) state what is
+implementation differs, the [oracle chapters](../../../../packages/confit/docs/oracle/README.md) state what is
 true of the code.
 
 ## Reference and comparison

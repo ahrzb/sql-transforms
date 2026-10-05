@@ -1,7 +1,7 @@
 # Goal yardsticks, reading N=2 (2026-09-26)
 
 **What this is.** The second reading of the yardsticks in
-[success measures](../specs/success-measures.md), taken on master `24aafe8` on
+[success measures](../../../packages/confit/docs/specs/success-measures.md), taken on master `24aafe8` on
 2026-09-26. The [first reading](2026-09-02-goal-baseline.md) (N=1) was taken on
 `2ba96e5` on 2026-09-02. This file does not edit that one: it reads the same measures,
 and the column that matters is the delta. Every number here was produced in the
@@ -10,7 +10,7 @@ re-read.
 
 `gap:` and `finding:` slugs keep N=1's names, so an entry can be followed from one
 reading to the next. `gap: static-only-fold` is defined in the
-[2026-09-21 reading](2026-09-21-per-row-aggregation-and-the-fold.md).
+[2026-09-21 reading](../../../packages/confit/docs/reports/2026-09-21-per-row-aggregation-and-the-fold.md).
 
 ---
 

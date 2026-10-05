@@ -1,10 +1,10 @@
 # Per-row aggregation and the static-only fold, reading (2026-09-21)
 
-> Current definitions: [scope](../goal.md#scope) and the
+> Current definitions: [scope](../../../../loops/confit/goal.md#scope) and the
 > [comparison contract](../oracle/05-the-comparison-contract.md).
 > The dated measurements below are unchanged.
 
-**What this is.** The dated reading behind three changes to `packages/confit/docs/goal.md`
+**What this is.** The dated reading behind three changes to `loops/confit/goal.md`
 made on this date: claim: float-reduction-bound, the move of per-row aggregation out of
 exclusion: whole-relation-shapes, and the retirement of that row's static-tables-only
 carve-out. The goal holds the target; this file holds what was measured and how far today's
@@ -151,4 +151,4 @@ refusal test in `test_arrow_schema_api.py`. The corpus floor drops by the nine m
 not determine — and has no subject once the path is gone. The unmerged branch
 `refuse-static-tie-order`, which refuses such shapes one class at a time, is superseded and
 is not to be merged. The decision record is
-`packages/confit/docs/decisions/closed/static-only-queries.md`.
+`loops/confit/decisions/closed/static-only-queries.md`.
