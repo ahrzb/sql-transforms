@@ -95,7 +95,7 @@ def check(
     holds `id_col` and one column per declared feature.
 
     Where the step itself raises on a row (sklearn rejecting an input it
-    validates), the native answer is not compared: docs/native/goal.md,
+    validates), the native answer is not compared: loops/native/goal.md,
     "Where the twin raises". Returns the number of rows compared."""
     if ulps is None:
         ulps = bound(step)

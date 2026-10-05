@@ -3,7 +3,7 @@
 > **Native transforms.** `sql_transform.native` turns fitted sklearn
 > transformers into confit functions (`to_native(step)`), held to their
 > Python twins by swap-the-entry parity. It grows by its own loop:
-> [docs/native/README.md](docs/native/README.md).
+> [loops/native/README.md](../../loops/native/README.md).
 
 `SQLProjection` — projections over `__THIS__`, fit once, serve row-at-a-time.
 

@@ -2,7 +2,7 @@
 
 Each spells one numpy operation in the order numpy performs it, so an entry
 built from them is bit-exact with its twin wherever the twin performs that
-same sequence (docs/native/goal.md, "Parity"). The order functions are
+same sequence (loops/native/goal.md, "Parity"). The order functions are
 generic over `+` and `*`: run on Python floats they ARE numpy's arithmetic,
 which `_helpers_test.py` checks against numpy itself.
 """

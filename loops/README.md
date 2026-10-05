@@ -19,9 +19,10 @@ The folder name is the `loop:` key of the KPI block in
 lookup table.
 
 > **Migration in progress (2026-10-05).** Each loop moves its own files here
-> from its old place (`packages/confit/docs/loop/`, `packages/confit/PLANS.md`,
-> `packages/sql-transform/docs/native/`). Until a loop's folder exists, its old
-> README is still the entry point.
+> from its old place (`packages/confit/docs/loop/`, `packages/confit/PLANS.md`).
+> Until a loop's folder exists, its old README is still the entry point. The
+> native loop has moved: `packages/sql-transform/docs/native/` keeps only a
+> pointer to [`native/`](native/README.md).
 
 ## Shared rules
 

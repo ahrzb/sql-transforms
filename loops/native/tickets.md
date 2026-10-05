@@ -1,15 +1,16 @@
 # Native ticket board
 
-What is in flight in the native loop, in the shared form of
-`loops/workers.md` §3. The native folder has not moved to `loops/native/`
-yet, so the board lives next to PLANS. Wave 1 (KBinsDiscretizer #351,
+What is in flight in the native loop, inline work included, in the shared
+form of [`../workers.md`](../workers.md) §3. Wave 1 (KBinsDiscretizer #351,
 QuantileTransformer #357, PowerTransformer #356) ran before the board
-existed and is merged.
+existed and is merged. A worker's prompt is [`../worker-brief.md`](../worker-brief.md),
+then [`worker-brief.md`](worker-brief.md), then its ticket's section below.
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 | T1 | `Pipeline` of catalog entries | `claude/native-pipeline` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_018LHu15JPWd1LYRNLLTHeZJ` | | in progress |
 | T2 | `FunctionTransformer` over numpy functions with an exact SQL twin | `claude/native-function` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_01KLp5t39aq6tePxHvz7kJwi` | | in progress |
+| T3 | move the loop to `loops/native/` | `claude/native-loops` | #361 (merged) | every native doc; T1 and T2 merge master after it | inline | | in review |
 
 Next up, once a slot frees and the account's usage warning clears:
 `SplineTransformer`, then `AdditiveChi2Sampler`, then `ColumnTransformer`
