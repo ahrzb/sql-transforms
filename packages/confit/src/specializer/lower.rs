@@ -57,6 +57,16 @@ fn narrow_result_can_escape(k: &SKind) -> bool {
     )
 }
 
+/// The bit width of a narrow integer type; `None` for BIGINT and the rest.
+pub(super) fn narrow_bits(ty: Ty) -> Option<i64> {
+    match ty {
+        Ty::I8 => Some(8),
+        Ty::I16 => Some(16),
+        Ty::I32 => Some(32),
+        _ => None,
+    }
+}
+
 /// DuckDB's spelling of a narrow width, for the trap message.
 fn duck_narrow_name(ty: Ty) -> &'static str {
     match ty {
@@ -1116,7 +1126,24 @@ impl<'a> FB<'a> {
                     }
                     _ => (la.val, lb.val),
                 };
-                let val = self.bin(ir_op, va, vb);
+                let mut val = self.bin(ir_op, va, vb);
+                // A right shift by the width or more is 0 at a narrow width
+                // too (`(-1)::TINYINT >> 8` is 0 on DuckDB), where the i64
+                // shift would keep the sign bits; negative counts are
+                // already 0 in the kernel.
+                if let (ArithOp::Shr, Some(bits)) = (op, narrow_bits(e.ty)) {
+                    let w = self.const_lit(Lit::I64(bits));
+                    let inrange = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: CmpPred::Lt,
+                        ty: Ty::I64,
+                        dst: inrange,
+                        a: vb,
+                        b: w,
+                    });
+                    let zero = self.const_lit(Lit::I64(0));
+                    val = self.select_of(inrange, val, zero);
+                }
                 let lane = Lane { flag, val };
                 // MIN % -1 at a NARROW width. DuckDB computes the modulo
                 // through the checked division, which overflows at the

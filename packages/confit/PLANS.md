@@ -18,10 +18,10 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    - `nullif(NULL, x)` drops `x`, which DuckDB evaluates and can trap on
      (seeds 3058298, 3722953). The adoptable-NULL channel has no node that
      evaluates an operand for its trap only;
-   - narrow-width shifts: `1 << 31` traps at INTEGER on DuckDB, while confit's
-     shift kernel is 64-bit;
    - a narrow-width overflow traps on both engines, but confit's text names the
-     arrow range instead of DuckDB's `Overflow in multiplication of INT8`.
+     arrow range instead of DuckDB's `Overflow in multiplication of INT8`
+     (narrow left shifts likewise: `Overflow in left shift` / `Left-shift value
+     8 is out of range`).
 
    Still waiting from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
    TIMEOUT class where confit traps first while DuckDB builds a 2 GiB string
