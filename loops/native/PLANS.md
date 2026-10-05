@@ -9,12 +9,7 @@ on the board: [tickets.md](tickets.md).
 Easiest first; each is one family, one PR.
 
 1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
-2. **Show served compositions in coverage.md:** sklearn's transformer
-   list has no `Pipeline` (it is not a `TransformerMixin`), so the
-   scoreboard does not show the one composition the catalog serves. A
-   "served" note on composition rows, with `Pipeline` added from
-   `catalog()`, would.
-3. **`QuantileTransformer` as one search tree per feature:** its two
+2. **`QuantileTransformer` as one search tree per feature:** its two
    `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
    with the other endpoint of each interval closed), so one tree whose
    leaves compute both lines, with `x` at a breakpoint dispatched to the
@@ -22,7 +17,7 @@ Easiest first; each is one family, one PR.
    and builds linearly (Needs from confit, "Two CASE trees"): the default
    1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
    and the caps could rise.
-4. **A bound per configuration.** An entry's ulp bound is its class's
+3. **A bound per configuration.** An entry's ulp bound is its class's
    (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
    identity and the exact functions, refuses `np.exp`, `np.log`,
    `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
@@ -60,7 +55,7 @@ Easiest first; each is one family, one PR.
   0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
   the message sent to the confit loop (2026-10-05). The entry is capped at
   4,000 quantiles over the features and 4,000,000 in their squares
-  meanwhile (about 7 s at most); Next, item 3, is the entry-side
+  meanwhile (about 7 s at most); Next, item 2, is the entry-side
   alternative.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
@@ -142,7 +137,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
   a string feature, or a boolean one except for the identity (numpy keeps
   a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
-  on a bound per configuration (Next, item 4); `log1p` and `expm1` have no
+  on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
   DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
   numpy's kernel bit-equal to confit's.
 - A `Pipeline` with a step that is not a catalog entry, or one

@@ -15,14 +15,14 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `Birch` | not yet |  |
 | `BisectingKMeans` | not yet |  |
 | `CCA` | not yet |  |
-| `ColumnTransformer` | composition | routes columns to parts |
+| `ColumnTransformer` | composition | routes columns to parts; served over bit-exact entries |
 | `DictVectorizer` | out of scope | input is dicts, not a row of columns |
 | `DictionaryLearning` | not yet |  |
 | `FactorAnalysis` | not yet |  |
 | `FastICA` | not yet |  |
 | `FeatureAgglomeration` | native | bit-exact |
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
-| `FeatureUnion` | composition | concatenates parts' outputs |
+| `FeatureUnion` | composition | concatenates parts' outputs; served over bit-exact entries |
 | `FunctionTransformer` | native | bit-exact |
 | `GaussianRandomProjection` | not yet |  |
 | `GenericUnivariateSelect` | native | bit-exact |
@@ -60,6 +60,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `PLSRegression` | not yet |  |
 | `PLSSVD` | not yet |  |
 | `PatchExtractor` | out of scope | input is images |
+| `Pipeline` | composition | chains steps; served over bit-exact entries |
 | `PolynomialCountSketch` | not yet |  |
 | `PolynomialFeatures` | native | bit-exact |
 | `PowerTransformer` | native | within 4 ulps |
