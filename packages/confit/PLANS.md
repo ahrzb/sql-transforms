@@ -133,6 +133,10 @@ The first five are ruled, in this order; the rest follow.
   (`CAST('' AS DOUBLE) / sqrt(NULL)` serves NULL there).
 - `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
   (DuckDB converts at execution; a bind-time conversion is over-eager).
+  A numeric string member converts through f64 and rounds to BIGINT, so past
+  2^53 it is the wrong integer (`b IN ('9007199254740993')` over a BIGINT
+  `b`); parse it with the integer kernels at the family's type instead.
+  Beside UBIGINT/HUGEINT such members refuse by name for this reason.
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
 - **Wrapped-query refusals** the metamorphic suite allowlists
   (rewrite tolerances in `fuzz/exclusions.py`): a struct- or list-valued column inside a

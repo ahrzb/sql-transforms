@@ -201,7 +201,8 @@ consequences:
   `decimal128(38, 0)`, as DuckDB exports it, past 38 digits too; UBIGINT as
   `uint64`. No arrow input type reads as HUGEINT. Refused by name: unary
   minus over UBIGINT (DuckDB wraps it), shifts over either width,
-  `round`/`trunc` with digits over either, and UHUGEINT (a literal past
+  `round`/`trunc` with digits over either, a string literal in an
+  `IN`/`BETWEEN` beside either, and UHUGEINT (a literal past
   HUGEINT, a CAST target), which does not survive the Arrow trip. CAST
   targets: TINYINT through HUGEINT, every unsigned width but UHUGEINT,
   DOUBLE, DECIMAL, VARCHAR and BOOLEAN (and DuckDB's aliases for them) are

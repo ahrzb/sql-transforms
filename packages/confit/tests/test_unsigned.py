@@ -154,3 +154,19 @@ def test_a_cast_to_an_unserved_width_refuses_by_name(cast, target):
             row_tables={"__THIS__": pa.schema([pa.field("k", pa.int64())])},
             static_tables={},
         )
+
+
+def test_a_varchar_build_key_takes_the_unsigned_sign_rule():
+    # '-0.4' is no UTINYINT on DuckDB (a minus only before zeros), so the
+    # key fails to convert there on every query (review of #349).
+    s = pa.table({"k": pa.array(["-0.4", "200"]), "z": pa.array([1, 2], pa.int64())})
+    assert_parity(
+        "SELECT u8, z FROM __THIS__ JOIN s ON u8 = s.k",
+        ROWS,
+        statics={"s": s},
+        expect="REFUSED",
+    )
+    ok = pa.table({"k": pa.array(["-0", "200"]), "z": pa.array([1, 2], pa.int64())})
+    assert_parity(
+        "SELECT u8, z FROM __THIS__ JOIN s ON u8 = s.k", ROWS, statics={"s": ok}
+    )

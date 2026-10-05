@@ -959,7 +959,7 @@ impl Binder<'_> {
     /// f64 side promotes all sides. Numeric-with-string/bool mixing has
     /// exec-time cast semantics we don't model — clean-unsupported.
     pub(super) fn unify_family(&self, exprs: &[&SqlExpr]) -> Result<Vec<SqlExpr>, PrepareError> {
-        let (mut any_f64, mut any_num) = (false, false);
+        let (mut any_f64, mut any_num, mut any_wide) = (false, false, false);
         // A DECIMAL member unifies the family at the common DECIMAL
         // (docs/specs/decimal-expressions.md §7). Each comparison below
         // meets its own pair's common type, which reads the same values
@@ -985,7 +985,7 @@ impl Binder<'_> {
                     Ty::F64 => (any_f64, any_num) = (true, true),
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => any_num = true,
                     Ty::Dec(..) => any_dec = Some(b.clone()),
-                    Ty::I128 | Ty::U64 => any_num = true,
+                    Ty::I128 | Ty::U64 => (any_num, any_wide) = (true, true),
                     Ty::Str | Ty::I1 => {}
                 }
             }
@@ -1033,6 +1033,15 @@ impl Binder<'_> {
                 continue;
             }
             let lit = match b.map(|b| b.kind) {
+                // The conversion below rounds through f64 to BIGINT, which
+                // has neither the unsigned sign rule nor 128-bit precision:
+                // `u64 IN ('-1', 3)` errors on DuckDB.
+                Some(SKind::Lit(Lit::Str(_))) if any_wide && !any_f64 => {
+                    return Err(unsup(
+                        "BETWEEN/IN mixing string literals with UBIGINT or HUGEINT \
+                         (DuckDB parses them at the 128-bit or unsigned type)",
+                    ));
+                }
                 Some(SKind::Lit(Lit::Str(s))) => {
                     // Non-numeric strings convert (and fail) at EXECUTION
                     // time in DuckDB — an empty input succeeds — so a

@@ -645,7 +645,8 @@ fn pa_ty<'py>(pa: &Bound<'py, PyModule>, t: Ty) -> PyResult<Bound<'py, PyAny>> {
         Ty::Dec(p, s) => pa.call_method1("decimal128", (p, s)),
         // DuckDB exports HUGEINT as decimal128(38, 0) whatever the value,
         // past 38 digits too (measured: 2^127 - 1 comes back as a 39-digit
-        // Decimal), and UBIGINT as uint64.
+        // Decimal), and UBIGINT as uint64. Such an array fails pyarrow's
+        // `validate(full=True)`, on DuckDB's export and here alike.
         Ty::I128 => pa.call_method1("decimal128", (38, 0)),
         Ty::U64 => pa.call_method0("uint64"),
     }

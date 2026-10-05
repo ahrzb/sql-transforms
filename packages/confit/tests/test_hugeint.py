@@ -315,3 +315,43 @@ def test_a_ubigint_shared_column_joins_by_name():
 def test_an_unaliased_cast_is_named_as_duckdb_names_it(cast, spelling):
     # An alias prints as the type it binds to: `CAST(i AS "UBIGINT")`.
     assert_parity(f"SELECT {cast}(i8 AS {spelling}) FROM __THIS__", SMALL)
+
+
+@pytest.mark.parametrize("bad", ["-1", "18446744073709551616", "-0.4"])
+def test_a_varchar_build_key_parses_at_the_unsigned_probe_type(bad):
+    # DuckDB casts the VARCHAR key to UBIGINT: '-1' and '-0.4' fail its sign
+    # rule and 2^64 its range, an error on every query. Parsed at the i128
+    # lane, all three used to serve (review of #349).
+    s = pa.table({"k": pa.array([bad, "3"]), "z": pa.array([1, 2], pa.int64())})
+    v = assert_parity(
+        "SELECT u64, z FROM __THIS__ JOIN s ON u64 = s.k",
+        ROWS,
+        statics={"s": s},
+        expect="REFUSED",
+    )
+    assert "UBIGINT" in v.detail, v.detail
+
+
+def test_a_varchar_build_key_in_range_still_joins_an_unsigned_probe():
+    s = pa.table(
+        {"k": pa.array(["18446744073709551615", "-0", " 7 "]), "z": pa.array([1, 2, 3])}
+    )
+    assert_parity(
+        "SELECT u64, z FROM __THIS__ JOIN s ON u64 = s.k", ROWS, statics={"s": s}
+    )
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "u64 IN ('-1', 3)",
+        "u64 IN ('-0.4', 1)",
+        "u64 BETWEEN '-0.4' AND 5",
+        f"{H} IN ('9007199254740993')",
+    ],
+)
+def test_a_string_member_beside_a_wide_integer_refuses_by_name(expr):
+    # The family's string conversion rounds through f64 to BIGINT: no sign
+    # rule, no 128-bit precision (review of #349).
+    v = assert_parity(f"SELECT {expr} AS o FROM __THIS__", ROWS, expect="REFUSED")
+    assert "UBIGINT or HUGEINT" in v.detail

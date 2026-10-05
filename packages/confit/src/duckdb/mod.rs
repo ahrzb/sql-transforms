@@ -1068,16 +1068,26 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                 if (ty.is_integer() || ty == Ty::F64) && v.is_instance_of::<pyo3::types::PyString>() {
                     let s: String = v.extract()?;
                     use crate::specializer::exec::kernels::{duck_stof, duck_stoi};
-                    let kb = if ty == Ty::F64 {
-                        duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
-                    } else if ty.is_wide() {
-                        crate::specializer::exec::hugeint::duck_ston(&s, ty).map(KeyBits::I128)
+                    // Parsed at the PROBE's own type, not the key lane's: an
+                    // unsigned probe takes the unsigned sign rule and its
+                    // range ('-1' and '-0.4' fail against UBIGINT and
+                    // UTINYINT alike), whatever lane the key rides.
+                    let p = k.probe_ty;
+                    let parsed = if ty == Ty::F64 {
+                        None
+                    } else if p.is_unsigned() || p.is_wide() {
+                        crate::specializer::exec::hugeint::duck_ston(&s, p)
                     } else {
                         duck_stoi(&s)
-                            .filter(|i| {
-                                k.probe_ty.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i))
-                            })
-                            .map(KeyBits::I64)
+                            .filter(|i| p.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i)))
+                            .map(i128::from)
+                    };
+                    let kb = if ty == Ty::F64 {
+                        duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
+                    } else if ty.lane() == Ty::I128 {
+                        parsed.map(KeyBits::I128)
+                    } else {
+                        parsed.map(|i| KeyBits::I64(i as i64))
                     };
                     return match kb {
                         Some(kb) => Ok(Some(kb)),
