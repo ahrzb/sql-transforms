@@ -577,6 +577,11 @@ NIGHTLY_305_SHARDED = {
     ),
     # WHERE BETWEEN's upper bound is checked last
     3510602: "AGREE_TRAP",
+    # 2026-10-05 nightly (seeds 4200000..4599999): a pure udf nested in a
+    # closed call folds first; a tree call with a NULL id over a column
+    # feature runs, so a trapping sibling traps.
+    4234049: "AGREE",
+    4316677: "AGREE_TRAP",
 }
 
 
@@ -585,7 +590,9 @@ def test_the_sharded_nightly_findings_stay_fixed(seed, kind):
     assert oracle.run_case(gen.gen(seed)).kind == kind
 
 
-@pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879])
+# 4211849: a bare name shared with a static struct column is ambiguous
+# (DuckDB's refusal), so qualifying it is a different query.
+@pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879, 4211849])
 def test_the_first_nightly_spellings_stay_consistent(seed):
     from fuzz import metamorphic
 

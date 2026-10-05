@@ -975,6 +975,13 @@ pub(super) fn static_col_of(
     // where UBIGINT and friends show up.
     if hit.is_none() {
         if let Some(err) = opaque_static_refusal(st, name, scope_name) {
+            // A bare name the other side also binds is ambiguous on DuckDB
+            // before any question of its type (nightly seed 4211849).
+            if matches!(e, SqlExpr::Identifier(_)) && binder.binds_as_column(name) {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous column '{name}' in JOIN ON (qualify it)"
+                )));
+            }
             return Err(err);
         }
         if let SqlExpr::CompoundIdentifier(_) = e {

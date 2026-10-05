@@ -54,6 +54,31 @@ impl Binder<'_> {
         let eval = self.bind_eval.get(ext)?;
         let mut vals = Vec::with_capacity(args.len());
         for a in args {
+            // A pure udf over constants is itself a constant to DuckDB's
+            // binder, which folds the inner call first (nightly seed
+            // 4234049): fold it here too, reading the lane this argument
+            // takes off it.
+            if let SKind::ExternCall {
+                ext: inner,
+                args: inner_args,
+                ret,
+                whole,
+                ..
+            } = &a.kind
+            {
+                let inner_spec = self.udfs.get(*inner as usize)?;
+                let lanes = match self.try_extern_bind_fold(*inner as usize, inner_spec, inner_args)? {
+                    Ok(lanes) => lanes,
+                    // It raises: DuckDB leaves the call to run.
+                    Err(_) => return None,
+                };
+                vals.push(match lanes {
+                    None => None,
+                    Some(_) if *whole => return None,
+                    Some(l) => l.into_iter().nth(*ret as usize).flatten(),
+                });
+                continue;
+            }
             if !bind_foldable(a) {
                 return None;
             }
@@ -576,8 +601,15 @@ impl Binder<'_> {
 
         // The instance id gates the RESULT: an unseen group has no model.
         // Feature nullability deliberately does not propagate.
-        let Some(bid) = self.expr_or_null(id)? else {
-            return Ok(null_of(Ty::F64));
+        let bid = match self.expr_or_null(id)? {
+            Some(b) => b,
+            // A bare NULL id: DuckDB folds the call only when every
+            // argument is a constant (then it is the NULL the binder elides
+            // its siblings under). Over a column feature the call runs per
+            // row and answers NULL, and a trapping sibling still traps
+            // (nightly seed 4316677: `trees(NULL, c0, ..) * ln(c0)`).
+            None if bound.iter().all(bind_foldable) => return Ok(null_of(Ty::F64)),
+            None => null_of(Ty::I64),
         };
         let bid = match bid.ty {
             t if t.is_int() => bid,
