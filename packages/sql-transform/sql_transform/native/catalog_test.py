@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pytest
+from sklearn.cluster import FeatureAgglomeration
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import (
     RFE,
@@ -374,6 +375,39 @@ FIXTURES[Pipeline] = [
             ("bin", Binarizer()),
         ]
     ),
+]
+
+
+def _clusters(count: Callable[[int], int], **kw: Any) -> Callable[[], Any]:
+    """A FeatureAgglomeration factory whose fit sets `n_clusters` to
+    `count(n_features)` first: the generator draws the width, and a fit
+    asked for more clusters than features raises."""
+
+    def make() -> FeatureAgglomeration:
+        est = FeatureAgglomeration(**kw)
+
+        def fit(X, y=None):
+            del est.fit  # the class's own again
+            est.n_clusters = count(np.shape(X)[1])
+            return FeatureAgglomeration.fit(est, X, y)
+
+        est.fit = fit
+        return est
+
+    return make
+
+
+# FeatureAgglomeration: mean pooling (the entry serves no other), one
+# cluster, one feature per cluster, and between, under each linkage. A
+# one-feature fit raises in sklearn, so those draws are drawn again.
+FIXTURES[FeatureAgglomeration] = [
+    FeatureAgglomeration,
+    _clusters(lambda n: 1),
+    _clusters(lambda n: n, linkage="complete"),
+    _clusters(lambda n: max(1, n // 2), linkage="average", pooling_func=np.mean),
+    _clusters(lambda n: max(1, n - 1), linkage="single"),
+    _clusters(lambda n: min(n, 3), linkage="complete", metric="manhattan"),
+    lambda: FeatureAgglomeration(n_clusters=None, distance_threshold=100.0),
 ]
 
 
@@ -936,7 +970,6 @@ def _sum_rows(X):
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
         (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
-        (FunctionTransformer(np.sin), [pa.float64()] * 9, "over 9 features"),
     ],
     ids=lambda v: None,
 )
@@ -1059,3 +1092,62 @@ def test_spline_refuses(params, reason):
     )
     with pytest.raises(NotNative, match=reason):
         to_native(step, strict=True)
+
+
+# ------------------------------------------------------- FeatureAgglomeration
+
+
+def _agglomeration_step(est: Any, n: int = 4) -> PythonTransform:
+    width = len(np.unique(est.labels_))
+    takes = pa.schema([(f"x{i}", pa.float64()) for i in range(n)])
+    return PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), width))
+
+
+def test_agglomeration_pools_signed_zeros_from_zero():
+    # Mean pooling sums from 0.0: a cluster of -0.0 pools to 0.0, a cluster
+    # of one -0.0 too; a 0.0 beside a -0.0 in any order as well.
+    X = np.array([[0.0, 0.0, 9.0, 9.0], [1.0, 1.0, -9.0, -9.0], [2.0, 2.0, 5, 5]])
+    est = _clusters(lambda n: 2, linkage="single")().fit(X)
+    assert len(set(est.labels_[:2])) == 1 and len(set(est.labels_[2:])) == 1
+    zeros = [(a, b, c, d) for a in (0.0, -0.0) for b in (0.0, -0.0)
+             for c in (0.0, -0.0) for d in (0.0, -0.0)]  # fmt: skip
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(zeros), pa.int64()),
+            **{f"x{i}": pa.array([z[i] for z in zeros]) for i in range(4)},
+        }
+    )
+    singles = FeatureAgglomeration(n_clusters=4).fit(X)
+    for e in (est, singles):
+        step = _agglomeration_step(e)
+        assert check(step, to_native(step, strict=True), rows) == len(zeros)
+
+
+def _median_rows(X, axis):
+    return np.median(X, axis=axis)
+
+
+@pytest.mark.parametrize(
+    "func, reason",
+    [
+        (np.max, r"pooling_func=np\.max\)"),
+        (np.min, r"pooling_func=np\.min\)"),
+        (np.median, r"pooling_func=np\.median\)"),
+        (lambda X, axis: np.mean(X, axis=axis), r"pooling_func=<lambda>\)"),
+        (_median_rows, r"pooling_func=_median_rows\)"),
+    ],
+    ids=["max", "min", "median", "lambda", "function"],
+)
+def test_agglomeration_refuses_other_pooling(func, reason):
+    X = np.random.default_rng(0).normal(size=(10, 4))
+    est = FeatureAgglomeration(pooling_func=func).fit(X)
+    with pytest.raises(NotNative, match=reason):
+        to_native(_agglomeration_step(est), strict=True)
+
+
+def test_agglomeration_refuses_labels_that_skip_a_cluster():
+    X = np.random.default_rng(0).normal(size=(10, 4))
+    est = FeatureAgglomeration(n_clusters=2).fit(X)
+    est.labels_ = np.array([0, 0, 2, 2])
+    with pytest.raises(NotNative, match="skip a cluster"):
+        to_native(_agglomeration_step(est), strict=True)
