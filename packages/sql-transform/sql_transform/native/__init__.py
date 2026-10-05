@@ -21,6 +21,7 @@ but the step class, so the rest of the package can change around it.
 
 from __future__ import annotations
 
+from sql_transform.native import discretize as _discretize  # noqa: F401  (registers)
 from sql_transform.native import encode as _encode  # noqa: F401  (registers)
 from sql_transform.native import impute as _impute  # noqa: F401  (registers)
 from sql_transform.native import polynomial as _polynomial  # noqa: F401  (registers)

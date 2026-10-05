@@ -7,11 +7,10 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **`KBinsDiscretizer`** (`encode="ordinal"`, `"onehot-dense"`).
-2. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
-   `standardize`), `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
-   twin, `AdditiveChi2Sampler`.
-3. **Compositions:** a step whose instances are `Pipeline`s of catalog
+1. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+   `standardize`), `SplineTransformer`, `FunctionTransformer` for numpy
+   ufuncs with a SQL twin, `AdditiveChi2Sampler`.
+2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
@@ -94,6 +93,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `Normalizer(norm="max")` over more than 8 features, and any norm whose
   body confit does not build, until a subexpression is shared within a call
   (above).
+- `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
+  for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
+  twin rounds x to float32 before it bins it, which the entry does not
+  spell (a cast to FLOAT would have to round as numpy does, unproven).
+  Bin edges that are not sorted numbers (searchsorted's answer is then
+  its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. Past 2,000 quantiles per estimator (summed
   over its features), until confit's build is linear in the lanes read

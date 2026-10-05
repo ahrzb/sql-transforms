@@ -57,6 +57,17 @@ Delivered:
   scope. 128 lanes read 128 times build in 0.4 s (13.6 s before both), 128
   lanes over 3 groups (past the 4M-token cap before) in 0.7 s, 256 lanes in
   1.4 s. An unaliased read is named as DuckDB names it, `(f(x)).p`.
+- A dropped function returns its JIT memory (`OwnedJit`): every build kept
+  2 mappings before, so a process stalled at `vm.max_map_count` after about
+  32k builds. 3,000 build/call/drop cycles now hold 479 mappings and 121 MB
+  flat (`tests/test_jit_memory.py`).
+- A struct-returning SQL function read field by field builds in time
+  linear in the lanes read, with or without `null_when` (whose CASE arm
+  reads as a call of its own) and with output aliases equal to the field
+  names (the scope key counts only aliases the call's arguments name). The
+  catalog's degree-2 shape with `null_when` and an `error()` arm: 1,035
+  lanes in 0.8 s (16.4 s before), 2,016 in 2.1 s, 3,240 in 4.0 s; no
+  expansion cap reached.
 - `greatest`/`least` build as one flat CASE (n² in the argument count, was
   4^n).
 - A Cranelift size limit refuses by name (`unsupported:`).

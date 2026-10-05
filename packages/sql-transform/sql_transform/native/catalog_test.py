@@ -35,6 +35,7 @@ from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.preprocessing import (
     Binarizer,
+    KBinsDiscretizer,
     MaxAbsScaler,
     MinMaxScaler,
     Normalizer,
@@ -66,6 +67,8 @@ pytestmark = pytest.mark.filterwarnings(
     "ignore:Found unknown categories:UserWarning",
     "ignore:overflow encountered:RuntimeWarning",
     "ignore:invalid value encountered:RuntimeWarning",
+    "ignore:Feature .* is constant:UserWarning",
+    "ignore:Bins whose width are too small:UserWarning",
 )
 
 
@@ -184,6 +187,28 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
     ],
     TargetEncoder: [TargetEncoder, lambda: TargetEncoder(target_type="continuous")],
 }
+
+# KBinsDiscretizer: the strategies only shape the edges; constant features
+# (edges [-inf, inf]) and dropped narrow bins come from the generator's
+# zero-variance and few-valued columns.
+FIXTURES[KBinsDiscretizer] = [
+    lambda: KBinsDiscretizer(encode="ordinal", strategy="uniform"),
+    lambda: KBinsDiscretizer(n_bins=2, encode="onehot-dense", strategy="uniform"),
+    lambda: KBinsDiscretizer(n_bins=10, encode="ordinal", strategy="quantile"),
+    lambda: KBinsDiscretizer(n_bins=3, encode="onehot-dense", strategy="quantile"),
+    lambda: KBinsDiscretizer(
+        n_bins=7, encode="ordinal", quantile_method="inverted_cdf"
+    ),
+    lambda: KBinsDiscretizer(n_bins=4, encode="onehot-dense", quantile_method="linear"),
+    lambda: KBinsDiscretizer(
+        n_bins=6, encode="ordinal", quantile_method="median_unbiased"
+    ),
+    lambda: KBinsDiscretizer(n_bins=4, encode="ordinal", strategy="kmeans"),
+    lambda: KBinsDiscretizer(n_bins=3, encode="onehot-dense", strategy="kmeans"),
+    lambda: KBinsDiscretizer(
+        n_bins=8, encode="onehot-dense", strategy="uniform", dtype=np.float64
+    ),
+]
 
 # QuantileTransformer: the fits have 5 to 60 rows, so n_quantiles_ is the
 # row count past it; few distinct values (kind 4) make runs of equal
@@ -540,3 +565,66 @@ def test_a_reordered_translation_is_caught(monkeypatch):
             caught += 1
     assert caught, "a one-rounding reorder passed the bit-exact bound"
     assert entry.ulps == 0
+
+
+# ------------------------------------------------------------ KBinsDiscretizer
+
+
+def _kbins_step(est: Any) -> PythonTransform:
+    width = np.asarray(est.transform(np.zeros((1, 2)))).shape[1]
+    return PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64()), ("x1", pa.float64())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+
+
+@pytest.mark.parametrize("encode", ["ordinal", "onehot-dense"])
+def test_kbins_counts_equal_edges_as_numpy_does(encode):
+    # "uniform" keeps every edge of np.linspace, so a range a few doubles
+    # wide repeats edges; served on the edges themselves and their
+    # neighbours. The second feature's edges straddle zero, served with
+    # both signed zeros.
+    lo = 1.0
+    hi = float(np.nextafter(np.nextafter(lo, 2.0), 2.0))
+    X = np.array([[lo, -2.0], [hi, 2.0], [lo, 0.5]])
+    est = KBinsDiscretizer(n_bins=8, encode=encode, strategy="uniform").fit(X)
+    edges = est.bin_edges_[0][1:-1]
+    assert len(set(edges)) < len(edges), "no repeated edge"
+    assert 0.0 in est.bin_edges_[1]
+    probes = sorted(
+        {float(v) for e in edges for v in (np.nextafter(e, -9), e, np.nextafter(e, 9))}
+    )
+    zeros = [0.0, -0.0, 5e-324, -5e-324, 0.5, -0.5, 2.0, -2.0]
+    n = max(len(probes), len(zeros))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * n, pa.int64()),
+            "x0": pa.array([probes[i % len(probes)] for i in range(n)]),
+            "x1": pa.array([zeros[i % len(zeros)] for i in range(n)]),
+        }
+    )
+    step = _kbins_step(est)
+    assert check(step, to_native(step, strict=True), rows) == n
+
+
+@pytest.mark.parametrize(
+    "make, why",
+    [
+        (lambda: KBinsDiscretizer(encode="onehot"), "sparse"),
+        (lambda: KBinsDiscretizer(encode="ordinal", dtype=np.float32), "float32"),
+    ],
+    ids=["onehot", "float32"],
+)
+def test_kbins_refuses(make, why):
+    X = np.random.default_rng(0).normal(size=(20, 2))
+    est = make().fit(X)
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64()), ("x1", pa.float64())]),
+        pa.float64(),
+    )
+    with pytest.raises(NotNative, match=why):
+        to_native(step, strict=True)

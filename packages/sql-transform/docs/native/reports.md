@@ -8,16 +8,11 @@ example. This page explains how the native loop does it.
 
 ## When to report
 
-Write a report when one of these happens:
-
-- **A batch of families has merged.** That means about five families, or the
-  end of a wave of workers.
-- **The scoreboard crosses a mark.** For example, half of the in-scope rows
-  in [coverage.md](coverage.md) are native, or a whole sklearn module is.
-- **A confit capability lands that unblocks entries.** Report how many
-  `NotNative` configurations it turned native.
-- **The loop stops.** This happens when PLANS has nothing left that it can do
-  without the owner.
+The triggers, the KPI block every report opens with, and the hand-off are
+shared with the confit loop: see
+[`docs/loop-reporting.md`](../../../../docs/loop-reporting.md). This page keeps
+the native loop's own parts: where the file goes and the shape of a full
+report.
 
 Do not write a report per PR. The PR descriptions already cover single
 changes.
@@ -29,7 +24,9 @@ edit an older report. A new reading is a new file, and it names the report
 it follows.
 
 **Committing it.** Commit the report in its own small PR, or in the PR that
-completes the milestone.
+completes the milestone. Open the file with the KPI block from
+[`docs/loop-reporting.md`](../../../../docs/loop-reporting.md#2-the-kpi-block-required-machine-readable),
+and start the PR title with `report:`.
 
 **Publishing it.** If the session can publish a document for the owner (for
 example a Claude Doc or an Artifact), publish the same text and link both in
