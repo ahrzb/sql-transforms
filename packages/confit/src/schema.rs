@@ -30,15 +30,12 @@ pub enum RowField {
 /// artifact of who wrote which reader.
 ///
 /// `Row` is exact: a type is served at its declared width or it is opaque.
-/// `Static` additionally takes `large_string`/`utf8` and the decimal tiers
-/// `decimal32`/`decimal64`/`decimal128` as `Ty::Dec(p,s)`, and ONLY those —
-/// each measured against DuckDB rather than assumed. `decimal256` stays
-/// opaque because DuckDB refuses it outright at arrow register ("Unsupported
-/// Internal Arrow Type for Decimal"), at any precision.
-///
-/// The two remaining differences are `large_string`/`utf8` and the decimal
-/// acceptance itself. Decimal ROW columns stay opaque, which is also why the
-/// arrow ROW-ingest path needs no decimal arm at all.
+/// Both take the decimal tiers `decimal32`/`decimal64`/`decimal128` as
+/// `Ty::Dec(p,s)`; `decimal256` stays opaque because DuckDB refuses it
+/// outright at arrow register ("Unsupported Internal Arrow Type for
+/// Decimal"), at any precision. `Static` additionally takes
+/// `large_string`/`utf8`, and ONLY that — measured against DuckDB rather than
+/// assumed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Row,
@@ -165,12 +162,12 @@ fn arrow_field_to_row_field(
         // here), unsigned in type (uint64 stays UINT64 there, int64 here).
         // The row path refuses them; a catalogue that widened them silently
         // instead would be the third mode the contract forbids.
+        n if n.starts_with("decimal") => match decimal_ps(n) {
+            Some((p, s)) => Ty::Dec(p, s),
+            None => return Ok(RowField::Opaque(name)),
+        },
         _ if policy == Policy::Static => match name.as_str() {
             "large_string" | "utf8" | "large_utf8" => Ty::Str,
-            n if n.starts_with("decimal") => match decimal_ps(n) {
-                Some((p, s)) => Ty::Dec(p, s),
-                None => return Ok(RowField::Opaque(name)),
-            },
             _ => return Ok(RowField::Opaque(name)),
         },
         _ => return Ok(RowField::Opaque(name)),
@@ -181,7 +178,7 @@ fn arrow_field_to_row_field(
 /// `(p, s)` out of pyarrow's own spelling — `decimal128(38, 0)`,
 /// `decimal32(6, 2)`. `None` for `decimal256` (DuckDB refuses it) and for
 /// anything outside DECIMAL's 1..=38 / s <= p range.
-fn decimal_ps(name: &str) -> Option<(u8, u8)> {
+pub(crate) fn decimal_ps(name: &str) -> Option<(u8, u8)> {
     let (head, args) = name.split_once('(')?;
     if !matches!(head, "decimal32" | "decimal64" | "decimal128" | "decimal") {
         return None;

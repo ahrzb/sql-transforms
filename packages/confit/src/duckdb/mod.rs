@@ -95,6 +95,19 @@ fn push_input_cell(
     // only subclass values (np.float64, str subclasses) take the isinstance
     // fallback. Keeps the strict boundary at the old unchecked-extract cost.
     match col {
+        ColData::Dec { p, s, valid, data } => {
+            valid.push(!null);
+            data.push(if null {
+                0
+            } else {
+                py_decimal_scaled(attr, *p, *s).map_err(|why| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "column '{name}' {why} for its {} type",
+                        arrow_ty_name(ty.ty)
+                    ))
+                })?
+            });
+        }
         ColData::I1 { valid, data } => {
             valid.push(!null);
             data.push(if null {
@@ -185,6 +198,71 @@ fn push_input_cell(
     Ok(())
 }
 
+/// A Python value as a DECIMAL(p, s) cell: its scaled integer, exactly. A
+/// `decimal.Decimal` must carry no more than `s` significant fractional
+/// digits (trailing zeros are fine) and fit `p` digits; an `int` is scaled
+/// up. A float or bool is refused: a binary fraction is not the decimal the
+/// caller meant, and DuckDB's own Arrow input is already exact.
+fn py_decimal_scaled(attr: &Bound<'_, PyAny>, p: u8, s: u8) -> Result<i128, String> {
+    use pyo3::types::{PyBool, PyInt, PyTuple};
+    let pow10 = |k: u32| 10i128.checked_pow(k);
+    let limit = pow10(p as u32).expect("p <= 38");
+    let fits = |v: i128| -> Result<i128, String> {
+        if v.abs() < limit {
+            Ok(v)
+        } else {
+            Err(format!("value is out of range"))
+        }
+    };
+    if attr.is_instance_of::<PyInt>() && !attr.is_instance_of::<PyBool>() {
+        let v: i128 = attr.extract().map_err(|_| "value is out of range".to_string())?;
+        return fits(
+            v.checked_mul(pow10(s as u32).expect("s <= 38"))
+                .ok_or("value is out of range")?,
+        );
+    }
+    let type_name = attr.get_type().name().map(|n| n.to_string()).unwrap_or_default();
+    if type_name != "Decimal" {
+        return Err(format!("expects a Decimal or an int, got {type_name}"));
+    }
+    let t = attr
+        .call_method0("as_tuple")
+        .map_err(|e| e.to_string())?;
+    let t = t.cast::<PyTuple>().map_err(|e| e.to_string())?;
+    let sign: i64 = t.get_item(0).and_then(|x| x.extract()).map_err(|e| e.to_string())?;
+    let exp: i64 = t
+        .get_item(2)
+        .and_then(|x| x.extract())
+        .map_err(|_| "value is not finite".to_string())?;
+    let digits: Vec<u8> = t.get_item(1).and_then(|x| x.extract()).map_err(|e| e.to_string())?;
+    // The coefficient, then the shift to scale `s`.
+    let mut shift = exp + s as i64;
+    let mut ds: &[u8] = &digits;
+    while shift < 0 {
+        match ds.split_last() {
+            Some((0, rest)) => {
+                ds = rest;
+                shift += 1;
+            }
+            Some(_) => return Err(format!("value has more than {s} decimal places")),
+            None => {
+                shift = 0;
+            }
+        }
+    }
+    let mut v: i128 = 0;
+    for &d in ds {
+        v = v
+            .checked_mul(10)
+            .and_then(|x| x.checked_add(d as i128))
+            .ok_or("value is out of range")?;
+    }
+    for _ in 0..shift {
+        v = v.checked_mul(10).ok_or("value is out of range")?;
+    }
+    fits(if sign == 1 { -v } else { v })
+}
+
 /// An empty `ColData` for one input lane, optionally with capacity. Both row
 /// boundaries build every lane through it and `arrow::ingest` builds its
 /// string lanes here, so the mapping it fixes is the one every ingest path
@@ -219,9 +297,12 @@ pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
             buf: String::new(),
             spans: Vec::with_capacity(cap),
         },
-        // A decimal ROW column is opaque (schema.rs, Policy::Row), so no
-        // input lane is ever a Dec.
-        Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
+        Ty::Dec(p, s) => ColData::Dec {
+            p,
+            s,
+            valid: Vec::with_capacity(cap),
+            data: Vec::with_capacity(cap),
+        },
     }
 }
 

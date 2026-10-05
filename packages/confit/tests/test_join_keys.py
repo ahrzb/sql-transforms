@@ -442,9 +442,9 @@ def test_an_opaque_shared_column_refuses_by_name(sql, aty, vals, col):
 
 
 def test_a_row_side_decimal_shared_column_refuses_by_name():
-    """decimal128 is the asymmetric one: servable on the STATIC side, opaque
-    on the ROW side, so the static loop found it and the row side dropped
-    it. The message must say which side."""
+    """A decimal row column is a lane now, so a shared DECIMAL key binds on
+    both sides, and refuses for what it is: a DECIMAL probe key against a
+    DECIMAL build key (PLANS, "Decimal remainders")."""
     dec = pa.decimal128(10, 2)
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("t", dec)]
@@ -456,7 +456,7 @@ def test_a_row_side_decimal_shared_column_refuses_by_name():
             "z": pa.array([7], pa.int64()),
         }
     )
-    _refuses(_FORMS[0], row_schema, static, "'t'")
+    _refuses(_FORMS[0], row_schema, static, "DECIMAL probe keys")
 
 
 def test_a_struct_key_with_an_unlaneable_field_refuses_by_name():

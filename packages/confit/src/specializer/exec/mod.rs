@@ -66,6 +66,13 @@ pub enum ColData {
         buf: String,
         spans: Vec<StrRef>,
     },
+    /// DECIMAL(p, s): the scaled i128, exact from ingest to emit.
+    Dec {
+        p: u8,
+        s: u8,
+        valid: Vec<bool>,
+        data: Vec<i128>,
+    },
 }
 
 impl ColData {
@@ -89,11 +96,12 @@ impl ColData {
                 buf: String::new(),
                 spans: Vec::new(),
             },
-            // Input columns only. A decimal ROW column is outside the row
-            // schema vocabulary and stays opaque (schema.rs, `Policy::Row`),
-            // so a Dec never reaches an INPUT lane — only a static's value
-            // lane and the output boundary, neither of which is ColData.
-            Ty::Dec(..) => unreachable!("a decimal row column is opaque, never a ColData"),
+            Ty::Dec(p, s) => ColData::Dec {
+                p,
+                s,
+                valid: Vec::new(),
+                data: Vec::new(),
+            },
         }
     }
 
@@ -116,6 +124,10 @@ impl ColData {
                 valid.clear();
                 buf.clear();
                 spans.clear();
+            }
+            ColData::Dec { valid, data, .. } => {
+                valid.clear();
+                data.clear();
             }
         }
     }
@@ -159,6 +171,7 @@ impl ColData {
             ColData::I64 { .. } => Ty::I64,
             ColData::F64 { .. } => Ty::F64,
             ColData::Str { .. } => Ty::Str,
+            ColData::Dec { p, s, .. } => Ty::Dec(*p, *s),
         }
     }
 
@@ -168,6 +181,7 @@ impl ColData {
             ColData::I64 { data, .. } => data.len(),
             ColData::F64 { data, .. } => data.len(),
             ColData::Str { spans, .. } => spans.len(),
+            ColData::Dec { data, .. } => data.len(),
         }
     }
 

@@ -520,6 +520,7 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
                     ColData::I1 { data, .. } => ScalarVal::I1(data[r]),
                     ColData::I64 { data, .. } => ScalarVal::I64(data[r]),
                     ColData::F64 { data, .. } => ScalarVal::F64(data[r]),
+                    ColData::Dec { data, p, s, .. } => ScalarVal::Dec(data[r], *p, *s),
                     ColData::Str { buf, spans, .. } => {
                         let sp = spans[r];
                         ScalarVal::Str(buf[sp.off as usize..(sp.off + sp.len) as usize].to_string())
@@ -1779,7 +1780,8 @@ pub(super) fn valid_len(c: &ColData) -> usize {
         ColData::I1 { valid, .. }
         | ColData::I64 { valid, .. }
         | ColData::F64 { valid, .. }
-        | ColData::Str { valid, .. } => valid.len(),
+        | ColData::Str { valid, .. }
+        | ColData::Dec { valid, .. } => valid.len(),
     }
 }
 
@@ -1791,7 +1793,8 @@ pub(super) fn col_valid(c: &ColData, row: usize) -> bool {
         ColData::I1 { valid, .. }
         | ColData::I64 { valid, .. }
         | ColData::F64 { valid, .. }
-        | ColData::Str { valid, .. } => valid.get(row).copied().unwrap_or(true),
+        | ColData::Str { valid, .. }
+        | ColData::Dec { valid, .. } => valid.get(row).copied().unwrap_or(true),
     }
 }
 
@@ -1801,6 +1804,7 @@ fn load_payload(c: &ColData, row: usize, arena: &mut Arena) -> RegVal {
         ColData::I64 { data, .. } => RegVal::I64(data[row]),
         ColData::F64 { data, .. } => RegVal::F64(data[row]),
         c @ ColData::Str { .. } => RegVal::Str(arena.push_str(c.str_at(row))),
+        ColData::Dec { data, .. } => RegVal::Dec(data[row]),
     }
 }
 

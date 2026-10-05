@@ -128,8 +128,8 @@ _ARROW = {
     # out of vocabulary on purpose: unreferenced, these must not block a build
     "float32": pa.float32(),
     "timestamp": pa.timestamp("us"),
-    # STATIC-ONLY: served exactly, emitted as decimal128(p,s) whatever the
-    # internal storage tier.
+    # DECIMAL, row or static: served exactly, emitted as decimal128(p,s)
+    # whatever the internal storage tier.
     "decimal(4,2)": pa.decimal128(4, 2),
     "decimal(9,4)": pa.decimal128(9, 4),
     "decimal(18,6)": pa.decimal128(18, 6),

@@ -56,9 +56,10 @@ The first five are ruled, in this order; the rest follow.
   (docs/specs/decimal-expressions.md). Still refused by name: casts from
   DOUBLE/VARCHAR/BOOLEAN into a DECIMAL (DuckDB's double->decimal rounding
   and its string parser), a DECIMAL join key expression against a
-  non-DOUBLE build key, `IN`/`BETWEEN` families capped at 38 digits, and
-  DECIMAL ROW columns (a `RowTy` newtype belongs with making DECIMAL a row
-  lane).
+  non-DOUBLE build key, and `IN`/`BETWEEN` families capped at 38 digits.
+  DECIMAL row columns serve (`tests/test_decimal_rows.py`); the generator
+  carries one on every seed 3 (mod 7), observable through star expansion and
+  the row boundary, since decimals are not in the expression grammar yet.
 - **i128 lane.** HUGEINT/UHUGEINT and the unsigned family (columns, statics,
   CAST targets) refuse. Needs i128 arithmetic and traps on both backends and
   exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
