@@ -24,6 +24,7 @@ from __future__ import annotations
 from sql_transform.native import encode as _encode  # noqa: F401  (registers)
 from sql_transform.native import impute as _impute  # noqa: F401  (registers)
 from sql_transform.native import polynomial as _polynomial  # noqa: F401  (registers)
+from sql_transform.native import power as _power  # noqa: F401  (registers)
 from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
 from sql_transform.native import select as _select  # noqa: F401  (registers)
 from sql_transform.native._check import ParityError, check

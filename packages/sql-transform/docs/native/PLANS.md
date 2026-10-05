@@ -8,8 +8,7 @@ first. Remove an item when it lands.
 Easiest first; each is one family, one PR.
 
 1. **`KBinsDiscretizer`** (`encode="ordinal"`, `"onehot-dense"`).
-2. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
-   `standardize`), `QuantileTransformer` (interpolation over quantiles),
+2. **Non-linear maps:** `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`.
 3. **Compositions:** a step whose instances are `Pipeline`s of catalog
@@ -24,6 +23,10 @@ Easiest first; each is one family, one PR.
   (x scores), `LinearDiscriminantAnalysis`: a BLAS matvec whose order the
   entry cannot follow, and whose error is not small in ulps of the result
   (decisions/open/matvec-parity-bound.md).
+- **`PowerTransformer`'s Yeo-Johnson, and either method with
+  `standardize=True`:** no small bound in ulps of the result, as for the
+  matvec families (decisions/open/power-parity-bound.md, measured).
+  Box-Cox with `standardize=False` is native, within 4 ulps.
 - **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
   `BisectingKMeans`, `Birch` (`transform` = distances, through BLAS), and
   the samplers that project through a matrix: `RBFSampler`,
@@ -48,6 +51,17 @@ Easiest first; each is one family, one PR.
   2,000 lanes confit refuses at its expansion cap. The catalog test draws
   steps of at most 300 lanes meanwhile (`MAX_LANES`). Sent to the confit
   loop 2026-10-05, with a repro.
+- **A call confit knows cannot trap.** `can_trap` counts every call as
+  one that may trap (`ln`, `exp`, even unary minus), so a struct field
+  read keeps the other lanes' calls and serving grows as the square of the
+  width. Box-Cox (`native/power.py`), one instance, per row against the
+  Python step: 0.3 vs 118 us at 1 feature, 39 vs 183 at 8, 90 vs 192 at
+  12, 179 vs 209 at 16, 393 vs 267 at 24; build 0.15 s at 8, 2.1 s at 24,
+  13 s at 32 with three instances, and at 64 (three instances) confit
+  refuses past Cranelift's size limit after 26 s (master b926e88, 2026-10-05). Classifying total
+  calls (`exp`, `pow`, `fneg`) as trap-free, and `ln` under a CASE arm
+  whose condition excludes `x <= 0`, would make it linear. `PowerTransformer`
+  is capped at 12 features meanwhile.
 
 Served since this catalog began (#336–#339, #341, #346): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
@@ -83,6 +97,10 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `Normalizer(norm="max")` over more than 8 features, and any norm whose
   body confit does not build, until a subexpression is shared within a call
   (above).
+- `PowerTransformer(method="yeo-johnson")` and `standardize=True`
+  (waiting on the owner, above); Box-Cox over more than 12 features, until
+  confit knows a call that cannot trap (above). Where the twin rejects
+  x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
