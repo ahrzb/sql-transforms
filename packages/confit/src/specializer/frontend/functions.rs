@@ -725,32 +725,61 @@ impl Binder<'_> {
                 } else {
                     CmpPred::Le
                 };
-                let mut it = bound.into_iter();
-                let mut acc = it.next().expect("non-empty");
-                for b in it {
-                    let cmp = self.cmp(pred, acc.clone(), b.clone())?;
-                    let is_null = |e: &SExpr| SExpr {
-                        kind: SKind::IsNull {
-                            negated: false,
-                            inner: Box::new(e.clone()),
-                        },
-                        ty: Ty::I1,
-                        nullable: false,
-                    };
-                    let nullable = acc.nullable && b.nullable;
-                    acc = SExpr {
-                        kind: SKind::Case {
-                            arms: vec![
-                                (is_null(&acc), b.clone()),
-                                (is_null(&b), acc.clone()),
-                                (cmp, acc),
-                            ],
-                            default: Some(Box::new(b)),
-                        },
-                        ty: unified,
-                        nullable,
-                    };
+                // A flat CASE: the first argument that is not NULL and wins
+                // every comparison against a non-NULL other is the answer
+                // (the sequential fold's first maximal element). Each
+                // argument appears n times, where folding pairwise cloned
+                // the accumulator four times per argument (4^n). Every arm
+                // that is taken has evaluated every argument, and so has
+                // the all-NULL default, so traps are unchanged.
+                let is_null = |e: &SExpr, negated: bool| SExpr {
+                    kind: SKind::IsNull {
+                        negated,
+                        inner: Box::new(e.clone()),
+                    },
+                    ty: Ty::I1,
+                    nullable: false,
+                };
+                let and = |a: SExpr, b: SExpr| SExpr {
+                    nullable: a.nullable || b.nullable,
+                    kind: SKind::And {
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    },
+                    ty: Ty::I1,
+                };
+                let nullable = bound.iter().all(|e| e.nullable);
+                if bound.len() == 1 {
+                    return Ok(bound.into_iter().next().expect("one"));
                 }
+                let mut arms = Vec::with_capacity(bound.len());
+                for (i, a) in bound.iter().enumerate() {
+                    let mut cond = is_null(a, true);
+                    for (j, b) in bound.iter().enumerate() {
+                        if i == j {
+                            continue;
+                        }
+                        let wins = self.cmp(pred, a.clone(), b.clone())?;
+                        let beats = SExpr {
+                            nullable: wins.nullable,
+                            kind: SKind::Or {
+                                a: Box::new(is_null(b, false)),
+                                b: Box::new(wins),
+                            },
+                            ty: Ty::I1,
+                        };
+                        cond = and(cond, beats);
+                    }
+                    arms.push((cond, a.clone()));
+                }
+                let acc = SExpr {
+                    kind: SKind::Case {
+                        arms,
+                        default: None,
+                    },
+                    ty: unified,
+                    nullable,
+                };
                 Ok(acc)
             }
             n if n == super::structs::SEQ_MARKER => {
