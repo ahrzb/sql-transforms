@@ -7,16 +7,15 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
-2. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
+1. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
    (`handle_unknown`, `drop`, infrequent categories), `TargetEncoder`
    (transform of new rows only). Needs string features in the fixtures.
-3. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 2).
-4. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+2. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 1).
+3. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`.
-5. **Compositions:** a step whose instances are `Pipeline`s of catalog
+4. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
@@ -35,6 +34,13 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
+- **A cast that cannot fail, cleared as trap-free.** An integer feature
+  reads as `coalesce(CAST(x AS DOUBLE), NaN)`; that CAST cannot trap, yet a
+  lane reading one appears to be kept as a sibling by every field read: a
+  `PolynomialFeatures(degree=3)` step over 8 features (165 lanes) builds in
+  1.2 s when they are DOUBLE, 11 s when all are BIGINT and 17 s when two
+  are (master c21a302). The catalog's wide polynomial fixtures take 20-50 s
+  each for it. Sent to the confit loop 2026-10-05.
 - **A subexpression shared within one call.** A `Normalizer` lane is
   `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
   body is O(n²) in the features. Measured on master b851298 through
