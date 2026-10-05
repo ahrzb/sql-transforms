@@ -196,6 +196,8 @@ pub const CUSTOM_NAMES: &[&str] = &[
     "first", "last", "any_value",
     // AST-shape gate over a declared extern
     "struct_extract",
+    // served only as a CASE result (`Binder::case_result`), refused elsewhere
+    "error",
 ];
 
 /// The single place a bound argument type meets its declared [`ArgTy`].

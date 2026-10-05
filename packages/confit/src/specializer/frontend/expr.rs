@@ -994,6 +994,59 @@ impl Binder<'_> {
         })
     }
 
+    /// One CASE result: bound as usual, or, for `error(msg)`, a NULL arm
+    /// plus the message it raises with. DuckDB types `error()` as SQLNULL and
+    /// never folds it, so in a CASE it adopts the CASE's type and raises
+    /// exactly when its arm is taken. The message must be a constant: a
+    /// computed one refuses by name, as does `error()` anywhere else.
+    fn case_result(&self, e: &SqlExpr) -> Result<(Option<SExpr>, Option<String>), PrepareError> {
+        let mut inner = e;
+        while let SqlExpr::Nested(x) = inner {
+            inner = x;
+        }
+        let SqlExpr::Function(f) = inner else {
+            return Ok((self.expr_or_null(e)?, None));
+        };
+        if !(f.name.0.len() == 1 && f.name.to_string().eq_ignore_ascii_case("error")) {
+            return Ok((self.expr_or_null(e)?, None));
+        }
+        let args = match &f.args {
+            sqlparser::ast::FunctionArguments::List(l)
+                if l.duplicate_treatment.is_none() && l.clauses.is_empty() =>
+            {
+                &l.args
+            }
+            _ => return Err(unsup("error() with this argument form")),
+        };
+        let [sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(arg))] =
+            args.as_slice()
+        else {
+            return Err(PrepareError::Bind("error takes exactly 1 argument".into()));
+        };
+        if f.over.is_some() || f.filter.is_some() || !f.within_group.is_empty() {
+            return Err(unsup("error() with OVER, FILTER or WITHIN GROUP"));
+        }
+        let Some(msg) = self.expr_or_null(arg)? else {
+            // error(NULL) is NULL.
+            return Ok((None, None));
+        };
+        if msg.ty != Ty::Str {
+            return Err(PrepareError::Bind(format!(
+                "error takes a VARCHAR message, got {}",
+                duck_ty_name(msg.ty)
+            )));
+        }
+        if !bind_foldable(&msg) {
+            return Err(unsup("error() with a message computed per row"));
+        }
+        // The message is closed: its value is the interpreter's answer for it.
+        match eval_closed(&msg, Vec::new()) {
+            Some(Some(ScalarVal::Str(m))) => Ok((None, Some(format!("Invalid Input Error: {m}")))),
+            Some(None) => Ok((None, None)),
+            _ => Err(unsup("error() with a message that does not evaluate to a constant")),
+        }
+    }
+
     pub(super) fn case(
         &self,
         operand: Option<&SqlExpr>,
@@ -1029,13 +1082,23 @@ impl Binder<'_> {
             conds.push(c);
         }
 
-        // Bind results (NULL allowed), then unify their types.
+        // Bind results (NULL allowed), then unify their types. An
+        // `error('msg')` result is typed like a NULL arm (DuckDB's SQLNULL)
+        // and raises when its arm is taken.
         let mut results: Vec<Option<SExpr>> = Vec::with_capacity(conditions.len());
+        let mut raises: Vec<Option<String>> = Vec::with_capacity(conditions.len());
         for when in conditions {
-            results.push(self.expr_or_null(&when.result)?);
+            let (r, raise) = self.case_result(&when.result)?;
+            results.push(r);
+            raises.push(raise);
         }
-        let else_bound: Option<Option<SExpr>> =
-            else_result.map(|e| self.expr_or_null(e)).transpose()?;
+        let (else_bound, else_raise) = match else_result {
+            Some(e) => {
+                let (r, raise) = self.case_result(e)?;
+                (Some(r), raise)
+            }
+            None => (None, None),
+        };
 
         // Width unification — DuckDB's fold: SEED from the ELSE
         // (its syntactic-literal hint intact); no ELSE — or ELSE NULL —
@@ -1091,6 +1154,12 @@ impl Binder<'_> {
             });
             acc_lit = None;
         }
+        if unified.is_none() && (else_raise.is_some() || raises.iter().any(Option::is_some)) {
+            return Err(unsup(
+                "CASE whose every branch is NULL or error(): its type is DuckDB's \
+                 SQLNULL, which a query level cannot carry",
+            ));
+        }
         let Some(unified) = unified else {
             // Every branch NULL: DuckDB types the CASE as a bare NULL (the
             // adoptable SQLNULL, measured in every context) but still
@@ -1117,8 +1186,20 @@ impl Binder<'_> {
                 Some(e) => e,
             }
         };
-        let results: Vec<SExpr> = results.into_iter().map(coerce).collect();
-        let default = else_bound.map(coerce);
+        let raise_or = |r: Option<SExpr>, raise: Option<String>| match raise {
+            Some(msg) => SExpr {
+                kind: SKind::Raise(msg),
+                ty: unified,
+                nullable: true,
+            },
+            None => coerce(r),
+        };
+        let results: Vec<SExpr> = results
+            .into_iter()
+            .zip(raises)
+            .map(|(r, raise)| raise_or(r, raise))
+            .collect();
+        let default = else_bound.map(|r| raise_or(r, else_raise));
 
         let nullable = default.is_none()
             || results.iter().any(|r| r.nullable)

@@ -40,12 +40,11 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-1. **`error()`**, so an unknown instance id raises as the Python twin does.
-2. **A field read over a CASE-valued struct** (`(CASE ... END).p` refuses),
+1. **A field read over a CASE-valued struct** (`(CASE ... END).p` refuses),
    so a NULL id can answer a NULL struct.
-3. **List-valued SQL functions** (`SqlFunction` refuses list returns), for
+2. **List-valued SQL functions** (`SqlFunction` refuses list returns), for
    steps with unnamed width-k output.
-4. **Dispatch on many instances**: a constant lookup in place of the CASE
+3. **Dispatch on many instances**: a constant lookup in place of the CASE
    ladder over fitted groups.
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
