@@ -9,14 +9,7 @@ on the board: [tickets.md](tickets.md).
 Easiest first; each is one family, one PR.
 
 1. **Non-linear maps:** `AdditiveChi2Sampler`.
-2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
-   entries as `compose.py` composes a `Pipeline`'s.
-3. **Show served compositions in coverage.md:** sklearn's transformer
-   list has no `Pipeline` (it is not a `TransformerMixin`), so the
-   scoreboard does not show the one composition the catalog serves. A
-   "served" note on composition rows, with `Pipeline` added from
-   `catalog()`, would.
-4. **`QuantileTransformer` as one search tree per feature:** its two
+2. **`QuantileTransformer` as one search tree per feature:** its two
    `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
    with the other endpoint of each interval closed), so one tree whose
    leaves compute both lines, with `x` at a breakpoint dispatched to the
@@ -24,7 +17,7 @@ Easiest first; each is one family, one PR.
    and builds linearly (Needs from confit, "Two CASE trees"): the default
    1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
    and the caps could rise.
-5. **A bound per configuration.** An entry's ulp bound is its class's
+3. **A bound per configuration.** An entry's ulp bound is its class's
    (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
    identity and the exact functions, refuses `np.exp`, `np.log`,
    `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
@@ -62,7 +55,7 @@ Easiest first; each is one family, one PR.
   0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
   the message sent to the confit loop (2026-10-05). The entry is capped at
   4,000 quantiles over the features and 4,000,000 in their squares
-  meanwhile (about 7 s at most); Next, item 4, is the entry-side
+  meanwhile (about 7 s at most); Next, item 2, is the entry-side
   alternative.
 
 - **A value bound once in a SQL function body, and a build linear in the
@@ -164,7 +157,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
   a string feature, or a boolean one except for the identity (numpy keeps
   a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
-  on a bound per configuration (Next, item 5); `log1p` and `expm1` have no
+  on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
   DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
   numpy's kernel bit-equal to confit's.
 - A `Pipeline` with a step that is not a catalog entry, or one
@@ -186,10 +179,34 @@ Configurations a translator declines (`NotNative`), each with its ground:
   past an estimated 7 s build, per estimator (32 features of degree 3,
   8 knots, and wider; Needs from confit, "A value bound once"), and any
   step where scipy's `BSpline` does not round as the unfused recurrence
-  (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the entry answers: NaN past
-  the knots under `extrapolation="error"`, 0.0 for NaN under
-  `handle_missing="error"`, and 0.0 above the knots under
+  (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the
+  entry answers: NaN past the knots under `extrapolation="error"`, 0.0
+  for NaN under `handle_missing="error"`, and 0.0 above the knots under
   `extrapolation="constant"` at `degree=0`.
+- A `ColumnTransformer` or `FeatureUnion` with a part that is not a
+  catalog entry, or one registered with a bound; a sparse output
+  (`sparse_output_`); a `set_output` container (the step's
+  `transform(...)[0]` misreads a DataFrame row); a string column passed
+  through (the step's `float()`); column names, which need a DataFrame,
+  and a scalar column, which hands the part a 1-D array. In a
+  `ColumnTransformer`, a part whose first step is a
+  `FunctionTransformer(func, validate=False)`: it is handed an object
+  array, on which `np.sqrt` raises and the exact functions answer as
+  Python floats do (conservative for those). A weight that is not a
+  double, on a float32 output (multiplied in float32), or an integer
+  weight on an output that may not be float64 or over a boolean feature
+  (an integer product has no -0.0); a weighted passthrough in a
+  `FeatureUnion` (the twin multiplies the step's list, which raises). A
+  `ColumnTransformer` with a passthrough part before the last step of a
+  `Pipeline` (its object output, as for the `Pipeline` rule above).
+- `IsotonicRegression` with float32 thresholds (the twin casts its input
+  to float32), past 8,000 thresholds (about 6 s to build; one CASE tree
+  builds in about 0.7 ms a threshold, 22 s at 20,000), with thresholds
+  further apart than a double spans, or on a platform whose `np.interp`
+  fuses its multiply-add (`quantile.interp_is_numpys`). Where the twin
+  raises (`out_of_bounds="raise"` outside the range, NaN, infinity), the
+  entry answers NaN, or the constant of a one-threshold fit (goal.md,
+  "Tolerated differences").
 - `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
   `np.max` and `np.min` included: on a tie of signed zeros numpy's SIMD
   reduction answers the zero its lane order reaches, neither the first
@@ -205,5 +222,5 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
   `RadiusNeighborsTransformer`, `IterativeImputer`, `RandomTreesEmbedding`,
   `BernoulliRBM`, `NMF`/`MiniBatchNMF`, the dictionary learners,
-  `SparsePCA`, `LatentDirichletAllocation`, `IsotonicRegression`,
+  `SparsePCA`, `LatentDirichletAllocation`,
   `NeighborhoodComponentsAnalysis`. Each needs a design first.

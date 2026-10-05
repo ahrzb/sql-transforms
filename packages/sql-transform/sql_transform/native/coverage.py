@@ -6,8 +6,11 @@ regenerates the table in loops/native/coverage.md; `coverage_test.py` fails
 while the file is stale (`--modules` prints the counts per sklearn module,
 for the milestone reports). Every transformer sklearn lists is in exactly
 one row: native (in the catalog, with its bound), composition (served by
-composing entries, not an entry of its own), out of scope (with the reason,
-from loops/native/goal.md "Scope"), or not yet.
+composing entries, not an entry of its own; "served" when the catalog
+composes it), out of scope (with the reason, from loops/native/goal.md
+"Scope"), or not yet. A composition the catalog serves that sklearn does
+not list as a transformer (`Pipeline`, not a `TransformerMixin`) gets a row
+of its own, outside the counts.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ BEGIN, END = "<!-- coverage:begin -->", "<!-- coverage:end -->"
 COMPOSITIONS = {
     "ColumnTransformer": "routes columns to parts",
     "FeatureUnion": "concatenates parts' outputs",
+    "Pipeline": "chains steps",
     "StackingClassifier": "a final estimator over parts' predictions",
     "StackingRegressor": "a final estimator over parts' predictions",
     "VotingClassifier": "averages parts' predictions",
@@ -47,15 +51,32 @@ OUT_OF_SCOPE = {
 }
 
 
+def _classes() -> dict[str, type]:
+    """sklearn's transformers, and the compositions the catalog serves
+    that sklearn does not list among them."""
+    listed = dict(all_estimators(type_filter="transformer"))
+    served = {
+        c.__name__: c
+        for c in catalog()
+        if c.__name__ in COMPOSITIONS and c.__name__ not in listed
+    }
+    return {**listed, **served}
+
+
 def rows() -> list[tuple[str, str, str]]:
     native = {c.__name__: e for c, e in catalog().items()}
     out = []
-    for name, _ in sorted(all_estimators(type_filter="transformer")):
-        if name in native:
+    for name in sorted(_classes()):
+        # A composition stays one, served or not (goal.md, "Scope"); served,
+        # it composes bit-exact entries only (compose.py).
+        if name in COMPOSITIONS:
+            note = COMPOSITIONS[name]
+            if name in native:
+                note += "; served over bit-exact entries"
+            out.append((name, "composition", note))
+        elif name in native:
             b = native[name].ulps
             out.append((name, "native", "bit-exact" if b == 0 else f"within {b} ulps"))
-        elif name in COMPOSITIONS:
-            out.append((name, "composition", COMPOSITIONS[name]))
         elif name in OUT_OF_SCOPE:
             out.append((name, "out of scope", OUT_OF_SCOPE[name]))
         else:
@@ -70,7 +91,7 @@ def table() -> str:
     lines = [
         BEGIN,
         f"**{counts['native']} of {in_scope}** in-scope transformers are native"
-        f" ({len(rs)} listed by sklearn).",
+        f" ({len(all_estimators(type_filter='transformer'))} listed by sklearn).",
         "",
         "| transformer | status | note |",
         "|---|---|---|",
@@ -88,7 +109,7 @@ def modules() -> str:
     (loops/native/report-format.md, "Scoreboard")."""
     status = {n: s for n, s, _ in rows()}
     counts: dict[str, dict[str, int]] = {}
-    for name, cls in all_estimators(type_filter="transformer"):
+    for name, cls in _classes().items():
         module = "sklearn." + cls.__module__.split(".")[1]
         counts.setdefault(module, dict.fromkeys(STATUSES, 0))[status[name]] += 1
     total = {s: sum(c[s] for c in counts.values()) for s in STATUSES}

@@ -7,7 +7,8 @@ def test_the_coverage_table_is_current():
     )
 
 
-def test_every_listed_name_is_a_sklearn_transformer():
+def test_every_named_class_has_a_row():
+    # sklearn transformers, and Pipeline: a composition the catalog serves.
     listed = {n for n, _, _ in coverage.rows()}
     assert set(coverage.COMPOSITIONS) <= listed
     assert set(coverage.OUT_OF_SCOPE) <= listed

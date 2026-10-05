@@ -9,15 +9,15 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
-| T6 | `SplineTransformer`, dense output | `claude/native-spline` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_014t6cVSh3kwJS3HYM64qom4` | | in progress |
-| T8 | `ColumnTransformer` and `FeatureUnion` of catalog entries | `claude/native-compose` | — | `compose.py`, `catalog_test.py`, PLANS | `session_01YVd4KRieYvTaH5SkrQPYX4` | | in progress |
-| T9 | `IsotonicRegression` as a transformer | `claude/native-isotonic` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_0189CHkotRvVeto6vtDu3kkh` | | in progress |
-| T10 | `FeatureAgglomeration` (pooling) | `claude/native-agglomeration` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_01GQwHcGiJBqxR32mtsBQf4r` | | in progress |
+| T6 | `SplineTransformer`, dense output | `claude/native-spline` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_014t6cVSh3kwJS3HYM64qom4` | #384 | in review |
+| T11 | A bound per configuration (`FunctionTransformer`'s transcendentals) | `claude/native-bounds` | — | `_registry.py`, `compose.py`, `coverage.py`, `function.py`, `catalog_test.py`, PLANS | `session_01Xdhd9vA5E9cnTuGCUZcskZ` | | in progress |
+| T12 | `QuantileTransformer` as one search tree per feature | `claude/native-quantile-tree` | — | `quantile.py`, `catalog_test.py`, PLANS | `session_01U2RFd5WLRad6pyPaHCugdS` | | in progress |
 
-Next up, once a slot frees: `AdditiveChi2Sampler` (its `log`, `cos` and
-`sin` are numpy's own kernels, so it waits on a bound per configuration,
-PLANS "Next" item 5). Inline: served compositions in coverage.md, and
-`QuantileTransformer` as one search tree per feature.
+Next up, once a slot frees: `AdditiveChi2Sampler`, after T11. Its `log`
+feeds `cos` and `sin`, and an argument one rounding apart moves them by
+about the argument's size times as many ulps, so it may need a record in
+`decisions/open/` rather than a bound. Inline: the milestone reading at
+the end of wave 3 (after T6).
 
 ## T6: `SplineTransformer`, dense output
 
@@ -97,231 +97,145 @@ sequence as you read it, and the timings.
 
 **Branch:** `claude/native-spline` (create it from `origin/master`). This is native T6 on the board, `loops/native/tickets.md`.
 
-## T8: `ColumnTransformer` and `FeatureUnion` of catalog entries
+## T11: A bound per configuration
 
-**Goal.** A step whose instances are fitted `ColumnTransformer`s or
-`FeatureUnion`s of catalog entries serves natively and bit-exact: each
-part's translation over its own columns, concatenated in the twin's order,
-with weights applied. `Pipeline` already composes this way (T1, #368).
-Together they cover the deployed shape "impute and scale the numbers,
-encode the strings, concatenate".
+**Goal.** An entry's parity bound can depend on the fitted estimator, not
+only on its class. Then `FunctionTransformer` can serve numpy's `exp`,
+`log`, `log2` and `tan` (1 ulp from DuckDB's), `log10` (2) and `cbrt` (3)
+within their measured bounds, while the identity and the exact functions
+stay bit-exact.
 
-**The twins.**
-- sklearn 1.9 `ColumnTransformer.transform`
-  (`sklearn/compose/_column_transformer.py`).
-- sklearn 1.9 `FeatureUnion.transform` (`sklearn/pipeline.py`).
+**Today.**
+- `translates(cls, ulps=n)` (`_registry.py`) stores `Entry(translate,
+  ulps)`.
+- `bound(step)` is the loosest of its instances' *classes*, and `check()`
+  (`_check.py`) defaults to it.
+- `compose.py` refuses a step or part whose entry has `ulps`.
+- `coverage.py` prints "bit-exact" or "within n ulps" per class.
+- `function.py` refuses `_NOT_EXACT` because the class is registered
+  bit-exact. Those distances were measured with numpy 2.5.1 against DuckDB
+  1.5.5 on x86-64 with AVX-512, over 1,600,000 draws.
 
-Both call `_transform_one`, which returns `res * weight` when a weight is
-set, and then `_hstack`. Read in the installed sklearn:
-- the order of the fitted parts (`transformers_`, `remainder` included);
-- how columns are selected on a numpy row: indices, slices, boolean masks
-  and callables, resolved at fit. Names need a DataFrame, which the step
-  never passes;
-- `"drop"` and `"passthrough"`, and `transformer_weights`;
-- when `_hstack` returns a sparse matrix (`sparse_output_`,
-  `sparse_threshold`).
+**The change.** This is shared machinery (`_registry.py`, `compose.py`,
+`coverage.py`, and `_check.py` if needed); say so at the top of the PR.
+- A translator can declare a bound per estimator. One shape: `ulps` stays
+  the class's ceiling, and the entry gains `bound(est) -> int`, which
+  defaults to the ceiling. Pick the shape, and say which and why.
+- `bound(step)`: the loosest of its instances' own bounds.
+- `Pipeline`, `ColumnTransformer` and `FeatureUnion` compose only parts
+  whose own bound is 0. They read the part's bound, not its class's, so
+  `FunctionTransformer()` stays composable while `FunctionTransformer(np.exp)`
+  is refused there, with its bound named.
+- `coverage.py`: a class whose bound varies says so, for example
+  "bit-exact; within 3 ulps for some configurations". Keep the KPI
+  `nonzero_ulp_bounds` meaningful (`loops/native/report-format.md`). If its
+  definition changes, change the format doc in the same PR.
+- A class registered with `ulps=n` and no per-estimator bound reads exactly
+  as it does today.
 
-**Pointers.** Extend `compose.py`, which composes a `Pipeline` through
-`catalog()`. A part gets its own columns' expressions and declared types,
-and the lanes it returns are DOUBLE.
+**FunctionTransformer.**
+- Serve `np.exp`, `np.log`, `np.log2`, `np.tan`, `np.log10` and `np.cbrt`
+  at their measured bounds, each from its DuckDB function (`exp`, `ln`,
+  `log2`, `tan`, `log10`, `cbrt`).
+- The twin answers numpy's IEEE values where DuckDB may raise: `log` of 0
+  is -inf and of a negative is NaN, `exp` can overflow, `tan` of an
+  infinity is NaN, and NaN passes through. Check each of these in DuckDB.
+  Guard them as `_trig` guards `sin`/`cos` (`function.py`), in the guard
+  shapes confit reads as non-trapping (#362, #375), so a struct field read
+  stays linear in the width.
+- numpy picks its SIMD kernels by CPU, so a bound measured here holds
+  here. Probe at first use, as `kernel_is_confits` does: measure each
+  function on a fixed sample against confit, and refuse (`NotNative`)
+  where the distance exceeds the declared bound.
+- `log1p`, `expm1` and every other function stay refused, as today.
 
-**Rules.**
-- Every part must be a catalog entry registered at 0 ulps (a nested
-  `Pipeline` counts), or `"drop"` or `"passthrough"`. Anything else raises
-  `NotNative` naming the part. Register both classes at 0.
-- Also `NotNative`, naming the cause:
-  - a sparse output (`sparse_output_`);
-  - a string column passed through (the step reads lanes with `float()`);
-  - column specs that need a DataFrame.
-- A weight multiplies its part's output. Spell `x * w` with the weight as
-  a DOUBLE literal: that is the twin's double.
-- Instance dispatch, `null_when` and width work as for any entry.
-  `to_native`'s trial build refuses what confit cannot build.
-
-**Fixtures.** Your own `FIXTURES[ColumnTransformer]` and
-`FIXTURES[FeatureUnion]` blocks.
-- Column specs must work at every width the generator draws, 1 to 32
-  features: use slices and callables, or index lists guarded for width.
-- `ColumnTransformer`:
-  - two and three parts;
-  - `remainder` both `"drop"` and `"passthrough"`;
-  - one weighted part;
-  - an encoder part over string columns beside a scaler over numeric
-    ones;
-  - a nested `Pipeline` part.
-- `FeatureUnion`:
-  - two and three parts;
-  - one weighted part;
-  - a `"drop"` part and a `"passthrough"` part.
-- Check what `ColumnTransformer.__sklearn_tags__` and
-  `FeatureUnion.__sklearn_tags__` report for input tags (strings, NaN).
-- Extend the generator as little as possible (as T1 did with `_runs`), so
-  that an encoder part gets string columns and an imputer part gets
-  holes, while every other entry's draws stay unchanged. Say what you did.
-
-**confit today.** Nothing the family needs is known to be missing. On
-master:
-- a repeated pure subexpression is computed once per row where it costs
-  nothing (#363, #377);
-- the total unaries, `round`, and guarded `ln`/`sqrt`/`sin`/`cos` count as
-  unable to trap (#362, #375);
-- `greatest` and `least` lower as a running extreme (#374).
-
-If a width is slow, measure it and tell the supervisor rather than
-capping it silently.
-
-**Acceptance.**
-- Bit-exact: 8 seeds in the gate. Run `NATIVE_SEEDS=200` once over your
-  configurations and report it.
-- Every refusal named and tested.
-- Gate green, coverage regenerated. Both classes are "composition" rows in
-  coverage.md: leave `coverage.py`'s categories as they are. PLANS "Next"
-  item 3 (showing served compositions) is a separate ticket; say what you
-  would show.
-- The PR states the twins' operation sequence as you read it, and the
-  build and serve times of the widest fixture.
-
-**Branch:** `claude/native-compose` (create it from `origin/master`). This
-is native T8 on the board, `loops/native/tickets.md`.
-
-## T9: `IsotonicRegression` as a transformer
-
-**Goal.** `sklearn.isotonic.IsotonicRegression` serves natively and
-bit-exact: the fitted step function interpolated linearly, as its
-`transform` answers. It is a one-feature, one-lane step.
-
-**The twin.** sklearn 1.9 `IsotonicRegression.transform` → `_transform`
-(`sklearn/isotonic.py`):
-- `check_array` on `T` with the thresholds' dtype. NaN and infinity raise,
-  so those rows are not compared.
-- with `out_of_bounds="clip"`, `np.clip(T, X_min_, X_max_)`;
-- then `self.f_(T)`. `f_` is built in `_build_f`: a constant when one
-  threshold is left, else scipy 1.18's `interp1d(X_thresholds_,
-  y_thresholds_, kind="linear", bounds_error=out_of_bounds == "raise")`.
-
-Read scipy's `interp1d._call_linear` and `_check_bounds`
-(`scipy/interpolate/_interpolate.py`, installed). In order:
-- the index is `searchsorted(x, x_new)` (side left), clipped to
-  `[1, len(x) - 1]`;
-- the value is `((x_new - x_lo) / (x_hi - x_lo)) * y_hi + ((x_hi - x_new)
-  / (x_hi - x_lo)) * y_lo`, in exactly that order;
-- below `x[0]` or above `x[-1]` the answer is `fill_value`, NaN by
-  default. `"raise"` raises instead.
-
-**Pointers.**
-- `quantile.py` already spells a piecewise-linear search (`_pieces`,
-  `_tree`), but with `np.interp`'s semantics, not `interp1d`'s. The search
-  side, the lack of an exact arm at a knot, and the arithmetic all differ.
-  Reuse the tree shape, not the leaf arithmetic.
-- Precompute what the twin computes from fitted numbers alone (`x_hi -
-  x_lo` per interval) only where the twin computes it the same way.
-  Spell the rest in the twin's order.
+**Fixtures.** Each function, validated and not, over the generator's rows
+plus the domain edges above.
 
 **Rules.**
-- `out_of_bounds`:
-  - `"nan"`: NaN outside the range;
-  - `"clip"`: clip first, as the twin does;
-  - `"raise"`: the entry may answer or raise where the twin raises
-    (goal.md, "tolerated differences"). Say which in the PR.
-- Thresholds with a dtype other than float64: `NotNative` (the twin casts
-  to that dtype).
-- One threshold left (a constant prediction) serves as the constant.
-- Register the class at 0 ulps. A configuration you cannot make bit-exact
-  is `NotNative` with its reason, never a bound.
+- A bound is measured over at least 200 seeds and cited where it is
+  declared.
+- A bound that is not small is a record in `decisions/open/`, not code.
 
-**Fixtures** (your own `FIXTURES[IsotonicRegression]` block):
-- `increasing` True, False and `"auto"`;
-- each `out_of_bounds`;
-- `y_min`/`y_max` set;
-- fits with ties in X;
-- a fit that leaves one threshold;
-- rows exactly at thresholds, between them, and outside the range.
-
-The step has exactly one feature. Check whether the generator draws one
-feature for this class: its `__sklearn_tags__` and the 1-D input
-requirement. Say what you did to get one.
-
-**confit today.** Nothing the family needs is known to be missing (CASE
-trees, DOUBLE division and arithmetic). PLANS "Needs from confit" has one
-entry, about two CASE trees in one expression. A single tree builds
-linearly.
+**confit today.** The guards may need `ln`/`log2`/`log10` under a CASE to
+count as non-trapping, as #362 made `ln` and `sqrt`. If confit counts one
+of them as trapping, measure the width at which a struct read turns
+quadratic. Then send a reproduction to the supervisor for the confit loop,
+and cap the width meanwhile.
 
 **Acceptance.**
-- Bit-exact: 8 seeds in the gate. Run `NATIVE_SEEDS=200` once over your
-  configurations and report it.
+- Gate green. Report `NATIVE_SEEDS=200` over the FunctionTransformer
+  configurations, with the largest distance measured per function.
 - Every refusal named and tested.
-- Gate green, coverage regenerated (`IsotonicRegression` leaves "not
-  yet").
-- Move it out of PLANS "Later", where it sits with the transformers that
-  read their fit samples. It reads only its fitted thresholds.
-- The PR states scipy's operation sequence as you read it, and the build
-  and serve times of the widest fixture: the most thresholds.
+- Coverage regenerated.
+- In PLANS: the "Next" item "A bound per configuration" removed, the
+  `FunctionTransformer` "Left Python" line updated, and the "Non-linear
+  maps" item updated with what `AdditiveChi2Sampler` waits on now.
+- The PR states the machinery change and its shape, and the build and
+  serve times of the widest fixture.
 
-**Branch:** `claude/native-isotonic` (create it from `origin/master`). This
-is native T9 on the board, `loops/native/tickets.md`.
+**Branch:** `claude/native-bounds` (create it from `origin/master`). This is
+native T11 on the board, `loops/native/tickets.md`.
 
-## T10: `FeatureAgglomeration` (pooling)
+## T12: `QuantileTransformer` as one search tree per feature
 
-**Goal.** `sklearn.cluster.FeatureAgglomeration` serves natively and
-bit-exact: each output lane pools the fitted cluster's features of the
-row.
+**Goal.** Each feature's two `np.interp` searches become one balanced CASE
+tree, so a feature builds in about half today's time or less and the caps
+(`MAX_QUANTILES`, `MAX_SQUARES` in `quantile.py`) can rise. The entry stays
+bit-exact.
 
-**The twin.** sklearn 1.9 `FeatureAgglomeration.transform`
-(`sklearn/cluster/_feature_agglomeration.py`, installed). It runs
-`validate_data` (NaN and infinity raise, so those rows are not compared),
-then:
-- **`pooling_func == np.mean`, dense input** (the default): each row is
-  `np.bincount(labels_, X[i, :]) / size`, where `size =
-  np.bincount(labels_)`. Read numpy's `bincount` with weights. Each bin is
-  a sequential sum from 0.0, adding the row's values in feature order,
-  then divided by the bin's count. Check that order in numpy 2.5's source
-  or by probe, and say which.
-- **any other `pooling_func`:** `pooling_func(X[:, labels_ == l],
-  axis=1)` for each label in `np.unique(labels_)`.
+**Today.** `quantile.py` answers a feature strictly inside `(q[0],
+q[-1])` with `0.5 * (_tree(x, up) - _tree(-x, down))`. That is two CASE
+trees over the same breakpoints: `down` holds the pieces of
+`np.interp(-x, -q[::-1], -r[::-1])`. Two trees in one expression build in
+about 3.8 times one tree's time, growing a little faster than the quantile
+count (PLANS "Needs from confit", "Two CASE trees"; confit #383 puts the
+superlinear term in Cranelift's `define_function`). Measured on a release
+build, one feature: 1.3–1.4 s at 1,000 quantiles and 4.4–4.7 s at 2,000
+once warm; the first build in a process is about 1.6 times slower.
 
-**Pointers.**
-- `_helpers.py` has the row reductions the catalog already uses
-  (`row_sum` is numpy's pairwise sum). `bincount` is not pairwise, so do
-  not reuse it blindly.
-- `scalers.py` (`Normalizer`) is the closest family shape: one reduction
-  per lane.
-- confit computes a repeated pure subexpression once per row (#363,
-  #377). Every lane reads several features, but none is repeated.
+**The idea** (PLANS "Next", "`QuantileTransformer` as one search tree per
+feature"): bisect once, on `x`.
+- Strictly between two neighbouring distinct breakpoints, both searches
+  land on the same interval. A leaf computes both lines, each in the
+  twin's own arithmetic (`_line`, with the slopes precomputed as today).
+- At a breakpoint `x == q[j]`, the ascending search takes the interval
+  that starts at `q[j]`, the last of a run of equal quantiles. The
+  mirrored search takes the interval that ends there, the first of the
+  run. So a leaf over `[q[j], q[j+1])` needs an `x == q[j]` arm for the
+  mirrored side.
+- Derive which piece each search lands on, exactly, from numpy's
+  `binary_search_with_guess` (cited in `quantile.py`'s docstring),
+  including runs of equal quantiles and the infinite-slope exact arms.
+  Write the derivation into the module docstring.
 
 **Rules.**
-- Serve `np.mean`, the default.
-- `np.max` and `np.min` are exact on the finite rows the twin answers
-  (`greatest`/`least`, which confit lowers as a running extreme, #374).
-  Serve them if you verify that numpy's `max(axis=1)` answers the same
-  double, signed zeros included.
-- Any other `pooling_func` (`np.median`, a lambda, ...): `NotNative`,
-  naming it.
-- Register the exact class only, at 0 ulps.
+- 0 ulps; `interp_is_numpys` stays.
+- Re-measure the build time: release build, warm and first-in-process, at
+  1,000, 2,000 and 4,000 quantiles over one feature, and at the slowest
+  shapes the caps allow.
+- Raise `MAX_QUANTILES` and `MAX_SQUARES` to what builds in about today's
+  worst case (about 7 s warm), and cite the measurement in the comment.
+- Keep the old two-tree spelling only if a configuration needs it, and say
+  why.
 
-**Fixtures** (your own `FIXTURES[FeatureAgglomeration]` block):
-- `n_clusters` from 1 up to the number of features;
-- the linkages (`ward`, `complete`, `average`, `single`);
-- `pooling_func` mean, and max/min if served;
-- clusters of one feature and of many.
+**Fixtures.** The existing `FIXTURES[QuantileTransformer]` plus your own
+tests:
+- runs of equal quantiles, and quantiles at signed zeros;
+- rows exactly at each breakpoint and at its `nextafter` neighbours;
+- fits whose slope overflows (the exact arms).
 
-The generator draws the feature count, so `n_clusters` must fit every
-width: use a factory that caps it, or say how you handled it. Check the
-twin on rows with signed zeros. Mean pooling starts its sum from 0.0, so a
-cluster of -0.0 values pools to 0.0.
-
-**confit today.** Nothing the family needs is known to be missing.
+**confit today.** One tree's build time grows a little faster than its
+size (T9 measured 0.46 s at 1,000 thresholds and 5.9 s at 8,000), far
+below two trees in one expression. Nothing known is missing.
 
 **Acceptance.**
-- Bit-exact: 8 seeds in the gate. Run `NATIVE_SEEDS=200` once over your
-  configurations and report it.
-- Every refusal named and tested.
-- Gate green, coverage regenerated (`FeatureAgglomeration` leaves "not
-  yet").
-- Add the family's lines to PLANS. It is not in PLANS today.
-- The PR states the twin's operation sequence as you read it (numpy's
-  bincount order included), and the build and serve times of the widest
-  fixture.
+- Bit-exact: 8 seeds in the gate. Run `NATIVE_SEEDS=200` over the
+  `QuantileTransformer` configurations and report it.
+- Gate green. Coverage is unchanged; regenerate it anyway.
+- In PLANS: remove that "Next" item, and update the "Two CASE trees" entry
+  under "Needs from confit" to say whether the catalog still needs it.
+- The PR gives the old and new build times side by side, and the new caps.
 
-**Branch:** `claude/native-agglomeration` (create it from
-`origin/master`). This is native T10 on the board,
-`loops/native/tickets.md`.
+**Branch:** `claude/native-quantile-tree` (create it from `origin/master`).
+This is native T12 on the board, `loops/native/tickets.md`.

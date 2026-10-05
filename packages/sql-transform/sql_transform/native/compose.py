@@ -1,6 +1,7 @@
 """Compositions of catalog entries: a fitted `Pipeline` is the composition of
 its steps' translations (sklearn 1.9, `Pipeline.transform` in
-`sklearn/pipeline.py`).
+`sklearn/pipeline.py`); a `ColumnTransformer` or `FeatureUnion` the
+concatenation of its parts' (below, `_column_transformer`, `_union`).
 
 The twin: `Xt = X`, then for each step of `_iter()` (every step, the final
 one included, skipping `"passthrough"` and `None`), `Xt = step.transform(Xt)`.
@@ -18,14 +19,21 @@ bound refuses the pipeline.
 
 from __future__ import annotations
 
+import math
+import numbers
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
+from sklearn.compose import ColumnTransformer
+from sklearn.compose._column_transformer import _is_empty_column_selection
 from sklearn.impute import MissingIndicator
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline
+from sklearn.preprocessing import FunctionTransformer
+from sklearn.utils._indexing import _determine_key_type, _safe_indexing
 
+from sql_transform.native._helpers import f64
 from sql_transform.native._registry import NotNative, catalog, translates
 
 
@@ -39,6 +47,16 @@ def _float64_out(est: Any) -> str | None:
     if isinstance(est, Pipeline):
         runs = list(est._iter(with_final=True, filter_passthrough=True))
         return _float64_out(runs[-1][2]) if runs else None
+    if isinstance(est, ColumnTransformer | FeatureUnion):
+        # The hstack of the parts' outputs. A ColumnTransformer handed the
+        # step's row passes columns through as an object array.
+        for _, part, _ in _parts(est):
+            if isinstance(est, ColumnTransformer) and _passes(part):
+                return "it passes columns through as objects"
+            why = _float64_out(part)
+            if why:
+                return why
+        return None
     if isinstance(est, MissingIndicator):
         return "its output is boolean"
     dtype = getattr(est, "dtype", None)
@@ -88,3 +106,201 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             raise NotNative(f"Pipeline step {name!r}: {e}") from None
         types = [pa.float64()] * len(x)
     return x
+
+
+# ColumnTransformer and FeatureUnion (sklearn 1.9). Both run each fitted
+# part's `transform` through `_transform_one`, which returns `res * weight`
+# when the part has a weight in `transformer_weights` and `res` otherwise,
+# and `_hstack` the results in the parts' order. The step hands `transform`
+# its row as a one-row list (`PythonTransform.__call__`); then:
+#
+# - `ColumnTransformer.transform`: `_check_X` turns the list into an object
+#   array (`check_array(dtype=object)`); the parts are `_iter(fitted=True,
+#   skip_drop=True, skip_empty_columns=True)` over `transformers_`, in its
+#   order, the remainder last; each is handed `_safe_indexing(X, columns,
+#   axis=1)`, its columns as resolved at fit (a callable's result, a
+#   slice, indices, a boolean mask; names need a DataFrame). A
+#   "passthrough" is a fitted identity `FunctionTransformer` there, so it
+#   hands back its object columns as they are. `_hstack` is `np.hstack`,
+#   or a sparse matrix when `sparse_output_` (set at fit).
+# - `FeatureUnion.transform`: each part of `_iter()` (skipping "drop"; a
+#   "passthrough" is an identity `FunctionTransformer`, which hands back
+#   the list itself) is handed the whole row, the list; `_hstack` is
+#   `xp.concat(axis=1)` (numpy's concatenate), or sparse when a part's
+#   output is.
+#
+# The step reads the stacked row with `float()`, so a part's lanes keep
+# their values whatever dtype the stack takes (float64, or object beside a
+# passthrough), and a weight is `x * w` in doubles: the twin's product of a
+# float64 (or Python float) by the weight.
+
+
+def _passes(part: Any) -> bool:
+    """`part` is an identity: "passthrough", or a `FunctionTransformer`
+    without `func`, which returns its input unchecked or validated."""
+    return isinstance(part, FunctionTransformer) and part.func is None
+
+
+def _parts(est: Any) -> list[tuple[str, Any, Any]]:
+    """`(name, part, columns)` for each part `transform` runs, in order;
+    `columns` is None for a `FeatureUnion` part, which reads the row."""
+    if isinstance(est, ColumnTransformer):
+        return [
+            (name, part, columns)
+            for name, part, columns, _ in est._iter(
+                fitted=True,
+                column_as_labels=False,
+                skip_drop=True,
+                skip_empty_columns=True,
+            )
+        ]
+    return [(name, part, None) for name, part, _ in est._iter()]
+
+
+def _reads_objects(part: Any) -> str | None:
+    """Why `part` does not read an object array as it reads the step's
+    row, or None when it does. Every catalog entry validates its input to
+    numbers (or, an encoder, per column) except `FunctionTransformer`
+    without validation, whose ufunc then calls each element's method
+    (`np.sqrt` on a float object raises)."""
+    if isinstance(part, FunctionTransformer):
+        if part.func is not None and not part.validate:
+            return "a FunctionTransformer(validate=False) applies its func to objects"
+        return None
+    if isinstance(part, Pipeline):
+        runs = list(part._iter(with_final=True, filter_passthrough=True))
+        return _reads_objects(runs[0][2]) if runs else None
+    if isinstance(part, FeatureUnion):
+        for _, p, _ in _parts(part):
+            why = _reads_objects(p)
+            if why:
+                return why
+    return None
+
+
+def _narrow_float(est: Any) -> bool:
+    """`est`'s output may be float32 or narrower, which a weight then
+    multiplies in that precision."""
+    if isinstance(est, Pipeline):
+        runs = list(est._iter(with_final=True, filter_passthrough=True))
+        return bool(runs) and _narrow_float(runs[-1][2])
+    if isinstance(est, ColumnTransformer | FeatureUnion):
+        return any(_narrow_float(p) for _, p, _ in _parts(est))
+    dtype = getattr(est, "dtype", None)
+    if dtype is None:
+        return False
+    dt = np.dtype(dtype)
+    return dt.kind == "f" and dt.itemsize < 8
+
+
+def _weight(
+    owner: str, name: str, part: Any, w: Any, types: list[pa.DataType]
+) -> float:
+    """The weight as the double the twin multiplies by, or `NotNative`."""
+    where = f"{owner} part {name!r}"
+    if not isinstance(w, numbers.Real) or not (float(w) == w or math.isnan(w)):
+        raise NotNative(f"{where}: weight {w!r} is not a double")
+    if _narrow_float(part):
+        raise NotNative(f"{where}: a weight on a float32 output multiplies in float32")
+    if isinstance(w, numbers.Integral):
+        # An integer output (or a passed boolean) times an integer is an
+        # integer, whose zero has no sign: 0 * -2 is 0, not -0.0.
+        why = _float64_out(part)
+        if why or pa.bool_() in types:
+            raise NotNative(
+                f"{where}: an integer weight on an output that may not be float64"
+                f" ({why or 'a boolean feature'}) multiplies in integers"
+            )
+    return float(w)
+
+
+def _part(
+    owner: str,
+    name: str,
+    part: Any,
+    weight: Any,
+    x: list[S.Expr],
+    types: list[pa.DataType],
+) -> list[S.Expr]:
+    """One part's lanes over its own features, weighted."""
+    where = f"{owner} part {name!r}"
+    entry = catalog().get(type(part))
+    if entry is None:
+        raise NotNative(f"{where}: no translation for {type(part).__name__}")
+    if entry.ulps:
+        raise NotNative(
+            f"{where}: {type(part).__name__} is within {entry.ulps} ulps;"
+            " a composition serves bit-exact parts only"
+        )
+    if _passes(part) and pa.string() in types:
+        raise NotNative(
+            f"{where} passes a string column through; the step reads lanes with float()"
+        )
+    w = None if weight is None else _weight(owner, name, part, weight, types)
+    try:
+        out = list(entry.translate(part, x, types))
+    except NotNative as e:
+        raise NotNative(f"{where}: {e}") from None
+    return out if w is None else [o * f64(w) for o in out]
+
+
+def _refuse_container(est: Any) -> None:
+    config = getattr(est, "_sklearn_output_config", {}).get("transform")
+    if config not in (None, "default"):
+        # A DataFrame row, which the step's `transform(...)[0]` misreads.
+        raise NotNative(f"{type(est).__name__}.set_output(transform={config!r})")
+
+
+@translates(ColumnTransformer)
+def _column_transformer(
+    est: Any, x: list[S.Expr], types: list[pa.DataType]
+) -> list[S.Expr]:
+    if est.sparse_output_:
+        raise NotNative("ColumnTransformer: the output is sparse (sparse_output_)")
+    _refuse_container(est)
+    n = len(x)
+    if est.n_features_in_ != n:
+        raise NotNative(
+            f"ColumnTransformer fitted on {est.n_features_in_} features, the step"
+            f" has {n}"
+        )
+    weights = est.transformer_weights or {}
+    out: list[S.Expr] = []
+    for name, part, columns in _parts(est):
+        where = f"ColumnTransformer part {name!r}"
+        if _determine_key_type(columns) == "str":
+            raise NotNative(
+                f"{where}: columns {columns!r} are names, which need a DataFrame"
+            )
+        # The twin's own selection, run on the column indices.
+        picked = _safe_indexing(np.arange(n).reshape(1, n), columns, axis=1)
+        if np.ndim(picked) != 2:
+            raise NotNative(f"{where}: column {columns!r} selects a 1-D array")
+        cols = [int(i) for i in picked[0]]
+        if _is_empty_column_selection(cols):
+            continue  # an empty slice, which `_iter` keeps
+        why = _reads_objects(part)
+        if why:
+            raise NotNative(f"{where}: {why}, as the twin hands it")
+        out += _part(
+            "ColumnTransformer",
+            name,
+            part,
+            weights.get(name),
+            [x[i] for i in cols],
+            [types[i] for i in cols],
+        )
+    return out
+
+
+@translates(FeatureUnion)
+def _union(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
+    _refuse_container(est)
+    weights = est.transformer_weights or {}
+    out: list[S.Expr] = []
+    for name, part, _ in _parts(est):
+        if _passes(part) and weights.get(name) is not None:
+            # It hands back the step's list, and `list * w` raises.
+            raise NotNative(f"FeatureUnion part {name!r}: a weighted passthrough")
+        out += _part("FeatureUnion", name, part, weights.get(name), x, types)
+    return out
