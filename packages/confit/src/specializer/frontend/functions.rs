@@ -31,7 +31,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "abs", "add", "any_value", "array_extract", "array_slice", "ascii", "avg",
     "bit_length", "cbrt", "ceil", "ceiling", "char_length", "character_length",
     "coalesce", "concat", "concat_ws", "contains", "cos", "count",
-    "damerau_levenshtein", "divide", "editdist3", "ends_with", "exp", "fdiv",
+    "damerau_levenshtein", "divide", "editdist3", "ends_with", "error", "exp", "fdiv",
     "first", "floor", "fmod", "geomean", "greatest", "hamming", "if",
     "ifnull", "instr",
     "jaccard", "last", "lcase", "least", "len", "length", "levenshtein",
@@ -753,6 +753,9 @@ impl Binder<'_> {
                 }
                 Ok(acc)
             }
+            // Served as a CASE result only (`Binder::case_result`), where
+            // DuckDB's SQLNULL typing of it has a type to adopt.
+            "error" => Err(unsup("error() outside a CASE result")),
             "nullif" => {
                 // Stricter than DuckDB wherever cmp(Eq) refuses a mix,
                 // deliberately — nullif(s, i) -> VARCHAR and nullif(b, b)

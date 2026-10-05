@@ -43,8 +43,10 @@ Easiest first; each is one family, one PR.
 - **List-valued SQL functions.** A step with unnamed width-k output
   declares a fixed-size list return; `SqlFunction` refuses list returns, so
   such steps stay Python.
-- **`error()`**, so an unknown instance id raises as the twin does (goal.md,
-  "Tolerated differences").
+- **`error()`**: served now, as a CASE result with a constant message
+  (`packages/confit/tests/test_error_function.py`). Adopt it: each lane's
+  dispatch gains `WHEN id IS NULL THEN NULL ELSE error('...')`, and goal.md's
+  unknown-id difference goes.
 - **A field read over a CASE-valued struct** (`(CASE ... END).p` refuses
   today), so a NULL id can answer a NULL struct.
 - **Dispatch on many instances.** Each lane selects its instance with a CASE

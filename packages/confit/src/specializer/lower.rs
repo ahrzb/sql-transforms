@@ -893,6 +893,14 @@ impl<'a> FB<'a> {
                     val,
                 })
             }
+            SKind::Raise(msg) => {
+                // Reaching it traps; the continuation (a NULL lane) is
+                // unreachable but keeps the block shape every caller expects.
+                let flag = self.const_i1(false);
+                let val = self.default_of(e.ty);
+                let bad = self.const_i1(true);
+                Ok(self.trap_if(bad, msg.clone(), Lane { flag: Some(flag), val }, e.ty, live))
+            }
             SKind::DecToFloat(inner) => {
                 let (p, s) = inner.ty.dec().expect("dtof operand is a decimal");
                 let l = self.emit(inner, live)?;

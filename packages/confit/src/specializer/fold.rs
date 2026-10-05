@@ -56,7 +56,7 @@ pub fn fold(e: SExpr) -> SExpr {
     let e = |kind| SExpr { kind, ty, nullable };
     match kind {
         SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
-        | SKind::JoinHit(_) => e(kind),
+        | SKind::JoinHit(_) | SKind::Raise(_) => e(kind),
         // Opaque call: fold the args, never the call itself.
         SKind::ExternCall {
             site,

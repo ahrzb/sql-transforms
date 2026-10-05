@@ -476,6 +476,9 @@ pub enum SKind {
     /// Typed NULL constant (`ty` is on the SExpr): flag=false, payload
     /// default. Produced where context gives the bare NULL literal a type.
     NullOf,
+    /// `error('msg')` as a CASE result: typed like a NULL there (DuckDB's
+    /// SQLNULL), and trapping with the full message whenever evaluated.
+    Raise(String),
     /// Arithmetic after type promotion: both sides already the same `Ty`
     /// (the frontend inserts `IntToFloat` where DuckDB promotes).
     Arith {
@@ -739,6 +742,7 @@ impl SExpr {
             | SKind::StaticCol { .. }
             | SKind::Lit(_)
             | SKind::NullOf
+            | SKind::Raise(_)
             | SKind::JoinHit(_) => Vec::new(),
             SKind::Arith { a, b, .. }
             | SKind::Cmp { a, b, .. }
@@ -875,7 +879,8 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
         // all on zero rows).
         SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
-        SKind::ExternCall { .. } | SKind::TreePredict { .. } => false,
+        // `error()` is never folded at bind: it raises when a row reaches it.
+        SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
         SKind::Lit(_) | SKind::NullOf => true,
         SKind::Arith { a, b, .. }
         | SKind::Cmp { a, b, .. }
