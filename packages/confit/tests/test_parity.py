@@ -38,11 +38,26 @@ def test_agreement_passes_and_returns_the_verdict():
     assert v.kind == "AGREE"
 
 
+def _tick():
+    import itertools
+
+    from confit import ExternFunction
+
+    n = itertools.count()
+    return ExternFunction(
+        "tick",
+        pa.schema([("a", pa.int64())]),
+        pa.int64(),
+        lambda a: (next(n),),
+        side_effects=True,
+    )
+
+
 @pytest.mark.parametrize(
     "sql, kw, message",
     [
-        # DuckDB names this column `(a + 1)` (tests/test_open_divergences.py)
-        ("SELECT a + 1 FROM __THIS__", {}, "DIVERGE_VALUE"),
+        # A udf that counts its calls answers differently on each engine.
+        ("SELECT tick(a) AS b FROM __THIS__", {"udfs": [_tick()]}, "DIVERGE_VALUE"),
         (
             "SELECT a + 1 AS b FROM __THIS__",
             {"trap": "Overflow"},
@@ -66,12 +81,12 @@ def test_the_probe_reports_each_query(capsys):
     code = probe.main(
         [
             "SELECT a + 1 AS b FROM __THIS__",
-            "SELECT a + 1 FROM __THIS__",
+            "SELECT a + 1 AS b FROM __THIS__ QUALIFY TRUE",
             "--table",
             '__THIS__::int32={"a": [1, null]}',
         ]
     )
     out = capsys.readouterr().out
     assert code == 1
-    assert "ok AGREE" in out and "!! DIVERGE_VALUE" in out
+    assert "ok AGREE" in out and "!! REFUSED" in out
     assert "confit: [DataType(int32)] [{'b': 2}, {'b': None}]" in out

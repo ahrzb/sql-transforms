@@ -720,7 +720,9 @@ def run_case(case: G.Case, *, report: bool = True) -> Verdict:
         """Our one result versus ONE DuckDB reading. Pure comparison — every
         side has already been executed, so calling it twice costs nothing."""
         duck_out, duck_phase, duck_err = duck
-        if duck_out is not None and len(set(duck_out.schema.names)) != len(
+        # The client contract renames case-insensitive duplicates too
+        # ('One', 'one' -> 'One', 'one_1'), not only exact ones.
+        if duck_out is not None and dedup_names(list(duck_out.schema.names)) != list(
             duck_out.schema.names
         ):
             duck_out = duck_out.rename_columns(dedup_names(list(duck_out.schema.names)))
