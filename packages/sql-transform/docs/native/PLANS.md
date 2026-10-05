@@ -7,16 +7,15 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
-2. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
+1. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
    (`handle_unknown`, `drop`, infrequent categories), `TargetEncoder`
    (transform of new rows only). Needs string features in the fixtures.
-3. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 2).
-4. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+2. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 1).
+3. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`.
-5. **Compositions:** a step whose instances are `Pipeline`s of catalog
+4. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
@@ -37,22 +36,25 @@ Easiest first; each is one family, one PR.
 
 - **A subexpression shared within one call.** A `Normalizer` lane is
   `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
-  body is O(n²) in the features. Measured on master b851298 through
-  `to_native`: l1 1.5 s and l2 3.4 s at 16 features; at 32 confit refuses
-  past its compiled-size limit after 8 s (l1) and 19 s (l2), and at 48 l1
-  after 36 s while l2 fails to parse (`Expected: ), found: WHEN`) a
-  definition DuckDB serves (554k characters, parenthesis depth 32).
-  Evaluating identical pure subexpressions of a call once (or a local
-  binding in a SQL function body) makes it O(n). The max norm is capped at
-  8 features meanwhile. Sent to the confit loop 2026-10-05.
+  body is O(n²) in the features. Measured on master 477ca2f through
+  `to_native`: l1 1.6 s and l2 3.5 s at 16 features; at 32 confit refuses
+  past its compiled-size limit after 9 s (l1) and 20 s (l2); at 48 l1
+  refuses after 30 s, and l2 fails after 85 s with an internal Cranelift
+  verifier error where a named refusal is due (the step stays Python
+  either way). Evaluating identical pure subexpressions of a call once (or
+  a local binding in a SQL function body) makes it O(n). The max norm is
+  capped at 8 features meanwhile. Sent to the confit loop 2026-10-05, the
+  verifier error with a repro.
 
-Served since this catalog began (#336–#339): a constant CASE result counts
-as trap-free (a 32-lane step serves a 64-row call in 331 µs, against
+Served since this catalog began (#336–#339, #341): a constant CASE result
+counts as trap-free (a 32-lane step serves a 64-row call in 331 µs, against
 297 µs inline and 5,081 µs before); a named refusal past Cranelift's size
 limit; `greatest`/`least` without the exponential fold; binary-search
-dispatch over many instances; and a field read expands its call once
+dispatch over many instances; a field read expands its call once
 (`StandardScaler` at 128 features and three groups builds in 1.2 s, where
-it passed the token cap).
+it passed the token cap); a cast that cannot fail is trap-free (wide
+`PolynomialFeatures` over BIGINT features built in 20-50 s, now 1-3 s);
+and DuckDB's parse depth.
 
 ## Left Python
 

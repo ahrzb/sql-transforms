@@ -38,6 +38,7 @@ from sklearn.preprocessing import (
     MaxAbsScaler,
     MinMaxScaler,
     Normalizer,
+    PolynomialFeatures,
     RobustScaler,
     StandardScaler,
 )
@@ -53,9 +54,12 @@ from sql_transform.native import (
 )
 
 # An imputer whose fit saw a column only missing warns at every transform
-# that it drops it; the fixtures make such columns on purpose.
+# that it drops it, and numpy warns when a twin overflows on an edge row;
+# the fixtures make both on purpose.
 pytestmark = pytest.mark.filterwarnings(
-    "ignore:Skipping features without any observed values:UserWarning"
+    "ignore:Skipping features without any observed values:UserWarning",
+    "ignore:overflow encountered:RuntimeWarning",
+    "ignore:invalid value encountered:RuntimeWarning",
 )
 
 
@@ -142,6 +146,13 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
         lambda: SequentialFeatureSelector(
             LinearRegression(), n_features_to_select=1, cv=2
         )
+    ],
+    PolynomialFeatures: [
+        PolynomialFeatures,
+        lambda: PolynomialFeatures(degree=3, include_bias=False),
+        lambda: PolynomialFeatures(degree=3, interaction_only=True),
+        lambda: PolynomialFeatures(degree=(2, 3)),
+        lambda: PolynomialFeatures(degree=(2, 2), include_bias=False),
     ],
 }
 
