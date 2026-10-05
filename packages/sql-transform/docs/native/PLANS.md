@@ -12,6 +12,10 @@ Easiest first; each is one family, one PR.
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
+3. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
+   (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
+   grew about as lanes^2.5; since #350 they grow about as lanes^1.4
+   (2,556 lanes: 3.2 s, master 5513891).
 
 ## Waiting on the owner
 
@@ -32,23 +36,19 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **A subexpression shared within one call.** A `Normalizer` lane is
-  `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
-  body is O(n²) in the features. Measured on master 477ca2f through
-  `to_native`: l1 1.6 s and l2 3.5 s at 16 features; at 32 confit refuses
-  past its compiled-size limit after 9 s (l1) and 20 s (l2), and at 48
-  after 30 s (l1) and 55 s (l2; an internal Cranelift verifier error
-  until #346 named it, master fa13d32). Evaluating identical pure
-  subexpressions of a call once (or a local binding in a SQL function
-  body) makes it O(n). The max norm is capped at 8 features meanwhile.
-  Sent to the confit loop 2026-10-05.
-- **Build time linear in the lanes read.** A step whose query reads L
-  struct fields builds in time growing about as L^2.5, though its body is
-  linear in L: `PolynomialFeatures(degree=2)` at 231 lanes builds in 1.6 s,
-  496 in 6.5 s, 861 in 23 s, 1,326 in 68 s (master 477ca2f), and past
-  2,000 lanes confit refuses at its expansion cap. The catalog test draws
-  steps of at most 300 lanes meanwhile (`MAX_LANES`). Sent to the confit
-  loop 2026-10-05, with a repro.
+- **A subexpression shared within one call** (the confit loop's ticket
+  T1, in progress). A `Normalizer` lane is `x_j / g(norm(x))`, and every
+  lane repeats the row norm verbatim, so the body is O(n²) in the
+  features. Measured on master 5513891 through `to_native`: l1 1.4 s and
+  l2 3.3 s at 16 features; at 32 confit refuses past its compiled-size
+  limit after 6.9 s (l1) and 16.7 s (l2), at 48 after 23.7 s and 46.7 s.
+  A native `Normalizer` call is 2x the twin's speed where other scalers
+  are about 30x. Evaluating identical pure subexpressions of a call once
+  (or a local binding in a SQL function body) makes it O(n). The max norm
+  is capped at 8 features meanwhile. Sent to the confit loop 2026-10-05.
+- **An early size refusal** (the confit loop's ticket T2, in progress):
+  the refusals above arrive after Cranelift has spent its time (up to
+  47 s), which `to_native` pays before falling back to Python.
 - **A call confit knows cannot trap.** `can_trap` counts every call as
   one that may trap (`ln`, `exp`, even unary minus), so a struct field
   read keeps the other lanes' calls and serving grows as the square of the
@@ -56,24 +56,20 @@ Easiest first; each is one family, one PR.
   Python step: 0.3 vs 118 us at 1 feature, 39 vs 183 at 8, 90 vs 192 at
   12, 179 vs 209 at 16, 393 vs 267 at 24; build 0.15 s at 8, 2.1 s at 24,
   13 s at 32 with three instances, and at 64 (three instances) confit
-  refuses past Cranelift's size limit after 26 s (master b926e88, 2026-10-05). Classifying total
-  calls (`exp`, `pow`, `fneg`) as trap-free, and `ln` under a CASE arm
-  whose condition excludes `x <= 0`, would make it linear. `PowerTransformer`
-  is capped at 12 features meanwhile.
-
+  refuses past Cranelift's size limit after 26 s (master b926e88,
+  2026-10-05). Classifying total calls (`exp`, `pow`, `fneg`) as
+  trap-free, and `ln` under a CASE arm whose condition excludes `x <= 0`,
+  would make it linear. `PowerTransformer` is capped at 12 features
+  meanwhile. Sent to the confit loop 2026-10-05.
 - **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
   far slower than `-1.0 * x`, which is the same double: a 32-feature
   `QuantileTransformer` (3 quantiles) built in 2.8 s and served 64 rows in
   32 ms with `-x`, against 0.35 s and 1.1 ms with the product (master
-  b926e88). The entry spells the product meanwhile. Sent with the PR that
-  added it, 2026-10-05.
-- **`QuantileTransformer` against build time in the lanes read** (the
-  item above): at 1,000 total quantiles a step builds in 2-3 s whatever
-  its width, but two features at the default 1,000 take 5.4 s, four
-  14.6 s, 64 features of 62 45 s and 128 of 31 83 s (master b926e88). The
-  entry serves at most 2,000 quantiles per estimator meanwhile.
+  b926e88). The entry spells the product meanwhile. Sent to the confit
+  loop 2026-10-05.
 
-Served since this catalog began (#336–#339, #341, #346): a constant CASE
+Served since this catalog began (#336–#339, #341, #346, #348, #350,
+#353): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -81,8 +77,13 @@ binary-search dispatch over many instances; a field read expands its call
 once (`StandardScaler` at 128 features and three groups builds in 1.2 s,
 where it passed the token cap); a cast that cannot fail is trap-free (wide
 `PolynomialFeatures` over BIGINT features built in 20-50 s, now 1-3 s);
-DuckDB's parse depth; and a named refusal past Cranelift's 24-bit index
-width, where a 48-feature `Normalizer` met a verifier error.
+DuckDB's parse depth; a named refusal past Cranelift's 24-bit index
+width, where a 48-feature `Normalizer` met a verifier error; struct reads
+that build about linearly in the lanes read (`PolynomialFeatures` at 2,556
+lanes: refused, then 287 s after #348, now 3.2 s after #350, master
+5513891); and a dropped function's JIT memory freed (each build leaked two
+memory mappings, so a process stalled at `vm.max_map_count` after about
+32,000 builds; 6,000 builds now hold 477 mappings).
 
 ## Left Python
 
@@ -115,8 +116,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. Past 2,000 quantiles per estimator (summed
-  over its features), until confit's build is linear in the lanes read
-  (above). Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
+  over its features), a cap set before #350 (Next, item 3). Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
   (`quantile.interp_is_numpys` probes it).
