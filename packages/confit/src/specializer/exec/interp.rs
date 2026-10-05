@@ -120,14 +120,19 @@ impl std::fmt::Display for CompileError {
             CompileError::Regex(msg) => write!(f, "regex table entry failed to compile: {msg}"),
             CompileError::InterpOnly(why) => write!(f, "interpreter only: {why}"),
             CompileError::Codegen(msg) => write!(f, "cranelift codegen failed: {msg}"),
-            CompileError::TooLarge(msg) => write!(
-                f,
-                "unsupported: the compiled query is past the code generator's \
-                 size limit ({msg}) -- fewer output columns or a smaller \
-                 expression per column builds"
-            ),
+            CompileError::TooLarge(msg) => write!(f, "unsupported: {}", too_large(msg)),
         }
     }
+}
+
+/// The refusal of a program past one of Cranelift's size limits (`why`),
+/// after its `unsupported: `: the one text, whether Cranelift said so or
+/// the size floor did first (`specializer::prepare_full`).
+pub fn too_large(why: &str) -> String {
+    format!(
+        "the compiled query is past the code generator's size limit ({why}) -- \
+         fewer output columns or a smaller expression per column builds"
+    )
 }
 
 /// Compile every [`ir::ReSpec`] in the program with the pinned builder

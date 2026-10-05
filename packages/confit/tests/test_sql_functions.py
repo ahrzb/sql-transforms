@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 import sys
+import time
 from pathlib import Path
 
 import pyarrow as pa
@@ -307,3 +308,40 @@ def test_a_wide_struct_function_builds_once_per_call():
     assert got[2]["o5"] is None
     with pytest.raises(Exception, match="unknown id"):
         infer.infer_arrow(rows.slice(0, 1).set_column(0, "iid", pa.array([7])))
+
+
+def test_a_call_past_the_code_generators_size_limit_refuses_before_compiling():
+    # 520 lanes, each a cast that can trap, all read in one sum: every read
+    # keeps its 519 siblings for their traps, so the program holds 270k
+    # casts, and Cranelift cannot number its virtual registers (2**21). The
+    # size floor says so after lowering: 2.7 s on a release build, 2.2M
+    # registers at least (2026-10-05). Before it, Cranelift itself refused,
+    # after everything else had run: 43 s at 420 lanes, 68 s at 480.
+    k = 520
+
+    def body(x):
+        return {
+            f"l{j}": (x * S.lit(1.0 + j / 1000.0)).cast(pa.int32()) for j in range(k)
+        }
+
+    fn = SqlFunction(
+        "f",
+        pa.schema([("x", F64)]),
+        pa.struct([(f"l{j}", pa.int32()) for j in range(k)]),
+        body,
+    )
+    sql = "SELECT " + " + ".join(f"f(x).l{j}" for j in range(k)) + " AS o FROM __THIS__"
+    start = time.perf_counter()
+    with pytest.raises(
+        ValueError,
+        match=r"^unsupported: the compiled query is past the code generator's size"
+        r" limit \(Code for function is too large: at least \d+ virtual registers",
+    ):
+        DuckDBInferFn(
+            sql,
+            row_tables={"__THIS__": pa.schema([("x", F64)])},
+            static_tables={},
+            udfs=[fn],
+        )
+    # Generous: a debug build is several times slower than release.
+    assert time.perf_counter() - start < 60

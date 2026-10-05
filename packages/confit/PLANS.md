@@ -40,8 +40,20 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-Nothing open; the catalog's PLANS "Needs from confit" is where new needs
-land.
+- **A struct function read lane by lane binds in cubic time.** The
+  catalog's Normalizer: each read keeps every sibling lane for its traps
+  because `can_trap` has no arm for `abs` (total over DOUBLE; only BIGINT's
+  `abs(MIN)` traps) and l2's `sqrt` is a trapping helper, so n reads carry n
+  lanes of n features each. The sibling cache (`frontend/calls.rs`) also
+  misses on every projection item (its scope key holds
+  `bound_aliases.len()`), so each read binds its siblings again, and with
+  `null_when` the expansion is not a `struct_pack`, so reads take the
+  generic path (3x slower). At 32 features (2026-10-05) binding is 2.0 s (l1)
+  and 3.6 s (l2) of the build, so the least an early size refusal (below)
+  takes there. A shared subexpression (T1) or the fixes above would bring
+  these under a second.
+
+The catalog's PLANS "Needs from confit" is where new needs land.
 
 Delivered:
 
@@ -57,7 +69,13 @@ Delivered:
   1.4 s. An unaliased read is named as DuckDB names it, `(f(x)).p`.
 - `greatest`/`least` build as one flat CASE (n² in the argument count, was
   4^n).
-- A Cranelift size limit refuses by name (`unsupported:`).
+- A Cranelift size limit refuses by name (`unsupported:`), and as soon as
+  the program is lowered when a floor on the virtual registers Cranelift
+  needs passes its 2^21 (`exec/size.rs`; checked against Cranelift on every
+  debug-assertion compile): l2 Normalizer at 32 features in 4.9 s (27.5 s
+  before), a 520-lane struct read in one sum in 2.7 s (97 s). Near the cap
+  the floor (about half of Cranelift's count there) does not reach it: l1 at
+  32 features still refuses from Cranelift, in 12 s.
 - An expression past DuckDB's depth limit (1000) refuses by name; an
   AND/OR chain past 64 terms binds as a balanced tree, and bind, fold and
   lower grow their stack on demand, so a 20000-term chain serves (about
@@ -168,6 +186,12 @@ The first five are ruled, in this order; the rest follow.
   (`docs/reports/2026-09-28-decimal-expressions.md`). Inlining the checks
   is the next step if decimals show up in serving profiles.
 - **Vectorized `apply_batch`** for `infer_arrow` (UDFs are called per row).
+- **Builds near Cranelift's register cap are slow.** A Normalizer (l1) at
+  30 features builds in 22-24 s; at 24 features Cranelift's register
+  allocation is 4.3 s, its IR verifier 0.8 s (1.7 s at 32), its egraph 0.8 s
+  (2026-10-05). A 100x100 checked-integer matvec took 443 s in Cranelift (not
+  investigated). Candidates: the verifier off in release builds, one
+  function per group of output columns.
 - **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
 

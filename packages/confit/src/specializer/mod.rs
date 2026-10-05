@@ -171,12 +171,17 @@ pub fn prepare_opaque(
 ) -> Result<Prepared, PrepareError> {
     prepare_full(
         sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval, &[],
+        false,
     )
 }
 
 /// [`prepare_opaque`] plus the declared SQL functions, each call of which
 /// is replaced by its body before the query is parsed
 /// ([`frontend::macros`]).
+///
+/// With `cranelift` (the program is for the Cranelift backend), a program
+/// that cannot fit Cranelift's virtual registers refuses as soon as it is
+/// lowered ([`exec::size`]).
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_full(
     sql: &str,
@@ -190,6 +195,7 @@ pub fn prepare_full(
     models: &[plan::ModelTable],
     bind_eval: &[exec::ExternImpl],
     macros: &[frontend::macros::SqlMacro],
+    cranelift: bool,
 ) -> Result<Prepared, PrepareError> {
     let (plan, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
         frontend::frontend(
@@ -220,6 +226,19 @@ pub fn prepare_full(
         &plan, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
         &model_refs,
     )?;
+    // Before canonicalize, verify, the interpreter compile and the CLIF
+    // build, which on the native catalog's Normalizer (l2, 32 features;
+    // 2026-10-05) took 12 s, and Cranelift 9 s more to refuse it itself.
+    if cranelift && !exec::cranelift::interp_only(&program) {
+        let floor = exec::size::vreg_floor(&program).total();
+        if floor >= exec::size::VREG_LIMIT {
+            return Err(PrepareError::Unsupported(exec::interp::too_large(&format!(
+                "Code for function is too large: at least {floor} virtual registers, \
+                 fewer than {} fit",
+                exec::size::VREG_LIMIT
+            ))));
+        }
+    }
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
     ir::canonicalize(&mut program);
