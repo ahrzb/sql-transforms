@@ -101,9 +101,18 @@ def test_degenerate_quantiles(column, params):
     assert check(step, to_native(step, strict=True), _rows(step, 2)) > 0
 
 
-def test_past_the_quantile_budget_stays_python():
-    step = _step(np.random.default_rng(4).normal(size=(1500, 3)))
-    with pytest.raises(NotNative, match="3000 quantiles, past the 2000"):
+@pytest.mark.parametrize(
+    "rows, features, n_quantiles, why",
+    [
+        (1500, 5, 1000, "5000 quantiles and 5000000 squared"),
+        (2500, 2, 2000, "4000 quantiles and 8000000 squared"),
+    ],
+    ids=["sum", "squares"],
+)
+def test_past_the_quantile_budget_stays_python(rows, features, n_quantiles, why):
+    X = np.random.default_rng(4).normal(size=(rows, features))
+    step = _step(X, n_quantiles=n_quantiles)
+    with pytest.raises(NotNative, match=f"{why}, past the 4000 and 4000000"):
         to_native(step, strict=True)
 
 

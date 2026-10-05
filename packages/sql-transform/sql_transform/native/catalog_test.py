@@ -309,10 +309,11 @@ EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324]
 # A row of only these has a norm under sklearn's zero-scale threshold.
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 # The widest step drawn, in output lanes: a wider fixture checks the same
-# translation, only slower. Set while confit's builds grew about as
-# lanes^2.5 (a 1,351-lane PolynomialFeatures draw took 115 s); since #350
-# they grow about as lanes^1.4, and PLANS "Next" raises it.
-MAX_LANES = 300
+# translation, only slower. 1,000 holds degree-2 PolynomialFeatures over
+# all 32 features and degree 3 over 16; with 8 seeds the classes that draw
+# past 300 lanes (PolynomialFeatures, OneHotEncoder, KBinsDiscretizer) run
+# in 35 s, against 31 s at 300 and 44 s at 2,000 (master 49acad5).
+MAX_LANES = 1000
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))

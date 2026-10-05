@@ -46,11 +46,16 @@ from sklearn.preprocessing import QuantileTransformer
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, translates
 
-# The most quantiles served per estimator, summed over its features: two
-# features at the default 1,000 build in 5.4 s, four in 14.6 s, and 64 of
-# 62 in 45 s (confit's build grows with the lanes read; PLANS, "Needs from
-# confit"; 2026-10-05).
-MAX_QUANTILES = 2000
+# The most quantiles served per estimator, over its features: their sum
+# and the sum of their squares. A feature of q quantiles builds in about
+# 0.57 ms * q + 0.87 us * q^2 (one feature: 1.4 s at 1,000, 4.4 s at
+# 2,000, 16 s at 4,000; PLANS, "Needs from confit"), so the sum bounds the
+# first term and the squares the second. The slowest steps served: the
+# default 1,000 quantiles over four features build in 6.7 s, 500 over
+# eight in 5.3 s, 100 over 40 in 3.6 s, and each serves 64 rows 18 to 35
+# times faster than the twin (release build, master 49acad5, 2026-10-05).
+MAX_QUANTILES = 4000
+MAX_SQUARES = 4_000_000
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
 # `slope * (x - start) + value`, or `value` at `start` when `exact`.
@@ -156,10 +161,7 @@ def _feature(x: S.Expr, q: np.ndarray, r: np.ndarray) -> S.Expr:
     if not up:  # q[0] == q[-1]: nothing lies inside
         return e.otherwise(f64(1.0))
     e = e.when(x >= f64(q[-1]), f64(1.0))
-    # -1.0 * x is -x to the bit (signed zeros included); confit serves a
-    # product faster than a negation (PLANS, "Needs from confit").
-    neg = f64(-1.0) * x
-    return e.otherwise(f64(0.5) * (_tree(x, up) - _tree(neg, down)))
+    return e.otherwise(f64(0.5) * (_tree(x, up) - _tree(-x, down)))
 
 
 @translates(QuantileTransformer)
@@ -169,12 +171,12 @@ def _quantile(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             f"QuantileTransformer(output_distribution={est.output_distribution!r}):"
             " scipy's norm.ppf has no SQL twin"
         )
-    total = est.n_quantiles_ * len(x)
-    if total > MAX_QUANTILES:
+    q, n = est.n_quantiles_, len(x)
+    if q * n > MAX_QUANTILES or q * q * n > MAX_SQUARES:
         raise NotNative(
-            f"QuantileTransformer with {est.n_quantiles_} quantiles over"
-            f" {len(x)} features: {total} quantiles, past the {MAX_QUANTILES}"
-            " confit builds in seconds"
+            f"QuantileTransformer with {q} quantiles over {n} features:"
+            f" {q * n} quantiles and {q * q * n} squared, past the"
+            f" {MAX_QUANTILES} and {MAX_SQUARES} confit builds in seconds"
         )
     if not interp_is_numpys():
         raise NotNative(
