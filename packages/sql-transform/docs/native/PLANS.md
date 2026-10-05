@@ -7,15 +7,12 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
-   (`handle_unknown`, `drop`, infrequent categories), `TargetEncoder`
-   (transform of new rows only). Needs string features in the fixtures.
-2. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 1).
-3. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+1. **`KBinsDiscretizer`** (`encode="ordinal"`, `"onehot-dense"`).
+2. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`.
-4. **Compositions:** a step whose instances are `Pipeline`s of catalog
+3. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
@@ -38,23 +35,30 @@ Easiest first; each is one family, one PR.
   `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
   body is O(n²) in the features. Measured on master 477ca2f through
   `to_native`: l1 1.6 s and l2 3.5 s at 16 features; at 32 confit refuses
-  past its compiled-size limit after 9 s (l1) and 20 s (l2); at 48 l1
-  refuses after 30 s, and l2 fails after 85 s with an internal Cranelift
-  verifier error where a named refusal is due (the step stays Python
-  either way). Evaluating identical pure subexpressions of a call once (or
-  a local binding in a SQL function body) makes it O(n). The max norm is
-  capped at 8 features meanwhile. Sent to the confit loop 2026-10-05, the
-  verifier error with a repro.
+  past its compiled-size limit after 9 s (l1) and 20 s (l2), and at 48
+  after 30 s (l1) and 55 s (l2; an internal Cranelift verifier error
+  until #346 named it, master fa13d32). Evaluating identical pure
+  subexpressions of a call once (or a local binding in a SQL function
+  body) makes it O(n). The max norm is capped at 8 features meanwhile.
+  Sent to the confit loop 2026-10-05.
+- **Build time linear in the lanes read.** A step whose query reads L
+  struct fields builds in time growing about as L^2.5, though its body is
+  linear in L: `PolynomialFeatures(degree=2)` at 231 lanes builds in 1.6 s,
+  496 in 6.5 s, 861 in 23 s, 1,326 in 68 s (master 477ca2f), and past
+  2,000 lanes confit refuses at its expansion cap. The catalog test draws
+  steps of at most 300 lanes meanwhile (`MAX_LANES`). Sent to the confit
+  loop 2026-10-05, with a repro.
 
-Served since this catalog began (#336–#339, #341): a constant CASE result
-counts as trap-free (a 32-lane step serves a 64-row call in 331 µs, against
-297 µs inline and 5,081 µs before); a named refusal past Cranelift's size
-limit; `greatest`/`least` without the exponential fold; binary-search
-dispatch over many instances; a field read expands its call once
-(`StandardScaler` at 128 features and three groups builds in 1.2 s, where
-it passed the token cap); a cast that cannot fail is trap-free (wide
+Served since this catalog began (#336–#339, #341, #346): a constant CASE
+result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
+against 297 µs inline and 5,081 µs before); a named refusal past
+Cranelift's size limit; `greatest`/`least` without the exponential fold;
+binary-search dispatch over many instances; a field read expands its call
+once (`StandardScaler` at 128 features and three groups builds in 1.2 s,
+where it passed the token cap); a cast that cannot fail is trap-free (wide
 `PolynomialFeatures` over BIGINT features built in 20-50 s, now 1-3 s);
-and DuckDB's parse depth.
+DuckDB's parse depth; and a named refusal past Cranelift's 24-bit index
+width, where a 48-feature `Normalizer` met a verifier error.
 
 ## Left Python
 
@@ -71,6 +75,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
   number (`None`, `pd.NA`, a string); `MissingIndicator(sparse=True)`.
 - A selector that keeps no feature, or whose `get_support()` raises (as
   its `transform` would).
+- `OneHotEncoder(sparse_output=True)`, the default: a sparse output, which
+  the Python step does not serve either (it reads a row with `float()`,
+  and a sparse row is not a float). A note for the step, not the catalog.
+- An encoder over a boolean feature: the fixtures make no boolean features
+  yet, for any entry.
 - `Normalizer(norm="max")` over more than 8 features, and any norm whose
   body confit does not build, until a subexpression is shared within a call
   (above).

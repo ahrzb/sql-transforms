@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import pyarrow as pa
 from confit import sql as S
 from sklearn.preprocessing import (
     Binarizer,
@@ -29,7 +30,7 @@ from sql_transform.native._registry import NotNative, translates
 
 
 @translates(StandardScaler)
-def _standard(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _standard(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X -= mean_` if with_mean, then `X /= scale_` if with_std, in
     # float64. `scale_` already has zero variances replaced by 1.0.
     out = []
@@ -44,7 +45,7 @@ def _standard(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 @translates(MinMaxScaler)
-def _minmax(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _minmax(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X *= scale_`, `X += min_`, then with `clip` the array-API
     # clip to `feature_range` (`_helpers.clip`). `scale_` already has zero
     # ranges replaced by 1.0.
@@ -59,7 +60,7 @@ def _minmax(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 @translates(MaxAbsScaler)
-def _maxabs(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _maxabs(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X /= scale_`, then with `clip` the array-API clip to [-1, 1].
     # `scale_` already has zero maxima replaced by 1.0.
     out = []
@@ -70,7 +71,7 @@ def _maxabs(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 @translates(RobustScaler)
-def _robust(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _robust(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X -= center_` if with_centering, then `X /= scale_` if
     # with_scaling. `quantile_range` and `unit_variance` only shape the
     # fitted `scale_`.
@@ -92,7 +93,7 @@ _MAX_NORM_WIDTH = 8
 
 
 @translates(Normalizer)
-def _normalizer(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _normalizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn `normalize`: the row's norm (l1: `np.sum(abs(X), axis=1)`,
     # numpy's pairwise sum; l2: `sqrt(row_norms(X, squared=True))`, an
     # einsum; max: `np.max(abs(X), axis=1)`, exact), a norm under
@@ -125,7 +126,7 @@ def _normalizer(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 @translates(Binarizer)
-def _binarizer(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _binarizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn `binarize`: 1 where `X > threshold`, else 0, in X's float64.
     # NaN raises in the twin.
     t = f64(est.threshold)

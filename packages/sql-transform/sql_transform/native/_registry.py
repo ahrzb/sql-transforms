@@ -4,12 +4,13 @@ A translator turns ONE fitted estimator into its output lanes, as
 `confit.sql` expressions over the feature expressions it is handed:
 
     @translates(StandardScaler)
-    def _(est, x: list[S.Expr]) -> list[S.Expr]: ...
+    def _(est, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]: ...
 
-`x` holds one expression per declared feature, already in the form the
-estimator receives it from `PythonTransform`: a numeric feature is a DOUBLE
-with NULL read as NaN, a string or boolean passes as is. A translator that
-cannot serve this estimator's configuration raises `NotNative` naming why.
+`x` holds one expression per declared feature, `types` the declared type
+of each. A numeric or boolean feature reads as a DOUBLE (a boolean as 0/1)
+with NULL as NaN, as `transform` sees it in a numeric row; a string passes
+as is, NULL as NULL (the step hands it None). A translator that cannot
+serve this estimator's configuration raises `NotNative` naming why.
 
 The framework does the rest, the same way for every entry: one
 `SqlFunction` named like the step, taking the instance id then the
@@ -34,7 +35,7 @@ from confit import sql as S
 
 from sql_transform._udf import PythonTransform
 
-Translator = Callable[[Any, list[S.Expr]], list[S.Expr]]
+Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
 
 
 @dataclass(frozen=True)
@@ -124,7 +125,7 @@ def _translate(step: Any) -> SqlFunction:
         feats = [_feature(p, t) for p, t in zip(params, types, strict=True)]
         per_id: list[tuple[int, list[S.Expr]]] = []
         for k, est in sorted(step.instances.items()):
-            out = list(_CATALOG[type(est)].translate(est, feats))
+            out = list(_CATALOG[type(est)].translate(est, feats, types))
             if len(out) != len(lanes):
                 raise NotNative(
                     f"instance {k}: {type(est).__name__} translates to"
