@@ -53,11 +53,9 @@ def clip(e: S.Expr, lo: Any, hi: Any) -> S.Expr:
 def row_max(xs: list[S.Expr]) -> S.Expr:
     """The largest of `xs`, none of them NaN (`np.max` over a row the twin
     validated finite): one `greatest` over all of them, exact whichever of
-    two equal operands wins. A tournament of two-way CASEs mentions each
-    half twice, so its expression is quadratic in `len(xs)` and confit
-    refuses to expand it past 32 features of a `Normalizer`; nested
-    two-way `greatest` calls are worse, as confit repeats their arguments
-    (PLANS, "Needs from confit")."""
+    two equal operands wins, which confit lowers as a running extreme
+    (#374). A tournament of two-way CASEs mentions each half twice, so its
+    expression is quadratic in `len(xs)`."""
     return xs[0] if len(xs) == 1 else S.fn("greatest", *xs)
 
 

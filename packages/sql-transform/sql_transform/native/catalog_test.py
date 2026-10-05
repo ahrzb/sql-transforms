@@ -854,7 +854,6 @@ def _sum_rows(X):
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
         (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
-        (FunctionTransformer(np.sin), [pa.float64()] * 9, "over 9 features"),
     ],
     ids=lambda v: None,
 )
