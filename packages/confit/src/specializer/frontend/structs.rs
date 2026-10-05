@@ -114,19 +114,14 @@ impl Binder<'_> {
         while let SqlExpr::Nested(i) = base {
             base = i;
         }
-        let SqlExpr::Function(f) = base else {
-            return Ok(None);
+        let field: Option<SqlExpr> = match base {
+            // The whole chain moves into each arm: `(CASE .. END).q.r`.
+            SqlExpr::Case { .. } => return Ok(Some(case_field(base, access_chain))),
+            // The rest of the chain reads into the picked field.
+            SqlExpr::Function(f) => self.struct_pack_field(f, &id.value, rest)?,
+            _ => return Ok(None),
         };
-        let Some(field) = self.struct_pack_field(f, &id.value)? else {
-            return Ok(None);
-        };
-        if rest.is_empty() {
-            return Ok(Some(field.clone()));
-        }
-        Ok(Some(SqlExpr::CompoundFieldAccess {
-            root: Box::new(SqlExpr::Nested(Box::new(field.clone()))),
-            access_chain: rest.to_vec(),
-        }))
+        Ok(field)
     }
 
     /// Field access over a struct COLUMN in its non-dotted spellings --
@@ -259,21 +254,27 @@ impl Binder<'_> {
         while let SqlExpr::Nested(i) = base {
             base = i;
         }
-        let SqlExpr::Function(inner) = base else {
-            return Ok(None);
-        };
-        Ok(self.struct_pack_field(inner, field)?.cloned())
+        match base {
+            SqlExpr::Case { .. } => Ok(Some(case_field(
+                base,
+                &[AccessExpr::Dot(SqlExpr::Identifier(Ident::new(field.clone())))],
+            ))),
+            SqlExpr::Function(inner) => self.struct_pack_field(inner, field, &[]),
+            _ => Ok(None),
+        }
     }
 
-    /// The named field of a plain `struct_pack(...)` call, ASCII-case-
-    /// insensitively (DuckDB's struct key matching). `Ok(None)` when `f`
-    /// isn't a plain struct_pack; a struct_pack MISSING the key refuses
-    /// with DuckDB's wording.
-    pub(super) fn struct_pack_field<'e>(
+    /// The read of a named field of a plain `struct_pack(...)` call, as the
+    /// AST it binds (see [`field_read`]), matching ASCII-case-insensitively
+    /// (DuckDB's struct key matching). `Ok(None)` when `f` isn't a plain
+    /// struct_pack; a struct_pack MISSING the key refuses with DuckDB's
+    /// wording.
+    pub(super) fn struct_pack_field(
         &self,
-        f: &'e sqlparser::ast::Function,
+        f: &sqlparser::ast::Function,
         field: &str,
-    ) -> Result<Option<&'e SqlExpr>, PrepareError> {
+        rest: &[AccessExpr],
+    ) -> Result<Option<SqlExpr>, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         if !f.name.to_string().eq_ignore_ascii_case("struct_pack")
             || f.uses_odbc_syntax
@@ -287,19 +288,29 @@ impl Binder<'_> {
         let FunctionArguments::List(list) = &f.args else {
             return Ok(None);
         };
+        let mut values = Vec::with_capacity(list.args.len());
+        let mut pick = None;
         for a in &list.args {
-            if let FunctionArg::Named { name, arg, .. } = a {
-                if name.value.eq_ignore_ascii_case(field) {
-                    let FunctionArgExpr::Expr(v) = arg else {
-                        return Ok(None);
-                    };
-                    return Ok(Some(v));
-                }
+            let (FunctionArg::Named { name, arg: FunctionArgExpr::Expr(v), .. }
+            | FunctionArg::ExprNamed {
+                name: SqlExpr::Identifier(name),
+                arg: FunctionArgExpr::Expr(v),
+                ..
+            }) = a
+            else {
+                return Ok(None);
+            };
+            if pick.is_none() && name.value.eq_ignore_ascii_case(field) {
+                pick = Some(values.len());
             }
+            values.push(v);
         }
-        Err(PrepareError::Bind(format!(
-            "Could not find key \"{field}\" in struct"
-        )))
+        let Some(pick) = pick else {
+            return Err(PrepareError::Bind(format!(
+                "Could not find key \"{field}\" in struct"
+            )));
+        };
+        Ok(Some(field_read(f, &values, pick, rest)))
     }
 
     /// A struct-VALUED projection item — `struct_pack(n := e, ...)`, or that
@@ -449,4 +460,82 @@ impl Binder<'_> {
         }
         Ok(Some((lanes, names)))
     }
+}
+
+
+/// The internal call a field read over `struct_pack` binds as when the
+/// struct has other fields: `__cf_seq(pick, f1, ..., fn)`, every field in
+/// its order and the index of the one read. DuckDB builds every field of a
+/// struct_pack, so a sibling's trap fires even though one field is read
+/// (`(struct_pack(p := a, q := a * 9223372036854775807)).p` traps, measured
+/// on 1.5.5); the binder keeps the siblings that can trap
+/// (`Binder::seq`). The name is reserved: user SQL spelling it refuses.
+pub(super) const SEQ_MARKER: &str = "__cf_seq";
+
+fn field_read(
+    f: &sqlparser::ast::Function,
+    values: &[&SqlExpr],
+    pick: usize,
+    rest: &[AccessExpr],
+) -> SqlExpr {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName};
+    let picked = if rest.is_empty() {
+        values[pick].clone()
+    } else {
+        SqlExpr::CompoundFieldAccess {
+            root: Box::new(SqlExpr::Nested(Box::new(values[pick].clone()))),
+            access_chain: rest.to_vec(),
+        }
+    };
+    if values.len() == 1 {
+        return picked;
+    }
+    let mut seq = f.clone();
+    seq.name = ObjectName::from(vec![Ident::new(SEQ_MARKER)]);
+    let FunctionArguments::List(list) = &mut seq.args else {
+        unreachable!("a struct_pack has an argument list");
+    };
+    let index = SqlExpr::Value(SqlValue::Number(pick.to_string(), false).into());
+    let fields = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| if i == pick { picked.clone() } else { (*v).clone() });
+    list.args = std::iter::once(index)
+        .chain(fields)
+        .map(|e| FunctionArg::Unnamed(FunctionArgExpr::Expr(e)))
+        .collect();
+    SqlExpr::Function(seq)
+}
+
+/// A field read over a CASE, as the CASE of the field reads:
+/// `(CASE WHEN c THEN s1 ELSE s2 END).f` is `CASE WHEN c THEN (s1).f ELSE
+/// (s2).f END`, a longer access chain moving into each arm whole. The arm taken is the arm whose struct DuckDB would build, and
+/// a NULL arm (or no ELSE) is a NULL struct, whose field is NULL; each arm's
+/// read then binds by the ordinary rules (over struct_pack: every field
+/// built, see [`SEQ_MARKER`]).
+fn case_field(case: &SqlExpr, chain: &[AccessExpr]) -> SqlExpr {
+    let read = |r: &SqlExpr| -> SqlExpr {
+        if matches!(r, SqlExpr::Value(v) if matches!(v.value, SqlValue::Null)) {
+            return r.clone();
+        }
+        SqlExpr::CompoundFieldAccess {
+            root: Box::new(SqlExpr::Nested(Box::new(r.clone()))),
+            access_chain: chain.to_vec(),
+        }
+    };
+    let mut out = case.clone();
+    if let SqlExpr::Case {
+        conditions,
+        else_result,
+        ..
+    } = &mut out
+    {
+        for w in conditions.iter_mut() {
+            w.result = read(&w.result);
+        }
+        if let Some(e) = else_result {
+            **e = read(e);
+        }
+    }
+    out
 }

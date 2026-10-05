@@ -753,6 +753,9 @@ impl Binder<'_> {
                 }
                 Ok(acc)
             }
+            n if n == super::structs::SEQ_MARKER => {
+                Ok(self.seq(f)?.unwrap_or_else(|| null_of(Ty::I32)))
+            }
             // Served as a CASE result only (`Binder::case_result`), where
             // DuckDB's SQLNULL typing of it has a type to adopt.
             "error" => Err(unsup("error() outside a CASE result")),

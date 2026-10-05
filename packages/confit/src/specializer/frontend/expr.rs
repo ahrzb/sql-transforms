@@ -18,6 +18,9 @@ impl Binder<'_> {
             SqlExpr::Value(v) if matches!(v.value, SqlValue::Null) => Ok(None),
             SqlExpr::Nested(inner) => self.expr_or_null(inner),
             SqlExpr::Function(f) => {
+                if f.name.to_string().eq_ignore_ascii_case(structs::SEQ_MARKER) {
+                    return self.seq(f);
+                }
                 if self.nullif_sqlnull(f)? {
                     return Ok(None);
                 }
@@ -992,6 +995,68 @@ impl Binder<'_> {
             ty: Ty::I1,
             nullable: false,
         })
+    }
+
+    /// `__cf_seq(pick, f1, ..., fn)`, a field read over struct_pack (see
+    /// [`structs::SEQ_MARKER`]): the read field binds where the read stood,
+    /// its siblings bind for their traps, and only those that can trap are
+    /// kept. With none, the read is just the field, so a bare-NULL field
+    /// keeps its adoptable channel.
+    pub(super) fn seq(
+        &self,
+        f: &sqlparser::ast::Function,
+    ) -> Result<Option<SExpr>, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let FunctionArguments::List(list) = &f.args else {
+            return Err(PrepareError::Internal("__cf_seq without arguments".into()));
+        };
+        let mut args = list.args.iter().map(|a| match a {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Ok(e),
+            _ => Err(PrepareError::Internal("__cf_seq argument form".into())),
+        });
+        let pick: usize = match args.next().transpose()? {
+            Some(SqlExpr::Value(v)) => match &v.value {
+                SqlValue::Number(n, _) => n.parse().ok(),
+                _ => None,
+            },
+            _ => None,
+        }
+        .ok_or_else(|| PrepareError::Internal("__cf_seq without its index".into()))?;
+        let values: Vec<&SqlExpr> = args.collect::<Result<_, _>>()?;
+        let mut items = Vec::with_capacity(values.len());
+        let mut at = None;
+        for (i, v) in values.iter().enumerate() {
+            if i == pick {
+                at = Some(items.len());
+                match self.expr_or_null(v)? {
+                    Some(e) => items.push(e),
+                    None => items.push(null_of(Ty::I32)),
+                }
+                continue;
+            }
+            if let Some(e) = self.expr_or_null(v)? {
+                if may_trap(&e) {
+                    items.push(e);
+                }
+            }
+        }
+        let at = at.ok_or_else(|| PrepareError::Internal("__cf_seq index out of range".into()))?;
+        if items.len() == 1 {
+            // No sibling can trap: the read is the field, bound in place.
+            return self.expr_or_null(values[pick]);
+        }
+        let v = &items[at];
+        if matches!(v.kind, SKind::NullOf) && self.expr_or_null(values[pick])?.is_none() {
+            return Err(unsup(
+                "a bare-NULL struct field read beside a field that can trap",
+            ));
+        }
+        let (ty, nullable) = (v.ty, v.nullable);
+        Ok(Some(SExpr {
+            kind: SKind::Seq { items, pick: at },
+            ty,
+            nullable,
+        }))
     }
 
     /// One CASE result: bound as usual, or, for `error(msg)`, a NULL arm

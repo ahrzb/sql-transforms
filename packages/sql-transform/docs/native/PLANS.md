@@ -47,8 +47,11 @@ Easiest first; each is one family, one PR.
   (`packages/confit/tests/test_error_function.py`). Adopt it: each lane's
   dispatch gains `WHEN id IS NULL THEN NULL ELSE error('...')`, and goal.md's
   unknown-id difference goes.
-- **A field read over a CASE-valued struct** (`(CASE ... END).p` refuses
-  today), so a NULL id can answer a NULL struct.
+- **A NULL struct**: served now. `SqlFunction(..., null_when=...)` makes
+  the whole struct NULL under a condition, and field reads over it serve
+  (`packages/confit/tests/test_struct_field_reads.py`). Adopt it: a struct
+  step passes `null_when=lambda iid, *_: iid.isnull()`, and goal.md's
+  NULL-struct difference goes.
 - **Dispatch on many instances.** Each lane selects its instance with a CASE
   ladder, linear in the number of fitted groups. A step with hundreds of
   groups needs a constant lookup (an indexed list, or a params static).

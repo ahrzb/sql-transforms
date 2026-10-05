@@ -57,6 +57,24 @@ pub fn fold(e: SExpr) -> SExpr {
     match kind {
         SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
         | SKind::JoinHit(_) | SKind::Raise(_) => e(kind),
+        // A constant item cannot trap: drop it, and the node with it once
+        // only the answer is left.
+        SKind::Seq { items, pick } => {
+            let mut kept = Vec::with_capacity(items.len());
+            let mut at = 0;
+            for (i, it) in items.into_iter().map(fold).enumerate() {
+                if i == pick {
+                    at = kept.len();
+                } else if matches!(it.kind, SKind::Lit(_) | SKind::NullOf) {
+                    continue;
+                }
+                kept.push(it);
+            }
+            if kept.len() == 1 {
+                return kept.pop().expect("the answer");
+            }
+            e(SKind::Seq { items: kept, pick: at })
+        }
         // Opaque call: fold the args, never the call itself.
         SKind::ExternCall {
             site,
