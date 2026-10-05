@@ -163,7 +163,7 @@ impl Binder<'_> {
             .all(|e| e.ty.dec().is_some() || e.ty.is_int());
         let any_null = bound.iter().any(|e| {
             e.as_ref()
-                .is_none_or(|e| bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf))
+                .is_none_or(folds_to_null)
         });
         any_dec && all_dec_or_int && any_null
     }
@@ -784,11 +784,7 @@ impl Binder<'_> {
             // NULL (CASE WHEN FALSE THEN 1.25 END) collapses exactly like a
             // bare NULL next to a decimal literal; DOUBLE-spelled foldable
             // NULLs do not (measured control).
-            let folds_null = |x: &Option<SExpr>| {
-                x.as_ref().is_none_or(|e| {
-                    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
-                })
-            };
+            let folds_null = |x: &Option<SExpr>| x.as_ref().is_none_or(folds_to_null);
             let dec_l = ast_decimal_literal(left);
             let dec_r = ast_decimal_literal(right);
             ((a.is_none() || (dec_l && folds_null(&a))) && b.is_some() && dec_r

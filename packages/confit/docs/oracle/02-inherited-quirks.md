@@ -30,6 +30,10 @@ complete unsupported-syntax inventory; that is `packages/confit/docs/known-limit
 | `repeat(NULL, n)` with bare `NULL` | selects the BLOB overload | refuse; `CAST(NULL AS VARCHAR)` is supported and types equally | `known-limitations.md` §4 |
 | regex `\B` | can crash DuckDB on non-ASCII | reject-list | `known-limitations.md` §4 |
 | non-final regex `$` | row evaluation may literal-optimize to PREFIX while constant evaluation performs a normal match | refuse by name under claim: evaluation-path-disagreement | `specs/pins-waveB/fuzzer-20260728.json` |
+| WHERE `x BETWEEN l AND u` | bound as `(x >= l) AND (x <= u)`; the planner's `SplitPredicates` keeps `x >= l` in place and moves `x <= u` to the end of the WHERE's conjuncts, so later conjuncts run on rows the upper bound would stop | reproduce | `tests/test_evaluation_order.py`; nightly seed 3510602 |
+| a foldable operand that evaluates to NULL | the binder evaluates it, whatever its spelling (`'0' LIKE 'a_c'` under a CASE), and the NULL replaces the call over it, so a trapping sibling never runs | reproduce: closed constants confit's fold leaves are evaluated by the interpreter at bind | `tests/test_evaluation_order.py` |
+| a JOIN ON conjunct that names only the static table | pushed below the join as a filter on that table and evaluated over every row of it, even when it names the key column the probe matches | refuse when it can trap (single-side rule), classified by what it names | `tests/test_evaluation_order.py`; nightly seed 2269747 |
+| a DOUBLE join key | `0.0` matches `-0.0`; a projected key column carries the static side's bits | reproduce: the key rides a shadow value lane | `tests/test_evaluation_order.py`; nightly seed 2678684 |
 
 *Evidence:* each row's cited measurement or limitation. The disposition, rather than the
 surprising behavior alone, is the contract.

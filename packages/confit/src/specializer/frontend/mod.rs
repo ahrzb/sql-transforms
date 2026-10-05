@@ -679,8 +679,7 @@ fn bind_select(
     // Project on the scan.
     let mut filter = None;
     if let Some(pred) = &leftover_where {
-        let bound = binder.expr(pred);
-        let pred = fold(bool_context(bound?, "WHERE predicate")?);
+        let pred = fold(where_conjuncts(&binder, pred)?);
         // NO statically-NULL-conjunct elision here, deliberately: the oracle
         // runs DuckDB optimizer-OFF. Optimizer-ON DuckDB proves
         // such a filter selects nothing and deletes it along with its
@@ -801,6 +800,15 @@ struct Binder<'a> {
     /// trapping-constant refusals only apply at depth 0 — a guarded
     /// trapping constant stays a lazy runtime question on both engines.
     in_guarded: std::cell::Cell<u32>,
+    /// Set only while [`joins::bind_residual`] re-binds a conjunct to read
+    /// which sides it NAMES: a join key column then binds as a reference to
+    /// its static table instead of its probe-side reconstruction.
+    classify_keys: std::cell::Cell<bool>,
+    /// The top-level column names of the static table whose JOIN ON key is
+    /// binding. That table is not in `joins` until its ON has bound, yet
+    /// DuckDB already sees it: a bare name both sides have is ambiguous
+    /// anywhere in the key expression (`c0 + 1 = s0.c0`).
+    beside: std::cell::RefCell<Vec<String>>,
     /// Lanes the binder MINTED. Struct-node presence is the only minted kind
     /// today; the seam is shaped to take a second, key-only kind without
     /// changing its contract. The caller APPENDS these to the lane list before
@@ -869,4 +877,68 @@ impl Drop for GuardScope<'_> {
     fn drop(&mut self) {
         self.0.set(self.0.get() - 1);
     }
+}
+
+/// A WHERE predicate in DuckDB's evaluation order. Its parser flattens an AND
+/// chain into one conjunct list, evaluated left to right with short-circuit;
+/// but its binder turns `x BETWEEN l AND u` (non-volatile `x`) into
+/// `(x >= l) AND (x <= u)`, and `LogicalFilter::SplitPredicates` -- the
+/// planner, not the optimizer -- keeps `x >= l` in place and APPENDS `x <= u`
+/// to the end of the list. So `(a BETWEEN a AND 46) AND (m * k)` evaluates
+/// `m * k` on rows the upper bound would have stopped, and traps there
+/// (nightly seed 3510602).
+fn where_conjuncts(binder: &Binder<'_>, pred: &SqlExpr) -> Result<SExpr, PrepareError> {
+    fn flatten<'e>(e: &'e SqlExpr, out: &mut Vec<&'e SqlExpr>) {
+        match e {
+            SqlExpr::Nested(i) => flatten(i, out),
+            SqlExpr::BinaryOp {
+                left,
+                op: BinaryOperator::And,
+                right,
+            } => {
+                flatten(left, out);
+                flatten(right, out);
+            }
+            other => out.push(other),
+        }
+    }
+    let mut conj = Vec::new();
+    flatten(pred, &mut conj);
+    let between = |e: &SqlExpr| {
+        let mut e = e;
+        while let SqlExpr::Nested(i) = e {
+            e = i;
+        }
+        matches!(e, SqlExpr::Between { negated: false, .. })
+    };
+    if !conj.iter().any(|c| between(c)) {
+        return bool_context(binder.expr(pred)?, "WHERE predicate");
+    }
+    let (mut head, mut tail) = (Vec::new(), Vec::new());
+    for c in conj {
+        let bound = match binder.expr_or_null(c)? {
+            Some(e) => bool_context(e, "WHERE predicate")?,
+            None => null_of(Ty::I1),
+        };
+        match bound.kind {
+            SKind::And { a, b } if between(c) => {
+                head.push(*a);
+                tail.push(*b);
+            }
+            kind => head.push(SExpr { kind, ..bound }),
+        }
+    }
+    let mut it = head.into_iter().chain(tail);
+    let first = it.next().expect("a WHERE has a conjunct");
+    Ok(it.fold(first, |acc, c| {
+        let nullable = acc.nullable || c.nullable;
+        SExpr {
+            kind: SKind::And {
+                a: Box::new(acc),
+                b: Box::new(c),
+            },
+            ty: Ty::I1,
+            nullable,
+        }
+    }))
 }

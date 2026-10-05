@@ -89,6 +89,16 @@ impl Binder<'_> {
             ));
         };
         let col = &sj.table.cols[ci as usize];
+        if self.classify_keys.get() {
+            return Ok(SExpr {
+                kind: SKind::StaticCol {
+                    join: j as u32,
+                    col: ci,
+                },
+                ty: col.ty.ty,
+                nullable: true,
+            });
+        }
         // `promote_key`'s F64-probe-against-integer-column arm compares
         // in double space, so no reconstruction can name the i64
         // back (two build rows can collide on one double). That column rides
@@ -428,6 +438,12 @@ impl Binder<'_> {
         if hits == 0 {
             return None;
         }
+        // The static table whose ON key is binding has the head too.
+        if self.beside.borrow().iter().any(|b| b.eq_ignore_ascii_case(name)) {
+            return Some(Err(PrepareError::Bind(format!(
+                "ambiguous column '{name}' in JOIN ON (qualify it)"
+            ))));
+        }
         if hits > 1 {
             return Some(Err(PrepareError::Bind(format!(
                 "ambiguous column '{name}' (qualify it)"
@@ -507,6 +523,25 @@ impl Binder<'_> {
     /// scope: the dynamic table plus every joined static table's value
     /// columns (DuckDB semantics; ambiguity is an error).
     pub(super) fn column(&self, name: &str) -> Result<SExpr, PrepareError> {
+        if self.beside.borrow().iter().any(|b| b.eq_ignore_ascii_case(name)) {
+            let saved = self.beside.take();
+            let here = self.column(name);
+            *self.beside.borrow_mut() = saved;
+            // Any binding at all on this side, a refused non-scalar one
+            // included, makes the name ambiguous.
+            let exists = match &here {
+                Ok(_) => true,
+                Err(PrepareError::Unsupported(_)) => true,
+                Err(PrepareError::Bind(m)) => m.starts_with("ambiguous"),
+                Err(_) => false,
+            };
+            if exists {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous column '{name}' in JOIN ON (qualify it)"
+                )));
+            }
+            return here;
+        }
         let mut hits: Vec<SExpr> = Vec::new();
         for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
             if c.name.eq_ignore_ascii_case(name) {

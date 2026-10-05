@@ -75,12 +75,19 @@ impl Binder<'_> {
                     };
                     Some(ScalarVal::Str(s))
                 }
-                // A constant spelling our fold cannot finish (runtime-only
-                // ops over literals) — DuckDB would fold; we pass.
-                _ => return None,
+                // A constant spelling our fold leaves as runtime ops over
+                // literals (`reverse('x')`, `'a' LIKE '_'`): DuckDB's binder
+                // evaluates it, so we do too (nightly seeds 1801793,
+                // 3811339). A trap means no fold, as DuckDB's
+                // TryEvaluateScalar gives up and leaves the call to run.
+                _ => self.eval_closed(a)?,
             });
         }
         Some((eval.fun)(&vals))
+    }
+
+    fn eval_closed(&self, e: &SExpr) -> Option<Option<ScalarVal>> {
+        eval_closed(e, self.regexes.borrow().clone())
     }
 
     /// [`Self::try_extern_bind_fold`], at most once per call site.
@@ -109,7 +116,7 @@ impl Binder<'_> {
     /// callable keeps the runtime call (DuckDB's fold swallows
     /// exceptions uniformly).
     pub(super) fn bind_fold_concat_operand(&self, e: SExpr) -> (SExpr, bool) {
-        if bind_foldable(&e) && matches!(fold(e.clone()).kind, SKind::NullOf) {
+        if folds_to_null(&e) {
             return (e, true);
         }
         // Peel unary wrappers down to a possible pure extern: to_varchar

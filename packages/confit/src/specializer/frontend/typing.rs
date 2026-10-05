@@ -89,13 +89,82 @@ pub(super) fn fold_operand(e: SExpr) -> (SExpr, bool) {
 /// Measured, fuzz seed 18995:
 /// `repeat(CAST((CASE WHEN FALSE THEN c1 END) AS VARCHAR), <overflow>)`
 /// runs per row on DuckDB and traps; a folding CAST made it a NULL call.
+///
+/// A closed constant our fold cannot finish (`'0' LIKE 'a_c'` under a CASE)
+/// is evaluated, and a NULL result becomes the NULL it is on DuckDB, whose
+/// binder elides a trapping sibling under it (nightly seed 2323487). A value
+/// or a trap keeps the node: only the NULL decides anything at bind.
 pub(super) fn bind_fold(e: SExpr) -> SExpr {
-    if bind_foldable(&e) {
-        fold(e)
-    } else {
-        e
+    if !bind_foldable(&e) {
+        return e;
+    }
+    let e = fold(e);
+    // Only a subtree that can be NULL can decide anything here, and the
+    // flag keeps nested constant math from re-running at every level.
+    if !e.nullable || matches!(e.kind, SKind::Lit(_) | SKind::NullOf) {
+        return e;
+    }
+    match eval_closed(&e, Vec::new()) {
+        Some(None) => null_of(e.ty),
+        // Evaluated to a value: provably never NULL, so an enclosing
+        // bind_fold need not evaluate it again.
+        Some(Some(_)) => SExpr {
+            nullable: false,
+            ..e
+        },
+        None => e,
     }
 }
+
+/// The value of a closed constant expression, computed by the interpreter
+/// over one row of no columns: the runtime's own answer, so fold and run
+/// cannot disagree. DuckDB's binder evaluates a foldable expression the same
+/// way (`TryEvaluateScalar`). `None` = not evaluable here (lowering refused,
+/// a trap, a regex this table does not carry); `Some(None)` = NULL.
+#[allow(clippy::option_option)]
+pub(super) fn eval_closed(
+    e: &SExpr,
+    regexes: Vec<super::super::ir::ReSpec>,
+) -> Option<Option<ScalarVal>> {
+    use super::super::exec::{interp, Batch, OutCol};
+    use super::super::ir::ColTy;
+    let plan = super::super::plan::Plan {
+        stages: vec![super::super::plan::Stage {
+            joins: vec![],
+            pred: None,
+            project: vec![("v".to_string(), e.clone())],
+        }],
+    };
+    let out = vec![Col {
+        name: "v".to_string(),
+        ty: ColTy {
+            ty: e.ty,
+            nullable: true,
+        },
+    }];
+    let mut p = super::super::lower::lower(
+        &plan, &[], &[], &[], out, regexes, &[], "fold", false, &[], &[],
+    )
+    .ok()?;
+    super::super::ir::canonicalize(&mut p);
+    let f = interp::compile(&p, vec![]).ok()?;
+    let mut st = f.new_state();
+    f.run(&Batch { rows: 1, cols: vec![] }, &mut st).ok()?;
+    if st.emitted != 1 {
+        return None;
+    }
+    Some(match &st.out[0] {
+        OutCol::I1(v) => v[0].0.then(|| ScalarVal::I1(v[0].1)),
+        OutCol::I64(v) => v[0].0.then(|| ScalarVal::I64(v[0].1)),
+        OutCol::F64(v) => v[0].0.then(|| ScalarVal::F64(v[0].1)),
+        OutCol::Str(v) => v[0].0.then(|| ScalarVal::Str(st.arena.get(v[0].1).to_string())),
+        OutCol::Dec(v) => match e.ty {
+            Ty::Dec(p, s) => v[0].0.then(|| ScalarVal::Dec(v[0].1, p, s)),
+            _ => return None,
+        },
+    })
+}
+
 
 pub(super) fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
     let nullable = inner.nullable;
@@ -642,7 +711,7 @@ pub(super) fn duck_int_name(t: Ty) -> &'static str {
 /// evaluates to NULL turns a default-NULL-handling call into a NULL of its
 /// return type at bind, so its other arguments never run.
 pub(super) fn folds_to_null(e: &SExpr) -> bool {
-    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
+    bind_foldable(e) && matches!(bind_fold(e.clone()).kind, SKind::NullOf)
 }
 
 /// A BOOLEAN as the INTEGER DuckDB casts it to for a comparison: 0 or 1,

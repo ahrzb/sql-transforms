@@ -389,6 +389,8 @@ pub(super) fn bind_from<'a>(
         extern_sites: std::cell::RefCell::new(Vec::new()),
         bind_folds: std::cell::RefCell::new(Vec::new()),
         in_guarded: std::cell::Cell::new(0),
+        classify_keys: std::cell::Cell::new(false),
+        beside: std::cell::RefCell::new(Vec::new()),
         minted_lanes: std::cell::RefCell::new(ctx.minted_lanes),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();

@@ -9,15 +9,23 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
    runs `fuzz.nightly` (400k fresh seeds in four parallel shards, plus the
    metamorphic suite) and files red runs as a "Nightly campaign findings"
-   issue. Watch the first sharded runs for runner time and flaky TIMEOUTs;
-   triage each filed class to a fix, a named exclusion, or an open-divergence
-   pin. Open from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
+   issue. Triage each filed class to a fix, a named exclusion, or an
+   open-divergence pin. The first six sharded nights are triaged
+   (`docs/reports/2026-10-05-sharded-nightly-triage.md`); still open from them:
+   - an INNER/CROSS join on an empty static table: whether DuckDB evaluates
+     the row side depends on its pipeline shape
+     (`docs/decisions/open/empty-static-join-trap-timing.md`, owner ruling);
+   - `nullif(NULL, x)` drops `x`, which DuckDB evaluates and can trap on
+     (seeds 3058298, 3722953). The adoptable-NULL channel has no node that
+     evaluates an operand for its trap only;
+   - narrow-width shifts: `1 << 31` traps at INTEGER on DuckDB, while confit's
+     shift kernel is 64-bit;
+   - a narrow-width overflow traps on both engines, but confit's text names the
+     arrow range instead of DuckDB's `Overflow in multiplication of INT8`.
+
+   Still waiting from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
    TIMEOUT class where confit traps first while DuckDB builds a 2 GiB string
-   (seed 1102717, EXCLUDED ratification). Most of #305's timeouts were a
-   different class, which no longer times out: a refused query's report-only
-   DuckDB reading (6 of the 7 in the window's first 20k seeds). Seed 18995 (a
-   constant-NULL `repeat()` argument hides a constant INT64 overflow DuckDB
-   still folds) is on master too, queued.
+   (seed 1102717, EXCLUDED ratification).
 2. **Parity migration.** On the campaign verdict: `duck_check` (about 550
    calls across the `test_duckdb_*` files, the shrinker's pin template),
    `test_null_operands`, `test_arm_widening`, `test_derived_tables`,
@@ -38,7 +46,8 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Waiting on the owner
 
 - `docs/decisions/open/`: the order of the query classes after derived tables
-  and CTEs, native-transform parity bounds.
+  and CTEs, native-transform parity bounds, trap timing of a join on an empty
+  static table.
 
 ## Query classes (large; order is the owner's call)
 
