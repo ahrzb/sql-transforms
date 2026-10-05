@@ -32,10 +32,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
-3. **Unaliased expression names** (`tests/test_open_divergences.py`):
-   DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
-   echoes the SQL text. Needs DuckDB's expression printer for the output
-   name, at the top level and at every subquery boundary.
 
 ## For the native catalog
 

@@ -1162,6 +1162,13 @@ def gen(seed: int) -> Case:
     output = rng.choice([None] * 4 + ["dict", "model"])
     if shape:
         tags.append(f"shape={shape}")
+    # Every fifth seed leaves its outermost items unaliased, so the campaign
+    # checks DuckDB's output naming too. Decided by the seed rather than a
+    # draw, so no other seed's stream moves; a row-model output keeps its
+    # aliases (its field names must be identifiers).
+    if seed % 5 == 0 and output is None:
+        query.body.items = [(e, None) for e, _ in query.body.items]
+        tags.append("unaliased")
     return Case(seed, row_schema, rows, statics, udfs, tree, query, shape, output, tags)
 
 

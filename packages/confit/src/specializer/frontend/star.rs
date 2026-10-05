@@ -14,6 +14,9 @@ pub(super) fn default_name(e: &SqlExpr) -> String {
         // subscripted expression (measured: `s['n'].x` is named
         // `(s['n']).x`, while `s.n['x']` and `s['n']['x']` print as written).
         SqlExpr::CompoundFieldAccess { root, access_chain } => {
+            if let Some(n) = super::naming::duck_name(e) {
+                return n;
+            }
             let mut name = root.to_string();
             let mut keyed = false;
             for acc in access_chain {
@@ -28,7 +31,9 @@ pub(super) fn default_name(e: &SqlExpr) -> String {
             }
             name
         }
-        other => other.to_string(),
+        // DuckDB prints the parsed expression; a form the printer does not
+        // model keeps the SQL text.
+        other => super::naming::duck_name(other).unwrap_or_else(|| other.to_string()),
     }
 }
 

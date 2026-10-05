@@ -53,6 +53,7 @@ mod typing;
 mod decimal;
 pub mod macros;
 mod lists;
+mod naming;
 
 use self::refusal::*;
 use self::from::*;
