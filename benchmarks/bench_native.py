@@ -3,8 +3,9 @@
 For every catalog class, the widest step the catalog's fixtures draw
 (`sql_transform.native.catalog_test`, seeds 0-7, every configuration) is
 measured three ways, on 64-row calls of rows every twin answers (ids of
-fitted instances, finite numbers, and for an encoder the row's instance's
-fitted categories):
+fitted instances, finite numbers, inside the fitted range where the
+transform raises outside it, and for an encoder the row's instance's
+fitted categories; a row the twin still rejects is drawn again):
 
   build    building the query that reads every lane, with the native entry
            (`DuckDBInferFn`, what `to_native`'s trial build and serving pay
@@ -26,6 +27,7 @@ Run: uv run python -m benchmarks.bench_native [--calls 30]
 from __future__ import annotations
 
 import argparse
+import math
 import numbers
 import random
 import statistics
@@ -74,31 +76,67 @@ def widest(cls) -> tuple[object, object, int, int, list[str]]:
     raise SystemExit(f"no fixture of {cls.__name__} translates")
 
 
+def _domain(est, i: int) -> tuple[float, float] | None:
+    """Feature `i`'s fitted range, where `est`'s transform raises outside
+    it: a spline's knots under `extrapolation="error"`, an isotonic fit's
+    thresholds under `out_of_bounds="raise"`. None elsewhere."""
+    splines = getattr(est, "bsplines_", None)
+    if splines is not None and getattr(est, "extrapolation", None) == "error":
+        t, k = splines[i].t, splines[i].k
+        return float(t[k]), float(t[len(t) - k - 1])
+    if hasattr(est, "X_min_") and getattr(est, "out_of_bounds", None) == "raise":
+        return float(est.X_min_), float(est.X_max_)
+    return None
+
+
+def _value(rng: random.Random, est, i: int, f: pa.Field, positive: bool):
+    cats = getattr(est, "categories_", None)
+    if cats is not None:
+        # A category the step can hand over (NaN and None are missing: a
+        # feature with only those reads NULL).
+        fitted = [c for c in cats[i] if isinstance(c, str | numbers.Real)]
+        fitted = [c for c in fitted if c == c]
+        return rng.choice(fitted) if fitted else None
+    if f.type == pa.string():
+        return rng.choice(fixtures.VOCAB)
+    domain = _domain(est, i)
+    if f.type == pa.int64():
+        if domain and math.ceil(domain[0]) <= math.floor(domain[1]):
+            return rng.randint(math.ceil(domain[0]), math.floor(domain[1]))
+        return rng.randint(1, 3) if positive else rng.randint(-3, 3)
+    lo, hi = domain or ((1e-3 if positive else -1e3), 1e3)
+    return rng.uniform(lo, hi)
+
+
 def rows(step, seed: int, positive: bool = False) -> pa.Table:
     """64 rows the twin answers: fitted ids, finite values (strictly
     positive for an estimator that rejects the rest, as the fixture's
-    `positive` flag says), and for an encoder each row's values among its
-    own instance's categories."""
+    `positive` flag says; inside the fitted range where the transform
+    raises outside it), and for an encoder each row's values among its own
+    instance's categories. A drawn row the twin still raises on is drawn
+    again."""
     rng = random.Random(seed)  # noqa: S311
-    ids = [rng.choice(list(step.instances)) for _ in range(ROWS)]
+    ids: list[int] = []
+    drawn: list[list] = []
+    for _ in range(50 * ROWS):
+        k = rng.choice(list(step.instances))
+        vals = [
+            _value(rng, step.instances[k], i, f, positive)
+            for i, f in enumerate(step.takes)
+        ]
+        try:
+            step(k, *vals)
+        except Exception:  # noqa: BLE001, S112 — a row the twin rejects
+            continue
+        ids.append(k)
+        drawn.append(vals)
+        if len(ids) == ROWS:
+            break
+    else:
+        raise SystemExit(f"{step.name}: no {ROWS} rows the twin answers")
     cols: dict[str, pa.Array] = {"__iid": pa.array(ids, pa.int64())}
     for i, f in enumerate(step.takes):
-        vals = []
-        for k in ids:
-            cats = getattr(step.instances[k], "categories_", None)
-            if cats is not None:
-                # A category the step can hand over (NaN and None are
-                # missing: a feature with only those reads NULL).
-                fitted = [c for c in cats[i] if isinstance(c, str | numbers.Real)]
-                fitted = [c for c in fitted if c == c]
-                vals.append(rng.choice(fitted) if fitted else None)
-            elif f.type == pa.string():
-                vals.append(rng.choice(fixtures.VOCAB))
-            elif f.type == pa.int64():
-                vals.append(rng.randint(1, 3) if positive else rng.randint(-3, 3))
-            else:
-                lo = 1e-3 if positive else -1e3
-                vals.append(rng.uniform(lo, 1e3))
+        vals = [r[i] for r in drawn]
         if f.type == pa.int64():
             vals = [None if v is None else int(v) for v in vals]
         elif f.type != pa.string():
