@@ -106,11 +106,12 @@ def _step(cls_factory, seed: int) -> PythonTransform:
                 X[:, j] = np.round(X[:, j])
         instances[k] = cls_factory().fit(X)
     width = np.asarray(instances[0].transform(X[:1])).reshape(1, -1).shape[1]
-    returns = (
-        pa.float64()
-        if width == 1
-        else pa.struct([(f"f{j}", pa.float64()) for j in range(width)])
-    )
+    if width == 1:
+        returns = pa.float64()
+    elif rng.random() < 0.3:  # unnamed lanes
+        returns = pa.list_(pa.float64(), width)
+    else:
+        returns = pa.struct([(f"f{j}", pa.float64()) for j in range(width)])
     return PythonTransform("tf", instances, takes, returns)
 
 
@@ -193,6 +194,47 @@ def test_a_mixed_step_stays_python():
     X = np.random.default_rng(1).normal(size=(10, len(step.takes)))
     step.instances[len(step.instances)] = PCA(n_components=1).fit(X)
     assert to_native(step) is step
+
+
+def test_an_unknown_id_raises_as_the_twin_does():
+    from confit.oracle import Oracle
+
+    from sql_transform.native._check import _serve
+    from sql_transform.native._registry import query
+
+    step = _scaler_step()
+    native = to_native(step, strict=True)
+    rows = _rows(step, 0)
+    rows = rows.set_column(0, "__iid", pa.array([99] * rows.num_rows, pa.int64()))
+    sql = query(step)
+    assert isinstance(_serve(sql, rows, step), Exception)
+    got = _serve(sql, rows, native)
+    assert "not in the fitted instances" in str(got)
+    with Oracle() as o:
+        native.register(o)
+        o.load("__THIS__", rows)
+        assert "not in the fitted instances" in str(o.try_answer(sql))
+
+
+def test_a_null_id_is_a_null_struct():
+    # The whole struct, as DuckDB reads it from each definition (confit
+    # serves field reads, which are NULL either way).
+    from confit.oracle import Oracle
+
+    step = _step(StandardScaler, 1)
+    assert pa.types.is_struct(step.returns)
+    args = ", ".join(["__iid", *step.takes.names])
+    rows = _rows(step, 1).slice(0, 2)
+    rows = rows.set_column(0, "__iid", pa.array([None, 0], pa.int64()))
+    answers = []
+    for fn in (step, to_native(step, strict=True)):
+        with Oracle() as o:
+            fn.register(o)
+            o.load("__THIS__", rows)
+            answers.append(o.answer(f"SELECT tf({args}) AS s FROM __THIS__"))
+    twin, native = (a.column("s").to_pylist() for a in answers)
+    assert twin[0] is None and native[0] is None
+    assert native[1] is not None and twin[1].keys() == native[1].keys()
 
 
 def test_explain_names_the_kind():

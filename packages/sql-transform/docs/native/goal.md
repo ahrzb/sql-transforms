@@ -12,8 +12,8 @@ A native entry is a drop-in replacement for its twin, the `PythonTransform`
 it was made from:
 
 - **Same call.** Same name, the instance id first, then the declared
-  features, by position. The same return type: a scalar, or a struct with
-  the same field names.
+  features, by position. The same return type: a scalar, a struct with
+  the same field names, or a list of the same width.
 - **Same answer.** Bit-exact wherever the entry performs the twin's
   operations in the twin's order, and within a declared per-family ulp
   bound otherwise (owner ruling:
@@ -22,7 +22,8 @@ it was made from:
 - **Same inputs.** A feature reaches the translation as `PythonTransform`
   hands it to `transform`: a number (or boolean) as a DOUBLE with NULL read
   as NaN, a string as is.
-- **Same NULL id.** A NULL instance id answers NULL.
+- **Same instance ids.** A NULL instance id answers NULL (a NULL struct,
+  for a struct return); an id the step does not know raises.
 - **Gated by swap-the-entry.** One query, served by confit with the twin and
   with the entry (`native.check`); and the entry answers exactly what DuckDB
   answers for its own definition.
@@ -33,18 +34,11 @@ instead.
 
 ## Tolerated differences
 
-Each is provisional, with the condition that ends it; see
-[decisions/](decisions/).
+Provisional, with the condition that ends it; see [decisions/](decisions/).
 
 - **Where the twin raises,** on input sklearn's validation rejects (an
   infinite value for most estimators), the entry may answer. Never the
   reverse: an entry may not raise where the twin answers.
-- **An instance id the step does not know** raises in the twin and answers
-  NULL in the entry. Ends when confit serves `error()`.
-- **A NULL id with a struct return** is a NULL struct from the twin and a
-  struct of NULL fields from the entry. Every field read agrees, and field
-  reads are what serving SQL emits. Ends when confit serves a field read
-  over a CASE-valued struct.
 
 ## Scope
 
