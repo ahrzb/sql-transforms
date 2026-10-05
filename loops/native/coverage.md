@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**27 of 68** in-scope transformers are native (84 listed by sklearn).
+**28 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -20,7 +20,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `DictionaryLearning` | not yet |  |
 | `FactorAnalysis` | not yet |  |
 | `FastICA` | not yet |  |
-| `FeatureAgglomeration` | not yet |  |
+| `FeatureAgglomeration` | native | bit-exact |
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
 | `FeatureUnion` | composition | concatenates parts' outputs |
 | `FunctionTransformer` | native | bit-exact |
