@@ -205,7 +205,11 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::Dtos { dst, .. } => vec![(*dst, Ty::Str)],
         Inst::Dunary { ty, dst, .. } => vec![(*dst, *ty)],
         Inst::DcastOk { dst, .. } => vec![(*dst, Ty::I1)],
+        Inst::Htof { dst, .. } => vec![(*dst, Ty::F64)],
+        Inst::Ftoh { dst, .. } => vec![(*dst, Ty::I128)],
+        Inst::StonOpt { to, flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, to.lane())],
         Inst::Itos { dst, .. }
+        | Inst::Htos { dst, .. }
         | Inst::Ftos { dst, .. }
         | Inst::Sconcat { dst, .. }
         | Inst::Str1 { dst, .. }
@@ -467,8 +471,9 @@ fn check_block(
                 }
             }
             Inst::Dcast { from, to, a, .. } => {
-                if from.dec().is_none() && to.dec().is_none() {
-                    err(errs, Some(bi), i, "dcast needs a decimal side".to_string());
+                let integers = from.is_integer() && to.is_integer();
+                if from.dec().is_none() && to.dec().is_none() && !integers {
+                    err(errs, Some(bi), i, "dcast needs a decimal side or two integers".to_string());
                 }
                 want(&in_scope, def_types, *a, *from, "operand", bi, i, errs);
             }
@@ -486,6 +491,16 @@ fn check_block(
             }
             Inst::Ftoi { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
             Inst::Itos { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
+            Inst::Htof { a, .. } | Inst::Htos { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::I128, "operand", bi, i, errs)
+            }
+            Inst::Ftoh { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
+            Inst::StonOpt { to, a, .. } => {
+                if !matches!(to, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::I128) {
+                    err(errs, Some(bi), i, format!("ston.opt to {} is stoi.opt", to.name()));
+                }
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
+            }
             Inst::Ftos { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
             Inst::StoiOpt { a, .. } | Inst::StofOpt { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)

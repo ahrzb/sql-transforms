@@ -18,9 +18,9 @@
 //! the CAST target). A bare `SELECT NULL` has no context and stays
 //! unsupported.
 //!
-//! Decimal literals: DuckDB types `1.5` as DECIMAL(2,1); this frontend types
-//! them f64. CAST targets without a lane (HUGEINT, the unsigned family,
-//! FLOAT/REAL, DECIMAL/NUMERIC, ...) refuse by name.
+//! Decimal literals: DuckDB types `1.5` as DECIMAL(2,1), and so does this
+//! frontend. CAST targets without a lane (UHUGEINT, FLOAT/REAL, INTERVAL,
+//! ...) refuse by name.
 
 use sqlparser::ast::{
     AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, Ident, JoinConstraint, JoinOperator,

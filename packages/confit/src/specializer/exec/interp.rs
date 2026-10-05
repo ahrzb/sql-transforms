@@ -60,6 +60,7 @@ use super::super::ir::{
     self, BinOp, CmpPred, Inst, NumOp1, Program, RoundMode, StaticTy, StrOp1, StrOp2, Term,
     Ty, Value,
 };
+use super::hugeint::{duck_ston, f64_to_hugeint, hugeint_abs, hugeint_arith};
 use super::kernels::*;
 use super::{
     Arena, Batch, ColData, KeyBits, OutCol, RegVal, RunState, ScalarVal, StaticData, StrRef, Trap,
@@ -328,7 +329,7 @@ impl InterpFn {
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => OutCol::I64(Vec::new()),
                     Ty::F64 => OutCol::F64(Vec::new()),
                     Ty::Str => OutCol::Str(Vec::new()),
-                    Ty::Dec(..) => OutCol::Dec(Vec::new()),
+                    Ty::Dec(..) | Ty::I128 | Ty::U64 => OutCol::Dec(Vec::new()),
                 })
                 .collect(),
         }
@@ -447,8 +448,12 @@ impl InterpFn {
                 OutCol::Str(_) => Ty::Str,
                 // The width check below is `col_ty != ty.lane()`, and a Dec
                 // lane keeps its (p, s) through `lane()`, so the declared
-                // type IS the answer here.
-                OutCol::Dec(_) => *ty,
+                // type IS the answer here; the builder also holds the i128
+                // integer lane.
+                OutCol::Dec(_) => match ty.lane() {
+                    t @ (Ty::Dec(..) | Ty::I128) => t,
+                    _ => Ty::I128,
+                },
             };
             if col_ty != ty.lane() {
                 return Err(Trap(format!(
@@ -530,6 +535,7 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
                     ColData::I64 { data, .. } => ScalarVal::I64(data[r]),
                     ColData::F64 { data, .. } => ScalarVal::F64(data[r]),
                     ColData::Dec { data, p, s, .. } => ScalarVal::Dec(data[r], *p, *s),
+                    ColData::I128 { data, .. } => ScalarVal::I128(data[r]),
                     ColData::Str { buf, spans, .. } => {
                         let sp = spans[r];
                         ScalarVal::Str(buf[sp.off as usize..(sp.off + sp.len) as usize].to_string())
@@ -728,7 +734,7 @@ fn scalar_to_reg(v: &ScalarVal, arena: &mut Arena) -> RegVal {
         ScalarVal::I64(i) => RegVal::I64(*i),
         ScalarVal::F64(f) => RegVal::F64(*f),
         ScalarVal::Str(s) => RegVal::Str(arena.push_str(s)),
-        ScalarVal::Dec(v, ..) => RegVal::Dec(*v),
+        ScalarVal::Dec(v, ..) | ScalarVal::I128(v) => RegVal::Dec(*v),
     }
 }
 
@@ -738,7 +744,7 @@ fn default_reg(ty: Ty) -> RegVal {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => RegVal::I64(0),
         Ty::F64 => RegVal::F64(0.0),
         Ty::Str => RegVal::Str(StrRef { off: 0, len: 0 }),
-        Ty::Dec(..) => RegVal::Dec(0),
+        Ty::Dec(..) | Ty::I128 | Ty::U64 => RegVal::Dec(0),
     }
 }
 
@@ -863,7 +869,7 @@ fn compile_inst(
                     ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&s));
                     Ok(())
                 }),
-                ir::Lit::Dec(v, ..) => Box::new(move |ctx| {
+                ir::Lit::Dec(v, ..) | ir::Lit::I128(v) => Box::new(move |ctx| {
                     ctx.regs[dst] = RegVal::Dec(v);
                     Ok(())
                 }),
@@ -950,6 +956,18 @@ fn compile_inst(
                     ctx.regs[dst] = RegVal::I64(v);
                     Ok(())
                 }),
+                BinOp::Hadd
+                | BinOp::Hsub
+                | BinOp::Hmul
+                | BinOp::Hdiv
+                | BinOp::Hrem
+                | BinOp::Hand
+                | BinOp::Hor
+                | BinOp::Hxor => Box::new(move |ctx| {
+                    let (x, y) = (as_dec(ctx.regs[a]), as_dec(ctx.regs[b]));
+                    ctx.regs[dst] = RegVal::Dec(hugeint_arith(op, x, y).map_err(Trap)?);
+                    Ok(())
+                }),
                 BinOp::And | BinOp::Or | BinOp::Xor => Box::new(move |ctx| {
                     let (x, y) = (as_i1(ctx.regs[a]), as_i1(ctx.regs[b]));
                     let v = match op {
@@ -988,7 +1006,7 @@ fn compile_inst(
                     // One scale on both sides (the verifier requires the
                     // operand types to be identical), so the scaled i128s
                     // compare as plain signed integers.
-                    Ty::Dec(..) => {
+                    Ty::Dec(..) | Ty::I128 | Ty::U64 => {
                         apply_ord(pred, as_dec(ctx.regs[a]).cmp(&as_dec(ctx.regs[b])))
                     }
                     Ty::I1 => unreachable!("cmp on i1 is rejected by the verifier"),
@@ -1061,10 +1079,10 @@ fn compile_inst(
                     r => as_i64(r) as i128,
                 };
                 let r = super::kernels::dec_cast(v, from, to).map_err(Trap)?;
-                ctx.regs[dst] = if to.dec().is_some() {
-                    RegVal::Dec(r)
-                } else {
+                ctx.regs[dst] = if to.lane() == Ty::I64 {
                     RegVal::I64(r as i64)
+                } else {
+                    RegVal::Dec(r)
                 };
                 Ok(())
             })
@@ -1119,6 +1137,42 @@ fn compile_inst(
             Box::new(move |ctx| {
                 let v = as_i64(ctx.regs[a]);
                 ctx.regs[dst] = RegVal::Str(ctx.arena.push_fmt(format_args!("{v}")));
+                Ok(())
+            })
+        }
+        Inst::Htof { dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::F64(super::kernels::hugeint_to_f64(as_dec(ctx.regs[a])));
+                Ok(())
+            })
+        }
+        Inst::Ftoh { dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::Dec(f64_to_hugeint(as_f64(ctx.regs[a])));
+                Ok(())
+            })
+        }
+        Inst::Htos { dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let v = as_dec(ctx.regs[a]);
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_fmt(format_args!("{v}")));
+                Ok(())
+            })
+        }
+        Inst::StonOpt { to, flag, dst, a } => {
+            let (flag, dst, a) = (sl(slots, flag), sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let r = duck_ston(ctx.arena.get(as_str(ctx.regs[a])), to);
+                ctx.regs[flag] = RegVal::I1(r.is_some());
+                let v = r.unwrap_or(0);
+                ctx.regs[dst] = if to.lane() == Ty::I128 {
+                    RegVal::Dec(v)
+                } else {
+                    RegVal::I64(v as i64)
+                };
                 Ok(())
             })
         }
@@ -1479,6 +1533,10 @@ fn compile_inst(
                         None => Err(Trap(abs_overflow_msg(x))),
                     }
                 }),
+                NumOp1::Habs => Box::new(move |ctx| {
+                    ctx.regs[dst] = RegVal::Dec(hugeint_abs(as_dec(ctx.regs[a])).map_err(Trap)?);
+                    Ok(())
+                }),
                 NumOp1::Fabs => Box::new(move |ctx| {
                     ctx.regs[dst] = RegVal::F64(as_f64(ctx.regs[a]).abs());
                     Ok(())
@@ -1631,10 +1689,11 @@ fn compile_inst(
                             Ty::Str => ScalarVal::Str(
                                 ctx.arena.get(as_str(ctx.regs[args[2 * j + 1]])).to_string(),
                             ),
-                            // A UDF over DECIMAL refuses at bind, so no
-                            // decimal ever reaches an extern parameter.
-                            Ty::Dec(..) => {
-                                unreachable!("a udf parameter is never a decimal")
+                            // A UDF over DECIMAL or the i128 lane refuses
+                            // at bind, so neither reaches an extern
+                            // parameter.
+                            Ty::Dec(..) | Ty::I128 | Ty::U64 => {
+                                unreachable!("a udf parameter is never a decimal or i128")
                             }
                         })
                     } else {
@@ -1763,7 +1822,7 @@ fn cmp_key(stored: &[KeyBits], key_regs: &[usize], ctx: &Ctx<'_>) -> std::cmp::O
             (KeyBits::I64(s), RegVal::I64(v)) => s.cmp(&v),
             (KeyBits::F64(s), RegVal::F64(v)) => s.cmp(&super::canon_f64_bits(v)),
             (KeyBits::Str(s), RegVal::Str(v)) => s.as_str().cmp(ctx.arena.get(v)),
-            (KeyBits::Dec(s, ..), RegVal::Dec(v)) => s.cmp(&v),
+            (KeyBits::Dec(s, ..) | KeyBits::I128(s), RegVal::Dec(v)) => s.cmp(&v),
             _ => unreachable!("probe key types checked at compile"),
         };
         if ord != Ordering::Equal {
@@ -1791,7 +1850,8 @@ pub(super) fn valid_len(c: &ColData) -> usize {
         | ColData::I64 { valid, .. }
         | ColData::F64 { valid, .. }
         | ColData::Str { valid, .. }
-        | ColData::Dec { valid, .. } => valid.len(),
+        | ColData::Dec { valid, .. }
+        | ColData::I128 { valid, .. } => valid.len(),
     }
 }
 
@@ -1804,7 +1864,8 @@ pub(super) fn col_valid(c: &ColData, row: usize) -> bool {
         | ColData::I64 { valid, .. }
         | ColData::F64 { valid, .. }
         | ColData::Str { valid, .. }
-        | ColData::Dec { valid, .. } => valid.get(row).copied().unwrap_or(true),
+        | ColData::Dec { valid, .. }
+        | ColData::I128 { valid, .. } => valid.get(row).copied().unwrap_or(true),
     }
 }
 
@@ -1814,7 +1875,7 @@ fn load_payload(c: &ColData, row: usize, arena: &mut Arena) -> RegVal {
         ColData::I64 { data, .. } => RegVal::I64(data[row]),
         ColData::F64 { data, .. } => RegVal::F64(data[row]),
         c @ ColData::Str { .. } => RegVal::Str(arena.push_str(c.str_at(row))),
-        ColData::Dec { data, .. } => RegVal::Dec(data[row]),
+        ColData::Dec { data, .. } | ColData::I128 { data, .. } => RegVal::Dec(data[row]),
     }
 }
 

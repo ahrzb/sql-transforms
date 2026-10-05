@@ -207,7 +207,10 @@ pub fn arg_ok(want: ArgTy, got: Ty) -> bool {
     match want {
         ArgTy::Exact(t) => got == t,
         ArgTy::Int => got.is_int(),
-        ArgTy::Num => got.is_int() || got == Ty::F64,
+        // UBIGINT and HUGEINT are numbers for the math rows and abs (a
+        // DOUBLE argument converts them, abs keeps the width), never for
+        // an `Int` slot: DuckDB does not narrow them implicitly.
+        ArgTy::Num => got.is_integer() || got == Ty::F64,
     }
 }
 

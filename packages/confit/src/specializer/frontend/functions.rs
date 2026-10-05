@@ -387,8 +387,9 @@ impl Binder<'_> {
                         return Ok(null_of(Ty::I64));
                     };
                     match inner.ty {
-                        // Measured: integer trunc is identity, WIDTH preserved.
-                        t if t.is_int() => Ok(inner),
+                        // Measured: integer trunc is identity, WIDTH preserved
+                        // (UBIGINT and HUGEINT too).
+                        t if t.is_integer() => Ok(inner),
                         Ty::F64 => Ok(math1_node(NumOp1::Ftrunc, inner)),
                         Ty::Dec(..) => Err(self.dec_refusal("trunc", &inner)),
                         other => Err(PrepareError::Bind(format!(
@@ -427,8 +428,10 @@ impl Binder<'_> {
                         // Measured: integer round is identity, WIDTH preserved;
                         // round has no unsigned overload, so an unsigned
                         // subject is BIGINT (round(200::UTINYINT) is BIGINT).
+                        // UBIGINT's is HUGEINT (round(5::UBIGINT) is HUGEINT).
+                        Ty::U64 => Ok(widen_int(inner, Ty::I128)),
                         t if t.is_unsigned() => Ok(widen_int(inner, Ty::I64)),
-                        t if t.is_int() => Ok(inner),
+                        t if t.is_integer() => Ok(inner),
                         Ty::F64 => {
                             let nullable = inner.nullable;
                             Ok(SExpr {
@@ -553,7 +556,7 @@ impl Binder<'_> {
                 // the seed's hint the same way).
                 let mut bound: Vec<SExpr> = Vec::with_capacity(args.len());
                 let mut unified: Option<Ty> = None;
-                let mut acc_lit: Option<i64> = None;
+                let mut acc_lit: Option<i128> = None;
                 let mut seen_null = false;
                 for arg in &args {
                     let Some(e) = self.expr_or_null(arg)? else {
@@ -572,11 +575,11 @@ impl Binder<'_> {
                         Some(u) => {
                             unified = Some(match (u, e.ty) {
                                 (u, t) if u == t => u,
-                                (u, t) if u.is_int() && t.is_int() => {
+                                (u, t) if u.is_integer() && t.is_integer() => {
                                     int_family_promote(u, acc_lit, t, new_lit)
                                 }
-                                (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
-                                (Ty::F64, t) if t.is_int() => Ty::F64,
+                                (u, t) if u.is_integer() && t == Ty::F64 => Ty::F64,
+                                (Ty::F64, t) if t.is_integer() => Ty::F64,
                                 (u, t) if dec_common(u, t).is_some() => {
                                     dec_common(u, t).expect("checked")
                                 }
@@ -611,9 +614,9 @@ impl Binder<'_> {
                     .map(|mut e| {
                         if unified.dec().is_some() || (unified == Ty::F64 && e.ty.dec().is_some()) {
                             to_common(e, unified)
-                        } else if e.ty.is_int() && unified == Ty::F64 {
+                        } else if e.ty.is_integer() && unified == Ty::F64 {
                             promote_f64(e)
-                        } else if e.ty.is_int() && unified.is_int() {
+                        } else if e.ty.is_integer() && unified.is_integer() {
                             // Fold may select this arm whole, and the OUTPUT
                             // width is the unified one.
                             widen_int(e, unified)
@@ -682,11 +685,11 @@ impl Binder<'_> {
                 for (e, new_lit) in &bound[1..] {
                     unified = match (unified, e.ty) {
                         (u, t) if u == t => u,
-                        (u, t) if u.is_int() && t.is_int() => {
+                        (u, t) if u.is_integer() && t.is_integer() => {
                             int_family_promote(u, acc_lit, t, *new_lit)
                         }
-                        (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
-                        (Ty::F64, t) if t.is_int() => Ty::F64,
+                        (u, t) if u.is_integer() && t == Ty::F64 => Ty::F64,
+                        (Ty::F64, t) if t.is_integer() => Ty::F64,
                         (u, t) if dec_common(u, t).is_some() => dec_common(u, t).expect("checked"),
                         (u, t) => {
                             if let Some((d, _)) =
@@ -713,9 +716,9 @@ impl Binder<'_> {
                     .map(|mut e| {
                         if unified.dec().is_some() || (unified == Ty::F64 && e.ty.dec().is_some()) {
                             to_common(e, unified)
-                        } else if e.ty.is_int() && unified == Ty::F64 {
+                        } else if e.ty.is_integer() && unified == Ty::F64 {
                             promote_f64(e)
-                        } else if e.ty.is_int() && unified.is_int() {
+                        } else if e.ty.is_integer() && unified.is_integer() {
                             widen_int(e, unified)
                         } else {
                             e.ty = unified;
@@ -966,7 +969,8 @@ impl Binder<'_> {
                 // BIGINT refuses. The NULL short-circuit below must not skip
                 // this check; a bare-NULL count itself is fine: DuckDB types
                 // it INTEGER.
-                // UTINYINT/USMALLINT widen into INTEGER; UINTEGER does not.
+                // UTINYINT/USMALLINT widen into INTEGER; UINTEGER, UBIGINT
+                // and HUGEINT do not.
                 let count_is_int32 = |e: &SExpr| {
                     e.ty.is_int() && !matches!(e.ty, Ty::I64 | Ty::U32)
                 };
@@ -977,7 +981,9 @@ impl Binder<'_> {
                      literal or CAST(.. AS INTEGER)",
                     bl.as_ref().map_or("BIGINT", |e| duck_int_name(e.ty))
                 );
-                if bl.as_ref().is_some_and(|e| matches!(e.ty, Ty::I64 | Ty::U32))
+                if bl
+                    .as_ref()
+                    .is_some_and(|e| matches!(e.ty, Ty::I64 | Ty::U32 | Ty::U64 | Ty::I128))
                     && (bs.is_none() || bp.is_none())
                 {
                     return Err(PrepareError::Bind(bad_count));
@@ -1580,6 +1586,14 @@ impl Binder<'_> {
         if subject.ty.dec().is_some() {
             return Err(self.dec_refusal(name, &subject));
         }
+        if subject.ty.is_wide() {
+            // DuckDB rounds a HUGEINT to a power of ten in its own width;
+            // the digits kernel here is BIGINT's.
+            return Err(unsup(format!(
+                "{name}(x, digits) over {}",
+                duck_int_name(subject.ty)
+            )));
+        }
         if !subject.ty.is_int() && subject.ty != Ty::F64 {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}({}, digits)",
@@ -1624,7 +1638,7 @@ impl Binder<'_> {
         };
         let inner = match inner.ty {
             Ty::F64 => inner,
-            t if t.is_int() => promote_f64(inner),
+            t if t.is_integer() => promote_f64(inner),
             // floor/ceil (sqlparser's FLOOR/CEIL forms land here) have a
             // DECIMAL overload of their own; the rest read it as DOUBLE,
             // DuckDB's implicit decimal->double cast.
@@ -1665,7 +1679,7 @@ impl Binder<'_> {
         let promote = |e: SExpr| -> Result<SExpr, PrepareError> {
             match e.ty {
                 Ty::F64 => Ok(e),
-                t if t.is_int() => Ok(promote_f64(e)),
+                t if t.is_integer() => Ok(promote_f64(e)),
                 Ty::Dec(..) => Ok(dec_to_float(e)),
                 other => Err(PrepareError::Bind(format!(
                     "no function matches {name}({})",

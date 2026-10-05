@@ -817,6 +817,7 @@ fn gen_scalar(rng: &mut gen::Rng, ty: Ty) -> ScalarVal {
         Ty::F64 => ScalarVal::F64((rng.next() as i64 % 1000) as f64 / 4.0),
         Ty::Str => ScalarVal::Str(format!("s{}", rng.below(5))),
         Ty::Dec(p, s) => ScalarVal::Dec((rng.next() as i64 % 1000) as i128, p, s),
+        Ty::I128 | Ty::U64 => ScalarVal::I128((rng.next() as i64 % 1000) as i128),
     }
 }
 
@@ -938,6 +939,7 @@ fn gen_input(rng: &mut gen::Rng, p: &Program) -> Batch {
                 // produces one (see schema.rs, Policy::Row).
                 Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
                 Ty::U8 | Ty::U16 | Ty::U32 => unreachable!("lane() is I64 for them"),
+                Ty::I128 | Ty::U64 => unreachable!("TYS never makes an i128 column"),
                 Ty::I1 => c_i1(
                     &(0..rows)
                         .map(|_| mk_valid(rng).then(|| rng.chance(50)))

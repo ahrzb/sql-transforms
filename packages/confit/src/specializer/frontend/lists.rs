@@ -74,7 +74,7 @@ impl Binder<'_> {
         elems: &[&SqlExpr],
         index: &SqlExpr,
     ) -> Result<SExpr, PrepareError> {
-        let Some(i) = ast_int_literal(index) else {
+        let Some(i) = ast_int_literal(index).and_then(|v| i64::try_from(v).ok()) else {
             return Err(unsup("a list index that is not an integer constant"));
         };
         let bound = self.list_elements(elems)?;
