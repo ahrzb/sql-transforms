@@ -52,6 +52,15 @@ Open, low priority (the catalog caps it meanwhile):
   column: about 3.8 times one tree, growing a little faster than q. Find
   where the remaining superlinear term is (the per-leaf `c` is shared now)
   before the catalog lifts its 4,000-quantile cap.
+  The real entry (one instance, one feature, `to_native`) builds in about
+  1.6 s at q=1,000 and 5.5 s at q=2,000, the same on master 8a67154 and on
+  49acad5 (three alternating runs each, release, one container; a reported
+  2x regression after #363 did not reproduce here — a debug `.so`, which the
+  tests' native guard rebuilds when Rust sources are newer, is the likely
+  cause). The superlinear term is Cranelift's `define_function`: 1.1 s at
+  q=1,000 and 4.6 s at q=2,000, on a program linear in q (36,000 blocks,
+  60,000 instructions at q=2,000); frontend, lowering and verify together
+  stay under 0.8 s.
 
 Follow-ups from the shared-subexpression work:
 
