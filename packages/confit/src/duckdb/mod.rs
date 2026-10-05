@@ -1917,6 +1917,9 @@ impl DuckDBInferFn {
         // The same closures the runtime uses, handed to the binder so a pure
         // udf can constant-fold at build.
         let bind_impls = make_externs(py, &udf_decls);
+        // SPECIALIZER_FORCE_INTERP pins the interpreter — the bench control
+        // and a debugging escape hatch.
+        let force_interp = std::env::var_os("SPECIALIZER_FORCE_INTERP").is_some();
         let prepared = match prepare_full(
             &sql,
             &row_table,
@@ -1929,6 +1932,7 @@ impl DuckDBInferFn {
             &model_catalog,
             &bind_impls,
             &sql_macros,
+            !force_interp,
         ) {
             Ok(p) => p,
             Err(e) => return Err(build_err(e.to_string())),
@@ -1956,9 +1960,6 @@ impl DuckDBInferFn {
             .collect();
         let data = materialize_statics(py, &prepared, &static_tables, &tree_decls)?;
 
-        // SPECIALIZER_FORCE_INTERP pins the interpreter — the bench control
-        // and a debugging escape hatch.
-        let force_interp = std::env::var_os("SPECIALIZER_FORCE_INTERP").is_some();
         let fun = match (force_interp, data) {
             (true, data) => Backend::Interp(
                 compile_ext(&prepared.program, data, make_externs(py, &udf_decls))

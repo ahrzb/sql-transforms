@@ -9,10 +9,18 @@ on the board: [tickets.md](tickets.md).
 Easiest first; each is one family, one PR.
 
 1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
-2. **Compositions:** a step whose instances are `Pipeline`s of catalog
-   entries (compose the translations; native T1, in progress), then
-   `ColumnTransformer` and `FeatureUnion`.
-3. **A bound per configuration.** An entry's ulp bound is its class's
+2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
+   entries as `compose.py` composes a `Pipeline`'s.
+3. **Show served compositions in coverage.md:** sklearn's transformer
+   list has no `Pipeline` (it is not a `TransformerMixin`), so the
+   scoreboard does not show the one composition the catalog serves. A
+   "served" note on composition rows, with `Pipeline` added from
+   `catalog()`, would.
+4. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
+   (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
+   grew about as lanes^2.5; since #350 they grow about as lanes^1.4
+   (2,556 lanes: 3.2 s, master 5513891).
+5. **A bound per configuration.** An entry's ulp bound is its class's
    (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
    identity and the exact functions, refuses `np.exp`, `np.log`,
    `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
@@ -20,10 +28,6 @@ Easiest first; each is one family, one PR.
    (`function.py`, 2026-10-05). A translator that declares its own bound
    per estimator would serve them within those, once each is measured over
    200 seeds of fixtures.
-4. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
-   (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
-   grew about as lanes^2.5; since #350 they grow about as lanes^1.4
-   (2,556 lanes: 3.2 s, master 5513891).
 
 ## Waiting on the owner
 
@@ -149,10 +153,19 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
   a string feature, or a boolean one except for the identity (numpy keeps
   a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
-  on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
+  on a bound per configuration (Next, item 5); `log1p` and `expm1` have no
   DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
   numpy's kernel bit-equal to confit's, and over at most 8 features
   (Needs from confit, `sin` and `cos` under a guard).
+- A `Pipeline` with a step that is not a catalog entry, or one
+  registered with a bound (a later step does not keep it bounded:
+  `x - mean_` near `mean_`); with `transform_input` (which only transforms
+  fit metadata, so the refusal is conservative); a step before the last
+  whose output is not float64 (`MissingIndicator`'s booleans, an encoder's
+  or discretizer's `dtype`: exact 0/1 or small integers either way, not
+  yet shown to read the same downstream); passthrough steps only, over a
+  string feature (the step's `float()` raises). A `set_output` container
+  between steps is not examined yet.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

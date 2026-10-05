@@ -736,6 +736,10 @@ pub enum SKind {
         ret: u32,
         whole: bool,
     },
+    /// A subexpression of the stage's projection evaluated once per row,
+    /// before the first item, and read here (`share.rs`). Exists only
+    /// between that pass and lowering; its value cannot trap.
+    Shared(u32),
 }
 
 impl SExpr {
@@ -751,7 +755,8 @@ impl SExpr {
             | SKind::Lit(_)
             | SKind::NullOf
             | SKind::Raise(_)
-            | SKind::JoinHit(_) => Vec::new(),
+            | SKind::JoinHit(_)
+            | SKind::Shared(_) => Vec::new(),
             SKind::Seq { items, .. } => items.iter_mut().collect(),
             SKind::Arith { a, b, .. }
             | SKind::Cmp { a, b, .. }
@@ -839,6 +844,7 @@ pub fn may_trap(e: &SExpr) -> bool {
         | SKind::Slot(_)
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
+        | SKind::Shared(_)
         | SKind::Lit(_)
         | SKind::NullOf => false,
         SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
@@ -924,6 +930,9 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
             trap
         }
         SKind::Arith { a, b, .. } if e.ty.lane() == Ty::F64 => any(&[a, b], facts),
+        // Only the integer abs traps (on its minimum); DuckDB's DOUBLE abs
+        // is fabs (measured: `abs(-1e308)`, `abs(-inf)`, `abs(NaN)` answer).
+        SKind::Abs(a) if e.ty.lane() == Ty::F64 => any(&[a], facts),
         SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => any(&[a, b], facts),
         SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => any(&[a], facts),
         SKind::Cast { inner, trying } if *trying || cast_is_total(inner.ty, e.ty) => {
@@ -1004,6 +1013,7 @@ fn can_trap_here(e: &SExpr) -> bool {
         | SKind::Slot(_)
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
+        | SKind::Shared(_)
         | SKind::Lit(_)
         | SKind::NullOf => false,
         SKind::Arith { a, b, .. } if e.ty.lane() == Ty::F64 => can_trap(a) || can_trap(b),
@@ -1083,7 +1093,46 @@ pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
                 nullable: true,
             })
         }
+        // An operation that cannot trap itself traps where its operands do,
+        // in operand order: keep only theirs. Lane j of a Normalizer,
+        // `x_j / CASE WHEN norm < tiny THEN 1.0 ELSE norm END`, keeps the
+        // CASE every lane shares, not the lane.
+        _ if traps_only_in_operands(e) => {
+            let mut c = e.clone();
+            let mut parts: Vec<SExpr> = c
+                .children_mut()
+                .into_iter()
+                .filter_map(|x| trap_skeleton(x))
+                .collect();
+            match parts.len() {
+                0 => None,
+                1 => parts.pop(),
+                n => {
+                    let (ty, nullable) = (parts[n - 1].ty, parts[n - 1].nullable);
+                    Some(SExpr {
+                        kind: SKind::Seq {
+                            items: parts,
+                            pick: n - 1,
+                        },
+                        ty,
+                        nullable,
+                    })
+                }
+            }
+        }
         _ => Some(e.clone()),
+    }
+}
+
+/// Whether `e`'s own operation is total, so it traps only where an operand
+/// does: the kinds [`can_trap`] looks through, short of CASE (whose arms
+/// are conditional) and AND/OR.
+fn traps_only_in_operands(e: &SExpr) -> bool {
+    match &e.kind {
+        SKind::Arith { .. } | SKind::Abs(_) => e.ty.lane() == Ty::F64,
+        SKind::Cmp { .. } | SKind::Not(_) | SKind::IsNull { .. } | SKind::IntToFloat(_) => true,
+        SKind::Cast { inner, trying } => *trying || cast_is_total(inner.ty, e.ty),
+        _ => false,
     }
 }
 
@@ -1109,7 +1158,7 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         // A slot never folds: constants do not fold across a query level
         // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
         // all on zero rows).
-        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
+        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) | SKind::Shared(_) => false,
         // `error()` is never folded at bind: it raises when a row reaches it.
         SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
         SKind::Seq { items, .. } => items.iter().all(bind_foldable),

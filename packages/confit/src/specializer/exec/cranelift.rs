@@ -1296,6 +1296,23 @@ fn clif_ty(ty: Ty) -> types::Type {
     }
 }
 
+/// Whether `p` uses a construct only the interpreter runs: the
+/// multiplicity ones (EmitTo loops, multimap probes), which [`compile_ext`]
+/// declines by name.
+pub fn interp_only(p: &Program) -> bool {
+    p.statics.iter().any(|s| {
+        matches!(
+            s,
+            super::super::ir::StaticTy::MultiMap { .. } | super::super::ir::StaticTy::BatchMap { .. }
+        )
+    }) || p.blocks.iter().any(|b| {
+        matches!(b.term, Term::EmitTo { .. })
+            || b.insts
+                .iter()
+                .any(|i| matches!(i, Inst::ProbeRange { .. } | Inst::ProbeRead { .. }))
+    })
+}
+
 pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<CraneliftFn, CompileError> {
     compile_ext(p, statics, Vec::new())
 }
@@ -1313,17 +1330,7 @@ pub fn compile_ext(
     // these constructs as unreachable. This is the ONLY thing the
     // interpreter's eval loop is load-bearing for — every other program
     // compiles here.
-    let has_multiplicity = p
-        .statics
-        .iter()
-        .any(|s| matches!(s, super::super::ir::StaticTy::MultiMap { .. } | super::super::ir::StaticTy::BatchMap { .. }))
-        || p.blocks.iter().any(|b| {
-            matches!(b.term, Term::EmitTo { .. })
-                || b.insts
-                    .iter()
-                    .any(|i| matches!(i, Inst::ProbeRange { .. } | Inst::ProbeRead { .. }))
-        });
-    if has_multiplicity {
+    if interp_only(p) {
         return Err(CompileError::InterpOnly(
             "multiplicity programs (shape='many') run on the interpreter",
         ));
@@ -1556,6 +1563,20 @@ pub fn compile_ext(
     module
         .define_function(fid, &mut ctx)
         .map_err(define_error)?;
+    // The size floor refuses before any of this on the promise that it
+    // never exceeds what Cranelift assigns: checked on every compile of a
+    // build with debug assertions (the tests, the nightly campaign).
+    #[cfg(debug_assertions)]
+    {
+        let floor = super::size::vreg_floor(p);
+        let (assigned, calls) = (upfront_vregs(&ctx.func), calls(&ctx.func));
+        debug_assert!(
+            floor.assigned <= assigned && floor.calls <= calls,
+            "size floor {floor:?} > what Cranelift assigned ({assigned}) or calls ({calls})"
+        );
+        #[cfg(test)]
+        ASSIGNED.with(|c| c.set((assigned, calls)));
+    }
     module.clear_context(&mut ctx);
     module
         .finalize_definitions()
@@ -3037,9 +3058,50 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// [`upfront_vregs`] and [`calls`] of the last function this thread
+    /// compiled.
+    pub(crate) static ASSIGNED: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The virtual registers Cranelift assigns `func` (as optimized) before
+/// lowering it: one per block parameter and instruction result, two for an
+/// i128 (`machinst/lower.rs`).
+#[cfg(debug_assertions)]
+pub(crate) fn upfront_vregs(func: &cranelift_codegen::ir::Function) -> usize {
+    let regs = |v: &cranelift_codegen::ir::Value| match func.dfg.value_type(*v) {
+        types::I128 => 2,
+        _ => 1,
+    };
+    func.layout
+        .blocks()
+        .map(|bb| {
+            func.dfg.block_params(bb).iter().map(regs).sum::<usize>()
+                + func
+                    .layout
+                    .block_insts(bb)
+                    .map(|i| func.dfg.inst_results(i).iter().map(regs).sum::<usize>())
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+/// The calls in `func`.
+#[cfg(debug_assertions)]
+fn calls(func: &cranelift_codegen::ir::Function) -> usize {
+    func.layout
+        .blocks()
+        .flat_map(|bb| func.layout.block_insts(bb))
+        .filter(|i| func.dfg.insts[*i].opcode() == cranelift_codegen::ir::Opcode::Call)
+        .count()
+}
+
 /// A failed `define_function`: past one of Cranelift's size limits (more
 /// virtual registers than it can number) is this query's size, refused by
-/// name; anything else is an engine bug.
+/// name; anything else is an engine bug. The last of the three size
+/// refusals (`size.rs`): what the size floor and `check_size` cannot prove.
 fn define_error(e: cranelift_module::ModuleError) -> CompileError {
     use cranelift_codegen::CodegenError;
     match e {
@@ -3066,7 +3128,9 @@ fn define_error(e: cranelift_module::ModuleError) -> CompileError {
 /// debug assertion: past it, a release build silently corrupts the function.
 /// A 48-feature Normalizer (6.7M instructions, 25M values) failed
 /// verification with "uses value arg from non-dominating block". So a
-/// function at that size refuses by name before codegen.
+/// function at that size refuses by name before codegen. The size floor
+/// (`size.rs`) does not cover this: it bounds the values that survive
+/// Cranelift's optimizer, and this counts the function as built.
 const CL_INDEX_LIMIT: usize = (1 << 24) - 2;
 
 fn check_size(insts: usize, blocks: usize, values: usize) -> Result<(), CompileError> {
