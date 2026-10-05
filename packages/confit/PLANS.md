@@ -57,6 +57,10 @@ Delivered:
   scope. 128 lanes read 128 times build in 0.4 s (13.6 s before both), 128
   lanes over 3 groups (past the 4M-token cap before) in 0.7 s, 256 lanes in
   1.4 s. An unaliased read is named as DuckDB names it, `(f(x)).p`.
+- A dropped function returns its JIT memory (`OwnedJit`): every build kept
+  2 mappings before, so a process stalled at `vm.max_map_count` after about
+  32k builds. 3,000 build/call/drop cycles now hold 479 mappings and 121 MB
+  flat (`tests/test_jit_memory.py`).
 - A struct-returning SQL function read field by field builds in time
   linear in the lanes read, with or without `null_when` (whose CASE arm
   reads as a call of its own) and with output aliases equal to the field
