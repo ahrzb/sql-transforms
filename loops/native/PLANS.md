@@ -11,10 +11,14 @@ Easiest first; each is one family, one PR.
 1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
    numpy ufuncs with a SQL twin (native T2, in progress), and
    `AdditiveChi2Sampler`.
-2. **Compositions:** a step whose instances are `Pipeline`s of catalog
-   entries (compose the translations; native T1, in progress), then
-   `ColumnTransformer` and `FeatureUnion`.
-3. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
+2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
+   entries as `compose.py` composes a `Pipeline`'s.
+3. **Show served compositions in coverage.md:** sklearn's transformer
+   list has no `Pipeline` (it is not a `TransformerMixin`), so the
+   scoreboard does not show the one composition the catalog serves. A
+   "served" note on composition rows, with `Pipeline` added from
+   `catalog()`, would.
+4. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
    (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
    grew about as lanes^2.5; since #350 they grow about as lanes^1.4
    (2,556 lanes: 3.2 s, master 5513891).
@@ -126,6 +130,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (waiting on the owner, above); Box-Cox over more than 12 features, until
   confit knows a call that cannot trap (above). Where the twin rejects
   x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
+- A `Pipeline` with a step that is not a catalog entry, or one
+  registered with a bound (a later step does not keep it bounded:
+  `x - mean_` near `mean_`); with `transform_input` (which only transforms
+  fit metadata, so the refusal is conservative); a step before the last
+  whose output is not float64 (`MissingIndicator`'s booleans, an encoder's
+  or discretizer's `dtype`: exact 0/1 or small integers either way, not
+  yet shown to read the same downstream); passthrough steps only, over a
+  string feature (the step's `float()` raises). A `set_output` container
+  between steps is not examined yet.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

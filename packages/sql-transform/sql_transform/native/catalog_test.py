@@ -34,6 +34,7 @@ from sklearn.feature_selection import (
 )
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import (
     Binarizer,
     KBinsDiscretizer,
@@ -224,6 +225,44 @@ FIXTURES[QuantileTransformer] = [
 ]
 
 
+# Pipeline: compositions across families, a passthrough and a None step, and
+# a nested pipeline. The generator reads the tags of the step that first
+# reads the row (`_runs`), so an imputer first gets holes and an encoder
+# first gets string features.
+FIXTURES[Pipeline] = [
+    lambda: make_pipeline(SimpleImputer(), StandardScaler()),
+    lambda: make_pipeline(StandardScaler(), PolynomialFeatures()),
+    lambda: make_pipeline(
+        OneHotEncoder(sparse_output=False, handle_unknown="ignore"), MaxAbsScaler()
+    ),
+    lambda: make_pipeline(
+        OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+        StandardScaler(),
+    ),
+    lambda: make_pipeline(
+        KBinsDiscretizer(n_bins=4, encode="ordinal", strategy="uniform"),
+        OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+    ),
+    lambda: make_pipeline(MinMaxScaler(), Binarizer(threshold=0.5)),
+    lambda: make_pipeline(StandardScaler(), SelectKBest(f_regression, k=1)),
+    lambda: Pipeline(
+        [("skip", "passthrough"), ("scale", RobustScaler()), ("none", None)]
+    ),
+    lambda: make_pipeline(
+        SimpleImputer(strategy="median", add_indicator=True),
+        StandardScaler(),
+        MinMaxScaler(feature_range=(-1.0, 1.0), clip=True),
+    ),
+    lambda: Pipeline(
+        [
+            ("prep", make_pipeline(SimpleImputer(), StandardScaler())),
+            ("poly", PolynomialFeatures(include_bias=False)),
+            ("bin", Binarizer()),
+        ]
+    ),
+]
+
+
 def positive(factory: Callable[[], Any]) -> Callable[[], Any]:
     """`factory`'s fits and rows draw strictly positive numbers (an
     estimator that rejects the rest): absolute values, a fitted zero made
@@ -356,6 +395,17 @@ def _step(cls_factory, seed: int, variant: int = 0) -> PythonTransform:
     raise AssertionError(f"no fixture of {cls_factory} fits in 20 draws")
 
 
+def _runs(est: Any) -> list[Any]:
+    """The estimators `transform` runs, in order: `est`, or a pipeline's
+    steps that run, nested ones flattened. A `Pipeline`'s own tags do not
+    say what it takes: sklearn 1.9 copies only `pairwise` (first step) and
+    `sparse` (all steps) from its steps, so `allow_nan` and `categorical`
+    read False. The generator reads its steps' instead."""
+    if not isinstance(est, Pipeline):
+        return [est]
+    return [r for _, _, s in est._iter() for r in _runs(s)]
+
+
 def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # Mostly narrow; sometimes wide enough for a row reduction's blocks.
     wide = rng.random() < 0.3
@@ -364,7 +414,8 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
     kinds = [int(rng.integers(5)) for _ in range(n_features)]
-    proto = cls_factory()
+    runs = _runs(cls_factory())
+    proto = runs[0]  # what reads the row
     positive = getattr(cls_factory, "positive", False)
     if proto.__sklearn_tags__().input_tags.categorical:
         # Categories: few distinct values per feature, about half of them
@@ -376,12 +427,12 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
                 kinds[j] = 4
     takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
     # Missing values in the fit data, for an estimator that takes them: an
-    # imputer's own `missing_values`, or NaN where sklearn says it allows it.
+    # imputer's own `missing_values`, or NaN where sklearn says it allows it
+    # (for a pipeline, every step: a scaler passes NaN on).
     marker = float(getattr(proto, "missing_values", np.nan))
     holes: list[str | None] = [None] * n_features
-    if (
-        hasattr(proto, "missing_values")
-        or proto.__sklearn_tags__().input_tags.allow_nan
+    if hasattr(proto, "missing_values") or all(
+        r.__sklearn_tags__().input_tags.allow_nan for r in runs
     ):
         holes = [
             ("some", "all", None)[int(np.searchsorted([0.4, 0.48], rng.random()))]
