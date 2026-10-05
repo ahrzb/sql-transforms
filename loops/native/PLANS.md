@@ -11,10 +11,14 @@ Easiest first; each is one family, one PR.
 1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
    numpy ufuncs with a SQL twin (native T2, in progress), and
    `AdditiveChi2Sampler`.
-2. **Compositions:** a step whose instances are `Pipeline`s of catalog
-   entries (compose the translations; native T1, in progress), then
-   `ColumnTransformer` and `FeatureUnion`.
-3. **`QuantileTransformer` as one search tree per feature:** its two
+2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
+   entries as `compose.py` composes a `Pipeline`'s.
+3. **Show served compositions in coverage.md:** sklearn's transformer
+   list has no `Pipeline` (it is not a `TransformerMixin`), so the
+   scoreboard does not show the one composition the catalog serves. A
+   "served" note on composition rows, with `Pipeline` added from
+   `catalog()`, would.
+4. **`QuantileTransformer` as one search tree per feature:** its two
    `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
    with the other endpoint of each interval closed), so one tree whose
    leaves compute both lines, with `x` at a breakpoint dispatched to the
@@ -65,7 +69,7 @@ Easiest first; each is one family, one PR.
   0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
   the message sent to the confit loop (2026-10-05). The entry is capped at
   4,000 quantiles over the features and 4,000,000 in their squares
-  meanwhile (about 7 s at most); Next, item 3, is the entry-side
+  meanwhile (about 7 s at most); Next, item 4, is the entry-side
   alternative.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
@@ -130,6 +134,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `PowerTransformer(method="yeo-johnson")` and `standardize=True`
   (waiting on the owner, above). Where the twin rejects
   x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
+- A `Pipeline` with a step that is not a catalog entry, or one
+  registered with a bound (a later step does not keep it bounded:
+  `x - mean_` near `mean_`); with `transform_input` (which only transforms
+  fit metadata, so the refusal is conservative); a step before the last
+  whose output is not float64 (`MissingIndicator`'s booleans, an encoder's
+  or discretizer's `dtype`: exact 0/1 or small integers either way, not
+  yet shown to read the same downstream); passthrough steps only, over a
+  string feature (the step's `float()` raises). A `set_output` container
+  between steps is not examined yet.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

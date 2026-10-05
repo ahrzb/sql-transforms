@@ -10,6 +10,7 @@ pub mod cranelift;
 pub mod hugeint;
 pub mod interp;
 pub mod kernels;
+pub mod size;
 mod pow10;
 mod strip_accents;
 pub mod tree_ensemble;
