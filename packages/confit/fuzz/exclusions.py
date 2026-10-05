@@ -255,7 +255,11 @@ def _duck_with_padding(ev: Evidence, statics: list[str]) -> str | None:
         _, phase, err = O._exec(con, ev.sql)
         return err if phase == "run" else None
     finally:
-        O._give_back(con, [*case.statics, "__THIS__"], [u.name for u in ev.udf_objs])
+        O._give_back(
+            con,
+            [*case.statics, "__THIS__"],
+            [(u.name, hasattr(u, "sql_body")) for u in ev.udf_objs],
+        )
 
 
 RULES: tuple[Rule, ...] = (

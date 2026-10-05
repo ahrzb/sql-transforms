@@ -51,6 +51,7 @@ mod udf;
 mod functions;
 mod typing;
 mod decimal;
+pub mod macros;
 
 use self::refusal::*;
 use self::from::*;
@@ -99,6 +100,7 @@ pub fn frontend(
     udfs: &[super::ir::ExternSpec],
     models: &[super::plan::ModelTable],
     bind_eval: &[ExternImpl],
+    macros: &[macros::SqlMacro],
 ) -> Result<
     (
         Plan,
@@ -131,6 +133,9 @@ pub fn frontend(
     let tokens = sqlparser::tokenizer::Tokenizer::new(&dialect, sql)
         .tokenize()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
+    // SQL functions first, so their bodies pass through the same rewrites
+    // as the query text they land in.
+    let tokens = macros::expand(tokens, macros)?;
     let tokens = super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
         super::rewrite::rewrite_parenless_replace(super::rewrite::rewrite_from_colon_aliases(
             super::rewrite::rewrite_colon_aliases(tokens),
