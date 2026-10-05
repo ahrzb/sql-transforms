@@ -1,17 +1,19 @@
 # Native catalog plans
 
 The working list for [the loop](README.md): open work only, highest value
-first. Remove an item when it lands.
+first. Remove an item when it lands. What is in flight, and who has it, is
+on the board: [tickets.md](tickets.md).
 
 ## Next
 
 Easiest first; each is one family, one PR.
 
 1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
-   numpy ufuncs with a SQL twin, `AdditiveChi2Sampler`.
+   numpy ufuncs with a SQL twin (native T2, in progress), and
+   `AdditiveChi2Sampler`.
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
-   entries (compose the translations), then `ColumnTransformer` and
-   `FeatureUnion`.
+   entries (compose the translations; native T1, in progress), then
+   `ColumnTransformer` and `FeatureUnion`.
 3. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
    (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
    grew about as lanes^2.5; since #350 they grow about as lanes^1.4
