@@ -126,7 +126,8 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
 # - `FeatureUnion.transform`: each part of `_iter()` (skipping "drop"; a
 #   "passthrough" is an identity `FunctionTransformer`, which hands back
 #   the list itself) is handed the whole row, the list; `_hstack` is
-#   `np.concatenate(axis=1)`, or sparse when a part's output is.
+#   `xp.concat(axis=1)` (numpy's concatenate), or sparse when a part's
+#   output is.
 #
 # The step reads the stacked row with `float()`, so a part's lanes keep
 # their values whatever dtype the stack takes (float64, or object beside a

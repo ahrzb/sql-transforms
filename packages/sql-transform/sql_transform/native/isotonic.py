@@ -60,7 +60,7 @@ from sql_transform.native.quantile import interp_is_numpys
 _Piece = tuple[float, float, float, bool]
 
 # The most thresholds served. One CASE tree over the thresholds builds in
-# about 0.7 ms a threshold, a little faster than linear: 1,000 in 0.5 s,
+# about 0.7 ms a threshold, a little worse than linear: 1,000 in 0.5 s,
 # 4,000 in 2.4 s, 8,000 in 5.8 s, 20,000 in 22 s. Serving 64 rows takes
 # 37 us at the widest fixture (51 thresholds) and 366 us at 8,000,
 # against the twin's 5,400 us (release build, master f2ef184,
