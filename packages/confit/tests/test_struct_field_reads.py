@@ -162,6 +162,13 @@ POSITIVE = table({"x": "float?"}, [{"x": 2.0}, {"x": float("nan")}, {"x": None}]
         "CASE WHEN x < 0 THEN NULL ELSE ln(x) END",
         "CASE WHEN x >= 0 THEN ln(x) END",
         "CASE WHEN x < -1 THEN NULL ELSE sqrt(x) END",
+        # sin/cos/tan raise exactly on +-inf; round(DOUBLE) never.
+        "CASE WHEN abs(x) = CAST('inf' AS DOUBLE) THEN NULL ELSE sin(x) END",
+        "CASE WHEN abs(x) < CAST('inf' AS DOUBLE) THEN cos(x) END",
+        "CASE WHEN abs(x) <> CAST('inf' AS DOUBLE) THEN tan(x) END",
+        "round(x) * 2.0",
+        "sin(x)",
+        "CASE WHEN x = CAST('inf' AS DOUBLE) THEN NULL ELSE cos(x) END",
     ],
 )
 def test_a_sibling_raises_exactly_where_duckdb_does(p):

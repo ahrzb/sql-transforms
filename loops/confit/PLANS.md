@@ -72,6 +72,12 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- `round(DOUBLE)` (`SKind::Round`) is trap-free, and `sin`/`cos`/`tan`
+  under a CASE guard that rules out the infinities (`abs(x) = inf` passed,
+  `abs(x) < k` or `abs(x) <> inf` taken) cannot raise, so a struct read does
+  not evaluate them beside the read field: the catalog's guarded-`sin`
+  FunctionTransformer at 64 features serves a 64-row call in 0.62 ms
+  (1,370 µs per row before).
 - `greatest`/`least` over I64, F64 or VARCHAR arguments lower as a running
   extreme (`SKind::Extreme`): linear in the arguments, each evaluated once in
   order. The catalog's max norm, `greatest(abs(x1), ..., abs(xn))`, builds in
