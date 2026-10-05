@@ -50,26 +50,6 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **Shared subexpressions kept lazy inside untaken CASE arms** (a
-  regression from #363, the highest of these). Lowering evaluates every
-  shared subexpression before the first item, so in a step whose instance
-  arms are CASE trees that share subtrees, every row computes every shared
-  subtree. `QuantileTransformer`'s widest fixture (27 features, three
-  instances, small-integer features whose breakpoints repeat) serves 64
-  rows in 21,480 us after #363 against 1,153 before, where the twin takes
-  about 27,000 (release build, master 89e99fc against c3b42ea); with one
-  instance it is unchanged (862 against 967), with two 2x slower (2,444
-  against 1,194). Sent to the confit loop with the reproduction,
-  2026-10-05.
-- **A `greatest` that builds linearly.** One `greatest` over n DOUBLEs
-  builds in 0.20 s at n = 32, 1.0 s at 64 and 6.1 s at 128, and past
-  Cranelift's size limit at 256, where a sum of the same n builds in 3 to
-  11 ms; nested two-way `greatest` calls repeat their arguments (a
-  balanced tree of them over a 32-feature `Normalizer` row: 87 s); and the
-  expansion cap counts a body before shared subexpressions are found, so
-  the CASE tournament the max norm used refuses at 48 features (release
-  build, master f0fa925). `Normalizer(norm="max")` spells one `greatest`
-  and is capped at 48 features (6.4 s) meanwhile.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
@@ -82,20 +62,9 @@ Easiest first; each is one family, one PR.
   4,000 quantiles over the features and 4,000,000 in their squares
   meanwhile (about 7 s at most); Next, item 3, is the entry-side
   alternative.
-- **`sin` and `cos` under a guard.** DuckDB's `sin` and `cos` raise on an
-  infinity, so `can_trap` counts them as trapping even under
-  `CASE WHEN abs(x) = inf THEN NaN ELSE sin(x) END` (or
-  `x = inf OR x = -inf`), and a struct field read evaluates every lane's
-  call: `FunctionTransformer(np.sin)`, three instances, 1,024-row batches,
-  release build, against the Python step, 13.7 vs 20.8 us per row at 8
-  features, 26.8 vs 25.8 at 10, 36.6 vs 29.1 at 12, 178 vs 49 at 24
-  (supervisor's measurement on 851cf08, master with #362, 2026-10-05). A
-  guard rule for them, as #362 gave `ln` and `sqrt`, would make it linear;
-  the entry caps `sin` and `cos` at 8 features meanwhile. Every other
-  `FunctionTransformer` spelling serves 128 features.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
-#353, #358, #362, #363): a constant CASE
+#353, #358, #362, #363, #374, #375, #377): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -120,7 +89,15 @@ registers right after lowering (a `Normalizer` repeats its norm in every
 lane: l1 and l2 at 32 features were refused after 6.9 s and 16.7 s,
 master 5513891, and now build in 0.10 s and 0.22 s and serve a row in 1.6
 and 5.1 us against the twin's 250 to 300; at 128 features they build in
-1.8 s and 5.1 s; the max norm's cap goes from 8 features to 48).
+1.8 s and 5.1 s); `greatest` lowered as a running extreme (the max norm
+at 48 features built in 6.4 s and stopped there; it now builds in 0.21 s,
+and in 1.6 s at 128 features, uncapped); `round(DOUBLE)` and `sin`/`cos`
+under a guard on `abs(x)` as trap-free (`FunctionTransformer(np.sin)` at
+32 features served a row in 100 us against the twin's 56; now 2.4 us,
+and 19.5 us at 128, uncapped, with the guard spelled through `abs`); and
+a subexpression shared only where it costs no row anything (a
+three-instance `QuantileTransformer` served 64 rows in 21,480 us after
+#363; now 1,033; release build, master 8a67154).
 
 ## Left Python
 
@@ -142,8 +119,6 @@ Configurations a translator declines (`NotNative`), each with its ground:
   and a sparse row is not a float). A note for the step, not the catalog.
 - An encoder over a boolean feature: the fixtures make no boolean features
   yet, for any entry.
-- `Normalizer(norm="max")` over more than 48 features, until confit's
-  `greatest` builds linearly (Needs from confit).
 - `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
   for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
   twin rounds x to float32 before it bins it, which the entry does not
@@ -153,7 +128,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. Past 4,000 quantiles over an estimator's
   features or 4,000,000 in their squares, where builds pass about 7 s
-  (Needs from confit, "A CASE tree that builds in linear time").
+  (Needs from confit, "Two CASE trees in one expression").
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
@@ -169,8 +144,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
   on a bound per configuration (Next, item 4); `log1p` and `expm1` have no
   DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
-  numpy's kernel bit-equal to confit's, and over at most 8 features
-  (Needs from confit, `sin` and `cos` under a guard).
+  numpy's kernel bit-equal to confit's.
 - A `Pipeline` with a step that is not a catalog entry, or one
   registered with a bound (a later step does not keep it bounded:
   `x - mean_` near `mean_`); with `transform_input` (which only transforms
@@ -196,6 +170,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `FeatureUnion` (the twin multiplies the step's list, which raises). A
   `ColumnTransformer` with a passthrough part before the last step of a
   `Pipeline` (its object output, as for the `Pipeline` rule above).
+- `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
+  `np.max` and `np.min` included: on a tie of signed zeros numpy's SIMD
+  reduction answers the zero its lane order reaches, neither the first
+  nor the last tied operand, so `greatest`/`least` (the first) part from
+  it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
+  `row_sumsq_is_numpys` has) would serve them.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

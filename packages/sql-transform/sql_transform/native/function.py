@@ -15,7 +15,7 @@ correctly rounded on both sides; DuckDB raises on a negative, so it is
 guarded), `reciprocal` (`1.0 / x`), `floor`, `ceil`, `trunc`, `rint` (half
 to even, spelled from `trunc`: confit has no `round_even`),
 `sign`, and `sin`/`cos` where this platform's numpy answers as confit
-does (`kernel_is_confits` probes it), up to `_MAX_TRIG_WIDTH` features.
+does (`kernel_is_confits` probes it).
 
 Refused: every other transcendental. numpy's float64 `exp`, `log`, `log2`,
 `log10`, `tan` and `cbrt` are its own SIMD kernels on x86-64 with AVX-512,
@@ -42,16 +42,6 @@ from sql_transform.native._registry import NotNative, translates
 
 _NAN = f64(math.nan)
 _ZERO = f64(0.0)
-# The widest step served by `sin` or `cos`. They raise on an infinity in
-# DuckDB, and confit counts them as able to trap even under the guard that
-# rules it out, so a struct field read also evaluates every other lane's
-# call and serving grows as the square of the width: per row, three
-# instances, 1,024-row batches, against the Python step, 13.7 vs 20.8 us
-# at 8 features, 26.8 vs 25.8 at 10, 36.6 vs 29.1 at 12, 178 vs 49 at 24
-# (release build, master with confit #362, 2026-10-05), until confit knows
-# a guarded `sin` and `cos` (PLANS, "Needs from confit"). The other
-# spellings are trap-free and serve 128 features.
-_MAX_TRIG_WIDTH = 8
 
 
 def _abs(x: S.Expr) -> S.Expr:
@@ -101,8 +91,10 @@ def _sqrt(x: S.Expr) -> S.Expr:
 
 def _trig(name: str) -> Callable[[S.Expr], S.Expr]:
     def spell(x: S.Expr) -> S.Expr:
-        # DuckDB raises on an infinity where numpy answers NaN.
-        inf = _abs(x) == f64(math.inf)
+        # DuckDB raises on an infinity where numpy answers NaN. The guard is
+        # spelled with `abs`, the form confit reads as ruling the infinities
+        # out (#375), so a field read leaves the other lanes unevaluated.
+        inf = S.fn("abs", x) == f64(math.inf)
         return S.case(inf, _NAN).otherwise(S.fn(name, x))
 
     return spell
@@ -126,9 +118,6 @@ _SERVED: dict[Any, Callable[[S.Expr], S.Expr]] = {
     np.sin: _trig("sin"),
     np.cos: _trig("cos"),
 }
-
-# The spellings capped at _MAX_TRIG_WIDTH features.
-_TRIG = {np.sin, np.cos}
 
 # Served only where this platform's numpy kernel is DuckDB's, to the bit.
 _PROBED = {np.sin: "sin", np.cos: "cos"}
@@ -221,12 +210,6 @@ def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         if isinstance(func, np.ufunc) and func in _NO_SQL:
             raise NotNative(f"{what}: {_NO_SQL[func]}")
         raise NotNative(f"{what}: not a function the entry serves")
-    if func in _TRIG and len(x) > _MAX_TRIG_WIDTH:
-        raise NotNative(
-            f"{what} over {len(x)} features: every lane's call is evaluated"
-            f" at each field read, past {_MAX_TRIG_WIDTH} (PLANS, 'sin and"
-            " cos under a guard')"
-        )
     if func in _PROBED and not kernel_is_confits(_PROBED[func]):
         raise NotNative(f"{what}: this platform's numpy kernel is not confit's")
     return [spell(xi) for xi in x]
