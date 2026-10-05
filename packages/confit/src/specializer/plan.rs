@@ -917,6 +917,15 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
             let strict = !matches!(op, Op::Fsqrt);
             any(&[a], facts) || !facts.iter().any(|&(c, taken)| guards(c, taken, a, strict))
         }
+        // sin/cos/tan raise exactly on +-inf (measured, DuckDB 1.5.5: "input
+        // value inf is out of range"; NaN is NaN). Under a CASE guard that
+        // rules the infinities out, they cannot.
+        SKind::MathF1 {
+            op: Op::Fsin | Op::Fcos | Op::Ftan,
+            a,
+        } => any(&[a], facts) || !facts.iter().any(|&(c, taken)| finite_guard(c, taken, a)),
+        // ROUND(DOUBLE): total, like `Fround`, which it lowers to.
+        SKind::Round(a) => any(&[a], facts),
         SKind::Case { arms, default } => {
             let depth = facts.len();
             let mut trap = false;
@@ -998,6 +1007,51 @@ fn guards(c: &SExpr, taken: bool, a: &SExpr, strict: bool) -> bool {
                     }
                 }
                 None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Whether condition `c`, TRUE (`taken`) or else FALSE or NULL, leaves `a`
+/// finite, NaN or NULL: the values on which sin/cos/tan cannot raise. The
+/// guard reads `abs(a)` against a constant: `abs(a) = inf` passed,
+/// `abs(a) <> inf` taken, `abs(a) < k` taken, `abs(a) <= k` taken for a
+/// finite k (NaN compares FALSE with `=` and `<`, and TRUE with `<>`, all of
+/// which leave it to an arm where it is harmless).
+fn finite_guard(c: &SExpr, taken: bool, a: &SExpr) -> bool {
+    match (&c.kind, taken) {
+        (SKind::Or { a: l, b: r }, false) | (SKind::And { a: l, b: r }, true) => {
+            finite_guard(l, taken, a) || finite_guard(r, taken, a)
+        }
+        (SKind::Cmp { pred, a: l, b: r }, _) => {
+            let (pred, x, k) = match (lit_f64(r), lit_f64(l)) {
+                (Some(k), _) => (*pred, l, k),
+                (None, Some(k)) => {
+                    let mirrored = match pred {
+                        CmpPred::Lt => CmpPred::Gt,
+                        CmpPred::Le => CmpPred::Ge,
+                        CmpPred::Gt => CmpPred::Lt,
+                        CmpPred::Ge => CmpPred::Le,
+                        p => *p,
+                    };
+                    (mirrored, r, k)
+                }
+                _ => return false,
+            };
+            let inner = match &strip_float(x).kind {
+                SKind::Abs(i) | SKind::MathF1 { op: super::ir::NumOp1::Fabs, a: i } => i,
+                _ => return false,
+            };
+            if strip_float(inner) != strip_float(a) {
+                return false;
+            }
+            let inf = k == f64::INFINITY;
+            match (pred, taken) {
+                (CmpPred::Eq, false) | (CmpPred::Ge, false) | (CmpPred::Ne, true) => inf,
+                (CmpPred::Lt, true) => true,
+                (CmpPred::Le, true) => k.is_finite(),
+                _ => false,
             }
         }
         _ => false,
