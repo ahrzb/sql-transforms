@@ -37,6 +37,55 @@ impl Drop for DepthGuard {
     }
 }
 
+/// Chains longer than this rebalance (see [`rebalance_chain`]); shorter
+/// ones bind exactly as written.
+const LONG_CHAIN: usize = 64;
+
+/// A left-deep `a AND b AND c ...` (or OR) chain of more than
+/// [`LONG_CHAIN`] terms, rebuilt as a balanced tree of the same terms in the
+/// same order. AND and OR are associative under three-valued logic, and
+/// evaluating left to right until a decisive operand stops at the same
+/// operand in either shape, so the meaning is unchanged; the depth drops
+/// from n to log n, which every later recursive pass needs (DuckDB builds
+/// these n-ary and serves 20000 terms). A balanced tree's own spine is
+/// shorter than the threshold, so this applies once.
+fn rebalance_chain(e: &SqlExpr) -> Option<SqlExpr> {
+    let SqlExpr::BinaryOp { op, .. } = e else {
+        return None;
+    };
+    if !matches!(op, BinaryOperator::And | BinaryOperator::Or) {
+        return None;
+    }
+    let mut terms = Vec::new();
+    let mut cur = e;
+    while let SqlExpr::BinaryOp { left, op: o, right } = cur {
+        if o != op {
+            break;
+        }
+        terms.push(right.as_ref());
+        cur = left;
+    }
+    terms.push(cur);
+    if terms.len() <= LONG_CHAIN {
+        return None;
+    }
+    terms.reverse();
+    fn build(terms: &[&SqlExpr], op: &BinaryOperator) -> SqlExpr {
+        match terms {
+            [one] => (*one).clone(),
+            _ => {
+                let (l, r) = terms.split_at(terms.len() / 2);
+                SqlExpr::BinaryOp {
+                    left: Box::new(build(l, op)),
+                    op: op.clone(),
+                    right: Box::new(build(r, op)),
+                }
+            }
+        }
+    }
+    Some(build(&terms, op))
+}
+
 impl Binder<'_> {
     /// Bind an expression that must have a definite type on its own. A bare
     /// NULL with no adopting context takes DuckDB's SQLNULL default:
@@ -48,6 +97,16 @@ impl Binder<'_> {
     /// Like `expr`, but a bare NULL literal comes back as `None` for the
     /// caller to type from context.
     pub(super) fn expr_or_null(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        // Binding recurses per level of the tree, and a level's frames are
+        // large (tens of KiB unoptimized): grow the stack on the heap rather
+        // than overflow it.
+        stacker::maybe_grow(RED_ZONE, STACK_SEGMENT, || self.expr_or_null_here(e))
+    }
+
+    fn expr_or_null_here(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        if let Some(balanced) = rebalance_chain(e) {
+            return self.expr_or_null_here(&balanced);
+        }
         // DuckDB's parser builds AND/OR chains n-ary, so they do not count
         // toward its depth limit (a 20000-term AND serves there).
         let _depth = match e {
@@ -1083,8 +1142,16 @@ impl Binder<'_> {
                 continue;
             }
             if let Some(e) = self.expr_or_null(v)? {
-                if can_trap(&e) {
-                    items.push(e);
+                // Only its traps are read: its skeleton, once (an equal
+                // skeleton already kept traps first, with the same message).
+                if let Some(s) = trap_skeleton(&e) {
+                    let seen = items
+                        .iter()
+                        .enumerate()
+                        .any(|(j, x)| Some(j) != at && *x == s);
+                    if !seen {
+                        items.push(s);
+                    }
                 }
             }
         }

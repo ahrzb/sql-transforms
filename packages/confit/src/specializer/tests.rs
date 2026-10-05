@@ -403,6 +403,23 @@ fn a_constant_case_result_is_not_a_sibling_trap() {
 }
 
 #[test]
+fn a_sibling_is_kept_for_its_traps_only() {
+    // Each sibling traps on the same condition with the same message: one
+    // skeleton is kept, and none of the siblings' values is computed.
+    let schema = cols(&[("k", Ty::I64, true), ("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let lane = |c: &str| format!("CASE WHEN k = 0 THEN {c} * 2 ELSE error('bad id') END");
+    let sql = format!(
+        "SELECT (struct_pack(p := {}, q := {}, r := {})).p AS o FROM __THIS__",
+        lane("x"),
+        lane("y"),
+        lane("y + 1")
+    );
+    let text = print(&prep(&sql, &schema).unwrap());
+    assert!(!text.contains(" in.y"), "{text}");
+    assert_eq!(text.matches("trap \"").count(), 2, "the answer's and one sibling's:\n{text}");
+}
+
+#[test]
 fn column_cache_loads_once_per_block() {
     let schema = cols(&[("a", Ty::I64, false)]);
     let p = prep("SELECT a + a AS d FROM __THIS__", &schema).unwrap();

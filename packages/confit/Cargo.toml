@@ -24,4 +24,5 @@ pyo3.workspace = true
 regex = "1"
 unicode-segmentation = "1"
 sqlparser = "0.62"
+stacker = "0.1"
 target-lexicon = "0.13.5"

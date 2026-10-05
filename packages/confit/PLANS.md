@@ -41,25 +41,23 @@ loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
 1. **Per-read expansion of a struct SQL function.** Each field read
-   `f(x).p` expands the whole body, so build cost grows with
-   reads x body size: 8 field reads over 100 instances build in about 0.4 s,
-   and a body with many lanes and instances can reach the 4M-token
-   expansion cap. Expanding one call once per distinct argument list (or
-   projecting the read field at expansion when no sibling can trap) would
-   make it linear. The catalog measures StandardScaler at 64 features
-   building in 1.4 s (one group) / 5.0 s (three), MinMaxScaler(clip) at 64 in
-   6.3 / 25 s, Normalizer(max) at 12 in 15 s.
-2. **A deep AND/OR chain crashes the process** (stack overflow, about 5000
-   terms). DuckDB builds these n-ary and serves 20000; bind, fold and lower
-   recurse per term. Flatten the chain into an n-ary node, or bind it
-   iteratively.
+   `f(x).p` still splices the whole body into the query text, so parse and
+   bind cost grow with reads x body size (128 lanes, one fitted group:
+   about 2 s, mostly the frontend). Expanding one call once per distinct
+   argument list would make it linear.
 
 Delivered: a constant CASE result (`CAST('0.0' AS DOUBLE)`) is no longer a
 sibling trap (`can_trap`), so a struct read evaluates the read lane only; a
 Cranelift size limit refuses by name (`unsupported:`) instead of raising an
 internal error; and an expression past DuckDB's depth limit (1000) refuses
 by name instead of overflowing the stack; and `greatest`/`least` build as one
-flat CASE (n² in the argument count, where the pairwise fold was 4^n).
+flat CASE (n² in the argument count, where the pairwise fold was 4^n);
+a sibling kept for its traps is reduced to its trap skeleton (CASE
+conditions, NULL for trap-free results) and equal skeletons are kept once,
+so n reads of n lanes that share `ELSE error(..)` compile n lanes plus one
+check (128 lanes: 13.6 s -> 2.1 s); an AND/OR chain past 64 terms binds as
+a balanced tree, and bind, fold and lower grow their stack on demand, so a
+20000-term chain serves (about 23 s to build: still superlinear).
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
 
