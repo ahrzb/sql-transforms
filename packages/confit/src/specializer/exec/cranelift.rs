@@ -1445,6 +1445,11 @@ pub fn compile_ext(
         b.finalize();
     }
 
+    check_size(
+        ctx.func.dfg.num_insts(),
+        ctx.func.dfg.num_blocks(),
+        ctx.func.dfg.num_values(),
+    )?;
     let fid = module
         .declare_function("row", Linkage::Export, &ctx.func.signature)
         .map_err(|e| CompileError::Codegen(format!("cranelift declare row: {e}")))?;
@@ -2863,8 +2868,37 @@ fn define_error(e: cranelift_module::ModuleError) -> CompileError {
         cranelift_module::ModuleError::Compilation(
             c @ (CodegenError::CodeTooLarge | CodegenError::ImplLimitExceeded),
         ) => CompileError::TooLarge(c.to_string()),
+        // The verifier's own Display is just "Verifier errors": name the
+        // first few, so a report says what broke.
+        cranelift_module::ModuleError::Compilation(CodegenError::Verifier(errs)) => {
+            let first: Vec<String> = errs.0.iter().take(3).map(|e| e.to_string()).collect();
+            CompileError::Codegen(format!(
+                "cranelift define: verifier errors ({} in all): {}",
+                errs.0.len(),
+                first.join("; ")
+            ))
+        }
         e => CompileError::Codegen(format!("cranelift define: {e}")),
     }
+}
+
+/// Cranelift packs an instruction, block or value index into 24 bits of a
+/// value's definition (`ir/dfg.rs`, `ValueDataPacked`: an instruction's
+/// result, a block's parameter, an alias's original), checked only by a
+/// debug assertion: past it, a release build silently corrupts the function.
+/// A 48-feature Normalizer (6.7M instructions, 25M values) failed
+/// verification with "uses value arg from non-dominating block". So a
+/// function at that size refuses by name before codegen.
+const CL_INDEX_LIMIT: usize = (1 << 24) - 2;
+
+fn check_size(insts: usize, blocks: usize, values: usize) -> Result<(), CompileError> {
+    if insts > CL_INDEX_LIMIT || blocks > CL_INDEX_LIMIT || values > CL_INDEX_LIMIT {
+        return Err(CompileError::TooLarge(format!(
+            "{insts} instructions, {blocks} blocks, {values} values; Cranelift \
+             indexes each in 24 bits"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2882,5 +2916,18 @@ mod define_error_tests {
             cranelift_codegen::CodegenError::Unsupported("x".into()),
         ));
         assert!(matches!(e, CompileError::Codegen(_)));
+    }
+
+    #[test]
+    fn a_function_past_the_index_width_is_a_named_refusal() {
+        assert!(check_size(1000, 10, 3000).is_ok());
+        let at = CL_INDEX_LIMIT;
+        assert!(check_size(at, at, at).is_ok());
+        let e = check_size(at + 1, 10, 10).unwrap_err();
+        assert!(matches!(e, CompileError::TooLarge(_)));
+        assert!(e.to_string().starts_with("unsupported: "), "{e}");
+        assert!(check_size(10, at + 1, 10).is_err());
+        // The 48-feature Normalizer: values past the width, the rest not.
+        assert!(check_size(6_728_981, 1_352_787, 25_070_499).is_err());
     }
 }
