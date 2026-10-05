@@ -42,6 +42,7 @@ from sklearn.preprocessing import (
     OneHotEncoder,
     OrdinalEncoder,
     PolynomialFeatures,
+    QuantileTransformer,
     RobustScaler,
     StandardScaler,
     TargetEncoder,
@@ -207,6 +208,17 @@ FIXTURES[KBinsDiscretizer] = [
     lambda: KBinsDiscretizer(
         n_bins=8, encode="onehot-dense", strategy="uniform", dtype=np.float64
     ),
+]
+
+# QuantileTransformer: the fits have 5 to 60 rows, so n_quantiles_ is the
+# row count past it; few distinct values (kind 4) make runs of equal
+# quantiles. quantile_test.py serves the default 1,000 quantiles.
+FIXTURES[QuantileTransformer] = [
+    QuantileTransformer,
+    lambda: QuantileTransformer(n_quantiles=2),
+    lambda: QuantileTransformer(n_quantiles=7),
+    lambda: QuantileTransformer(n_quantiles=40),
+    lambda: QuantileTransformer(n_quantiles=4, subsample=5, random_state=0),
 ]
 
 # A string feature's fitted values, and the unseen ones serving adds.
