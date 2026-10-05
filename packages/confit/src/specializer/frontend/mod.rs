@@ -36,7 +36,7 @@ use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimS
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
     ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Plan, SExpr, SKind, Stage,
-    StaticTable, StructCol, StructField, StructNode, bind_foldable, may_trap,
+    StaticTable, StructCol, StructField, StructNode, bind_foldable, can_trap, may_trap,
 };
 
 mod refusal;

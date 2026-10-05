@@ -1052,7 +1052,7 @@ impl Binder<'_> {
                 continue;
             }
             if let Some(e) = self.expr_or_null(v)? {
-                if may_trap(&e) {
+                if can_trap(&e) {
                     items.push(e);
                 }
             }

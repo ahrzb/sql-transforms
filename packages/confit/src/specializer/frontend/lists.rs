@@ -91,7 +91,7 @@ impl Binder<'_> {
             if Some(j) == pos {
                 pick = Some(items.len());
                 items.push(x);
-            } else if may_trap(&x) {
+            } else if can_trap(&x) {
                 items.push(x);
             }
         }

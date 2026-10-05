@@ -2455,6 +2455,9 @@ impl<'a> FB<'a> {
         default: Option<&SExpr>,
         live: &mut Live,
     ) -> Result<Lane, PrepareError> {
+        if let Some((table, prefix)) = dispatch_table(arms) {
+            return self.case_dispatch(e, arms, prefix, default, &table, live);
+        }
         let res_ty = e.ty.lane();
         let res_nullable = e.nullable;
 
@@ -2537,6 +2540,195 @@ impl<'a> FB<'a> {
                 val: tail[0],
             }
         })
+    }
+
+    /// A CASE whose first `prefix` conditions are `x = <integer constant>`
+    /// over one plain value `x` (a column, slot or static column), as a
+    /// binary search over the sorted constants instead of a test per arm:
+    /// what a native transform's per-instance selection compiles to. The
+    /// same arm is taken: those conditions are side-effect free and mutually
+    /// exclusive once a repeated constant keeps its FIRST arm, and when none
+    /// matches (a NULL `x` included) the remaining arms and the default run
+    /// as a CASE of their own, as they would arm by arm.
+    fn case_dispatch(
+        &mut self,
+        e: &SExpr,
+        arms: &[(SExpr, SExpr)],
+        prefix: usize,
+        default: Option<&SExpr>,
+        table: &[(i64, usize)],
+        live: &mut Live,
+    ) -> Result<Lane, PrepareError> {
+        let res_ty = e.ty.lane();
+        let res_nullable = e.nullable;
+        let base_tys = Self::live_types(live);
+        let live_width = base_tys.len();
+        let mut join_tys = base_tys;
+        if res_nullable {
+            join_tys.push(Ty::I1);
+        }
+        join_tys.push(res_ty);
+        let (join, join_params) = self.create_block(&join_tys);
+
+        let x = dispatch_scrutinee(&arms[0].0);
+        let lx = self.emit(x, live)?;
+        live.push((lx, x.ty));
+        let shape = Self::live_types(live);
+        let mut arm_blocks: Vec<Option<(usize, Vec<Value>)>> = vec![None; arms.len()];
+        for &(_, i) in table {
+            if arm_blocks[i].is_none() {
+                arm_blocks[i] = Some(self.create_block(&shape));
+            }
+        }
+        let (dflt, dflt_p) = self.create_block(&shape);
+
+        // A NULL x matches no arm.
+        if let Some(valid) = lx.flag {
+            let (root, root_p) = self.create_block(&shape);
+            let args = Self::live_args(live);
+            self.term(Term::Brif {
+                cond: valid,
+                then_to: BlockId(root as u32),
+                then_args: args.clone(),
+                else_to: BlockId(dflt as u32),
+                else_args: args,
+            });
+            self.switch(root);
+            self.enter_block(live, &root_p);
+        }
+        let to_arm: Vec<(i64, usize)> = table
+            .iter()
+            .map(|&(v, i)| (v, arm_blocks[i].as_ref().expect("made above").0))
+            .collect();
+        self.dispatch_search(&to_arm, dflt, &shape, live);
+
+        let finish = |fb: &mut FB<'a>, lane: Lane, live: &Live| -> Term {
+            let mut args = Self::live_args(live);
+            if res_nullable {
+                let flag = match lane.flag {
+                    Some(f) => f,
+                    None => fb.const_i1(true),
+                };
+                args.push(flag);
+            }
+            args.push(lane.val);
+            Term::Jump {
+                to: BlockId(join as u32),
+                args,
+            }
+        };
+        for (i, blk) in arm_blocks.iter().enumerate() {
+            let Some((b, params)) = blk else { continue };
+            self.switch(*b);
+            self.enter_block(live, params);
+            let held = live.pop().expect("x is live");
+            let rl = self.emit(&arms[i].1, live)?;
+            let jump = finish(self, rl, live);
+            self.term(jump);
+            live.push(held);
+        }
+        self.switch(dflt);
+        self.enter_block(live, &dflt_p);
+        live.pop().expect("x is live");
+        let dl = match default {
+            _ if prefix < arms.len() => self.case(e, &arms[prefix..], default, live)?,
+            Some(d) => self.emit(d, live)?,
+            None => {
+                let flag = self.const_i1(false);
+                let val = self.default_of(res_ty);
+                Lane {
+                    flag: Some(flag),
+                    val,
+                }
+            }
+        };
+        let jump = finish(self, dl, live);
+        self.term(jump);
+
+        self.switch(join);
+        self.enter_block(live, &join_params[..live_width]);
+        let tail = &join_params[live_width..];
+        Ok(if res_nullable {
+            Lane {
+                flag: Some(tail[0]),
+                val: tail[1],
+            }
+        } else {
+            Lane {
+                flag: None,
+                val: tail[0],
+            }
+        })
+    }
+
+    /// Branch to the arm block whose constant equals `x` (the top of
+    /// `live`), else to `dflt`: halve on `x < c` until a few constants are
+    /// left, then test those in turn. Terminates the current block.
+    fn dispatch_search(&mut self, table: &[(i64, usize)], dflt: usize, shape: &[Ty], live: &mut Live) {
+        if table.len() <= 4 {
+            for (j, &(v, arm)) in table.iter().enumerate() {
+                // Re-read per block: entering one rebinds the live values.
+                let xv = live.last().expect("x is live").0.val;
+                let c = self.const_lit(Lit::I64(v));
+                let eq = self.fresh();
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Eq,
+                    ty: Ty::I64,
+                    dst: eq,
+                    a: xv,
+                    b: c,
+                });
+                let args = Self::live_args(live);
+                if j + 1 == table.len() {
+                    self.term(Term::Brif {
+                        cond: eq,
+                        then_to: BlockId(arm as u32),
+                        then_args: args.clone(),
+                        else_to: BlockId(dflt as u32),
+                        else_args: args,
+                    });
+                    return;
+                }
+                let (next, next_p) = self.create_block(shape);
+                self.term(Term::Brif {
+                    cond: eq,
+                    then_to: BlockId(arm as u32),
+                    then_args: args.clone(),
+                    else_to: BlockId(next as u32),
+                    else_args: args,
+                });
+                self.switch(next);
+                self.enter_block(live, &next_p);
+            }
+            return;
+        }
+        let xv = live.last().expect("x is live").0.val;
+        let mid = table.len() / 2;
+        let c = self.const_lit(Lit::I64(table[mid].0));
+        let lt = self.fresh();
+        self.inst(Inst::Cmp {
+            pred: CmpPred::Lt,
+            ty: Ty::I64,
+            dst: lt,
+            a: xv,
+            b: c,
+        });
+        let (lo, lo_p) = self.create_block(shape);
+        let (hi, hi_p) = self.create_block(shape);
+        let args = Self::live_args(live);
+        self.term(Term::Brif {
+            cond: lt,
+            then_to: BlockId(lo as u32),
+            then_args: args.clone(),
+            else_to: BlockId(hi as u32),
+            else_args: args,
+        });
+        self.switch(lo);
+        self.enter_block(live, &lo_p);
+        self.dispatch_search(&table[..mid], dflt, shape, live);
+        self.switch(hi);
+        self.enter_block(live, &hi_p);
+        self.dispatch_search(&table[mid..], dflt, shape, live);
     }
 
     /// CAST/TRY_CAST lowering. NULL input never traps; CAST failure traps
@@ -2967,4 +3159,73 @@ impl<'a> FB<'a> {
             (Some(fa), Some(fb)) => Some(self.bin(BinOp::And, fa, fb)),
         }
     }
+}
+
+
+/// Arms below this many keep the test-per-arm lowering.
+const DISPATCH_MIN_ARMS: usize = 8;
+
+/// The value an equality condition tests and its constant, when the
+/// condition is `x = c` (either side) with `x` a plain integer value.
+fn dispatch_key(cond: &SExpr) -> Option<(&SExpr, i64)> {
+    let SKind::Cmp {
+        pred: CmpPred::Eq,
+        a,
+        b,
+    } = &cond.kind
+    else {
+        return None;
+    };
+    let (x, c) = match (&a.kind, &b.kind) {
+        (_, SKind::Lit(Lit::I64(c))) => (a.as_ref(), *c),
+        (SKind::Lit(Lit::I64(c)), _) => (b.as_ref(), *c),
+        _ => return None,
+    };
+    let plain = matches!(
+        x.kind,
+        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. }
+    );
+    (plain && x.ty.is_int()).then_some((x, c))
+}
+
+fn same_plain(a: &SExpr, b: &SExpr) -> bool {
+    a.ty == b.ty
+        && match (&a.kind, &b.kind) {
+            (SKind::Col(i), SKind::Col(j)) | (SKind::Slot(i), SKind::Slot(j)) => i == j,
+            (
+                SKind::StaticCol { join: j1, col: c1 },
+                SKind::StaticCol { join: j2, col: c2 },
+            ) => j1 == j2 && c1 == c2,
+            _ => false,
+        }
+}
+
+fn dispatch_scrutinee(cond: &SExpr) -> &SExpr {
+    dispatch_key(cond).expect("checked by dispatch_table").0
+}
+
+/// `(constant, arm)` sorted by constant, each constant keeping its first
+/// arm, over the longest run of leading conditions that test one plain
+/// value against an integer constant, and that run's length; `None` when
+/// the run is too short to pay.
+fn dispatch_table(arms: &[(SExpr, SExpr)]) -> Option<(Vec<(i64, usize)>, usize)> {
+    let (x0, _) = dispatch_key(&arms.first()?.0)?;
+    let mut table: Vec<(i64, usize)> = Vec::with_capacity(arms.len());
+    let mut seen = std::collections::HashSet::new();
+    let mut prefix = 0;
+    for (i, (cond, _)) in arms.iter().enumerate() {
+        let Some((x, c)) = dispatch_key(cond) else { break };
+        if !same_plain(x, x0) {
+            break;
+        }
+        if seen.insert(c) {
+            table.push((c, i));
+        }
+        prefix = i + 1;
+    }
+    if prefix < DISPATCH_MIN_ARMS {
+        return None;
+    }
+    table.sort_unstable();
+    Some((table, prefix))
 }

@@ -33,7 +33,7 @@ pub struct SqlMacro {
 const MAX_EXPANSIONS: usize = 2_000;
 /// Tokens after expansion: a chain of functions each using its parameter
 /// twice doubles per level, so the bound is checked before each splice.
-const MAX_TOKENS: usize = 200_000;
+const MAX_TOKENS: usize = 4_000_000;
 
 fn is_ws(t: &Token) -> bool {
     matches!(t, Token::Whitespace(_))
