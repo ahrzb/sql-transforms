@@ -1146,9 +1146,42 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
 
 type RowFn = extern "C" fn(*mut Cx) -> i64;
 
+/// A JIT module that frees its code and data memory when dropped:
+/// `JITModule` frees it only through `free_memory`, so a dropped one leaks
+/// its mappings (2 per program; a process past `vm.max_map_count` stalls).
+struct OwnedJit(std::mem::ManuallyDrop<JITModule>);
+
+impl OwnedJit {
+    fn new(m: JITModule) -> Self {
+        OwnedJit(std::mem::ManuallyDrop::new(m))
+    }
+}
+
+impl std::ops::Deref for OwnedJit {
+    type Target = JITModule;
+    fn deref(&self) -> &JITModule {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for OwnedJit {
+    fn deref_mut(&mut self) -> &mut JITModule {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedJit {
+    fn drop(&mut self) {
+        // SAFETY: the module is never used again, and no pointer into its
+        // memory outlives it: the only one, `CraneliftFn::row_fn`, is a
+        // field of the struct that owns this module.
+        unsafe { std::mem::ManuallyDrop::take(&mut self.0).free_memory() }
+    }
+}
+
 pub struct CraneliftFn {
-    /// Keeps the executable memory alive; also the fallback + checker.
-    _module: JITModule,
+    /// Keeps the executable memory alive (freed on drop).
+    _module: OwnedJit,
     row_fn: RowFn,
     interp: InterpFn,
     trap_msgs: Vec<String>,
@@ -1245,7 +1278,7 @@ pub fn compile_ext(
     for (name, ptr) in HELPERS {
         jb.symbol(*name, *ptr);
     }
-    let mut module = JITModule::new(jb);
+    let mut module = OwnedJit::new(JITModule::new(jb));
     let ptr_ty = module.target_config().pointer_type();
 
     // Declare helper signatures once.
