@@ -52,6 +52,17 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
+- **Shared subexpressions kept lazy inside untaken CASE arms** (a
+  regression from #363, the highest of these). Lowering evaluates every
+  shared subexpression before the first item, so in a step whose instance
+  arms are CASE trees that share subtrees, every row computes every shared
+  subtree. `QuantileTransformer`'s widest fixture (27 features, three
+  instances, small-integer features whose breakpoints repeat) serves 64
+  rows in 21,480 us after #363 against 1,153 before, where the twin takes
+  about 27,000 (release build, master 89e99fc against c3b42ea); with one
+  instance it is unchanged (862 against 967), with two 2x slower (2,444
+  against 1,194). Sent to the confit loop with the reproduction,
+  2026-10-05.
 - **A `greatest` that builds linearly.** One `greatest` over n DOUBLEs
   builds in 0.20 s at n = 32, 1.0 s at 64 and 6.1 s at 128, and past
   Cranelift's size limit at 256, where a sum of the same n builds in 3 to
