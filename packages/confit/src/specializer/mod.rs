@@ -229,16 +229,21 @@ pub fn prepare_full(
     )?;
     // A program Cranelift cannot number refuses here, before canonicalize,
     // the interpreter compile, the CLIF build and Cranelift itself, which
-    // took most of the time to the same refusal (exec/size.rs). Verified
-    // first, so a lowering bug still reads as one, not as a size (verify
-    // takes sparse ids; canonicalize, 1.6 s on the Normalizer at l2 x 32
-    // features, is only for programs that go on). The other two size
+    // took most of the time to the same refusal (exec/size.rs). Under debug
+    // assertions it is verified first, so a lowering bug still reads as one,
+    // not as a size (verify takes sparse ids; canonicalize, 1.6 s on the
+    // Normalizer at l2 x 32 features, is only for programs that go on). A
+    // release build skips that verify, the largest part of the refusal (2.1 s
+    // of l2 x 32): the tests and the nightly run debug-assertion builds,
+    // which keep the coverage. The other two size
     // refusals stay (`cranelift::check_size`, `define_error`): the floor
     // proves too large, it never proves fits.
     if cranelift && !exec::cranelift::interp_only(&program) {
         let floor = exec::size::vreg_floor(&program).total();
         if floor >= exec::size::VREG_LIMIT {
-            verified(&program)?;
+            if cfg!(debug_assertions) {
+                verified(&program)?;
+            }
             return Err(PrepareError::Unsupported(exec::interp::too_large(&format!(
                 "Code for function is too large: at least {floor} virtual registers, \
                  fewer than {} fit",
