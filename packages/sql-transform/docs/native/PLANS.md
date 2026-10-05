@@ -7,12 +7,11 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **`KBinsDiscretizer`** (`encode="ordinal"`, `"onehot-dense"`).
-2. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+1. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`.
-3. **Compositions:** a step whose instances are `Pipeline`s of catalog
+2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
@@ -83,6 +82,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `Normalizer(norm="max")` over more than 8 features, and any norm whose
   body confit does not build, until a subexpression is shared within a call
   (above).
+- `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
+  for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
+  twin rounds x to float32 before it bins it, which the entry does not
+  spell (a cast to FLOAT would have to round as numpy does, unproven).
+  Bin edges that are not sorted numbers (searchsorted's answer is then
+  its search order's), which no strategy fits on finite data.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
