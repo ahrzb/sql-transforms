@@ -3100,7 +3100,8 @@ fn calls(func: &cranelift_codegen::ir::Function) -> usize {
 
 /// A failed `define_function`: past one of Cranelift's size limits (more
 /// virtual registers than it can number) is this query's size, refused by
-/// name; anything else is an engine bug.
+/// name; anything else is an engine bug. The last of the three size
+/// refusals (`size.rs`): what the size floor and `check_size` cannot prove.
 fn define_error(e: cranelift_module::ModuleError) -> CompileError {
     use cranelift_codegen::CodegenError;
     match e {
@@ -3127,7 +3128,9 @@ fn define_error(e: cranelift_module::ModuleError) -> CompileError {
 /// debug assertion: past it, a release build silently corrupts the function.
 /// A 48-feature Normalizer (6.7M instructions, 25M values) failed
 /// verification with "uses value arg from non-dominating block". So a
-/// function at that size refuses by name before codegen.
+/// function at that size refuses by name before codegen. The size floor
+/// (`size.rs`) does not cover this: it bounds the values that survive
+/// Cranelift's optimizer, and this counts the function as built.
 const CL_INDEX_LIMIT: usize = (1 << 24) - 2;
 
 fn check_size(insts: usize, blocks: usize, values: usize) -> Result<(), CompileError> {

@@ -226,12 +226,18 @@ pub fn prepare_full(
         &plan, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
         &model_refs,
     )?;
-    // Before canonicalize, verify, the interpreter compile and the CLIF
-    // build, which on the native catalog's Normalizer (l2, 32 features;
-    // 2026-10-05) took 12 s, and Cranelift 9 s more to refuse it itself.
+    // A program Cranelift cannot number refuses here, before canonicalize,
+    // the interpreter compile, the CLIF build and Cranelift itself, which
+    // took most of the time to the same refusal (exec/size.rs). Verified
+    // first, so a lowering bug still reads as one, not as a size (verify
+    // takes sparse ids; canonicalize, 1.6 s on the Normalizer at l2 x 32
+    // features, is only for programs that go on). The other two size
+    // refusals stay (`cranelift::check_size`, `define_error`): the floor
+    // proves too large, it never proves fits.
     if cranelift && !exec::cranelift::interp_only(&program) {
         let floor = exec::size::vreg_floor(&program).total();
         if floor >= exec::size::VREG_LIMIT {
+            verified(&program)?;
             return Err(PrepareError::Unsupported(exec::interp::too_large(&format!(
                 "Code for function is too large: at least {floor} virtual registers, \
                  fewer than {} fit",
@@ -242,13 +248,7 @@ pub fn prepare_full(
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
     ir::canonicalize(&mut program);
-    if let Err(errs) = ir::verify::verify(&program) {
-        let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
-        return Err(PrepareError::Internal(format!(
-            "lowered program failed verification: {}",
-            msgs.join("; ")
-        )));
-    }
+    verified(&program)?;
     let specs = joins
         .iter()
         .map(|j| {
@@ -330,6 +330,17 @@ pub fn prepare_full(
             .map(|r| models[*r as usize].name.clone())
             .collect(),
         input_lanes,
+    })
+}
+
+/// A lowered program that fails verification is an engine bug.
+fn verified(program: &ir::Program) -> Result<(), PrepareError> {
+    ir::verify::verify(program).map_err(|errs| {
+        let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
+        PrepareError::Internal(format!(
+            "lowered program failed verification: {}",
+            msgs.join("; ")
+        ))
     })
 }
 

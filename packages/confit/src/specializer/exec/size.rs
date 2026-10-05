@@ -7,12 +7,25 @@
 //! result left after its optimizer (`cranelift-codegen` 0.126,
 //! `machinst/lower.rs`, "Assign a vreg to each block param, each inst
 //! result"), then more for temporaries as it lowers. It gets there late:
-//! past bind, lower, verify, the interpreter compile, the CLIF build, its
-//! own verifier and its egraph, 26 s on the native catalog's Normalizer
-//! (l2, 32 features; 2026-10-05). [`vreg_floor`] is a floor on that count
-//! read off the lowered IR in one pass, so a program that cannot fit
-//! refuses with the same message as soon as it is lowered (5 s there).
-
+//! past the interpreter compile, the CLIF build, its own verifier and its
+//! egraph. [`vreg_floor`] is a floor on that count read off the lowered IR
+//! in one pass, so a program that cannot fit refuses with the same message
+//! (`interp::too_large`) as soon as it is lowered and verified
+//! (`specializer::prepare_full`).
+//!
+//! It is one of three size refusals, each needed:
+//! - this floor, first and cheap, but only ever proving "too large": a
+//!   program under it may still not fit (Cranelift's own count runs 1.2x to
+//!   10x the floor, most of the excess in what lowering allocates);
+//! - `cranelift::check_size`, after the CLIF build: Cranelift packs an
+//!   instruction, block or value index into 24 bits and, in a release build,
+//!   corrupts the function silently past that. It counts the function as
+//!   built, before the optimizer drops and merges values, which a floor on
+//!   what survives the optimizer cannot bound;
+//! - `cranelift::define_error`: Cranelift's own refusal (its register count,
+//!   lowering temporaries included, and its other implementation limits),
+//!   for what neither check above can prove.
+//!
 use std::collections::HashMap;
 use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 

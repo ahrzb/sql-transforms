@@ -314,9 +314,9 @@ def test_a_call_past_the_code_generators_size_limit_refuses_before_compiling():
     # 520 lanes, each a cast that can trap, all read in one sum: every read
     # keeps its 519 siblings for their traps, so the program holds 270k
     # casts, and Cranelift cannot number its virtual registers (2**21). The
-    # size floor says so after lowering: 2.7 s on a release build, 2.2M
-    # registers at least (2026-10-05). Before it, Cranelift itself refused,
-    # after everything else had run: 43 s at 420 lanes, 68 s at 480.
+    # size floor says so once the program is lowered and verified: 6.3 s on a
+    # release build, 2.2M registers at least (2026-10-05). Before it,
+    # Cranelift itself refused, after everything else had run: 88.7 s.
     k = 520
 
     def body(x):
@@ -343,5 +343,5 @@ def test_a_call_past_the_code_generators_size_limit_refuses_before_compiling():
             static_tables={},
             udfs=[fn],
         )
-    # Generous: a debug build is several times slower than release.
+    # Generous: a debug build takes 23.4 s (2026-10-05).
     assert time.perf_counter() - start < 60
