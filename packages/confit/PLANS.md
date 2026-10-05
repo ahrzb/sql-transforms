@@ -57,8 +57,8 @@ is where new needs land. Follow-ups from the shared-subexpression work:
 - A CASE lowers to blocks even when every arm is a trap-free leaf, so the
   catalog's `coalesce(x, NaN)` per term splits three blocks, and its
   right-nested l2 sum carries its pending partial sums through each:
-  catalog l2 serves 64 rows in 4 ms at 64 features and 15 ms at 128 (l1,
-  whose sum is left to right, 2.9 ms at 128). Lowering such a CASE to
+  catalog l2 serves 64 rows in 3.3 ms at 64 features and 14 ms at 128 (l1,
+  whose sum is left to right, 2.7 ms at 128). Lowering such a CASE to
   `select` would make it linear.
 
 Delivered:
@@ -73,10 +73,10 @@ Delivered:
   read over a guarded body (`null_when`: `CASE .. THEN NULL ELSE
   struct_pack(..) END`) uses that cache too, and a field read reuses its
   call's expansion without substituting the body again. A Normalizer-shaped
-  call read lane by lane builds l2 at 128 lanes in about 4 s and serves 64
-  rows in 2 ms; on master 32 lanes took 15 s and 169 ms, and 64 failed.
+  call read lane by lane builds l2 at 128 lanes in 2.4 s and serves 64 rows
+  in 3.0 ms; on master 32 lanes took 15 s and 169 ms, and 64 failed.
   Through the catalog (`to_native`, bit-exact): l2 at 64 features builds in
-  1.9 s, l1 at 128 in 2.5 s.
+  2.0 s, l1 at 128 in 2.6 s.
 - A constant CASE result (`CAST('0.0' AS DOUBLE)`) is not a sibling trap
   (`can_trap`).
 - A sibling kept for its traps is reduced to its trap skeleton (CASE
