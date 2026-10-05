@@ -99,20 +99,17 @@ pub(super) fn bind_fold(e: SExpr) -> SExpr {
         return e;
     }
     let e = fold(e);
-    // Only a subtree that can be NULL can decide anything here, and the
-    // flag keeps nested constant math from re-running at every level.
+    // Only a subtree that can be NULL can decide anything here.
     if !e.nullable || matches!(e.kind, SKind::Lit(_) | SKind::NullOf) {
         return e;
     }
+    // A value leaves the node as it is, its nullability included: the
+    // lowering still gives a TRY_CAST under it a flag, and a non-nullable
+    // node over a flagged lane breaks the output store (campaign seed
+    // 5001244).
     match eval_closed(&e, Vec::new()) {
         Some(None) => null_of(e.ty),
-        // Evaluated to a value: provably never NULL, so an enclosing
-        // bind_fold need not evaluate it again.
-        Some(Some(_)) => SExpr {
-            nullable: false,
-            ..e
-        },
-        None => e,
+        _ => e,
     }
 }
 

@@ -68,8 +68,9 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   lane).
 - **i128 lane.** HUGEINT/UHUGEINT and the unsigned family (columns, statics,
   CAST targets) refuse. Needs i128 arithmetic and traps on both backends and
-  exact `sum`/`product` at decimal128(38,0). The literal 9223372036854775808
-  alone is 34 of the 526.
+  exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
+  (it is BIGINT on DuckDB); the bare 9223372036854775808, and the minimum
+  negated twice, are HUGEINT and refuse.
 - **float32** (needs f32 arithmetic, not widening), **temporal types**
   (columns, casts, literals, functions; opaque temporal join keys could use a
   key-only lane), **BLOB**.
