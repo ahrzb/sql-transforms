@@ -18,5 +18,13 @@ refused, each with an executable twin asserting the refusal.
 from __future__ import annotations
 
 from confit._engine import BUILD_PROFILE, DuckDBInferFn
+from confit.functions import Ensemble, ExternFunction, Function, FunctionError
 
-__all__ = ["BUILD_PROFILE", "DuckDBInferFn"]
+__all__ = [
+    "BUILD_PROFILE",
+    "DuckDBInferFn",
+    "Ensemble",
+    "ExternFunction",
+    "Function",
+    "FunctionError",
+]

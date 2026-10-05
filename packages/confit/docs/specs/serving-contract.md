@@ -141,7 +141,10 @@ an implicit leading nullable-BIGINT instance argument, outside `takes`.
 Struct returns have named lanes; fixed-size-list returns have unnamed lanes.
 A width-one list must instead declare its scalar element type. A UDF exposing
 `tree_tables()` supplies `(nodes, models, compare_grid)` for native scoring
-without a Python call on the row path. The protocol is specified by
+without a Python call on the row path. `confit.functions` spells the
+protocol as classes: `ExternFunction` (a callable) and `Ensemble` (packed tree
+tables plus their reference walk), each with a `register` that is its oracle
+definition (`tests/test_functions.py`). The protocol is specified by
 `packages/confit/confit/_engine.pyi` and exercised by `test_udfs.py` and
 `test_tree_predict.py`.
 
