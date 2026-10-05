@@ -5,13 +5,13 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**1 of 68** in-scope transformers are native (84 listed by sklearn).
+**6 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
 | `AdditiveChi2Sampler` | not yet |  |
 | `BernoulliRBM` | not yet |  |
-| `Binarizer` | not yet |  |
+| `Binarizer` | native | bit-exact |
 | `Birch` | not yet |  |
 | `BisectingKMeans` | not yet |  |
 | `CCA` | not yet |  |
@@ -41,8 +41,8 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `LatentDirichletAllocation` | not yet |  |
 | `LinearDiscriminantAnalysis` | not yet |  |
 | `LocallyLinearEmbedding` | not yet |  |
-| `MaxAbsScaler` | not yet |  |
-| `MinMaxScaler` | not yet |  |
+| `MaxAbsScaler` | native | bit-exact |
+| `MinMaxScaler` | native | bit-exact |
 | `MiniBatchDictionaryLearning` | not yet |  |
 | `MiniBatchKMeans` | not yet |  |
 | `MiniBatchNMF` | not yet |  |
@@ -51,7 +51,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `MultiLabelBinarizer` | out of scope | encodes a target, not features |
 | `NMF` | not yet |  |
 | `NeighborhoodComponentsAnalysis` | not yet |  |
-| `Normalizer` | not yet |  |
+| `Normalizer` | native | bit-exact |
 | `Nystroem` | not yet |  |
 | `OneHotEncoder` | not yet |  |
 | `OrdinalEncoder` | not yet |  |
@@ -69,7 +69,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `RFECV` | not yet |  |
 | `RadiusNeighborsTransformer` | not yet |  |
 | `RandomTreesEmbedding` | not yet |  |
-| `RobustScaler` | not yet |  |
+| `RobustScaler` | native | bit-exact |
 | `SelectFdr` | not yet |  |
 | `SelectFpr` | not yet |  |
 | `SelectFromModel` | not yet |  |

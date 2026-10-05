@@ -13,10 +13,10 @@ from typing import Any
 
 import pyarrow as pa
 from confit import DuckDBInferFn, compare
-from confit import sql as S
 from confit.oracle import Oracle
 
 from sql_transform._udf import PythonTransform
+from sql_transform.native._registry import bound, query
 
 
 class ParityError(AssertionError):
@@ -47,21 +47,6 @@ def _same(a: Any, b: Any, ulps: int) -> bool:
     return a == b
 
 
-def query(step: Any, id_col: str = "__iid") -> str:
-    """The query both entries serve: every output lane of one call."""
-    args = ", ".join([S.col(id_col).sql(), *(S.col(n).sql() for n in step.takes.names)])
-    call = f"{step.name}({args})"
-    r = step.returns
-    if pa.types.is_struct(r):
-        items = [
-            f"{call}.{S.col(r.field(i).name).sql()} AS {S.col(r.field(i).name).sql()}"
-            for i in range(r.num_fields)
-        ]
-    else:
-        items = [f"{call} AS o"]
-    return f"SELECT {', '.join(items)} FROM __THIS__"  # noqa: S608
-
-
 def _serve(sql: str, rows: pa.Table, fn: Any) -> list[dict] | Exception:
     try:
         f = DuckDBInferFn(
@@ -89,8 +74,6 @@ def check(
     validates), the native answer is not compared: docs/native/goal.md,
     "Where the twin raises". Returns the number of rows compared."""
     if ulps is None:
-        from sql_transform.native._registry import bound
-
         ulps = bound(step)
     sql = query(step, id_col)
 
