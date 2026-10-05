@@ -240,6 +240,10 @@ branch with an ordinary commit; never force-push a worker's branch.
   seeds too.
 - **The native catalog loop.** Reproduce each request it sends, then fix it
   inline or ticket it. Tell that session when a fix lands.
+- **Reports.** Write one when a trigger in
+  [`docs/loop-reporting.md`](../../../../docs/loop-reporting.md) fires, in
+  `docs/reports/`, opening with that page's KPI block and ending with what
+  needs the owner. Title the PR `report: ...`. Never one per PR.
 - **Owner questions.** OPT_EMULATED classes, exclusions and open decisions go
   to the owner with evidence, never into code.
 - **Hygiene.**
