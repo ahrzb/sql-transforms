@@ -649,6 +649,7 @@ impl Binder<'_> {
             1 => Ok(hits.pop().expect("len checked")),
             0 if name.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
             0 => {
+                self.alias_reads.set(self.alias_reads.get() + 1);
                 // Lateral aliases: an already-bound alias resolves to its
                 // expression; a known-but-later alias is the pinned
                 // forward-reference error. A name defined MORE THAN ONCE

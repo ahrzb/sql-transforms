@@ -41,7 +41,8 @@ use super::plan::{self, ArithOp, JoinKind, JoinSpec, KeyCmp, Plan, SExpr, SKind,
 /// The exempt list is an allowlist, and each entry earns it: `Col` and
 /// `StaticCol` are range-checked on the way IN (the ingest boundary mirrors
 /// `narrow_check`); a `Slot` was checked where its stage produced it; a `Lit` outside its type's range refuses at build;
-/// `NullOf` is a typed default; `JoinHit` is i1; and `Case` only forwards a
+/// `NullOf` is a typed default; `JoinHit` is i1; a `Shared` value was checked
+/// where it was computed; and `Case` only forwards a
 /// value one of its arms already produced and checked. Everything else —
 /// arithmetic, casts, abs, extern returns, anything added later — is checked.
 fn narrow_result_can_escape(k: &SKind) -> bool {
@@ -53,6 +54,7 @@ fn narrow_result_can_escape(k: &SKind) -> bool {
             | SKind::Lit(_)
             | SKind::NullOf
             | SKind::JoinHit(_)
+            | SKind::Shared(_)
             | SKind::Case { .. }
     )
 }
@@ -215,20 +217,41 @@ pub fn lower(
         let n_slots = live.len();
         fb.n_slots = n_slots;
         fb.lower_stage_head(stage, &mut live)?;
+        // The projection's shared values go on the live stack above the
+        // slots, each dropped after the last step that reads it.
+        let exprs: Vec<SExpr> = stage.project.iter().map(|(_, e)| e.clone()).collect();
+        let (items, last_use) = match super::share::share(&exprs) {
+            Some(sh) => {
+                fb.shared_at = vec![None; sh.defs.len()];
+                for (k, d) in sh.defs.iter().enumerate() {
+                    let lane = fb.emit(d, &mut live)?;
+                    live.push((lane, d.ty));
+                    fb.shared_at[k] = Some(live.len() - 1);
+                    fb.drop_dead_shared(&sh.last_use, k, &mut live);
+                }
+                (sh.items, sh.last_use)
+            }
+            None => {
+                fb.shared_at.clear();
+                (exprs, Vec::new())
+            }
+        };
+        let n_defs = last_use.len();
         if si + 1 < plan.stages.len() {
             // Every column, read or not, in SELECT order: its traps fire
             // for every row reaching the stage, exactly as DuckDB evaluates
             // a subquery. Each lane joins the live stack as soon as it
             // exists, so a later column's block splits carry it.
-            for (_, e) in &stage.project {
+            for (ci, e) in items.iter().enumerate() {
                 let lane = fb.emit(e, &mut live)?;
                 live.push((lane, e.ty));
+                fb.drop_dead_shared(&last_use, n_defs + ci, &mut live);
             }
             // The next stage sees only these: the inner scope is closed.
             live.drain(..n_slots);
             continue;
         }
-        for (ci, (_, e)) in stage.project.iter().enumerate() {
+        for (ci, e) in items.iter().enumerate() {
             // Not a `debug_assert`: this runs once per output column at
             // prepare, never per row, and it is the ONLY thing that catches
             // an arm which pushes lanes and forgets to truncate. A leak
@@ -236,7 +259,11 @@ pub fn lower(
             // well-formed IR, so `verify` says nothing, and a release-only
             // test run sees nothing either (measured: the whole suite passes
             // green with a `live.truncate` deleted from an arm).
-            assert!(live.len() == n_slots, "live stack leaked before column {ci}");
+            let n_shared = fb.shared_at.iter().flatten().count();
+            assert!(
+                live.len() == n_slots + n_shared,
+                "live stack leaked before column {ci}"
+            );
             let lane = fb.emit(e, &mut live)?;
             let col = ci as u32;
             if out_cols[ci].ty.nullable {
@@ -256,6 +283,7 @@ pub fn lower(
                 debug_assert!(lane.flag.is_none(), "non-nullable column with a flag lane");
                 fb.inst(Inst::Store { col, val: lane.val });
             }
+            fb.drop_dead_shared(&last_use, n_defs + ci, &mut live);
         }
     }
     fb.term(Term::Emit);
@@ -349,6 +377,9 @@ struct FB<'a> {
     /// How many slots the stage being lowered can read: the previous
     /// stage's projection width, sitting at `live[..n_slots]`.
     n_slots: usize,
+    /// Where each of the stage's shared values (`share.rs`) sits on the
+    /// live stack, `None` once it is dead.
+    shared_at: Vec<Option<usize>>,
 }
 
 /// Where an active many-join's probe lanes ride: `nd` live entries starting
@@ -392,6 +423,7 @@ impl<'a> FB<'a> {
             many: None,
             probe_seeds: Vec::new(),
             n_slots: 0,
+            shared_at: Vec::new(),
         }
     }
 
@@ -702,6 +734,27 @@ impl<'a> FB<'a> {
         args
     }
 
+    /// Drop every shared value whose last read is evaluation step `step`
+    /// (see [`super::share::Shared::last_use`]) off the live stack, so it
+    /// stops riding later block transitions. Called between top-level
+    /// steps, when nothing above the stage's own entries is pending.
+    fn drop_dead_shared(&mut self, last_use: &[usize], step: usize, live: &mut Live) {
+        for (k, &last) in last_use.iter().enumerate() {
+            if last != step {
+                continue;
+            }
+            let Some(at) = self.shared_at[k].take() else {
+                continue;
+            };
+            live.remove(at);
+            for p in self.shared_at.iter_mut().flatten() {
+                if *p > at {
+                    *p -= 1;
+                }
+            }
+        }
+    }
+
     /// Rebind the live stack to the params of the block just switched to.
     /// The shape (lane count + flag pattern) is invariant across transitions.
     fn rebind_live(live: &mut Live, params: &[Value]) {
@@ -847,6 +900,14 @@ impl<'a> FB<'a> {
             // rebound at every block transition, so this is whatever
             // register holds it in the current block. Nothing is evaluated.
             SKind::Slot(i) if (*i as usize) < self.n_slots => Ok(live[*i as usize].0),
+            // A shared value: computed before the projection's first item,
+            // riding the live stack like a slot.
+            SKind::Shared(k) => match self.shared_at.get(*k as usize).copied().flatten() {
+                Some(at) => Ok(live[at].0),
+                None => Err(PrepareError::Internal(format!(
+                    "shared value {k} read where it is not live"
+                ))),
+            },
             SKind::Slot(i) => Err(PrepareError::Internal(format!(
                 "slot {i} read outside the previous stage's {} columns",
                 self.n_slots

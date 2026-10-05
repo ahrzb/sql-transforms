@@ -40,11 +40,43 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-Nothing open; the catalog's PLANS "Needs from confit" is where new needs
-land.
+Nothing the catalog has asked for is open; its PLANS "Needs from confit"
+is where new needs land. Follow-ups from the shared-subexpression work:
+
+- A function past Cranelift's limits can panic instead of refusing by name
+  (master: `index out of bounds` building 64 l2 Normalizer lanes; now: `Value
+  alias loop detected` building `greatest` over 128 arguments, n lanes deep).
+  Both should be the named size refusal.
+- `greatest`/`least` over n shared arguments keeps all n live across its n²
+  blocks (64 arguments: 24 s to build); a tournament (the catalog's
+  `row_max`) is linear to lower, but its text is cubic in the row and passes
+  the 4M-token macro cap at 64 lanes.
+- Sharing covers a stage's projection only: not WHERE, join keys, or the
+  `shape="many"` loop; and only trap-free subexpressions (a repeated `sqrt`
+  is evaluated where it stands, its trap-free operand once).
+- A CASE lowers to blocks even when every arm is a trap-free leaf, so the
+  catalog's `coalesce(x, NaN)` per term splits three blocks, and its
+  right-nested l2 sum carries its pending partial sums through each:
+  catalog l2 serves 64 rows in 4 ms at 64 features and 15 ms at 128 (l1,
+  whose sum is left to right, 2.9 ms at 128). Lowering such a CASE to
+  `select` would make it linear.
 
 Delivered:
 
+- A subexpression repeated across a stage's projection that cannot trap
+  (`can_trap`, now with DOUBLE `abs` on its allowlist) and has at least six
+  nodes is computed once per row, before the first item, and read where it
+  occurred (`specializer/share.rs`); its value leaves the live stack after
+  its last read. A sibling's trap skeleton looks through operations that
+  cannot trap themselves (`x_j / CASE .. END` keeps the CASE every lane
+  shares), the sibling cache no longer misses once per projection item, a
+  read over a guarded body (`null_when`: `CASE .. THEN NULL ELSE
+  struct_pack(..) END`) uses that cache too, and a field read reuses its
+  call's expansion without substituting the body again. A Normalizer-shaped
+  call read lane by lane builds l2 at 128 lanes in about 4 s and serves 64
+  rows in 2 ms; on master 32 lanes took 15 s and 169 ms, and 64 failed.
+  Through the catalog (`to_native`, bit-exact): l2 at 64 features builds in
+  1.9 s, l1 at 128 in 2.5 s.
 - A constant CASE result (`CAST('0.0' AS DOUBLE)`) is not a sibling trap
   (`can_trap`).
 - A sibling kept for its traps is reduced to its trap skeleton (CASE

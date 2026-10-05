@@ -435,6 +435,80 @@ fn a_cast_that_cannot_fail_is_not_a_sibling_trap() {
     assert!(read("TINYINT").contains(" in.k"), "{}", read("TINYINT"));
 }
 
+/// How many `op` instructions the printed program holds.
+fn count_op(p: &super::ir::Program, op: &str) -> usize {
+    print(p).matches(&format!(" {op} ")).count()
+}
+
+#[test]
+fn a_repeated_pure_subexpression_is_computed_once() {
+    // The row's sum of squares repeats in all three columns (twice in the
+    // last, under a CASE): its two products are computed once per row.
+    let schema = cols(&[("a", Ty::F64, true), ("b", Ty::F64, true)]);
+    let n = "(a * a + b * b)";
+    let sql = format!(
+        "SELECT a / {n} AS p, b / {n} AS q, \
+         CASE WHEN {n} < 1e-10 THEN 1.0 ELSE {n} END AS r FROM __THIS__"
+    );
+    let p = prep(&sql, &schema).unwrap();
+    assert_eq!(count_op(&p, "fmul"), 2, "{}", print(&p));
+    let got = run_sql(
+        &sql,
+        &schema,
+        batch(
+            2,
+            vec![c_f64(&[Some(3.0), None]), c_f64(&[Some(4.0), Some(1.0)])],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["0.12", "0.16", "25.0"], &["NULL", "NULL", "NULL"]]));
+}
+
+#[test]
+fn a_small_subexpression_is_evaluated_again() {
+    // Five nodes: cheaper to compute at each read than to carry.
+    let schema = cols(&[("a", Ty::F64, true), ("b", Ty::F64, true)]);
+    let sql = "SELECT (a * b + 1) / 2 AS p, (a * b + 1) / 3 AS q FROM __THIS__";
+    let p = prep(sql, &schema).unwrap();
+    assert_eq!(count_op(&p, "fmul"), 2, "{}", print(&p));
+}
+
+#[test]
+fn a_subexpression_that_can_trap_is_not_shared() {
+    // sqrt traps on a negative operand: each occurrence stays where the
+    // query put it. Its operand cannot trap, and is shared.
+    let schema = cols(&[("a", Ty::F64, true), ("b", Ty::F64, true)]);
+    let sql = "SELECT sqrt(a * b + a * a) + 1 AS p, sqrt(a * b + a * a) + 2 AS q FROM __THIS__";
+    let p = prep(sql, &schema).unwrap();
+    assert_eq!(count_op(&p, "fsqrt"), 2, "{}", print(&p));
+    assert_eq!(count_op(&p, "fmul"), 2, "{}", print(&p));
+}
+
+#[test]
+fn a_shared_value_beside_a_trap_keeps_the_trap() {
+    // Column q can overflow between two reads of a shared sum; the sum
+    // moving ahead of it changes nothing that is observed.
+    let schema = cols(&[("a", Ty::F64, false), ("k", Ty::I64, false)]);
+    let sql = "SELECT a * a + a * 2.0 AS p, k * 4611686018427387904 AS q, \
+               (a * a + a * 2.0) * 2 AS r FROM __THIS__";
+    let p = prep(sql, &schema).unwrap();
+    assert_eq!(count_op(&p, "fmul"), 3, "the sum once, *2 once:\n{}", print(&p));
+    let ok = run_sql(
+        sql,
+        &schema,
+        batch(1, vec![c_f64(&[Some(2.0)]), c_i64(&[Some(1)])]),
+    )
+    .unwrap();
+    assert_eq!(ok, rows(&[&["8.0", "4611686018427387904", "16.0"]]));
+    let trap = run_sql(
+        sql,
+        &schema,
+        batch(1, vec![c_f64(&[Some(2.0)]), c_i64(&[Some(2)])]),
+    )
+    .unwrap_err();
+    assert!(trap.contains("Overflow"), "{trap}");
+}
+
 #[test]
 fn column_cache_loads_once_per_block() {
     let schema = cols(&[("a", Ty::I64, false)]);

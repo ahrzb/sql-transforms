@@ -144,6 +144,8 @@ pub struct Expanded {
 struct State<'m> {
     macros: &'m [SqlMacro],
     bodies: Vec<Vec<Token>>,
+    /// Per macro, its ASCII-lowercased parameter names to positions.
+    params: Vec<std::collections::HashMap<String, usize>>,
     rounds: usize,
     tokens: usize,
     calls: Vec<Call>,
@@ -181,9 +183,22 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Expanded, Prepa
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let params = macros
+        .iter()
+        .map(|m| {
+            let mut map = std::collections::HashMap::new();
+            for (i, p) in m.params.iter().enumerate() {
+                // The first of two names equal but for case wins, as the
+                // linear search did.
+                map.entry(p.to_ascii_lowercase()).or_insert(i);
+            }
+            map
+        })
+        .collect();
     let mut st = State {
         macros,
         bodies,
+        params,
         rounds: 0,
         tokens: tokens.len(),
         calls: Vec::new(),
@@ -210,6 +225,44 @@ fn read_by_field(toks: &[Token], end: usize) -> bool {
         return false;
     };
     matches!(next_solid(toks, dot), Some((_, Token::Word(_))))
+}
+
+/// `(body)` with every parameter reference spelled `(argument)`. `params`
+/// maps an ASCII-lowercased parameter name to its position.
+fn substitute(
+    body: &[Token],
+    params: &std::collections::HashMap<String, usize>,
+    args: &[Vec<Token>],
+) -> Vec<Token> {
+    let mut rep = Vec::with_capacity(body.len() + 2);
+    rep.push(Token::LParen);
+    for (j, t) in body.iter().enumerate() {
+        let param = match t {
+            // A quoted name, or a bare one that is not a keyword: a
+            // bare `end` is CASE's, never a parameter.
+            Token::Word(w)
+                if (w.quote_style == Some('"')
+                    || (w.quote_style.is_none() && w.keyword == Keyword::NoKeyword))
+                    && is_reference(body, j) =>
+            {
+                params
+                    .get(&w.value.to_ascii_lowercase())
+                    .copied()
+                    .filter(|_| !matches!(next_solid(body, j), Some((_, Token::LParen))))
+            }
+            _ => None,
+        };
+        match param {
+            Some(p) => {
+                rep.push(Token::LParen);
+                rep.extend(args[p].iter().cloned());
+                rep.push(Token::RParen);
+            }
+            None => rep.push(t.clone()),
+        }
+    }
+    rep.push(Token::RParen);
+    rep
 }
 
 fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, PrepareError> {
@@ -245,38 +298,9 @@ fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, Prepa
             a[lo..hi].to_vec()
         };
         let args: Vec<Vec<Token>> = args.iter().map(|a| trim(a)).collect();
-        let body = &st.bodies[m];
-        let mut rep = Vec::with_capacity(body.len() + 2);
-        rep.push(Token::LParen);
-        for (j, t) in body.iter().enumerate() {
-            let param = match t {
-                // A quoted name, or a bare one that is not a keyword: a
-                // bare `end` is CASE's, never a parameter.
-                Token::Word(w)
-                    if (w.quote_style == Some('"')
-                        || (w.quote_style.is_none() && w.keyword == Keyword::NoKeyword))
-                        && is_reference(body, j) =>
-                {
-                    mac
-                    .params
-                    .iter()
-                    .position(|p| p.eq_ignore_ascii_case(&w.value))
-                        .filter(|_| !matches!(next_solid(body, j), Some((_, Token::LParen))))
-                }
-                _ => None,
-            };
-            match param {
-                Some(p) => {
-                    rep.push(Token::LParen);
-                    rep.extend(args[p].iter().cloned());
-                    rep.push(Token::RParen);
-                }
-                None => rep.push(t.clone()),
-            }
-        }
-        rep.push(Token::RParen);
         if read_by_field(&toks, end) {
-            // One expansion per distinct call, keyed by its spelling.
+            // One expansion per distinct call, keyed by its spelling: a
+            // call read again reuses it without substituting the body.
             let key: String = args
                 .iter()
                 .map(|a| a.iter().map(|t| t.to_string()).collect::<String>())
@@ -285,6 +309,7 @@ fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, Prepa
             let id = match st.keys.iter().position(|k| *k == (m, key.clone())) {
                 Some(id) => id,
                 None => {
+                    let rep = substitute(&st.bodies[m], &st.params[m], &args);
                     st.tokens += rep.len();
                     st.keys.push((m, key));
                     st.calls.push(Call {
@@ -308,6 +333,7 @@ fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, Prepa
             marker.push(Token::RParen);
             toks.splice(at..end, marker);
         } else {
+            let rep = substitute(&st.bodies[m], &st.params[m], &args);
             st.tokens = st.tokens - (end - at) + rep.len();
             toks.splice(at..end, rep);
         }

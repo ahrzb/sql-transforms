@@ -736,6 +736,10 @@ pub enum SKind {
         ret: u32,
         whole: bool,
     },
+    /// A subexpression of the stage's projection evaluated once per row,
+    /// before the first item, and read here (`share.rs`). Exists only
+    /// between that pass and lowering; its value cannot trap.
+    Shared(u32),
 }
 
 impl SExpr {
@@ -751,7 +755,8 @@ impl SExpr {
             | SKind::Lit(_)
             | SKind::NullOf
             | SKind::Raise(_)
-            | SKind::JoinHit(_) => Vec::new(),
+            | SKind::JoinHit(_)
+            | SKind::Shared(_) => Vec::new(),
             SKind::Seq { items, .. } => items.iter_mut().collect(),
             SKind::Arith { a, b, .. }
             | SKind::Cmp { a, b, .. }
@@ -839,6 +844,7 @@ pub fn may_trap(e: &SExpr) -> bool {
         | SKind::Slot(_)
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
+        | SKind::Shared(_)
         | SKind::Lit(_)
         | SKind::NullOf => false,
         SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
@@ -878,6 +884,7 @@ pub fn can_trap(e: &SExpr) -> bool {
         | SKind::Slot(_)
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
+        | SKind::Shared(_)
         | SKind::Lit(_)
         | SKind::NullOf => false,
         SKind::Arith { a, b, .. } if e.ty.lane() == Ty::F64 => can_trap(a) || can_trap(b),
@@ -885,6 +892,9 @@ pub fn can_trap(e: &SExpr) -> bool {
             can_trap(a) || can_trap(b)
         }
         SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => can_trap(a),
+        // Only the integer abs traps (on its minimum); DuckDB's DOUBLE abs
+        // is fabs (measured: `abs(-1e308)`, `abs(-inf)`, `abs(NaN)` answer).
+        SKind::Abs(a) if e.ty.lane() == Ty::F64 => can_trap(a),
         // A cast that cannot fail: TRY_CAST (a failure is NULL), and the
         // conversions that are total -- an integer or a DOUBLE to DOUBLE,
         // anything numeric or BOOLEAN to VARCHAR, an integer to a width
@@ -932,11 +942,16 @@ fn cast_is_total(from: Ty, to: Ty) -> bool {
 /// values (a fitted lane per field, every one with the same
 /// `ELSE error(..)`) come out equal, and a read keeps one of them.
 pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
-    if !can_trap(e) {
-        return None;
-    }
     match &e.kind {
         SKind::Case { arms, default } => {
+            let results: Vec<Option<SExpr>> = arms.iter().map(|(_, r)| trap_skeleton(r)).collect();
+            let default = default.as_deref().and_then(trap_skeleton);
+            if default.is_none()
+                && results.iter().all(Option::is_none)
+                && !arms.iter().any(|(c, _)| can_trap(c))
+            {
+                return None;
+            }
             let null = || SExpr {
                 kind: SKind::NullOf,
                 ty: e.ty,
@@ -946,18 +961,55 @@ pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
                 kind: SKind::Case {
                     arms: arms
                         .iter()
-                        .map(|(c, r)| (c.clone(), trap_skeleton(r).unwrap_or_else(null)))
+                        .zip(results)
+                        .map(|((c, _), r)| (c.clone(), r.unwrap_or_else(null)))
                         .collect(),
-                    default: default
-                        .as_deref()
-                        .and_then(trap_skeleton)
-                        .map(Box::new),
+                    default: default.map(Box::new),
                 },
                 ty: e.ty,
                 nullable: true,
             })
         }
-        _ => Some(e.clone()),
+        // An operation that cannot trap itself traps where its operands do,
+        // in operand order: keep only theirs. Lane j of a Normalizer,
+        // `x_j / CASE WHEN norm < tiny THEN 1.0 ELSE norm END`, keeps the
+        // CASE every lane shares, not the lane.
+        _ if traps_only_in_operands(e) => {
+            let mut c = e.clone();
+            let mut parts: Vec<SExpr> = c
+                .children_mut()
+                .into_iter()
+                .filter_map(|x| trap_skeleton(x))
+                .collect();
+            match parts.len() {
+                0 => None,
+                1 => parts.pop(),
+                n => {
+                    let (ty, nullable) = (parts[n - 1].ty, parts[n - 1].nullable);
+                    Some(SExpr {
+                        kind: SKind::Seq {
+                            items: parts,
+                            pick: n - 1,
+                        },
+                        ty,
+                        nullable,
+                    })
+                }
+            }
+        }
+        _ => can_trap(e).then(|| e.clone()),
+    }
+}
+
+/// Whether `e`'s own operation is total, so it traps only where an operand
+/// does: the kinds [`can_trap`] looks through, short of CASE (whose arms
+/// are conditional) and AND/OR.
+fn traps_only_in_operands(e: &SExpr) -> bool {
+    match &e.kind {
+        SKind::Arith { .. } | SKind::Abs(_) => e.ty.lane() == Ty::F64,
+        SKind::Cmp { .. } | SKind::Not(_) | SKind::IsNull { .. } | SKind::IntToFloat(_) => true,
+        SKind::Cast { inner, trying } => *trying || cast_is_total(inner.ty, e.ty),
+        _ => false,
     }
 }
 
@@ -979,69 +1031,80 @@ pub fn zero_divisor_nulls(op: ArithOp, ty: Ty) -> bool {
 }
 
 pub fn bind_foldable(e: &SExpr) -> bool {
-    match &e.kind {
-        // A slot never folds: constants do not fold across a query level
-        // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
-        // all on zero rows).
-        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
-        // `error()` is never folded at bind: it raises when a row reaches it.
-        SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
-        SKind::Seq { items, .. } => items.iter().all(bind_foldable),
-        SKind::Lit(_) | SKind::NullOf => true,
-        SKind::Arith { a, b, .. }
-        | SKind::Cmp { a, b, .. }
-        | SKind::And { a, b }
-        | SKind::Or { a, b }
-        | SKind::Concat { a, b }
-        | SKind::Str2 { a, b, .. }
-        | SKind::MathF2 { a, b, .. }
-        | SKind::Str2i { a, n: b, .. }
-        | SKind::Round2 { a, n: b, .. }
-        | SKind::DecArith { a, b, .. }
-        | SKind::Trim { a, chars: b, .. } => bind_foldable(a) && bind_foldable(b),
-        SKind::Not(a)
-        | SKind::IsNull { inner: a, .. }
-        | SKind::IntToFloat(a)
-        | SKind::DecToFloat(a)
-        | SKind::IntToDec { a, .. }
-        | SKind::DecCast(a)
-        | SKind::DecTryCast(a)
-        | SKind::DecUnary { a, .. }
-        | SKind::IntToFloat32(a)
-        | SKind::Cast { inner: a, .. }
-        | SKind::StrCase { a, .. }
-        | SKind::Abs(a)
-        | SKind::Round(a)
-        | SKind::SLen { a, .. }
-        | SKind::ReMatch { a, .. }
-        | SKind::ReExtract { a, .. }
-        | SKind::ReReplace { a, .. }
-        | SKind::MathF1 { a, .. }
-        | SKind::Sord { a, .. }
-        | SKind::StripAccents(a)
-        | SKind::Reverse(a) => bind_foldable(a),
-        SKind::Substr { a, start, len } => {
-            bind_foldable(a)
-                && bind_foldable(start)
-                && len.as_deref().map_or(true, bind_foldable)
-        }
-        SKind::Like { a, p, esc, .. } => {
-            bind_foldable(a) && bind_foldable(p) && esc.as_deref().map_or(true, bind_foldable)
-        }
-        SKind::Str3 { a, b, c, .. } => {
-            bind_foldable(a) && bind_foldable(b) && bind_foldable(c)
-        }
-        SKind::Spad { a, len, pad, .. } => {
-            bind_foldable(a) && bind_foldable(len) && bind_foldable(pad)
-        }
-        SKind::Sslice { a, lo, hi } => {
-            bind_foldable(a) && bind_foldable(lo) && bind_foldable(hi)
-        }
-        SKind::Case { arms, default } => {
-            arms.iter().all(|(c, r)| bind_foldable(c) && bind_foldable(r))
-                && default.as_deref().map_or(true, bind_foldable)
+    // Breadth first: an input is usually near the top, and a recursive walk
+    // that reaches it only after a deep operand made a left-deep chain of n
+    // terms cost n per level, n^2 in all, at every level the binder asks.
+    let mut queue = std::collections::VecDeque::from([e]);
+    while let Some(e) = queue.pop_front() {
+        match &e.kind {
+            // A slot never folds: constants do not fold across a query level
+            // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
+            // all on zero rows).
+            SKind::Col(_)
+            | SKind::Slot(_)
+            | SKind::StaticCol { .. }
+            | SKind::JoinHit(_)
+            | SKind::Shared(_) => return false,
+            // `error()` is never folded at bind: it raises when a row reaches it.
+            SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => {
+                return false
+            }
+            SKind::Seq { items, .. } => queue.extend(items),
+            SKind::Lit(_) | SKind::NullOf => {}
+            SKind::Arith { a, b, .. }
+            | SKind::Cmp { a, b, .. }
+            | SKind::And { a, b }
+            | SKind::Or { a, b }
+            | SKind::Concat { a, b }
+            | SKind::Str2 { a, b, .. }
+            | SKind::MathF2 { a, b, .. }
+            | SKind::Str2i { a, n: b, .. }
+            | SKind::Round2 { a, n: b, .. }
+            | SKind::DecArith { a, b, .. }
+            | SKind::Trim { a, chars: b, .. } => queue.extend([a.as_ref(), b.as_ref()]),
+            SKind::Not(a)
+            | SKind::IsNull { inner: a, .. }
+            | SKind::IntToFloat(a)
+            | SKind::DecToFloat(a)
+            | SKind::IntToDec { a, .. }
+            | SKind::DecCast(a)
+            | SKind::DecTryCast(a)
+            | SKind::DecUnary { a, .. }
+            | SKind::IntToFloat32(a)
+            | SKind::Cast { inner: a, .. }
+            | SKind::StrCase { a, .. }
+            | SKind::Abs(a)
+            | SKind::Round(a)
+            | SKind::SLen { a, .. }
+            | SKind::ReMatch { a, .. }
+            | SKind::ReExtract { a, .. }
+            | SKind::ReReplace { a, .. }
+            | SKind::MathF1 { a, .. }
+            | SKind::Sord { a, .. }
+            | SKind::StripAccents(a)
+            | SKind::Reverse(a) => queue.push_back(a),
+            SKind::Substr { a, start, len } => {
+                queue.extend([a.as_ref(), start.as_ref()]);
+                queue.extend(len.as_deref());
+            }
+            SKind::Like { a, p, esc, .. } => {
+                queue.extend([a.as_ref(), p.as_ref()]);
+                queue.extend(esc.as_deref());
+            }
+            SKind::Str3 { a, b, c, .. } => queue.extend([a.as_ref(), b.as_ref(), c.as_ref()]),
+            SKind::Spad { a, len, pad, .. } => {
+                queue.extend([a.as_ref(), len.as_ref(), pad.as_ref()])
+            }
+            SKind::Sslice { a, lo, hi } => queue.extend([a.as_ref(), lo.as_ref(), hi.as_ref()]),
+            SKind::Case { arms, default } => {
+                for (c, r) in arms {
+                    queue.extend([c, r]);
+                }
+                queue.extend(default.as_deref());
+            }
         }
     }
+    true
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division

@@ -886,6 +886,10 @@ struct Binder<'a> {
     /// Per SQL function call read by field, and scope: its siblings' trap
     /// skeletons (see `calls`), bound once for every read.
     call_siblings: std::cell::RefCell<std::collections::HashMap<calls::ScopeKey, calls::Siblings>>,
+    /// How many names have resolved past the real columns, to the lateral
+    /// aliases: a binding during which this does not move cannot depend on
+    /// which aliases are bound (`calls.rs` keys its cache on that).
+    alias_reads: std::cell::Cell<u32>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.

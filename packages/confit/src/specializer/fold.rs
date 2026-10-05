@@ -65,7 +65,7 @@ fn fold_here(e: SExpr) -> SExpr {
     let e = |kind| SExpr { kind, ty, nullable };
     match kind {
         SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
-        | SKind::JoinHit(_) | SKind::Raise(_) => e(kind),
+        | SKind::JoinHit(_) | SKind::Raise(_) | SKind::Shared(_) => e(kind),
         // A constant item cannot trap: drop it, and the node with it once
         // only the answer is left.
         SKind::Seq { items, pick } => {
