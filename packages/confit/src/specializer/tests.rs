@@ -4448,3 +4448,50 @@ mod staged {
         assert!(err.to_string().contains("slot 1"), "{err}");
     }
 }
+
+/// How many `op` unaries the program evaluates.
+fn num1_count(p: &super::ir::Program, op: NumOp1) -> usize {
+    p.blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter(|i| matches!(i, Inst::Num1 { op: o, .. } if *o == op))
+        .count()
+}
+
+#[test]
+fn a_sibling_that_cannot_raise_is_not_evaluated() {
+    // A field read keeps a sibling only for its traps (`trap_skeleton`).
+    // DOUBLE negation and exp never raise, and ln/sqrt never raise
+    // under a CASE guard that excludes their domain error (measured,
+    // DuckDB 1.5.5): reading `q` evaluates none of them.
+    let ins = cols(&[("x", Ty::F64, true)]);
+    let read = |p: &str| {
+        prep(
+            &format!("SELECT (struct_pack(p := {p}, q := x)).q AS o FROM __THIS__"),
+            &ins,
+        )
+        .unwrap()
+    };
+    for (p, op) in [
+        ("-x * 2.0", NumOp1::Fneg),
+        ("exp(x)", NumOp1::Fexp),
+        ("CASE WHEN x <= 0 THEN NULL ELSE ln(x) END", NumOp1::Ln),
+        ("CASE WHEN x > 0 THEN ln(x) END", NumOp1::Ln),
+        ("CASE WHEN x < 0 OR x IS NULL THEN 0.0 ELSE sqrt(x) END", NumOp1::Fsqrt),
+        ("CASE WHEN 0 >= x THEN NULL ELSE exp(0.5 * ln(x)) END", NumOp1::Ln),
+    ] {
+        assert_eq!(num1_count(&read(p), op), 0, "{p}");
+    }
+    // A guard that leaves the error reachable keeps the sibling.
+    for (p, op) in [
+        ("ln(x)", NumOp1::Ln),
+        ("CASE WHEN x < 0 THEN NULL ELSE ln(x) END", NumOp1::Ln),
+        ("CASE WHEN x >= 0 THEN ln(x) END", NumOp1::Ln),
+        ("CASE WHEN x <= 0 THEN ln(x) END", NumOp1::Ln),
+        ("CASE WHEN x <= 0 AND x > 1 THEN NULL ELSE ln(x) END", NumOp1::Ln),
+        ("CASE WHEN x < -1 THEN NULL ELSE sqrt(x) END", NumOp1::Fsqrt),
+        ("CASE WHEN x <= 0 THEN NULL ELSE ln(x + 1.0) END", NumOp1::Ln),
+    ] {
+        assert_eq!(num1_count(&read(p), op), 1, "{p}");
+    }
+}

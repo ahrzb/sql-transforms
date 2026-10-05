@@ -17,7 +17,7 @@
 //!   width-only cast of an integer literal collapses because it cannot trap
 //!   and its provenance mark is already spent by fold time.
 
-use super::ir::{CmpPred, DecOp, Lit, NumOp1, Ty};
+use super::ir::{BinOp, CmpPred, DecOp, Lit, NumOp1, Ty};
 use super::plan::{ArithOp, SExpr, SKind};
 
 /// A constant operand: a payload or a typed NULL.
@@ -148,7 +148,7 @@ fn fold_here(e: SExpr) -> SExpr {
             let inner = fold(*inner);
             let v = match as_const(&inner) {
                 Some(K::Null) => return null(ty),
-                Some(K::Val(Lit::Dec(v, ..))) => Some(v),
+                Some(K::Val(Lit::Dec(v, ..) | Lit::I128(v))) => Some(v),
                 Some(K::Val(Lit::I64(v))) => Some(v as i128),
                 _ => None,
             };
@@ -158,10 +158,7 @@ fn fold_here(e: SExpr) -> SExpr {
                 }),
                 _ => super::exec::kernels::dec_cast(v, inner.ty.lane(), ty)
                     .ok()
-                    .map(|r| match ty {
-                        Ty::Dec(dp, ds) => Lit::Dec(r, dp, ds),
-                        _ => Lit::I64(r as i64),
-                    }),
+                    .map(|r| int_or_dec_lit(r, ty)),
             });
             match folded {
                 Some(l) => lit(l, ty),
@@ -172,18 +169,12 @@ fn fold_here(e: SExpr) -> SExpr {
             let inner = fold(*inner);
             let v = match as_const(&inner) {
                 Some(K::Null) => return null(ty),
-                Some(K::Val(Lit::Dec(v, ..))) => Some(v),
+                Some(K::Val(Lit::Dec(v, ..) | Lit::I128(v))) => Some(v),
                 Some(K::Val(Lit::I64(v))) => Some(v as i128),
                 _ => None,
             };
             match v.map(|v| super::exec::kernels::dec_cast(v, inner.ty.lane(), ty)) {
-                Some(Ok(r)) => lit(
-                    match ty {
-                        Ty::Dec(dp, ds) => Lit::Dec(r, dp, ds),
-                        _ => Lit::I64(r as i64),
-                    },
-                    ty,
-                ),
+                Some(Ok(r)) => lit(int_or_dec_lit(r, ty), ty),
                 Some(Err(_)) => null(ty),
                 None => e(SKind::DecTryCast(Box::new(inner))),
             }
@@ -222,6 +213,9 @@ fn fold_here(e: SExpr) -> SExpr {
             let inner = fold(*inner);
             match as_const(&inner) {
                 Some(K::Val(Lit::I64(i))) => lit(Lit::F64(i as f64), ty),
+                Some(K::Val(Lit::I128(i))) => {
+                    lit(Lit::F64(super::exec::kernels::hugeint_to_f64(i)), ty)
+                }
                 Some(K::Null) => null(ty),
                 _ => e(SKind::IntToFloat(Box::new(inner))),
             }
@@ -403,7 +397,7 @@ fn fold_here(e: SExpr) -> SExpr {
                 // dividend is constant too -- a live dividend must still run.
                 (Some(K::Val(_)), Some(K::Val(y)))
                     if super::plan::zero_divisor_nulls(op, ty)
-                        && (matches!(y, Lit::I64(0))
+                        && (matches!(y, Lit::I64(0) | Lit::I128(0))
                             || matches!(y, Lit::F64(v) if v == 0.0)) =>
                 {
                     null(ty)
@@ -435,6 +429,7 @@ fn fold_here(e: SExpr) -> SExpr {
                 }
                 (Some(K::Val(x)), Some(K::Val(y))) => match arith(op, &x, &y).filter(|l| {
                     !matches!((l, ty.int_range()), (Lit::I64(v), Some((lo, hi))) if !(lo..=hi).contains(v))
+                        && !matches!((l, ty), (Lit::I128(v), Ty::U64) if u64::try_from(*v).is_err())
                 }) {
                     Some(l) => lit(l, ty),
                     // Would trap at run time — keep the node, keep the trap.
@@ -593,6 +588,8 @@ fn fold_here(e: SExpr) -> SExpr {
             if let SKind::Lit(Lit::Str(s)) = &inner.kind {
                 let parsed = if ty == Ty::F64 {
                     super::exec::kernels::duck_stof(s).map(Lit::F64)
+                } else if ty.is_unsigned() || ty.is_wide() {
+                    super::exec::hugeint::duck_ston(s, ty).map(|v| int_or_dec_lit(v, ty))
                 } else if ty.is_int() {
                     super::exec::kernels::duck_stoi(s)
                         .filter(|v| ty.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(v)))
@@ -602,7 +599,7 @@ fn fold_here(e: SExpr) -> SExpr {
                 };
                 match parsed {
                     Some(v) => return lit(v, ty),
-                    None if trying && (ty == Ty::F64 || ty.is_int()) => return null(ty),
+                    None if trying && (ty == Ty::F64 || ty.is_integer()) => return null(ty),
                     None => {}
                 }
             }
@@ -652,6 +649,7 @@ fn fold_here(e: SExpr) -> SExpr {
             let a = fold(*a);
             match &a.kind {
                 SKind::Lit(Lit::I64(v)) if *v != i64::MIN => lit(Lit::I64(v.abs()), ty),
+                SKind::Lit(Lit::I128(v)) if *v != i128::MIN => lit(Lit::I128(v.abs()), ty),
                 SKind::Lit(Lit::F64(v)) => lit(Lit::F64(v.abs()), ty),
                 SKind::NullOf => null(ty),
                 _ => e(SKind::Abs(Box::new(a))),
@@ -714,6 +712,15 @@ fn kleene(is_and: bool, a: SExpr, b: SExpr, ty: Ty, nullable: bool) -> SExpr {
     SExpr { kind, ty, nullable }
 }
 
+/// A conversion result as the literal of its lane.
+fn int_or_dec_lit(r: i128, ty: Ty) -> Lit {
+    match ty {
+        Ty::Dec(dp, ds) => Lit::Dec(r, dp, ds),
+        t if t.lane() == Ty::I128 => Lit::I128(r),
+        _ => Lit::I64(r as i64),
+    }
+}
+
 /// `None` = the interpreter would trap on this — do not fold.
 fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
     match (a, b) {
@@ -734,6 +741,24 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::BitOr => Some(Lit::I64(x | y)),
             ArithOp::BitXor => Some(Lit::I64(x ^ y)),
         },
+        // The i128 lane: the kernel both backends run, so a fold that
+        // succeeds is the runtime's value and one that would trap stays.
+        (Lit::I128(x), Lit::I128(y)) => {
+            let bop = match op {
+                ArithOp::Add => BinOp::Hadd,
+                ArithOp::Sub => BinOp::Hsub,
+                ArithOp::Mul => BinOp::Hmul,
+                ArithOp::Rem => BinOp::Hrem,
+                ArithOp::IDiv => BinOp::Hdiv,
+                ArithOp::BitAnd => BinOp::Hand,
+                ArithOp::BitOr => BinOp::Hor,
+                ArithOp::BitXor => BinOp::Hxor,
+                ArithOp::Div | ArithOp::Shl | ArithOp::Shr => {
+                    unreachable!("/ is DOUBLE and shifts refuse over the i128 lane")
+                }
+            };
+            super::exec::hugeint::hugeint_arith(bop, *x, *y).ok().map(Lit::I128)
+        }
         (Lit::F64(x), Lit::F64(y)) => Some(Lit::F64(match op {
             ArithOp::Add => x + y,
             ArithOp::Sub => x - y,
@@ -764,6 +789,7 @@ fn cmp(pred: CmpPred, a: &Lit, b: &Lit) -> bool {
     };
     match (a, b) {
         (Lit::I64(x), Lit::I64(y)) => ord(x.cmp(y)),
+        (Lit::I128(x), Lit::I128(y)) => ord(x.cmp(y)),
         (Lit::Str(x), Lit::Str(y)) => ord(x.cmp(y)),
         // DuckDB DOUBLE order, exactly as exec/interp.rs computes it.
         (Lit::F64(x), Lit::F64(y)) => ord(super::exec::duck_fcmp(*x, *y)),

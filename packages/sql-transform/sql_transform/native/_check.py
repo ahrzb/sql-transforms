@@ -2,7 +2,8 @@
 Python step and once with its native twin, compared lane by lane.
 
 The native twin is also checked against its own definition: registered on
-DuckDB, the same query must answer exactly what confit serves.
+DuckDB, the same query (its call made once per row) must answer exactly what
+confit serves.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import Any
 
 import pyarrow as pa
 from confit import DuckDBInferFn, compare
+from confit import sql as S
 from confit.oracle import Oracle
 
 from sql_transform._udf import PythonTransform
@@ -51,6 +53,24 @@ def _same(a: Any, b: Any, ulps: int) -> bool:
     return a == b
 
 
+def _once(step: PythonTransform, id_col: str) -> str:
+    """`query(step)` with the call made once per row, its struct then read
+    by field: the same answers, in the time DuckDB takes for one call.
+    DuckDB expands a macro at every field read, so it makes a wide struct's
+    call once per lane (285 lanes: 18 s, against 0.1 s once)."""
+    r = step.returns
+    if not pa.types.is_struct(r):
+        return query(step, id_col)
+    args = ", ".join([S.col(id_col).sql(), *(S.col(n).sql() for n in step.takes.names)])
+    s = S.col("__s")
+    reads = ", ".join(
+        f"{S.fn('struct_extract', s, S.lit(f.name)).sql()} AS {S.col(f.name).sql()}"
+        for f in r
+    )
+    call = f"{step.name}({args}) AS {s.sql()}"
+    return f"SELECT {reads} FROM (SELECT {call} FROM __THIS__)"  # noqa: S608
+
+
 def _serve(sql: str, rows: pa.Table, fn: Any) -> list[dict] | Exception:
     try:
         f = DuckDBInferFn(
@@ -75,7 +95,7 @@ def check(
     holds `id_col` and one column per declared feature.
 
     Where the step itself raises on a row (sklearn rejecting an input it
-    validates), the native answer is not compared: docs/native/goal.md,
+    validates), the native answer is not compared: loops/native/goal.md,
     "Where the twin raises". Returns the number of rows compared."""
     if ulps is None:
         ulps = bound(step)
@@ -88,7 +108,7 @@ def check(
     with Oracle() as o:
         native.register(o)
         o.load("__THIS__", rows)
-        want = o.try_answer(sql)
+        want = o.try_answer(_once(step, id_col))
     if isinstance(want, Exception) or not isinstance(want, pa.Table):
         raise ParityError(f"DuckDB does not run the native definition: {want}")
     compare.assert_rows(got, want.to_pylist(), ctx=sql)

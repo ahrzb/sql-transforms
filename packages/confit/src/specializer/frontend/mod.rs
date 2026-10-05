@@ -18,9 +18,9 @@
 //! the CAST target). A bare `SELECT NULL` has no context and stays
 //! unsupported.
 //!
-//! Decimal literals: DuckDB types `1.5` as DECIMAL(2,1); this frontend types
-//! them f64. CAST targets without a lane (HUGEINT, the unsigned family,
-//! FLOAT/REAL, DECIMAL/NUMERIC, ...) refuse by name.
+//! Decimal literals: DuckDB types `1.5` as DECIMAL(2,1), and so does this
+//! frontend. CAST targets without a lane (UHUGEINT, FLOAT/REAL, INTERVAL,
+//! ...) refuse by name.
 
 use sqlparser::ast::{
     AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, Ident, JoinConstraint, JoinOperator,
@@ -886,10 +886,10 @@ struct Binder<'a> {
     /// Per SQL function call read by field, and scope: its siblings' trap
     /// skeletons (see `calls`), bound once for every read.
     call_siblings: std::cell::RefCell<std::collections::HashMap<calls::ScopeKey, calls::Siblings>>,
-    /// How many names have resolved past the real columns, to the lateral
-    /// aliases: a binding during which this does not move cannot depend on
-    /// which aliases are bound (`calls.rs` keys its cache on that).
-    alias_reads: std::cell::Cell<u32>,
+    /// Per call: the identifier words of its arguments, for the scope key.
+    call_words: std::cell::RefCell<
+        std::collections::HashMap<usize, std::rc::Rc<std::collections::HashSet<String>>>,
+    >,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.

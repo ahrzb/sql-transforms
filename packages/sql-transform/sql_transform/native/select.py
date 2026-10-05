@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 from confit import sql as S
 from sklearn.feature_selection import (
     RFE,
@@ -38,7 +39,7 @@ from sql_transform.native._registry import NotNative, translates
     SequentialFeatureSelector,
     VarianceThreshold,
 )
-def _select(est: Any, x: list[S.Expr]) -> list[S.Expr]:
+def _select(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate (NaN raises unless the estimator's tags allow it),
     # then `X[:, get_support()]`. The mask is fitted state, read once here.
     try:

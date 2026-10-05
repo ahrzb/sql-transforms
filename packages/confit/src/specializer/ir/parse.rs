@@ -838,6 +838,8 @@ impl Parser {
             "u8" => Ok(Ty::U8),
             "u16" => Ok(Ty::U16),
             "u32" => Ok(Ty::U32),
+            "u64" => Ok(Ty::U64),
+            "i128" => Ok(Ty::I128),
             "i32" => Ok(Ty::I32),
             "i64" => Ok(Ty::I64),
             "f64" => Ok(Ty::F64),
@@ -1191,6 +1193,32 @@ impl Parser {
                     }
                 }
             }
+            "const.i128" => {
+                want_dsts(1, self)?;
+                let v = self.i128_literal("an i128 literal")?;
+                Inst::Const {
+                    dst: def!(0),
+                    lit: Lit::I128(v),
+                }
+            }
+            "htof" | "ftoh" | "htos" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                let dst = def!(0);
+                match opcode.as_str() {
+                    "htof" => Inst::Htof { dst, a },
+                    "ftoh" => Inst::Ftoh { dst, a },
+                    _ => Inst::Htos { dst, a },
+                }
+            }
+            "ston.opt" => {
+                want_dsts(2, self)?;
+                let to = self.ty()?;
+                let a = self.use_value()?;
+                let flag = def!(0);
+                let dst = def!(1);
+                Inst::StonOpt { to, flag, dst, a }
+            }
             "const.i1" | "const.i64" | "const.f64" | "const.str" => {
                 want_dsts(1, self)?;
                 let lit = match opcode.as_str() {
@@ -1218,7 +1246,8 @@ impl Parser {
             }
             "iadd" | "isub" | "imul" | "idiv" | "irem" | "fadd" | "fsub" | "fmul" | "fdiv"
             | "frem" | "fpow" | "flogb" | "ffloordiv" | "ffloormod" | "fnextafter" | "ishl"
-            | "ishr" | "iand" | "ior" | "ixor" | "and" | "or" | "xor" => {
+            | "ishr" | "iand" | "ior" | "ixor" | "and" | "or" | "xor" | "hadd" | "hsub"
+            | "hmul" | "hdiv" | "hrem" | "hand" | "hor" | "hxor" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iadd" => BinOp::Iadd,
@@ -1241,6 +1270,14 @@ impl Parser {
                     "iand" => BinOp::Iand,
                     "ior" => BinOp::Ior,
                     "ixor" => BinOp::Ixor,
+                    "hadd" => BinOp::Hadd,
+                    "hsub" => BinOp::Hsub,
+                    "hmul" => BinOp::Hmul,
+                    "hdiv" => BinOp::Hdiv,
+                    "hrem" => BinOp::Hrem,
+                    "hand" => BinOp::Hand,
+                    "hor" => BinOp::Hor,
+                    "hxor" => BinOp::Hxor,
                     "and" => BinOp::And,
                     "or" => BinOp::Or,
                     _ => BinOp::Xor,
@@ -1279,10 +1316,11 @@ impl Parser {
                     b,
                 }
             }
-            _ if head == "icmp" || head == "fcmp" || head == "scmp" => {
+            _ if head == "icmp" || head == "fcmp" || head == "scmp" || head == "hcmp" => {
                 want_dsts(1, self)?;
                 let ty = match head.as_str() {
                     "icmp" => Ty::I64,
+                    "hcmp" => Ty::I128,
                     "fcmp" => Ty::F64,
                     _ => Ty::Str,
                 };
@@ -1575,11 +1613,12 @@ impl Parser {
                     len,
                 }
             }
-            "iabs" | "fabs" | "fneg" | "fround" | "ln" | "log2" | "log10" | "fexp" | "fsqrt"
+"habs" | "iabs" | "fabs" | "fneg" | "fround" | "ln" | "log2" | "log10" | "fexp" | "fsqrt"
             | "fcbrt" | "fsin" | "fcos" | "ftan" | "ffloor" | "fceil" | "ftrunc" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iabs" => NumOp1::Iabs,
+                    "habs" => NumOp1::Habs,
                     "fabs" => NumOp1::Fabs,
                     "fneg" => NumOp1::Fneg,
                     "fround" => NumOp1::Fround,

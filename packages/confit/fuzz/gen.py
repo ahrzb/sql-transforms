@@ -61,6 +61,8 @@ SEMANTIC = {
     "uint8": "int",
     "uint16": "int",
     "uint32": "int",
+    # The i128 lane's narrow width, from the `_wide` seed gate.
+    "uint64": "int",
     "double": "float",
     "string": "str",
 }
@@ -75,6 +77,7 @@ INT_RANGE = {
     "uint8": (0, 2**8 - 1),
     "uint16": (0, 2**16 - 1),
     "uint32": (0, 2**32 - 1),
+    "uint64": (0, 2**64 - 1),
 }
 
 
@@ -647,6 +650,8 @@ CAST_SPELLINGS = {
     "uint8": ("UTINYINT", "UINT8"),
     "uint16": ("USMALLINT", "UINT16"),
     "uint32": ("UINTEGER", "UINT32"),
+    "uint64": ("UBIGINT", "UINT64"),
+    "hugeint": ("HUGEINT", "INT128"),
     "float": ("DOUBLE", "FLOAT8", "DOUBLE PRECISION"),
     "str": ("VARCHAR", "TEXT", "STRING"),
     "bool": ("BOOLEAN", "BOOL", "LOGICAL"),
@@ -1140,6 +1145,55 @@ def _unsigned(urng, query, row_schema, rows, statics, tags) -> None:
         tags.append("unsigned")
 
 
+# Values past BIGINT a HUGEINT literal or a UBIGINT cell takes: the edges
+# where the i128 lane's own range checks fire, and plain large ones.
+_WIDE_LITS = (2**63, 2**64 - 1, 2**64, -(2**63) - 1, 2**100, -(2**126), 2**127 - 1)
+
+
+def _wide(wrng, query, row_schema, rows, statics, tags) -> None:
+    """The i128 lane: make some BIGINT columns UBIGINT (a negative value
+    wraps into the range), some BIGINT casts UBIGINT or HUGEINT, and some
+    integer literals HUGEINT ones (past BIGINT), from a generator of its own
+    so no other seed's draws move."""
+
+    def flip(schema: dict, table_rows: list[dict]) -> bool:
+        hit = False
+        for c, spec in list(schema.items()):
+            if not isinstance(spec, str) or spec.rstrip("?") != "int64":
+                continue
+            if wrng.random() < 0.5:
+                schema[c] = "uint64" + spec[len("int64") :]
+                for r in table_rows:
+                    v = r.get(c)
+                    if v is None:
+                        continue
+                    if wrng.random() < 0.15:
+                        r[c] = wrng.choice((2**63, 2**64 - 1, 2**64 - 2))
+                    else:
+                        r[c] = v % 2**64 if wrng.random() < 0.5 else abs(v)
+                hit = True
+        return hit
+
+    hit = flip(row_schema, rows)
+    for sch, srows in statics.values():
+        hit |= flip(sch, srows)
+    for n in _all_nodes(query):
+        if isinstance(n, Cast) and n.to == "int" and wrng.random() < 0.4:
+            n.to = wrng.choice(("uint64", "hugeint"))
+            n.spell = wrng.randrange(len(CAST_SPELLINGS[n.to]))
+            hit = True
+        elif (
+            isinstance(n, Lit)
+            and n.ty == "int"
+            and n.val is not None
+            and wrng.random() < 0.15
+        ):
+            n.val = wrng.choice(_WIDE_LITS)
+            hit = True
+    if hit:
+        tags.append("wide")
+
+
 def _all_nodes(obj):
     """Every AST node reachable from `obj`, through any dataclass field."""
     if isinstance(obj, Node):
@@ -1272,6 +1326,9 @@ def gen(seed: int) -> Case:
     if seed % 11 == 6:
         urng = random.Random(seed * 7919 + 2)  # noqa: S311
         _unsigned(urng, query, row_schema, rows, statics, tags)
+    if seed % 13 == 5:
+        wrng = random.Random(seed * 7919 + 3)  # noqa: S311
+        _wide(wrng, query, row_schema, rows, statics, tags)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
     output = rng.choice([None] * 4 + ["dict", "model"])

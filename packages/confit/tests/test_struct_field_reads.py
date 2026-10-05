@@ -138,6 +138,63 @@ def test_a_null_struct_from_a_sql_function():
         assert_parity(sql, ROWS, udfs=[f])
 
 
+EDGES = table(
+    {"x": "float?"},
+    [
+        {"x": v}
+        for v in (2.0, -1.0, 0.0, -0.0, float("nan"), float("inf"), float("-inf"), None)
+    ],
+)
+POSITIVE = table({"x": "float?"}, [{"x": 2.0}, {"x": float("nan")}, {"x": None}])
+
+
+@pytest.mark.parametrize(
+    "p",
+    [
+        "-x * 2.0",
+        "exp(x * 1000.0)",
+        "CASE WHEN x <= 0 THEN NULL ELSE ln(x) END",
+        "CASE WHEN x > 0 THEN ln(x) END",
+        "CASE WHEN 0 >= x THEN NULL ELSE exp(0.5 * ln(x)) / 0.5 END",
+        "CASE WHEN x < 0 THEN 0.0 ELSE sqrt(x) END",
+        # Guards that leave the domain error reachable: the read still traps.
+        "ln(x)",
+        "CASE WHEN x < 0 THEN NULL ELSE ln(x) END",
+        "CASE WHEN x >= 0 THEN ln(x) END",
+        "CASE WHEN x < -1 THEN NULL ELSE sqrt(x) END",
+    ],
+)
+def test_a_sibling_raises_exactly_where_duckdb_does(p):
+    # Siblings proven unable to raise (plan.rs `can_trap`) are not
+    # evaluated by a field read; the rest still raise.
+    sql = f"SELECT (struct_pack(p := {p}, q := x)).q AS o FROM __THIS__"
+    assert_parity(sql, EDGES)
+    assert_parity(sql, POSITIVE)
+
+
+def test_a_null_struct_keeps_its_sibling_traps():
+    # null_when wraps the body in a CASE whose struct_pack arm reads as a
+    # call of its own (calls.rs `split_case_arms`): the read field still
+    # carries its siblings' traps, only on rows that build the struct.
+    f = SqlFunction(
+        "h",
+        pa.schema([("iid", pa.int64()), ("n", pa.int64())]),
+        pa.struct([("lo", pa.int64()), ("hi", pa.int64())]),
+        lambda iid, n: {"lo": n - S.lit(1), "hi": n * S.lit(9223372036854775807)},
+        null_when=lambda iid, n: iid.isnull(),
+    )
+    for sql in (
+        "SELECT h(a, a).lo AS o FROM __THIS__",
+        "SELECT h(a, a).lo AS o, h(a, a).hi AS p FROM __THIS__",
+        "SELECT h(a, a) AS st FROM __THIS__",
+        # A lateral alias named by the arguments rebinds the call.
+        "SELECT a + 1 AS a, h(a, a).lo AS o, h(a, a).hi AS p FROM __THIS__",
+        "SELECT a + 1 AS b, h(b, a).lo AS o, h(a, b).lo AS p FROM __THIS__",
+    ):
+        assert_parity(sql, ROWS, udfs=[f], trap="Overflow")
+        assert_parity(sql, SAFE, udfs=[f])
+
+
 @pytest.mark.parametrize(
     "expr, why",
     [

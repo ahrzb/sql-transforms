@@ -2,7 +2,9 @@
 
 My working list: open work only, highest value first within each section.
 Facts about what confit does live in `docs/`; questions waiting on a ruling are
-records in `docs/decisions/open/`. Remove an item when it lands.
+records in `docs/decisions/open/`. Remove an item when it lands. How the loop
+runs (inline or with workers, and how work becomes tickets):
+`docs/loop/README.md`; the live tickets: `docs/loop/tickets.md`.
 
 ## Next
 
@@ -87,6 +89,23 @@ Delivered:
   scope. 128 lanes read 128 times build in 0.4 s (13.6 s before both), 128
   lanes over 3 groups (past the 4M-token cap before) in 0.7 s, 256 lanes in
   1.4 s. An unaliased read is named as DuckDB names it, `(f(x)).p`.
+- A sibling that cannot raise is not evaluated by a field read: DOUBLE
+  negation, `exp`, `abs`, `round`, `cbrt`, `floor`/`ceil`/`trunc` are total,
+  and `ln`/`log2`/`log10`/`sqrt` under a CASE guard that excludes their
+  domain error (`WHEN x <= 0 THEN .. ELSE ln(x)`, `WHEN x > 0 THEN ln(x)`)
+  cannot raise. 32 lanes of a `-x` quantile shape serve a 64-row call in
+  0.61 ms (9.43 ms before); 64 guarded-`ln` lanes in 0.62 ms (22.6 ms).
+- A dropped function returns its JIT memory (`OwnedJit`): every build kept
+  2 mappings before, so a process stalled at `vm.max_map_count` after about
+  32k builds. 3,000 build/call/drop cycles now hold 479 mappings and 121 MB
+  flat (`tests/test_jit_memory.py`).
+- A struct-returning SQL function read field by field builds in time
+  linear in the lanes read, with or without `null_when` (whose CASE arm
+  reads as a call of its own) and with output aliases equal to the field
+  names (the scope key counts only aliases the call's arguments name). The
+  catalog's degree-2 shape with `null_when` and an `error()` arm: 1,035
+  lanes in 0.8 s (16.4 s before), 2,016 in 2.1 s, 3,240 in 4.0 s; no
+  expansion cap reached.
 - `greatest`/`least` build as one flat CASE (n² in the argument count, was
   4^n).
 - A Cranelift size limit refuses by name (`unsupported:`).
@@ -110,14 +129,18 @@ The first five are ruled, in this order; the rest follow.
   generator carries one on every seed 3 (mod 7), observable through star
   expansion and the row boundary, and keys that seed's first ON join on it
   (tag `decimal-key`), since decimals are not in the expression grammar yet.
-- **i128 lane.** UTINYINT/USMALLINT/UINTEGER serve on the i64 lane
-  (`tests/test_unsigned.py`; the generator makes some narrow columns and
-  casts unsigned on every seed 6 (mod 11), tag `unsigned`), refusing by name
-  unary minus, shifts, and DOUBLE-to-unsigned casts. HUGEINT, UBIGINT and
-  UHUGEINT (columns, statics, CAST targets) refuse. Needs i128 arithmetic
-  and traps on both backends and exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
-  (it is BIGINT on DuckDB); the bare 9223372036854775808, and the minimum
-  negated twice, are HUGEINT and refuse.
+- **i128 lane.** Every integer width but UHUGEINT serves: UTINYINT..UINTEGER
+  on the i64 lane (`tests/test_unsigned.py`, seed gate 6 mod 11, tag
+  `unsigned`), HUGEINT on an i128 lane with UBIGINT as its narrow width
+  (`tests/test_hugeint.py`, seed gate 5 mod 13, tag `wide`). Still refused
+  by name: unary minus over an unsigned width (DuckDB wraps it), shifts over
+  an unsigned width or HUGEINT, a CAST from DOUBLE to UTINYINT..UINTEGER
+  (range-checked before rounding, 255.5 wraps), `round`/`trunc` with digits
+  over UBIGINT/HUGEINT, UHUGEINT (literals past HUGEINT, CAST targets), and a
+  HUGEINT join key against a DECIMAL build key. Left: exact `sum`/`product`
+  at decimal128(38,0) belong to per-row aggregation, not to this lane; the
+  i128 ops are one helper call each on the JIT (inline `iadd.i128` with an
+  overflow check is the next step if HUGEINT shows up in serving profiles).
 - **Non-scalar values.** Whole structs, struct literals, bracket access, lists
   and list-valued regex forms (served so far: a list literal read by a
   constant index or projected whole, with elements of one type,
@@ -161,6 +184,10 @@ The first five are ruled, in this order; the rest follow.
   (`CAST('' AS DOUBLE) / sqrt(NULL)` serves NULL there).
 - `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
   (DuckDB converts at execution; a bind-time conversion is over-eager).
+  A numeric string member converts through f64 and rounds to BIGINT, so past
+  2^53 it is the wrong integer (`b IN ('9007199254740993')` over a BIGINT
+  `b`); parse it with the integer kernels at the family's type instead.
+  Beside UBIGINT/HUGEINT such members refuse by name for this reason.
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
 - **Wrapped-query refusals** the metamorphic suite allowlists
   (rewrite tolerances in `fuzz/exclusions.py`): a struct- or list-valued column inside a

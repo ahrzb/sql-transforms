@@ -74,6 +74,13 @@ fn rand_lit(rng: &mut Rng, ty: Ty) -> Lit {
         // TYS never generates Dec either; a request still gets a literal at
         // the right type so the generator stays total.
         Ty::Dec(p, s) => Lit::Dec((rng.next() % 1_000_000) as i128, p, s),
+        Ty::I128 | Ty::U64 => Lit::I128(match rng.below(6) {
+            0 => 0,
+            1 => -1,
+            2 => i128::MAX,
+            3 => i128::MIN,
+            _ => (rng.next() as i64 as i128) * (rng.next() % 1_000_000) as i128,
+        }),
         // TYS never generates narrow widths (they are header-only); a narrow
         // request still gets an i64-lane literal.
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => Lit::I64(match rng.below(6) {
@@ -389,6 +396,82 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let dst = b.fresh();
                 insts.push(Inst::Sconcat { dst, a, b: rhs });
                 scope.add(dst, Ty::Str);
+            }
+            7 => {
+                // The i128 lane (HUGEINT / UBIGINT). hdiv/hrem stay out for
+                // idiv/irem's reason; the checked + - * trap on overflow at
+                // i128::MAX consts, which is trap agreement, as for iadd.
+                match rng.below(6) {
+                    0 => {
+                        let ops = [
+                            BinOp::Hadd,
+                            BinOp::Hsub,
+                            BinOp::Hmul,
+                            BinOp::Hand,
+                            BinOp::Hor,
+                            BinOp::Hxor,
+                        ];
+                        let op = ops[rng.below(ops.len() as u64) as usize];
+                        let a = ensure(rng, b, scope, insts, Ty::I128);
+                        let rhs = ensure(rng, b, scope, insts, Ty::I128);
+                        let dst = b.fresh();
+                        insts.push(Inst::Bin { op, dst, a, b: rhs });
+                        scope.add(dst, Ty::I128);
+                    }
+                    1 => {
+                        let preds = [
+                            CmpPred::Eq,
+                            CmpPred::Ne,
+                            CmpPred::Lt,
+                            CmpPred::Le,
+                            CmpPred::Gt,
+                            CmpPred::Ge,
+                        ];
+                        let pred = preds[rng.below(6) as usize];
+                        let a = ensure(rng, b, scope, insts, Ty::I128);
+                        let rhs = ensure(rng, b, scope, insts, Ty::I128);
+                        let dst = b.fresh();
+                        insts.push(Inst::Cmp {
+                            pred,
+                            ty: Ty::I128,
+                            dst,
+                            a,
+                            b: rhs,
+                        });
+                        scope.add(dst, Ty::I1);
+                    }
+                    2 => {
+                        let a = ensure(rng, b, scope, insts, Ty::I128);
+                        let dst = b.fresh();
+                        insts.push(Inst::Htof { dst, a });
+                        scope.add(dst, Ty::F64);
+                    }
+                    3 => {
+                        // Saturates outside the range: total.
+                        let a = ensure(rng, b, scope, insts, Ty::F64);
+                        let dst = b.fresh();
+                        insts.push(Inst::Ftoh { dst, a });
+                        scope.add(dst, Ty::I128);
+                    }
+                    4 => {
+                        let a = ensure(rng, b, scope, insts, Ty::I128);
+                        let dst = b.fresh();
+                        insts.push(Inst::Htos { dst, a });
+                        scope.add(dst, Ty::Str);
+                    }
+                    _ => {
+                        // i64 -> i128 is total.
+                        let a = ensure(rng, b, scope, insts, Ty::I64);
+                        let dst = b.fresh();
+                        insts.push(Inst::Dcast {
+                            from: Ty::I64,
+                            to: Ty::I128,
+                            dst,
+                            a,
+                        });
+                        scope.add(dst, Ty::I128);
+                    }
+                }
             }
             8 => {
                 let op = match rng.below(3) {

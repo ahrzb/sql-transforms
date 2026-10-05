@@ -119,6 +119,9 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             Lit::Dec(v, dp, ds) => {
                 let _ = write!(s, "const.dec({dp},{ds}) {v}");
             }
+            Lit::I128(v) => {
+                let _ = write!(s, "const.i128 {v}");
+            }
         },
         Inst::Bin { op, a, b, .. } => {
             let _ = write!(s, "{} {}, {}", op.name(), val(*a), val(*b));
@@ -131,6 +134,7 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             // could not rebuild the operand type.
             let prefix = match ty {
                 Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => "icmp".to_string(),
+                Ty::I128 | Ty::U64 => "hcmp".to_string(),
                 Ty::F64 => "fcmp".to_string(),
                 Ty::Str => "scmp".to_string(),
                 Ty::Dec(dp, ds) => format!("dcmp({dp},{ds})"),
@@ -192,6 +196,18 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         }
         Inst::Ftos { a, .. } => {
             let _ = write!(s, "ftos {}", val(*a));
+        }
+        Inst::Htof { a, .. } => {
+            let _ = write!(s, "htof {}", val(*a));
+        }
+        Inst::Ftoh { a, .. } => {
+            let _ = write!(s, "ftoh {}", val(*a));
+        }
+        Inst::Htos { a, .. } => {
+            let _ = write!(s, "htos {}", val(*a));
+        }
+        Inst::StonOpt { to, a, .. } => {
+            let _ = write!(s, "ston.opt {} {}", to.name(), val(*a));
         }
         Inst::StoiOpt { a, .. } => {
             let _ = write!(s, "stoi.opt {}", val(*a));

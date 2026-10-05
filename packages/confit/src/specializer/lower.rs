@@ -81,6 +81,8 @@ fn duck_narrow_name(ty: Ty) -> &'static str {
         Ty::U8 => "UTINYINT",
         Ty::U16 => "USMALLINT",
         Ty::U32 => "UINTEGER",
+        Ty::U64 => "UBIGINT",
+        Ty::I128 => "HUGEINT",
         _ => "BIGINT",
     }
 }
@@ -95,6 +97,7 @@ fn arrow_narrow_name(ty: Ty) -> &'static str {
         Ty::U8 => "uint8",
         Ty::U16 => "uint16",
         Ty::U32 => "uint32",
+        Ty::U64 => "uint64",
         _ => "int64",
     }
 }
@@ -567,6 +570,7 @@ impl<'a> FB<'a> {
             // The LEFT-miss payload of a decimal lane: a zero at the
             // column's own scale, exactly like the other lanes' defaults.
             Ty::Dec(p, s) => Lit::Dec(0, p, s),
+            Ty::I128 | Ty::U64 => Lit::I128(0),
         })
     }
 
@@ -800,7 +804,12 @@ impl<'a> FB<'a> {
         let lane = self.emit_kind(e, live)?;
         match e.ty.int_range() {
             Some((lo, hi)) if narrow_result_can_escape(&e.kind) => {
-                self.narrow_trap(lane, lo, hi, e.ty, live)
+                self.narrow_trap(lane, Lit::I64(lo), Lit::I64(hi), e.ty, live)
+            }
+            // UBIGINT, the narrow width of the i128 lane.
+            _ if e.ty == Ty::U64 && narrow_result_can_escape(&e.kind) => {
+                let (lo, hi) = e.ty.int_range128().expect("an integer width");
+                self.narrow_trap(lane, Lit::I128(lo), Lit::I128(hi), e.ty, live)
             }
             _ => Ok(lane),
         }
@@ -812,17 +821,18 @@ impl<'a> FB<'a> {
     fn narrow_trap(
         &mut self,
         l: Lane,
-        lo: i64,
-        hi: i64,
+        lo: Lit,
+        hi: Lit,
         ty: Ty,
         live: &mut Live,
     ) -> Result<Lane, PrepareError> {
-        let lo_v = self.const_lit(Lit::I64(lo));
-        let hi_v = self.const_lit(Lit::I64(hi));
+        let lane = ty.lane();
+        let lo_v = self.const_lit(lo);
+        let hi_v = self.const_lit(hi);
         let ge = self.fresh();
         self.inst(Inst::Cmp {
             pred: CmpPred::Ge,
-            ty: Ty::I64,
+            ty: lane,
             dst: ge,
             a: l.val,
             b: lo_v,
@@ -830,7 +840,7 @@ impl<'a> FB<'a> {
         let le = self.fresh();
         self.inst(Inst::Cmp {
             pred: CmpPred::Le,
-            ty: Ty::I64,
+            ty: lane,
             dst: le,
             a: l.val,
             b: hi_v,
@@ -1139,11 +1149,22 @@ impl<'a> FB<'a> {
                 let narrow = matches!(e.kind, SKind::IntToFloat32(_));
                 let l = self.emit(inner, live)?;
                 let dst = self.fresh();
-                self.inst(Inst::Itof {
-                    narrow,
-                    dst,
-                    a: l.val,
-                });
+                if inner.ty.lane() == Ty::I128 {
+                    if narrow {
+                        return Err(PrepareError::Unsupported(format!(
+                            "a {} tree feature (sklearn's float32 narrowing of a 128-bit \
+                             integer is not modelled)",
+                            duck_narrow_name(inner.ty)
+                        )));
+                    }
+                    self.inst(Inst::Htof { dst, a: l.val });
+                } else {
+                    self.inst(Inst::Itof {
+                        narrow,
+                        dst,
+                        a: l.val,
+                    });
+                }
                 Ok(Lane {
                     flag: l.flag,
                     val: dst,
@@ -1173,6 +1194,14 @@ impl<'a> FB<'a> {
                     (ArithOp::BitAnd, Ty::I64) => BinOp::Iand,
                     (ArithOp::BitOr, Ty::I64) => BinOp::Ior,
                     (ArithOp::BitXor, Ty::I64) => BinOp::Ixor,
+                    (ArithOp::Add, Ty::I128) => BinOp::Hadd,
+                    (ArithOp::Sub, Ty::I128) => BinOp::Hsub,
+                    (ArithOp::Mul, Ty::I128) => BinOp::Hmul,
+                    (ArithOp::IDiv, Ty::I128) => BinOp::Hdiv,
+                    (ArithOp::Rem, Ty::I128) => BinOp::Hrem,
+                    (ArithOp::BitAnd, Ty::I128) => BinOp::Hand,
+                    (ArithOp::BitOr, Ty::I128) => BinOp::Hor,
+                    (ArithOp::BitXor, Ty::I128) => BinOp::Hxor,
                     (op, ty) => {
                         return Err(PrepareError::Internal(format!(
                             "arith {op:?} on {} escaped the frontend",
@@ -1196,13 +1225,14 @@ impl<'a> FB<'a> {
                 // Both operands were evaluated above whatever the divisor, as
                 // DuckDB evaluates them, so a trap in the dividend still fires.
                 let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
+                    || matches!(b.kind, SKind::Lit(Lit::I128(n)) if n != 0)
                     || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
                 let flag = if plan::zero_divisor_nulls(*op, e.ty) && !nonzero_lit {
                     let lane = e.ty.lane();
-                    let zero = self.const_lit(if lane == Ty::F64 {
-                        Lit::F64(0.0)
-                    } else {
-                        Lit::I64(0)
+                    let zero = self.const_lit(match lane {
+                        Ty::F64 => Lit::F64(0.0),
+                        Ty::I128 => Lit::I128(0),
+                        _ => Lit::I64(0),
                     });
                     let nz = self.fresh();
                     self.inst(Inst::Cmp {
@@ -1225,6 +1255,12 @@ impl<'a> FB<'a> {
                         };
                         let da = self.const_lit(Lit::I64(0));
                         let db = self.const_lit(Lit::I64(safe_b));
+                        (self.select_of(f, la.val, da), self.select_of(f, lb.val, db))
+                    }
+                    (Ty::I128, Some(f)) => {
+                        let safe_b = i128::from(matches!(ir_op, BinOp::Hdiv | BinOp::Hrem));
+                        let da = self.const_lit(Lit::I128(0));
+                        let db = self.const_lit(Lit::I128(safe_b));
                         (self.select_of(f, la.val, da), self.select_of(f, lb.val, db))
                     }
                     _ => (la.val, lb.val),
@@ -1376,11 +1412,12 @@ impl<'a> FB<'a> {
             }
             SKind::Abs(a) => {
                 let l = self.emit(a, live)?;
-                // iabs traps on i64::MIN; mask the nullable payload.
-                let (op, av) = if e.ty.lane() == Ty::I64 {
-                    (NumOp1::Iabs, self.masked(l, Ty::I64))
-                } else {
-                    (NumOp1::Fabs, l.val)
+                // iabs / habs trap on the lane's minimum; mask the nullable
+                // payload.
+                let (op, av) = match e.ty.lane() {
+                    Ty::I64 => (NumOp1::Iabs, self.masked(l, Ty::I64)),
+                    Ty::I128 => (NumOp1::Habs, self.masked(l, Ty::I128)),
+                    _ => (NumOp1::Fabs, l.val),
                 };
                 let dst = self.fresh();
                 self.inst(Inst::Num1 { op, dst, a: av });
@@ -2826,6 +2863,12 @@ impl<'a> FB<'a> {
         let to = e.ty.lane();
         let l = self.emit(inner, live)?;
 
+        // The i128 lane, and the parse into an unsigned width, which keeps
+        // DuckDB's sign rule (`ston.opt`).
+        if from == Ty::I128 || to == Ty::I128 || (from == Ty::Str && e.ty.is_unsigned()) {
+            return self.wide_cast(e, inner, l, trying, live);
+        }
+
         // Branchless conversions first.
         let simple: Option<Lane> = match (from, to) {
             (a, b) if a == b => Some(l),
@@ -3229,6 +3272,192 @@ impl<'a> FB<'a> {
                 "cast {} -> {} escaped the frontend",
                 from.name(),
                 to.name()
+            ))),
+        }
+    }
+
+    /// A cast with the i128 lane on either side (or a parse into an
+    /// unsigned width): integer <-> integer through the checked `dcast`,
+    /// DOUBLE in through a range check and `ftoh`, DOUBLE / VARCHAR /
+    /// BOOLEAN out, VARCHAR in through `ston.opt`. CAST traps where DuckDB
+    /// errors; TRY_CAST answers NULL there instead.
+    fn wide_cast(
+        &mut self,
+        e: &SExpr,
+        inner: &SExpr,
+        l: Lane,
+        trying: bool,
+        live: &mut Live,
+    ) -> Result<Lane, PrepareError> {
+        let (from, to) = (inner.ty, e.ty);
+        let fresh_lane = |this: &mut Self, flag: Option<Value>, val: Value| -> Lane {
+            match (trying, flag) {
+                (true, None) => Lane {
+                    flag: Some(this.const_i1(true)),
+                    val,
+                },
+                _ => Lane { flag, val },
+            }
+        };
+        // `ok` is the conversion's success on this row's (masked) payload;
+        // CAST traps on a real row that fails, TRY_CAST flags it NULL.
+        let finish = |this: &mut Self, ok: Value, val: Value, msg: String, live: &mut Live| {
+            if trying {
+                let flag = match l.flag {
+                    Some(f) => this.bin(BinOp::And, f, ok),
+                    None => ok,
+                };
+                return Lane {
+                    flag: Some(flag),
+                    val,
+                };
+            }
+            let not_ok = this.not(ok);
+            let bad = match l.flag {
+                Some(f) => this.bin(BinOp::And, f, not_ok),
+                None => not_ok,
+            };
+            this.trap_if(bad, msg, Lane { flag: l.flag, val }, to, live)
+        };
+        let phys = |t: Ty| match t {
+            Ty::U8 => "UINT8",
+            Ty::U16 => "UINT16",
+            Ty::U32 => "UINT32",
+            Ty::U64 => "UINT64",
+            Ty::I128 => "INT128",
+            Ty::I8 => "INT8",
+            Ty::I16 => "INT16",
+            Ty::I32 => "INT32",
+            _ => "INT64",
+        };
+        match (from.lane(), to.lane()) {
+            (f, t) if from.is_integer() && to.is_integer() => {
+                let (flo, fhi) = from.int_range128().expect("an integer width");
+                let (tlo, thi) = to.int_range128().expect("an integer width");
+                let total = tlo <= flo && fhi <= thi;
+                if total && f == t {
+                    return Ok(fresh_lane(self, l.flag, l.val));
+                }
+                // A NULL row converts 0, which every width holds.
+                let a = self.masked(l, from);
+                let (from_lane, dst) = (f, self.fresh());
+                if total {
+                    self.inst(Inst::Dcast {
+                        from: from_lane,
+                        to,
+                        dst,
+                        a,
+                    });
+                    return Ok(fresh_lane(self, l.flag, dst));
+                }
+                let ok = self.fresh();
+                self.inst(Inst::DcastOk {
+                    from: from_lane,
+                    to,
+                    dst: ok,
+                    a,
+                });
+                // A failing row converts 0 instead: its flag says NULL or
+                // the trap below fires first.
+                let zero = self.default_of(from);
+                let safe = self.select_of(ok, a, zero);
+                self.inst(Inst::Dcast {
+                    from: from_lane,
+                    to,
+                    dst,
+                    a: safe,
+                });
+                let msg = format!(
+                    "Conversion Error: Type {} can't be cast because the value is out of \
+                     range for the destination type {}",
+                    phys(from),
+                    phys(to)
+                );
+                Ok(finish(self, ok, dst, msg, live))
+            }
+            (Ty::I1, Ty::I128) => {
+                let one = self.const_lit(Lit::I128(1));
+                let zero = self.const_lit(Lit::I128(0));
+                let dst = self.select_of(l.val, one, zero);
+                Ok(fresh_lane(self, l.flag, dst))
+            }
+            (Ty::I128, Ty::I1) => {
+                let zero = self.const_lit(Lit::I128(0));
+                let dst = self.fresh();
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Ne,
+                    ty: Ty::I128,
+                    dst,
+                    a: l.val,
+                    b: zero,
+                });
+                Ok(fresh_lane(self, l.flag, dst))
+            }
+            (Ty::I128, Ty::F64) => {
+                let dst = self.fresh();
+                self.inst(Inst::Htof { dst, a: l.val });
+                Ok(fresh_lane(self, l.flag, dst))
+            }
+            (Ty::I128, Ty::Str) => {
+                let dst = self.fresh();
+                self.inst(Inst::Htos { dst, a: l.val });
+                Ok(fresh_lane(self, l.flag, dst))
+            }
+            (Ty::F64, Ty::I128) => {
+                // `TryCastWithOverflowCheckFloat` / `ConvertFloatingToBigint`:
+                // the range is checked on the UNROUNDED value, NaN out.
+                // UBIGINT's bound is the double 18446744073709551615.0,
+                // which is 2^64.
+                let (lo, lo_pred, hi) = if to == Ty::U64 {
+                    (0.0, CmpPred::Ge, 18446744073709551616.0)
+                } else {
+                    (-170141183460469231731687303715884105728.0, CmpPred::Gt, 170141183460469231731687303715884105728.0)
+                };
+                let lo_v = self.const_lit(Lit::F64(lo));
+                let hi_v = self.const_lit(Lit::F64(hi));
+                let ge = self.fresh();
+                self.inst(Inst::Cmp {
+                    pred: lo_pred,
+                    ty: Ty::F64,
+                    dst: ge,
+                    a: l.val,
+                    b: lo_v,
+                });
+                let lt = self.fresh();
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Lt,
+                    ty: Ty::F64,
+                    dst: lt,
+                    a: l.val,
+                    b: hi_v,
+                });
+                let ok = self.bin(BinOp::And, ge, lt);
+                let zero = self.const_lit(Lit::F64(0.0));
+                let safe = self.select_of(ok, l.val, zero);
+                let dst = self.fresh();
+                self.inst(Inst::Ftoh { dst, a: safe });
+                let msg = format!(
+                    "Conversion Error: Type DOUBLE can't be cast because the value is out of \
+                     range for the destination type {}",
+                    phys(to)
+                );
+                Ok(finish(self, ok, dst, msg, live))
+            }
+            (Ty::Str, _) => {
+                let (ok, dst) = (self.fresh(), self.fresh());
+                self.inst(Inst::StonOpt {
+                    to,
+                    flag: ok,
+                    dst,
+                    a: l.val,
+                });
+                let msg = format!("Conversion Error: Could not convert string to {}", phys(to));
+                Ok(finish(self, ok, dst, msg, live))
+            }
+            (f, t) => Err(PrepareError::Internal(format!(
+                "cast {} -> {} escaped the frontend",
+                f.name(),
+                t.name()
             ))),
         }
     }

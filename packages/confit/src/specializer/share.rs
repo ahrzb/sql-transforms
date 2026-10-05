@@ -224,6 +224,7 @@ fn shallow_hash(e: &SExpr, children: &[u32]) -> u64 {
         SKind::Lit(l) => match l {
             Lit::I1(b) => b.hash(&mut h),
             Lit::I64(v) => v.hash(&mut h),
+            Lit::I128(v) => v.hash(&mut h),
             // `Lit`'s equality: bitwise, except NaNs of one sign are equal.
             Lit::F64(v) if v.is_nan() => v.is_sign_negative().hash(&mut h),
             Lit::F64(v) => v.to_bits().hash(&mut h),

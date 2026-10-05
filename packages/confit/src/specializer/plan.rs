@@ -879,6 +879,135 @@ pub fn may_trap(e: &SExpr) -> bool {
 /// inf/NaN, or a NULL flag); an integer or DECIMAL one can overflow. Any
 /// kind not named counts as trapping.
 pub fn can_trap(e: &SExpr) -> bool {
+    can_trap_under(e, &mut Vec::new())
+}
+
+/// [`can_trap`] where `facts` hold: each a CASE condition with whether it
+/// was taken (TRUE) or passed (FALSE or NULL) on the way to `e`.
+fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool {
+    use super::ir::NumOp1 as Op;
+    let any = |xs: &[&'a SExpr], facts: &mut Vec<(&'a SExpr, bool)>| {
+        xs.iter().any(|x| can_trap_under(x, facts))
+    };
+    match &e.kind {
+        // Total on every DOUBLE, NaN and the infinities included (measured,
+        // DuckDB 1.5.5: exp(1000) is inf, -NaN is NaN).
+        SKind::MathF1 {
+            op: Op::Fneg | Op::Fabs | Op::Fround | Op::Fexp | Op::Fcbrt | Op::Ffloor | Op::Fceil | Op::Ftrunc,
+            a,
+        } => any(&[a], facts),
+        // ln/log2/log10 raise exactly when x <= 0 (-0.0 and -inf included;
+        // NaN is NaN), sqrt when x < 0 (sqrt(-0.0) is -0.0). Under a CASE
+        // guard that rules that out, they cannot.
+        SKind::MathF1 {
+            op: op @ (Op::Ln | Op::Log2 | Op::Log10 | Op::Fsqrt),
+            a,
+        } => {
+            let strict = !matches!(op, Op::Fsqrt);
+            any(&[a], facts) || !facts.iter().any(|&(c, taken)| guards(c, taken, a, strict))
+        }
+        SKind::Case { arms, default } => {
+            let depth = facts.len();
+            let mut trap = false;
+            for (c, r) in arms {
+                if can_trap_under(c, facts) {
+                    trap = true;
+                    break;
+                }
+                facts.push((c, true));
+                let t = can_trap_under(r, facts);
+                facts.pop();
+                if t {
+                    trap = true;
+                    break;
+                }
+                facts.push((c, false));
+            }
+            if !trap {
+                trap = default.as_deref().is_some_and(|d| can_trap_under(d, facts));
+            }
+            facts.truncate(depth);
+            trap
+        }
+        SKind::Arith { a, b, .. } if e.ty.lane() == Ty::F64 => any(&[a, b], facts),
+        // Only the integer abs traps (on its minimum); DuckDB's DOUBLE abs
+        // is fabs (measured: `abs(-1e308)`, `abs(-inf)`, `abs(NaN)` answer).
+        SKind::Abs(a) if e.ty.lane() == Ty::F64 => any(&[a], facts),
+        SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => any(&[a, b], facts),
+        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => any(&[a], facts),
+        SKind::Cast { inner, trying } if *trying || cast_is_total(inner.ty, e.ty) => {
+            any(&[inner], facts)
+        }
+        SKind::Seq { items, .. } => items.iter().any(|x| can_trap_under(x, facts)),
+        _ => can_trap_here(e),
+    }
+}
+
+/// Whether condition `c`, TRUE (`taken`) or else FALSE or NULL, leaves `a`
+/// positive (`strict`) or non-negative, NaN or NULL: the values on which
+/// ln (`strict`) or sqrt cannot raise. DuckDB orders NaN above every
+/// number, so `x <= 0` is FALSE for NaN, and `x > 0` TRUE.
+fn guards(c: &SExpr, taken: bool, a: &SExpr, strict: bool) -> bool {
+    match (&c.kind, taken) {
+        (SKind::Or { a: l, b: r }, false) | (SKind::And { a: l, b: r }, true) => {
+            guards(l, taken, a, strict) || guards(r, taken, a, strict)
+        }
+        (SKind::Cmp { pred, a: l, b: r }, _) => {
+            let (pred, x, k) = match (lit_f64(r), lit_f64(l)) {
+                (Some(k), _) => (*pred, l, k),
+                (None, Some(k)) => {
+                    let mirrored = match pred {
+                        CmpPred::Lt => CmpPred::Gt,
+                        CmpPred::Le => CmpPred::Ge,
+                        CmpPred::Gt => CmpPred::Lt,
+                        CmpPred::Ge => CmpPred::Le,
+                        p => *p,
+                    };
+                    (mirrored, r, k)
+                }
+                _ => return false,
+            };
+            if strip_float(x) != strip_float(a) {
+                return false;
+            }
+            // What `x` is then known to be beyond (NULL or NaN aside):
+            // `> k` (open) or `>= k` (closed).
+            let bound = match (pred, taken) {
+                (CmpPred::Le, false) | (CmpPred::Gt, true) => Some((k, true)),
+                (CmpPred::Lt, false) | (CmpPred::Ge, true) => Some((k, false)),
+                _ => None,
+            };
+            match bound {
+                Some((k, open)) => {
+                    if strict {
+                        k > 0.0 || (k == 0.0 && open)
+                    } else {
+                        k >= 0.0
+                    }
+                }
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn strip_float(e: &SExpr) -> &SExpr {
+    match &e.kind {
+        SKind::IntToFloat(a) => strip_float(a),
+        _ => e,
+    }
+}
+
+fn lit_f64(e: &SExpr) -> Option<f64> {
+    match &strip_float(e).kind {
+        SKind::Lit(Lit::F64(v)) if !v.is_nan() => Some(*v),
+        SKind::Lit(Lit::I64(v)) => Some(*v as f64),
+        _ => None,
+    }
+}
+
+fn can_trap_here(e: &SExpr) -> bool {
     match &e.kind {
         SKind::Col(_)
         | SKind::Slot(_)
@@ -892,9 +1021,6 @@ pub fn can_trap(e: &SExpr) -> bool {
             can_trap(a) || can_trap(b)
         }
         SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => can_trap(a),
-        // Only the integer abs traps (on its minimum); DuckDB's DOUBLE abs
-        // is fabs (measured: `abs(-1e308)`, `abs(-inf)`, `abs(NaN)` answer).
-        SKind::Abs(a) if e.ty.lane() == Ty::F64 => can_trap(a),
         // A cast that cannot fail: TRY_CAST (a failure is NULL), and the
         // conversions that are total -- an integer or a DOUBLE to DOUBLE,
         // anything numeric or BOOLEAN to VARCHAR, an integer to a width
@@ -922,11 +1048,11 @@ pub fn can_trap(e: &SExpr) -> bool {
 fn cast_is_total(from: Ty, to: Ty) -> bool {
     match (from, to) {
         (a, b) if a == b => true,
-        (a, Ty::F64) => a.is_int() || a == Ty::I1,
-        (a, Ty::Str) => a.is_int() || a == Ty::I1 || a == Ty::F64 || a.dec().is_some(),
-        (Ty::I1, b) => b.is_int(),
-        (a, b) if a.is_int() && b.is_int() => {
-            let range = |t: Ty| t.int_range().unwrap_or((i64::MIN, i64::MAX));
+        (a, Ty::F64) => a.is_integer() || a == Ty::I1,
+        (a, Ty::Str) => a.is_integer() || a == Ty::I1 || a == Ty::F64 || a.dec().is_some(),
+        (Ty::I1, b) => b.is_integer(),
+        (a, b) if a.is_integer() && b.is_integer() => {
+            let range = |t: Ty| t.int_range128().expect("an integer width");
             let ((alo, ahi), (blo, bhi)) = (range(a), range(b));
             blo <= alo && ahi <= bhi
         }
@@ -942,16 +1068,11 @@ fn cast_is_total(from: Ty, to: Ty) -> bool {
 /// values (a fitted lane per field, every one with the same
 /// `ELSE error(..)`) come out equal, and a read keeps one of them.
 pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
+    if !can_trap(e) {
+        return None;
+    }
     match &e.kind {
         SKind::Case { arms, default } => {
-            let results: Vec<Option<SExpr>> = arms.iter().map(|(_, r)| trap_skeleton(r)).collect();
-            let default = default.as_deref().and_then(trap_skeleton);
-            if default.is_none()
-                && results.iter().all(Option::is_none)
-                && !arms.iter().any(|(c, _)| can_trap(c))
-            {
-                return None;
-            }
             let null = || SExpr {
                 kind: SKind::NullOf,
                 ty: e.ty,
@@ -961,10 +1082,12 @@ pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
                 kind: SKind::Case {
                     arms: arms
                         .iter()
-                        .zip(results)
-                        .map(|((c, _), r)| (c.clone(), r.unwrap_or_else(null)))
+                        .map(|(c, r)| (c.clone(), trap_skeleton(r).unwrap_or_else(null)))
                         .collect(),
-                    default: default.map(Box::new),
+                    default: default
+                        .as_deref()
+                        .and_then(trap_skeleton)
+                        .map(Box::new),
                 },
                 ty: e.ty,
                 nullable: true,
@@ -997,7 +1120,7 @@ pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
                 }
             }
         }
-        _ => can_trap(e).then(|| e.clone()),
+        _ => Some(e.clone()),
     }
 }
 
@@ -1027,7 +1150,7 @@ fn traps_only_in_operands(e: &SExpr) -> bool {
 /// it as a flag, so the dividend is always evaluated; the binder reads it
 /// for nullability.
 pub fn zero_divisor_nulls(op: ArithOp, ty: Ty) -> bool {
-    (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv
+    (op == ArithOp::Rem && ty.is_integer()) || op == ArithOp::IDiv
 }
 
 pub fn bind_foldable(e: &SExpr) -> bool {
