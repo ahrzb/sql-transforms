@@ -7,26 +7,31 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
-   `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
-   `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
-   (x scores), `LinearDiscriminantAnalysis`: a matvec, so a measured bound
-   (`_helpers.dot`).
-2. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
-3. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
+1. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
+2. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
    (`handle_unknown`, `drop`, infrequent categories), `TargetEncoder`
    (transform of new rows only). Needs string features in the fixtures.
-4. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 3).
-5. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+3. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 2).
+4. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
-   twin, `AdditiveChi2Sampler`, `SkewedChi2Sampler`, `RBFSampler`,
-   `PolynomialCountSketch`.
-6. **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
-   `BisectingKMeans`, `Birch` (`transform` = distances).
-7. **Compositions:** a step whose instances are `Pipeline`s of catalog
+   twin, `AdditiveChi2Sampler`.
+5. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
+
+## Waiting on the owner
+
+- **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
+  `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
+  `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
+  (x scores), `LinearDiscriminantAnalysis`: a BLAS matvec whose order the
+  entry cannot follow, and whose error is not small in ulps of the result
+  (decisions/open/matvec-parity-bound.md).
+- **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
+  `BisectingKMeans`, `Birch` (`transform` = distances, through BLAS), and
+  the samplers that project through a matrix: `RBFSampler`,
+  `SkewedChi2Sampler`, `PolynomialCountSketch`. The same ruling.
 
 ## Needs from confit
 
