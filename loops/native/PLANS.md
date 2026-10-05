@@ -51,10 +51,10 @@ Easiest first; each is one family, one PR.
   (release build, master 49acad5; a confit-only reproduction is in the
   message sent to the confit loop, 2026-10-05). The catalog no longer
   needs it: `QuantileTransformer` answers both searches from one tree
-  whose leaves compute both lines (T12), 0.5, 1.25, 2.9 s at 1,000, 2,000,
-  4,000 quantiles over one feature against 1.6, 5.5, 25 s for the two
-  trees, measured on one container, 2026-10-05; capped at 8,000 quantiles
-  over an estimator's features (6-9 s at that sum). Low priority for
+  whose leaves compute both lines (T12), 0.5, 1.3, 2.7-3.2 s at 1,000,
+  2,000, 4,000 quantiles over one feature against 1.4, 4.7, 23 s for the
+  two trees (release build, one container, 2026-10-05); capped at 8,000
+  quantiles over an estimator's features (6-8 s at that sum). Low priority for
   confit: a future entry that needs two trees in one expression would
   raise it again.
 
@@ -122,7 +122,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
-  features, where builds reach 6-9 s (`quantile.MAX_QUANTILES`).
+  features, where builds reach 6-8 s (`quantile.MAX_QUANTILES`).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add

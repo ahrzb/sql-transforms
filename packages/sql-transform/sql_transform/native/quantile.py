@@ -75,17 +75,18 @@ from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, translates
 
 # The most quantiles served per estimator, summed over its features. One
-# tree builds about linearly in its leaves (one feature: 0.5 s at 1,000
-# quantiles, 1.25 s at 2,000, 2.9 s at 4,000, 6.6 s at 8,000, where both
-# searches as two trees took 1.6, 5.5 and 25 s up to 4,000), and so does an
-# estimator in its total: 8,000 quantiles as 4,000 over two features build
-# in 6.8-7.3 s, 2,000 over four in 7.1-7.2 s, 1,000 over eight in 7.0-7.2
-# s, 100 over 80 in 6.1-6.2 s, 10 over 800 in 8.3-8.7 s (warm; the first
-# build in a process within 15% of these), against 11.7 s for the old cap's
-# slowest, 1,000 over four, on the same container. Fits with runs build
-# faster: fewer leaves outweigh their arms. Serving 64 rows is 28 times
-# faster than the twin at 1,000 over one feature, 2 times at 8,000 over
-# one, 12 times at 10 over 800 (release build, 2026-10-05).
+# tree builds about linearly in its leaves (one feature, warm: 0.5-0.6 s
+# at 1,000 quantiles, 1.3-1.4 s at 2,000, 2.7-3.2 s at 4,000, 6.4-6.9 s at
+# 8,000, where both searches as two trees took 1.4-1.6, 4.7-4.8 and 23-24
+# s up to 4,000), and so does an estimator in its total: 8,000 quantiles
+# as 4,000 over two features build in 6.8-7.5 s, 2,000 over four in
+# 6.6-7.1 s, 1,000 over eight in 6.9-7.1 s, 100 over 80 in 6.2-6.4 s, 10
+# over 800 in 7.8-8.0 s (the first build in a process within 10% of
+# these), against 7.0 s for the old caps' slowest, 1,000 over four. Fits
+# with runs build faster: fewer leaves outweigh their arms. Serving 64
+# rows is 25 times faster than the twin at 1,000 over one feature, 2 times
+# at 8,000 over one, 3 at 1,000 over eight, 13 at 10 over 800 (release
+# build, one container, 2026-10-05).
 MAX_QUANTILES = 8000
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
