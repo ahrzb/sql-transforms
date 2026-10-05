@@ -15,7 +15,8 @@ always correct to serve, only slower.
 The catalog is one module per family (`scalers.py`, `impute.py`,
 `select.py`, `function.py`, `polynomial.py`, `encode.py`, `quantile.py`,
 `isotonic.py`, ...), each entry registered with
-`@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`).
+`@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`,
+a `ColumnTransformer`, a `FeatureUnion`).
 This package imports confit and sklearn and nothing else of sql_transform
 but the step class, so the rest of the package can change around it.
 """

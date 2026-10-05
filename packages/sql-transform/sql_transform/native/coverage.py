@@ -51,11 +51,12 @@ def rows() -> list[tuple[str, str, str]]:
     native = {c.__name__: e for c, e in catalog().items()}
     out = []
     for name, _ in sorted(all_estimators(type_filter="transformer")):
-        if name in native:
+        # A composition stays one, served or not (goal.md, "Scope").
+        if name in COMPOSITIONS:
+            out.append((name, "composition", COMPOSITIONS[name]))
+        elif name in native:
             b = native[name].ulps
             out.append((name, "native", "bit-exact" if b == 0 else f"within {b} ulps"))
-        elif name in COMPOSITIONS:
-            out.append((name, "composition", COMPOSITIONS[name]))
         elif name in OUT_OF_SCOPE:
             out.append((name, "out of scope", OUT_OF_SCOPE[name]))
         else:

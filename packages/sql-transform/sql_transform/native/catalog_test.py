@@ -20,6 +20,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.cluster import FeatureAgglomeration
+from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import (
     RFE,
@@ -38,7 +39,7 @@ from sklearn.feature_selection import (
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
     Binarizer,
     FunctionTransformer,
@@ -316,6 +317,120 @@ FIXTURES[Pipeline] = [
 ]
 
 
+# ColumnTransformer and FeatureUnion. Column specs hold at every width the
+# generator draws (1 to 32): callables over the fit matrix, a short slice,
+# a boolean mask; a part whose selection is empty is skipped, as sklearn
+# skips it. An encoder part selects the string columns, beside a numeric
+# part over the rest; the generator reads the tags of the first part
+# (`_runs`), so an encoder or imputer goes first to get strings or holes.
+
+
+def _string_cols(X: np.ndarray) -> list[int]:
+    # A string feature is fitted as str or None; a number as a float.
+    if X.dtype != object:
+        return []
+    return [
+        j
+        for j in range(X.shape[1])
+        if any(v is None or isinstance(v, str) for v in X[:, j])
+    ]
+
+
+def _number_cols(X: np.ndarray) -> list[int]:
+    strings = set(_string_cols(X))
+    return [j for j in range(X.shape[1]) if j not in strings]
+
+
+def _evens(X: np.ndarray) -> list[int]:
+    return list(range(0, X.shape[1], 2))
+
+
+def _odds(X: np.ndarray) -> list[int]:
+    return list(range(1, X.shape[1], 2))
+
+
+def _thirds(X: np.ndarray) -> np.ndarray:
+    return np.arange(X.shape[1]) % 3 == 1
+
+
+def _onehot() -> OneHotEncoder:
+    return OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+
+
+FIXTURES[ColumnTransformer] = [
+    lambda: ColumnTransformer(
+        [("std", StandardScaler(), _evens), ("minmax", MinMaxScaler(), _odds)]
+    ),
+    lambda: ColumnTransformer(
+        [
+            ("first", RobustScaler(), slice(0, 1)),
+            ("mask", Binarizer(threshold=0.5), _thirds),
+            ("maxabs", MaxAbsScaler(clip=True), lambda X: [X.shape[1] - 1]),
+        ],
+        remainder="passthrough",
+    ),
+    lambda: ColumnTransformer(
+        [("std", StandardScaler(), _evens)], remainder=PolynomialFeatures()
+    ),
+    lambda: ColumnTransformer(
+        [("std", StandardScaler(), _evens), ("pass", "passthrough", _odds)],
+        transformer_weights={"std": 0.1},
+    ),
+    lambda: ColumnTransformer(
+        [("enc", _onehot(), _string_cols), ("num", StandardScaler(), _number_cols)]
+    ),
+    lambda: ColumnTransformer(
+        [
+            (
+                "enc",
+                OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+                _string_cols,
+            ),
+            ("num", make_pipeline(SimpleImputer(), StandardScaler()), _number_cols),
+        ],
+        transformer_weights={"enc": -3.0},
+    ),
+    lambda: ColumnTransformer(
+        [
+            ("imp", SimpleImputer(strategy="median", add_indicator=True), _evens),
+            ("maxabs", MaxAbsScaler(), _odds),
+        ],
+        remainder="passthrough",
+    ),
+]
+
+FIXTURES[FeatureUnion] = [
+    lambda: FeatureUnion([("std", StandardScaler()), ("minmax", MinMaxScaler())]),
+    lambda: FeatureUnion(
+        [
+            ("imp", SimpleImputer()),
+            ("ind", MissingIndicator(features="all")),
+            ("std", StandardScaler(with_mean=False)),
+        ]
+    ),
+    lambda: FeatureUnion(
+        [("std", StandardScaler()), ("robust", RobustScaler())],
+        transformer_weights={"robust": 0.3},
+    ),
+    lambda: FeatureUnion(
+        [("minmax", MinMaxScaler()), ("gone", "drop"), ("pass", "passthrough")]
+    ),
+    lambda: FeatureUnion(
+        [
+            ("pipe", make_pipeline(SimpleImputer(), StandardScaler())),
+            ("pass", "passthrough"),
+        ],
+        transformer_weights={"pipe": 2},
+    ),
+    lambda: FeatureUnion(
+        [
+            ("bins", KBinsDiscretizer(n_bins=3, encode="onehot-dense")),
+            ("poly", PolynomialFeatures(include_bias=False)),
+        ]
+    ),
+]
+
+
 def _clusters(count: Callable[[int], int], **kw: Any) -> Callable[[], Any]:
     """A FeatureAgglomeration factory whose fit sets `n_clusters` to
     `count(n_features)` first: the generator draws the width, and a fit
@@ -491,13 +606,20 @@ def _step(cls_factory, seed: int, variant: int = 0) -> PythonTransform:
 
 def _runs(est: Any) -> list[Any]:
     """The estimators `transform` runs, in order: `est`, or a pipeline's
-    steps that run, nested ones flattened. A `Pipeline`'s own tags do not
-    say what it takes: sklearn 1.9 copies only `pairwise` (first step) and
-    `sparse` (all steps) from its steps, so `allow_nan` and `categorical`
-    read False. The generator reads its steps' instead."""
-    if not isinstance(est, Pipeline):
+    steps that run, or a column transformer's or union's parts (remainder
+    last), nested ones flattened. A composition's own tags do not say what
+    it takes: sklearn 1.9 copies only `pairwise` (a pipeline's first step)
+    and `sparse` (all steps or parts) from its estimators, so `allow_nan`
+    and `categorical` read False. The generator reads theirs instead."""
+    if isinstance(est, Pipeline):
+        return [r for _, _, s in est._iter() for r in _runs(s)]
+    if isinstance(est, ColumnTransformer):
+        parts = [t for _, t, _ in est.transformers] + [est.remainder]
+    elif isinstance(est, FeatureUnion):
+        parts = [t for _, t in est.transformer_list]
+    else:
         return [est]
-    return [r for _, _, s in est._iter() for r in _runs(s)]
+    return [r for t in parts if not isinstance(t, str) for r in _runs(t)]
 
 
 def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
