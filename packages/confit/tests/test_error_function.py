@@ -42,16 +42,19 @@ DISPATCH = (
         (f"SELECT {DISPATCH} AS o FROM __THIS__", ROWS),
         (f"SELECT {DISPATCH} + 1 AS o FROM __THIS__", ROWS),
         (
-            "SELECT CASE WHEN a = 0 THEN 1 ELSE error('it''s ' || 'bad') END AS o FROM __THIS__",
+            "SELECT CASE WHEN a = 0 THEN 1 ELSE error('it''s ' || 'bad') END AS o "
+            "FROM __THIS__",
             SAFE,
         ),
         ("SELECT CASE WHEN a = 0 THEN 1 ELSE error(NULL) END AS o FROM __THIS__", ROWS),
         (
-            "SELECT CASE WHEN a = 0 THEN s ELSE error(CAST(NULL AS VARCHAR)) END AS o FROM __THIS__",
+            "SELECT CASE WHEN a = 0 THEN s ELSE error(CAST(NULL AS VARCHAR)) END AS o "
+            "FROM __THIS__",
             ROWS,
         ),
         (
-            "SELECT CASE a WHEN 0 THEN 1.5 ELSE error('x') END AS o FROM __THIS__ WHERE a = 0",
+            "SELECT CASE a WHEN 0 THEN 1.5 ELSE error('x') END AS o FROM __THIS__ "
+            "WHERE a = 0",
             ROWS,
         ),
         (
@@ -59,7 +62,8 @@ DISPATCH = (
             ROWS,
         ),
         (
-            "SELECT a FROM __THIS__ WHERE CASE WHEN a = 0 THEN TRUE ELSE error('w') END",
+            "SELECT a FROM __THIS__ "
+            "WHERE CASE WHEN a = 0 THEN TRUE ELSE error('w') END",
             SAFE,
         ),
     ],
@@ -71,7 +75,8 @@ def test_an_error_arm_agrees_with_the_oracle(sql, rows):
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT CASE WHEN a = 0 THEN 1 ELSE error('no instance') END AS o FROM __THIS__",
+        "SELECT CASE WHEN a = 0 THEN 1 ELSE error('no instance') END AS o "
+        "FROM __THIS__",
         "SELECT CASE WHEN TRUE THEN error('always') ELSE 1 END AS o FROM __THIS__",
     ],
 )
