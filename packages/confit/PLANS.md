@@ -33,11 +33,20 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    echoes the SQL text. Needs DuckDB's expression printer for the output
    name, at the top level and at every subquery boundary.
 
-## Waiting on the owner
+## For the native catalog
 
-- SQL-defined transforms (owner's proposal, 2026-10-05): a spec first, or
-  build. Settled: confit only applies fitted transforms; fitting is not its
-  concern.
+`sql_transform.native` (its own loop, `packages/sql-transform/docs/native/`)
+lists what it needs from confit under its PLANS "Needs from confit"; this
+loop builds those, ahead of the query classes, since each one unblocks
+catalog entries. Today:
+
+1. **`error()`**, so an unknown instance id raises as the Python twin does.
+2. **A field read over a CASE-valued struct** (`(CASE ... END).p` refuses),
+   so a NULL id can answer a NULL struct.
+3. **List-valued SQL functions** (`SqlFunction` refuses list returns), for
+   steps with unnamed width-k output.
+4. **Dispatch on many instances**: a constant lookup in place of the CASE
+   ladder over fitted groups.
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
 
