@@ -1444,7 +1444,7 @@ pub fn compile_ext(
         .map_err(|e| CompileError::Codegen(format!("cranelift declare row: {e}")))?;
     module
         .define_function(fid, &mut ctx)
-        .map_err(|e| CompileError::Codegen(format!("cranelift define: {e}")))?;
+        .map_err(define_error)?;
     module.clear_context(&mut ctx);
     module
         .finalize_definitions()
@@ -2845,5 +2845,36 @@ mod tests {
         assert_eq!(out, lo.wrapping_add(lo));
         f(&mut out, &lo, &hi, 0);
         assert_eq!(out, hi.wrapping_add(hi));
+    }
+}
+
+/// A failed `define_function`: past one of Cranelift's size limits (more
+/// virtual registers than it can number) is this query's size, refused by
+/// name; anything else is an engine bug.
+fn define_error(e: cranelift_module::ModuleError) -> CompileError {
+    use cranelift_codegen::CodegenError;
+    match e {
+        cranelift_module::ModuleError::Compilation(
+            c @ (CodegenError::CodeTooLarge | CodegenError::ImplLimitExceeded),
+        ) => CompileError::TooLarge(c.to_string()),
+        e => CompileError::Codegen(format!("cranelift define: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod define_error_tests {
+    use super::*;
+
+    #[test]
+    fn a_size_limit_is_a_named_refusal() {
+        let e = define_error(cranelift_module::ModuleError::Compilation(
+            cranelift_codegen::CodegenError::CodeTooLarge,
+        ));
+        assert!(matches!(e, CompileError::TooLarge(_)));
+        assert!(e.to_string().starts_with("unsupported: "), "{e}");
+        let e = define_error(cranelift_module::ModuleError::Compilation(
+            cranelift_codegen::CodegenError::Unsupported("x".into()),
+        ));
+        assert!(matches!(e, CompileError::Codegen(_)));
     }
 }

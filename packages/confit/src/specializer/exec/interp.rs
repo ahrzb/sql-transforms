@@ -89,6 +89,9 @@ pub enum CompileError {
     /// Cranelift failed to generate code for a program the interpreter
     /// accepts: an engine bug, never a reason to fall back silently.
     Codegen(String),
+    /// The program is past a code-size limit of Cranelift's: a named
+    /// refusal of this query's size, not an engine bug.
+    TooLarge(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -117,6 +120,12 @@ impl std::fmt::Display for CompileError {
             CompileError::Regex(msg) => write!(f, "regex table entry failed to compile: {msg}"),
             CompileError::InterpOnly(why) => write!(f, "interpreter only: {why}"),
             CompileError::Codegen(msg) => write!(f, "cranelift codegen failed: {msg}"),
+            CompileError::TooLarge(msg) => write!(
+                f,
+                "unsupported: the compiled query is past the code generator's \
+                 size limit ({msg}) -- fewer output columns or a smaller \
+                 expression per column builds"
+            ),
         }
     }
 }
