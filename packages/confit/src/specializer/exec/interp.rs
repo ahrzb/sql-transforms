@@ -1754,6 +1754,7 @@ fn cmp_key(stored: &[KeyBits], key_regs: &[usize], ctx: &Ctx<'_>) -> std::cmp::O
             (KeyBits::I64(s), RegVal::I64(v)) => s.cmp(&v),
             (KeyBits::F64(s), RegVal::F64(v)) => s.cmp(&super::canon_f64_bits(v)),
             (KeyBits::Str(s), RegVal::Str(v)) => s.as_str().cmp(ctx.arena.get(v)),
+            (KeyBits::Dec(s, ..), RegVal::Dec(v)) => s.cmp(&v),
             _ => unreachable!("probe key types checked at compile"),
         };
         if ord != Ordering::Equal {

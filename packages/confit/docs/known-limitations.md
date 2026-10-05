@@ -141,8 +141,9 @@ bool. Measured consequences:
   DuckDB's types (docs/specs/decimal-expressions.md): `+ - * %`, the
   casts, comparisons, `CASE`/`COALESCE`/`greatest`/`IN` unification, and
   the DECIMAL overloads of `abs`/`ceil`/`floor`/`round`/`trunc`. What
-  refuses, by name: a DECIMAL join key EXPRESSION against anything but a
-  DOUBLE build key, casts between a DECIMAL and a DOUBLE/VARCHAR/BOOLEAN
+  refuses, by name: a DECIMAL join key EXPRESSION against a VARCHAR build
+  key or past the 38-digit common type (DECIMAL, integer and DOUBLE build
+  keys serve, compared in DuckDB's common type), casts between a DECIMAL and a DOUBLE/VARCHAR/BOOLEAN
   in the INTO direction, and `IN`/`BETWEEN` families capped at 38 digits.
   `decimal256` columns refuse (DuckDB itself refuses them at arrow
   register, at any precision). A Python row value for a DECIMAL column is a

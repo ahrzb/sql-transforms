@@ -55,11 +55,14 @@ The first five are ruled, in this order; the rest follow.
 - **Decimal remainders.** Decimal expressions serve
   (docs/specs/decimal-expressions.md). Still refused by name: casts from
   DOUBLE/VARCHAR/BOOLEAN into a DECIMAL (DuckDB's double->decimal rounding
-  and its string parser), a DECIMAL join key expression against a
-  non-DOUBLE build key, and `IN`/`BETWEEN` families capped at 38 digits.
-  DECIMAL row columns serve (`tests/test_decimal_rows.py`); the generator
-  carries one on every seed 3 (mod 7), observable through star expansion and
-  the row boundary, since decimals are not in the expression grammar yet.
+  and its string parser), a DECIMAL join key expression against a VARCHAR
+  build key, a decimal key pair whose common type passes 38 digits (DuckDB
+  caps it and the per-row cast can fail), and `IN`/`BETWEEN` families capped
+  at 38 digits. DECIMAL row columns serve (`tests/test_decimal_rows.py`), as
+  join keys too, against DECIMAL, integer and DOUBLE build keys; the
+  generator carries one on every seed 3 (mod 7), observable through star
+  expansion and the row boundary, and keys that seed's first ON join on it
+  (tag `decimal-key`), since decimals are not in the expression grammar yet.
 - **i128 lane.** HUGEINT/UHUGEINT and the unsigned family (columns, statics,
   CAST targets) refuse. Needs i128 arithmetic and traps on both backends and
   exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves

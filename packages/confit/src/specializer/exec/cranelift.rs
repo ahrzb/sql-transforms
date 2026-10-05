@@ -1009,6 +1009,7 @@ extern "C" fn h_probe(
                     let v = arena.get(span(cell[0] as i64, cell[1] as i64));
                     s.as_str().cmp(v)
                 }
+                KeyBits::Dec(s, ..) => s.cmp(&((((cell[1] as u128) << 64) | cell[0] as u128) as i128)),
             };
             if ord != std::cmp::Ordering::Equal {
                 return ord;
@@ -2272,9 +2273,9 @@ fn translate_inst(
                             Ty::I1 => b.ins().uextend(types::I64, v),
                             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
                             Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
-                            Ty::Dec(..) => {
-                                unreachable!("a probe expression is never a decimal")
-                            }
+                            // The whole 16-byte cell: the i128 as the
+                            // helper reads it back (lo, hi).
+                            Ty::Dec(..) => v,
                             Ty::Str => unreachable!(),
                         };
                         b.ins().stack_store(as64, slot_keys, base);

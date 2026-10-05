@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
@@ -441,22 +442,28 @@ def test_an_opaque_shared_column_refuses_by_name(sql, aty, vals, col):
     _refuses(sql, row_schema, static, f"'{col}'")
 
 
-def test_a_row_side_decimal_shared_column_refuses_by_name():
-    """A decimal row column is a lane now, so a shared DECIMAL key binds on
-    both sides, and refuses for what it is: a DECIMAL probe key against a
-    DECIMAL build key (PLANS, "Decimal remainders")."""
-    dec = pa.decimal128(10, 2)
+@pytest.mark.parametrize("sql", _FORMS[:1] + _LEFT_FORMS[:1])
+def test_a_decimal_shared_column_keys_on_both_sides(sql):
+    """A decimal row column is a lane, so a shared DECIMAL column keys the
+    join on both sides, compared in the common decimal type."""
     row_schema = pa.schema(
-        [pa.field("id", pa.int64(), nullable=False), pa.field("t", dec)]
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("t", pa.decimal128(10, 2)),
+        ]
+    )
+    row = _row_table(
+        row_schema,
+        [{"id": 5, "t": Decimal("1.00")}, {"id": 5, "t": Decimal("1.50")}],
     )
     static = pa.table(
         {
-            "id": pa.array([5], pa.int64()),
-            "t": pa.array([1], dec),
-            "z": pa.array([7], pa.int64()),
+            "id": pa.array([5, 5], pa.int64()),
+            "t": pa.array([Decimal("1.0"), None], pa.decimal128(3, 1)),
+            "z": pa.array([7, 8], pa.int64()),
         }
     )
-    _refuses(_FORMS[0], row_schema, static, "DECIMAL probe keys")
+    assert ours(sql, row, static) == _oracle(sql, row, static)
 
 
 def test_a_struct_key_with_an_unlaneable_field_refuses_by_name():
