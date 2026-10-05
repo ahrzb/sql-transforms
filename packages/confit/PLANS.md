@@ -2,7 +2,9 @@
 
 My working list: open work only, highest value first within each section.
 Facts about what confit does live in `docs/`; questions waiting on a ruling are
-records in `docs/decisions/open/`. Remove an item when it lands.
+records in `docs/decisions/open/`. Remove an item when it lands. How the loop
+runs (inline or with workers, and how work becomes tickets):
+`docs/loop/README.md`; the live tickets: `docs/loop/tickets.md`.
 
 ## Next
 
