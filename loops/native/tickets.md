@@ -9,9 +9,10 @@ then [`worker-brief.md`](worker-brief.md), then its ticket's section below.
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 | T1 | `Pipeline` of catalog entries | `claude/native-pipeline` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_018LHu15JPWd1LYRNLLTHeZJ` | #368 | merged |
-| T2 | `FunctionTransformer` over numpy functions with an exact SQL twin | `claude/native-function` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_01KLp5t39aq6tePxHvz7kJwi` | #367 | in review |
+| T2 | `FunctionTransformer` over numpy functions with an exact SQL twin | `claude/native-function` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_01KLp5t39aq6tePxHvz7kJwi` | #367 | merged |
 | T3 | move the loop to `loops/native/` | `claude/native-loops` | #361 (merged) | every native doc; T1 and T2 merge master after it | inline | #366 | merged |
-| T4 | adopt confit #362; re-measure the caps (Box-Cox width, `MAX_QUANTILES`, `MAX_LANES`) | `claude/native-caps` | — | `catalog_test.py` (`MAX_LANES`), PLANS | inline | #369 | in review |
+| T4 | adopt confit #362; re-measure the caps (Box-Cox width, `MAX_QUANTILES`, `MAX_LANES`) | `claude/native-caps` | — | `catalog_test.py` (`MAX_LANES`), PLANS | inline | #369 | merged |
+| T5 | adopt confit #363 and #358: `Normalizer` re-measured, the max norm as one `greatest` | `claude/native-shared` | — | `_helpers.py` (`row_max`), PLANS | inline | #372 | in review |
 
 Next up, once a slot frees and the account's usage warning clears:
 `SplineTransformer`, then `AdditiveChi2Sampler`, then `ColumnTransformer`

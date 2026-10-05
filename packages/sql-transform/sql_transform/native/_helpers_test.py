@@ -93,7 +93,7 @@ def test_row_sumsq_is_row_norms(n):
     _assert_rows(_oracle(row_sumsq, x), want, x)
 
 
-@pytest.mark.parametrize("n", [1, 2, 3, 5, 8, 13])
+@pytest.mark.parametrize("n", [1, 2, 3, 5, 8, 13, 32, 48])
 def test_row_max_is_numpys(n):
     # The twin validates its rows finite: no NaN here.
     x = np.nan_to_num(_matrix(2, n), nan=1.0, posinf=7.0, neginf=-7.0)
