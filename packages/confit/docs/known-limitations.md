@@ -185,13 +185,17 @@ bool. Measured consequences:
   wider expression (`a + a > 0`, `CAST(a + a AS BIGINT)`), exactly where
   DuckDB raises. The trap text names the width (`value out of range for
   INTEGER`) rather than DuckDB's operator wording, which the error-text
-  rule permits. HUGEINT and the unsigned family are not
-  served — they refuse by name rather than collapse to i64 (see the
-  static-column entry above). The same holds for CAST targets: only
-  TINYINT, SMALLINT, INTEGER, BIGINT, DOUBLE, VARCHAR and BOOLEAN (and
-  DuckDB's aliases for them) are served; every other target — HUGEINT, the
-  unsigned family, FLOAT/REAL, INTERVAL, dates — refuses
-  with `CAST target type <T>`.
+  rule permits. UTINYINT, USMALLINT and UINTEGER are narrow widths of the
+  same lane (columns, statics and CAST targets, with DuckDB's own operator
+  and unification lattices; `tests/test_unsigned.py`); unary minus over
+  one (DuckDB wraps it), a shift, and a CAST from DOUBLE to one (DuckDB
+  range-checks before rounding) refuse by name. HUGEINT, UBIGINT and
+  UHUGEINT are not served — they refuse by name rather than collapse to
+  i64 (see the static-column entry above). The same holds for CAST
+  targets: only TINYINT, SMALLINT, INTEGER, BIGINT, the three unsigned
+  widths, DOUBLE, VARCHAR and BOOLEAN (and DuckDB's aliases for them) are
+  served; every other target — HUGEINT, UBIGINT, UHUGEINT, FLOAT/REAL,
+  INTERVAL, dates — refuses with `CAST target type <T>`.
 
 ## 4. Semantics descoped after measurement
 

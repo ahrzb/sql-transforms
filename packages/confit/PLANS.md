@@ -78,9 +78,12 @@ The first five are ruled, in this order; the rest follow.
   generator carries one on every seed 3 (mod 7), observable through star
   expansion and the row boundary, and keys that seed's first ON join on it
   (tag `decimal-key`), since decimals are not in the expression grammar yet.
-- **i128 lane.** HUGEINT/UHUGEINT and the unsigned family (columns, statics,
-  CAST targets) refuse. Needs i128 arithmetic and traps on both backends and
-  exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
+- **i128 lane.** UTINYINT/USMALLINT/UINTEGER serve on the i64 lane
+  (`tests/test_unsigned.py`; the generator makes some narrow columns and
+  casts unsigned on every seed 6 (mod 11), tag `unsigned`), refusing by name
+  unary minus, shifts, and DOUBLE-to-unsigned casts. HUGEINT, UBIGINT and
+  UHUGEINT (columns, statics, CAST targets) refuse. Needs i128 arithmetic
+  and traps on both backends and exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
   (it is BIGINT on DuckDB); the bare 9223372036854775808, and the minimum
   negated twice, are HUGEINT and refuse.
 - **Non-scalar values.** Whole structs, struct literals, bracket access, lists
