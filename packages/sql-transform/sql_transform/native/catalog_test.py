@@ -217,10 +217,10 @@ UNSEEN = ["zz", "", "A"]
 EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324]
 # A row of only these has a norm under sklearn's zero-scale threshold.
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
-# The widest step drawn, in output lanes. confit's build time grows faster
-# than the lanes read (PLANS, "Needs from confit"), and a wider fixture
-# checks the same translation, only slower: a 1,351-lane PolynomialFeatures
-# draw took 115 s.
+# The widest step drawn, in output lanes: a wider fixture checks the same
+# translation, only slower. Set while confit's builds grew about as
+# lanes^2.5 (a 1,351-lane PolynomialFeatures draw took 115 s); since #350
+# they grow about as lanes^1.4, and PLANS "Next" raises it.
 MAX_LANES = 300
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, docs/native/reports.md).

@@ -10,10 +10,16 @@ Easiest first; each is one family, one PR.
 1. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
-   twin, `AdditiveChi2Sampler`.
+   twin, `AdditiveChi2Sampler`. In progress, wave 1 (subagents.md):
+   `PowerTransformer` on `claude/native-power`
+   (`session_01KRvmpULPVDQtRxRx6XrBRG`), `QuantileTransformer` on
+   `claude/native-quantile` (`session_01Y2x9kvyGhHrtr9VTsDFv8R`).
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
+3. **Wider fixtures:** `MAX_LANES` (300) was set while builds grew about as
+   lanes^2.5; since #350 they grow about as lanes^1.4 (2,556 lanes: 3.2 s),
+   so the fixtures can draw wider steps.
 
 ## Waiting on the owner
 
@@ -30,25 +36,22 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **A subexpression shared within one call.** A `Normalizer` lane is
-  `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
-  body is O(n²) in the features. Measured on master 477ca2f through
-  `to_native`: l1 1.6 s and l2 3.5 s at 16 features; at 32 confit refuses
-  past its compiled-size limit after 9 s (l1) and 20 s (l2), and at 48
-  after 30 s (l1) and 55 s (l2; an internal Cranelift verifier error
-  until #346 named it, master fa13d32). Evaluating identical pure
-  subexpressions of a call once (or a local binding in a SQL function
-  body) makes it O(n). The max norm is capped at 8 features meanwhile.
-  Sent to the confit loop 2026-10-05.
-- **Build time linear in the lanes read.** A step whose query reads L
-  struct fields builds in time growing about as L^2.5, though its body is
-  linear in L: `PolynomialFeatures(degree=2)` at 231 lanes builds in 1.6 s,
-  496 in 6.5 s, 861 in 23 s, 1,326 in 68 s (master 477ca2f), and past
-  2,000 lanes confit refuses at its expansion cap. The catalog test draws
-  steps of at most 300 lanes meanwhile (`MAX_LANES`). Sent to the confit
-  loop 2026-10-05, with a repro.
+- **A subexpression shared within one call** (the confit loop's ticket
+  T1, in progress). A `Normalizer` lane is `x_j / g(norm(x))`, and every
+  lane repeats the row norm verbatim, so the body is O(n²) in the
+  features. Measured on master 5513891 through `to_native`: l1 1.4 s and
+  l2 3.3 s at 16 features; at 32 confit refuses past its compiled-size
+  limit after 6.9 s (l1) and 16.7 s (l2), at 48 after 23.7 s and 46.7 s.
+  A native `Normalizer` call is 2x the twin's speed where other scalers
+  are about 30x. Evaluating identical pure subexpressions of a call once
+  (or a local binding in a SQL function body) makes it O(n). The max norm
+  is capped at 8 features meanwhile. Sent to the confit loop 2026-10-05.
+- **An early size refusal** (the confit loop's ticket T2, in progress):
+  the refusals above arrive after Cranelift has spent its time (up to
+  47 s), which `to_native` pays before falling back to Python.
 
-Served since this catalog began (#336–#339, #341, #346): a constant CASE
+Served since this catalog began (#336–#339, #341, #346, #348, #350,
+#353): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -56,8 +59,13 @@ binary-search dispatch over many instances; a field read expands its call
 once (`StandardScaler` at 128 features and three groups builds in 1.2 s,
 where it passed the token cap); a cast that cannot fail is trap-free (wide
 `PolynomialFeatures` over BIGINT features built in 20-50 s, now 1-3 s);
-DuckDB's parse depth; and a named refusal past Cranelift's 24-bit index
-width, where a 48-feature `Normalizer` met a verifier error.
+DuckDB's parse depth; a named refusal past Cranelift's 24-bit index
+width, where a 48-feature `Normalizer` met a verifier error; struct reads
+that build about linearly in the lanes read (`PolynomialFeatures` at 2,556
+lanes: refused, then 287 s after #348, now 3.2 s after #350, master
+5513891); and a dropped function's JIT memory freed (each build leaked two
+memory mappings, so a process stalled at `vm.max_map_count` after about
+32,000 builds; 6,000 builds now hold 477 mappings).
 
 ## Left Python
 
