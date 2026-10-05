@@ -3,6 +3,40 @@
 
 use super::*;
 
+/// DuckDB's `max_expression_depth` default: its parser refuses an
+/// expression nested deeper (a 999-term `+` chain already is). Binding
+/// recurses per level, so past this the native stack is at risk too.
+const MAX_EXPRESSION_DEPTH: u32 = 1000;
+
+thread_local! {
+    static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// One level of [`Binder::expr_or_null`]'s recursion, released on drop.
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter() -> Result<Self, PrepareError> {
+        let d = DEPTH.with(|c| {
+            c.set(c.get() + 1);
+            c.get()
+        });
+        let g = DepthGuard;
+        if d > MAX_EXPRESSION_DEPTH {
+            return Err(PrepareError::Parse(format!(
+                "Max expression depth limit of {MAX_EXPRESSION_DEPTH} exceeded"
+            )));
+        }
+        Ok(g)
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        DEPTH.with(|c| c.set(c.get() - 1));
+    }
+}
+
 impl Binder<'_> {
     /// Bind an expression that must have a definite type on its own. A bare
     /// NULL with no adopting context takes DuckDB's SQLNULL default:
@@ -14,6 +48,15 @@ impl Binder<'_> {
     /// Like `expr`, but a bare NULL literal comes back as `None` for the
     /// caller to type from context.
     pub(super) fn expr_or_null(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        // DuckDB's parser builds AND/OR chains n-ary, so they do not count
+        // toward its depth limit (a 20000-term AND serves there).
+        let _depth = match e {
+            SqlExpr::BinaryOp {
+                op: BinaryOperator::And | BinaryOperator::Or,
+                ..
+            } => None,
+            _ => Some(DepthGuard::enter()?),
+        };
         match e {
             SqlExpr::Value(v) if matches!(v.value, SqlValue::Null) => Ok(None),
             SqlExpr::Nested(inner) => self.expr_or_null(inner),
@@ -798,28 +841,6 @@ impl Binder<'_> {
         // CONSTANT half only: `CAST(k AS INTEGER) * 2`, trapping
         // data-dependently at row time, is the lowering's narrow-width
         // range trap instead.
-        if matches!(
-            op,
-            BinaryOperator::Plus
-                | BinaryOperator::Minus
-                | BinaryOperator::Multiply
-                | BinaryOperator::Modulo
-        ) {
-            let probe = SqlExpr::BinaryOp {
-                left: Box::new(left.clone()),
-                op: op.clone(),
-                right: Box::new(right.clone()),
-            };
-            if let I32Fold::Traps = eval_i32_literal(&probe) {
-                return Err(PrepareError::Bind(format!(
-                    "integer literal arithmetic overflows INTEGER on DuckDB \
-                     ({} {op} {}) — int-literal math runs in 32 bits there; \
-                     make an operand BIGINT (CAST(.. AS BIGINT)) for 64-bit \
-                     arithmetic",
-                    left, right
-                )));
-            }
-        }
         // NO i128 comparison fold here, deliberately. Optimizer-ON DuckDB
         // answers an all-literal integer
         // comparison through wide range analysis, without ever performing the
@@ -834,6 +855,16 @@ impl Binder<'_> {
         // optimizer.
         let a = self.expr_or_null(left)?;
         let b = self.expr_or_null(right)?;
+        // After the operands, so the depth guard refuses a deep tree
+        // before this walks it.
+        if let I32Fold::Traps = eval_i32_binary(left, op, right) {
+            return Err(PrepareError::Bind(format!(
+                "integer literal arithmetic overflows INTEGER on DuckDB \
+                 ({left} {op} {right}) — int-literal math runs in 32 bits there; \
+                 make an operand BIGINT (CAST(.. AS BIGINT)) for 64-bit \
+                 arithmetic"
+            )));
+        }
         // DuckDB folds a strict op over a DECIMAL literal and a bare NULL
         // to SQLNULL — INTEGER — discarding the decimal (measured:
         // -2.681 + NULL and 2.5 * NULL are INTEGER; / stays DOUBLE). Our

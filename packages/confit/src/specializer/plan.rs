@@ -890,6 +890,13 @@ pub fn can_trap(e: &SExpr) -> bool {
                 || default.as_deref().is_some_and(can_trap)
         }
         SKind::Seq { items, .. } => items.iter().any(can_trap),
+        // A closed constant that folds to a value (`CAST('0.0' AS DOUBLE)`,
+        // how a typed constant is spelled) cannot trap: fold leaves a
+        // failing cast in place, to trap at run time.
+        _ if bind_foldable(e) => !matches!(
+            super::fold::fold(e.clone()).kind,
+            SKind::Lit(_) | SKind::NullOf
+        ),
         _ => true,
     }
 }

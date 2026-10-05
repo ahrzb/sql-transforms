@@ -237,7 +237,11 @@ fn rejects_mismatched_statics() {
             Err(CompileError::Verify(_)) | Err(CompileError::Regex(_)) => {
                 panic!("fixture failed verify?")
             }
-            Err(e @ (CompileError::InterpOnly(_) | CompileError::Codegen(_))) => {
+            Err(
+                e @ (CompileError::InterpOnly(_)
+                | CompileError::Codegen(_)
+                | CompileError::TooLarge(_)),
+            ) => {
                 panic!("the interpreter compile raised a Cranelift-only error: {e}")
             }
             Ok(_) => panic!("compile accepted bad statics (wanted '{needle}')"),

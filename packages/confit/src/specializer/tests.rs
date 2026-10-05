@@ -385,6 +385,24 @@ fn an_instance_case_lowers_to_a_search() {
 }
 
 #[test]
+fn a_constant_case_result_is_not_a_sibling_trap() {
+    // A typed constant is spelled `CAST('0.0' AS DOUBLE)`; it folds to a
+    // value, so the unread field is dropped. A constant cast that fails is
+    // still a trap, so its field is still evaluated.
+    let schema = cols(&[("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let read = |q: &str| {
+        let sql = format!(
+            "SELECT (struct_pack(p := CASE WHEN x IS NULL THEN CAST('0.0' AS DOUBLE) \
+             ELSE x END, q := CASE WHEN y IS NULL THEN CAST('{q}' AS DOUBLE) ELSE y END)).p \
+             AS o FROM __THIS__"
+        );
+        print(&prep(&sql, &schema).unwrap())
+    };
+    assert!(!read("1.5").contains(" in.y"), "{}", read("1.5"));
+    assert!(read("nope").contains(" in.y"), "{}", read("nope"));
+}
+
+#[test]
 fn column_cache_loads_once_per_block() {
     let schema = cols(&[("a", Ty::I64, false)]);
     let p = prep("SELECT a + a AS d FROM __THIS__", &schema).unwrap();

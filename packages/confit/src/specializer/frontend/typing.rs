@@ -364,26 +364,30 @@ pub(super) fn eval_i32_literal(e: &SqlExpr) -> I32Fold {
             Fine(Some(n)) => n.checked_neg().map_or(Traps, |n| Fine(Some(n))),
             other => other,
         },
-        SqlExpr::BinaryOp { left, op, right } => {
-            let f = match op {
-                BinaryOperator::Plus => i32::checked_add,
-                BinaryOperator::Minus => i32::checked_sub,
-                BinaryOperator::Multiply => i32::checked_mul,
-                BinaryOperator::Modulo => i32::checked_rem,
-                _ => return NotShaped,
-            };
-            match (eval_i32_literal(left), eval_i32_literal(right)) {
-                (Fine(x), Fine(y)) => match (x, y) {
-                    (Some(_), Some(0)) if matches!(op, BinaryOperator::Modulo) => {
-                        Fine(None) // INTEGER % 0 is NULL, not a trap
-                    }
-                    (Some(x), Some(y)) => f(x, y).map_or(Traps, |n| Fine(Some(n))),
-                    _ => Fine(None), // NULL propagates trap-free
-                },
-                (Traps, _) | (_, Traps) => Traps,
-                _ => NotShaped,
+        SqlExpr::BinaryOp { left, op, right } => eval_i32_binary(left, op, right),
+        _ => NotShaped,
+    }
+}
+
+/// [`eval_i32_literal`] of `left op right`, without building the node.
+pub(super) fn eval_i32_binary(left: &SqlExpr, op: &BinaryOperator, right: &SqlExpr) -> I32Fold {
+    use I32Fold::{Fine, NotShaped, Traps};
+    let f = match op {
+        BinaryOperator::Plus => i32::checked_add,
+        BinaryOperator::Minus => i32::checked_sub,
+        BinaryOperator::Multiply => i32::checked_mul,
+        BinaryOperator::Modulo => i32::checked_rem,
+        _ => return NotShaped,
+    };
+    match (eval_i32_literal(left), eval_i32_literal(right)) {
+        (Fine(x), Fine(y)) => match (x, y) {
+            (Some(_), Some(0)) if matches!(op, BinaryOperator::Modulo) => {
+                Fine(None) // INTEGER % 0 is NULL, not a trap
             }
-        }
+            (Some(x), Some(y)) => f(x, y).map_or(Traps, |n| Fine(Some(n))),
+            _ => Fine(None), // NULL propagates trap-free
+        },
+        (Traps, _) | (_, Traps) => Traps,
         _ => NotShaped,
     }
 }

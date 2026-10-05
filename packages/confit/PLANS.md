@@ -46,7 +46,23 @@ catalog entries. Today:
    and a body with many lanes and instances can reach the 4M-token
    expansion cap. Expanding one call once per distinct argument list (or
    projecting the read field at expansion when no sibling can trap) would
-   make it linear.
+   make it linear. The catalog measures StandardScaler at 64 features
+   building in 1.4 s (one group) / 5.0 s (three), MinMaxScaler(clip) at 64 in
+   6.3 / 25 s, Normalizer(max) at 12 in 15 s.
+2. **`greatest`/`least` are exponential in their argument count**: the
+   CASE fold clones the accumulator per argument (`frontend/functions.rs`);
+   six arguments build in 5.6 s, eight fail Cranelift. Bind the accumulator
+   once (a slot) instead.
+3. **A deep AND/OR chain crashes the process** (stack overflow, about 5000
+   terms). DuckDB builds these n-ary and serves 20000; bind, fold and lower
+   recurse per term. Flatten the chain into an n-ary node, or bind it
+   iteratively.
+
+Delivered: a constant CASE result (`CAST('0.0' AS DOUBLE)`) is no longer a
+sibling trap (`can_trap`), so a struct read evaluates the read lane only; a
+Cranelift size limit refuses by name (`unsupported:`) instead of raising an
+internal error; and an expression past DuckDB's depth limit (1000) refuses
+by name instead of overflowing the stack.
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
 
