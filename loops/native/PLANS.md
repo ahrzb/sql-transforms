@@ -1,7 +1,8 @@
 # Native catalog plans
 
 The working list for [the loop](README.md): open work only, highest value
-first. Remove an item when it lands.
+first. Remove an item when it lands. What is in flight, and who has it, is
+on the board: [tickets.md](tickets.md).
 
 ## Next
 
@@ -9,8 +10,8 @@ Easiest first; each is one family, one PR.
 
 1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
-   entries (compose the translations), then `ColumnTransformer` and
-   `FeatureUnion`.
+   entries (compose the translations; native T1, in progress), then
+   `ColumnTransformer` and `FeatureUnion`.
 3. **A bound per configuration.** An entry's ulp bound is its class's
    (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
    identity and the exact functions, refuses `np.exp`, `np.log`,

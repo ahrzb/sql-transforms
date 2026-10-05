@@ -355,3 +355,20 @@ def test_a_string_member_beside_a_wide_integer_refuses_by_name(expr):
     # rule, no 128-bit precision (review of #349).
     v = assert_parity(f"SELECT {expr} AS o FROM __THIS__", ROWS, expect="REFUSED")
     assert "UBIGINT or HUGEINT" in v.detail
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "170141183460469231731687303715884105727",
+        "-170141183460469231731687303715884105727 - 1",
+        H,
+    ],
+)
+def test_a_hugeint_struct_field_past_38_digits_leaves_as_duckdb_exports_it(field):
+    # The struct output is built from Python values; a HUGEINT past 38
+    # digits still leaves as the raw i128 in decimal128(38,0), as DuckDB
+    # exports it (campaign seed 938657).
+    assert_parity(
+        f"SELECT struct_pack(f0 := {field}, g := i64) AS s FROM __THIS__", ROWS
+    )

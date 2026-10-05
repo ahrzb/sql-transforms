@@ -2,11 +2,10 @@
 
 Applies to both loops: the confit loop
 ([`packages/confit/docs/loop/`](../packages/confit/docs/loop/README.md)) and the
-native-transform loop
-([`packages/sql-transform/docs/native/`](../packages/sql-transform/docs/native/README.md)).
+native-transform loop ([`native/`](native/README.md)).
 It says when a loop reports, which KPIs every report carries, and how a report
 reaches the owner. The shape of a full report stays each loop's own: the native
-loop's [`reports.md`](../packages/sql-transform/docs/native/reports.md), and the
+loop's [`report-format.md`](native/report-format.md), and the
 confit loop's goal readings (for example
 [`2026-09-26-goal-reading-n3.md`](../packages/confit/docs/reports/2026-09-26-goal-reading-n3.md)).
 
@@ -52,7 +51,7 @@ kpis:                   # fixed per loop, see below; `null` if not measured this
   twin_us_per_64: null
   open_needs_from_confit: 1
 needs_owner:            # decisions/open records this report asks the owner to rule on
-  - packages/sql-transform/docs/native/decisions/open/matvec-parity-bound.md
+  - loops/native/decisions/open/matvec-parity-bound.md
 needs_from_other_loop: [cse-within-call]
 ---
 ```
@@ -71,7 +70,7 @@ needs_from_other_loop: [cse-within-call]
 
 ## 3. Two forms
 
-- **Milestone report:** the existing shape, unchanged (native `reports.md`
+- **Milestone report:** the existing shape, unchanged (native `report-format.md`
   sections 0–8; confit's goal-reading shape). Bold outcome claims, deltas over
   levels, every number re-measured on the SHA named, bad news as plainly as good.
 - **Short reading:** used for staleness. The KPI block plus at most 40 lines:
@@ -84,7 +83,7 @@ line of evidence the owner needs to rule. When nothing needs the owner, write
 
 ## 4. Where it goes, and the hand-off
 
-- File: `packages/confit/docs/reports/` or `packages/sql-transform/docs/native/reports/`,
+- File: `packages/confit/docs/reports/` or `loops/native/reports/`,
   named `YYYY-MM-DD-<slug>.md`. Never edit an older report: a new reading names
   the one it follows.
 - Commit it in the PR that completes the milestone, or in its own small PR.

@@ -9,23 +9,22 @@ example. This page explains how the native loop does it.
 ## When to report
 
 The triggers, the KPI block every report opens with, and the hand-off are
-shared with the confit loop: see
-[`docs/loop-reporting.md`](../../../../docs/loop-reporting.md). This page keeps
-the native loop's own parts: where the file goes and the shape of a full
-report.
+shared with the confit loop: see [`../reporting.md`](../reporting.md). This
+page keeps the native loop's own parts: where the file goes and the shape of
+a full report.
 
 Do not write a report per PR. The PR descriptions already cover single
 changes.
 
 ## Where to put it
 
-**The file.** Save it as `docs/native/reports/YYYY-MM-DD-<slug>.md`. Never
+**The file.** Save it as `loops/native/reports/YYYY-MM-DD-<slug>.md`. Never
 edit an older report. A new reading is a new file, and it names the report
 it follows.
 
 **Committing it.** Commit the report in its own small PR, or in the PR that
 completes the milestone. Open the file with the KPI block from
-[`docs/loop-reporting.md`](../../../../docs/loop-reporting.md#2-the-kpi-block-required-machine-readable),
+[`../reporting.md`](../reporting.md#2-the-kpi-block-required-machine-readable),
 and start the PR title with `report:`.
 
 **Publishing it.** If the session can publish a document for the owner (for
@@ -115,7 +114,7 @@ The sections below are in order. Number them, and give each an anchor
   whenever there are more than three comparable numbers.
 - **No model names or model identifiers** in the report.
 
-## In the subagent-driven mode
+## In the worker-driven mode
 
 The supervisor writes the report itself, at the end of a wave. Writing it is
 part of reviewing the wave's work. A worker never writes one. The merged
