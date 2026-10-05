@@ -37,6 +37,7 @@ from sklearn.feature_selection import (
     f_regression,
 )
 from sklearn.impute import MissingIndicator, SimpleImputer
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
@@ -228,6 +229,24 @@ FIXTURES[QuantileTransformer] = [
     lambda: QuantileTransformer(n_quantiles=7),
     lambda: QuantileTransformer(n_quantiles=40),
     lambda: QuantileTransformer(n_quantiles=4, subsample=5, random_state=0),
+]
+
+
+# IsotonicRegression: one feature (the generator reads its one-d input tag)
+# and a continuous target. `increasing` only shapes the fit; `y_max=-0.0`
+# leaves -0.0 values, where numpy's exact arm at a threshold matters. Ties
+# in X and fits left with one threshold come from the generator's
+# few-valued and zero-variance columns, rows at thresholds from its integer
+# rows; test_isotonic_at_and_between_thresholds serves the rest.
+FIXTURES[IsotonicRegression] = [
+    IsotonicRegression,
+    lambda: IsotonicRegression(increasing=False),
+    lambda: IsotonicRegression(increasing="auto"),
+    lambda: IsotonicRegression(out_of_bounds="clip"),
+    lambda: IsotonicRegression(out_of_bounds="raise"),
+    lambda: IsotonicRegression(y_min=-1.0, y_max=1.0, out_of_bounds="clip"),
+    lambda: IsotonicRegression(increasing="auto", y_max=-0.0),
+    lambda: IsotonicRegression(increasing=False, y_min=0.0, out_of_bounds="raise"),
 ]
 
 
@@ -508,13 +527,16 @@ def _fit_matrix(
     holes: list[str | None],
     marker: float,
     positive: bool = False,
+    regression: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """One instance's fit data, a column per feature of its kind (an integer
-    one rounded), and a binary target. `kinds` and `holes` are the step's,
-    the same for every instance, as a feature keeps its nature across
-    fitted groups: `holes[j]` is None for nowhere missing (and never
-    holding the marker), "some" for about a fifth of the rows and at least
-    one, "all" for everywhere. `marker` spells missing."""
+    one rounded), and a binary target, or for a `regression` a continuous
+    one: a random multiple of the first feature, standardized, plus noise.
+    `kinds` and `holes` are the step's, the same for every instance, as a
+    feature keeps its nature across fitted groups: `holes[j]` is None for
+    nowhere missing (and never holding the marker), "some" for about a
+    fifth of the rows and at least one, "all" for everywhere. `marker`
+    spells missing."""
     n = int(rng.integers(5, 60))
     cols = []
     strings = [t == pa.string() for t in types]
@@ -554,6 +576,10 @@ def _fit_matrix(
         cols.append(c)
     y = (rng.random(n) < 0.5).astype(int)
     y[:4] = (0, 1, 0, 1)  # two of each class, for a 2-fold split
+    if regression and not strings[0]:
+        c = np.nan_to_num(np.asarray(cols[0], dtype=float))
+        t = (c - c.mean()) / (c.std() or 1.0)
+        y = rng.uniform(-3, 3) * t + rng.normal(0, rng.uniform(0.1, 2), n)
     if any(strings):
         # A string beside numbers makes an object matrix, as the step's
         # rows reach `transform`.
@@ -607,6 +633,10 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     runs = _runs(cls_factory())
     proto = runs[0]  # what reads the row
     positive = getattr(cls_factory, "positive", False)
+    if not proto.__sklearn_tags__().input_tags.two_d_array:
+        # A one-dimensional input (IsotonicRegression): one feature.
+        n_features, types, kinds = 1, types[:1], kinds[:1]
+    regression = runs[-1].__sklearn_tags__().estimator_type == "regressor"
     if proto.__sklearn_tags__().input_tags.categorical:
         # Categories: few distinct values per feature, about half of them
         # strings (kind 5..8: two to five of VOCAB).
@@ -639,7 +669,9 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
         warnings.simplefilter("ignore")
         try:
             for k in range(int(rng.integers(1, 4))):
-                X, y = _fit_matrix(rng, kinds, types, holes, marker, positive)
+                X, y = _fit_matrix(
+                    rng, kinds, types, holes, marker, positive, regression
+                )
                 est = cls_factory().fit(X, y)
                 w = np.asarray(est.transform(X[:1])).reshape(1, -1).shape[1]
                 if k and w != width:
@@ -1037,6 +1069,149 @@ def test_a_failing_kernel_probe_leaves_sin_python(monkeypatch):
             to_native(step, strict=True)
     finally:
         function.kernel_is_confits.cache_clear()
+
+
+# ---------------------------------------------------------- IsotonicRegression
+
+
+def _isotonic_step(est: Any) -> PythonTransform:
+    return PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+
+
+def _probes(xp: np.ndarray) -> list[float]:
+    """Each threshold, its neighbouring doubles, the midpoints, beyond both
+    ends, and both signed zeros."""
+    vals = {0.0, -0.0, float(xp[0]) - 1.0, float(xp[-1]) + 1.0}
+    for t in xp:
+        vals |= {
+            float(t),
+            float(np.nextafter(t, -np.inf)),
+            float(np.nextafter(t, np.inf)),
+        }
+    vals |= {float(v) for v in (xp[:-1] + xp[1:]) / 2}
+    return sorted(vals, key=lambda v: (v, math.copysign(1.0, v)))
+
+
+@pytest.mark.parametrize("out_of_bounds", ["nan", "clip", "raise"])
+@pytest.mark.parametrize("increasing", [True, False])
+def test_isotonic_at_and_between_thresholds(out_of_bounds, increasing):
+    # Thresholds straddling zero, with -0.0 values (y_max=-0.0 or y_min
+    # with a negated target), where numpy's exact arm at a threshold keeps
+    # the sign.
+    rng = np.random.default_rng(3)
+    X = np.round(rng.normal(0, 4, 80), 1)
+    X[:3] = (0.0, -2.5, 2.5)
+    y = (X if increasing else -X) + rng.normal(0, 1, 80)
+    est = IsotonicRegression(
+        increasing=increasing, y_max=-0.0, out_of_bounds=out_of_bounds
+    ).fit(X, y)
+    xp, fp = est.X_thresholds_, est.y_thresholds_
+    assert len(xp) > 4
+    assert any(v == 0.0 and math.copysign(1.0, v) < 0 for v in fp)
+    probes = _probes(xp)
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(probes), pa.int64()),
+            "x0": pa.array(probes, pa.float64()),
+        }
+    )
+    step = _isotonic_step(est)
+    compared = check(step, to_native(step, strict=True), rows)
+    outside = sum(not xp[0] <= v <= xp[-1] for v in probes)
+    assert compared == len(probes) - (outside if out_of_bounds == "raise" else 0)
+
+
+@pytest.mark.parametrize("out_of_bounds", ["nan", "clip", "raise"])
+def test_isotonic_with_one_threshold_is_a_constant(out_of_bounds):
+    est = IsotonicRegression(out_of_bounds=out_of_bounds).fit(
+        np.full(6, 2.0), np.arange(6.0)
+    )
+    assert len(est.X_thresholds_) == 1
+    probes = [2.0, -1e300, 0.0, -0.0, 7.5, 1e300, None]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(probes), pa.int64()),
+            "x0": pa.array(probes, pa.float64()),
+        }
+    )
+    step = _isotonic_step(est)
+    # The twin raises on NaN (a NULL) only.
+    assert check(step, to_native(step, strict=True), rows) == len(probes) - 1
+
+
+def _fitted_isotonic(**kw) -> IsotonicRegression:
+    X = np.arange(10.0)
+    return IsotonicRegression(**kw).fit(X, X + np.sin(X))
+
+
+def _mutate(est: IsotonicRegression, **attrs) -> IsotonicRegression:
+    for k, v in attrs.items():
+        setattr(est, k, v)
+    return est
+
+
+@pytest.mark.parametrize(
+    "make, reason",
+    [
+        (
+            lambda: IsotonicRegression().fit(
+                np.arange(10, dtype=np.float32), np.arange(10.0)
+            ),
+            "float32 thresholds",
+        ),
+        (
+            lambda: IsotonicRegression().fit(
+                np.array([-1e308, 1e308]), np.array([0.0, 1.0])
+            ),
+            "further apart than a double",
+        ),
+        (
+            lambda: _mutate(_fitted_isotonic(), f_=lambda T: T),
+            "does not delegate to np.interp",
+        ),
+        (
+            lambda: _mutate(
+                _fitted_isotonic(),
+                y_thresholds_=np.where(np.arange(10) == 4, np.inf, np.arange(10.0)),
+            ),
+            "not all finite",
+        ),
+        (
+            lambda: _mutate(
+                _fitted_isotonic(),
+                X_thresholds_=np.array([0.0, 2.0, 1.0, *range(3, 10)]),
+            ),
+            "not strictly increasing",
+        ),
+    ],
+    ids=["float32", "infinite-width", "not-np-interp", "infinite-value", "unsorted"],
+)
+def test_isotonic_refuses(make, reason):
+    with pytest.raises(NotNative, match=reason):
+        to_native(_isotonic_step(make()), strict=True)
+
+
+def test_isotonic_refuses_two_features():
+    takes = pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
+    step = PythonTransform("tf", {0: _fitted_isotonic()}, takes)
+    with pytest.raises(NotNative, match="over 2 features"):
+        to_native(step, strict=True)
+
+
+def test_isotonic_refuses_past_its_cap(monkeypatch):
+    from sql_transform.native import isotonic
+
+    monkeypatch.setattr(isotonic, "MAX_THRESHOLDS", 5)
+    with pytest.raises(NotNative, match="10 thresholds: past the 5"):
+        to_native(_isotonic_step(_fitted_isotonic()), strict=True)
+
+
+def test_isotonic_refuses_a_fused_interp(monkeypatch):
+    from sql_transform.native import isotonic
+
+    monkeypatch.setattr(isotonic, "interp_is_numpys", lambda: False)
+    with pytest.raises(NotNative, match="unfused C loop"):
+        to_native(_isotonic_step(_fitted_isotonic()), strict=True)
 
 
 # ------------------------------------------------------- FeatureAgglomeration
