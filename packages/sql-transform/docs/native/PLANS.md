@@ -7,12 +7,19 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
-   numpy ufuncs with a SQL twin, `AdditiveChi2Sampler`.
+1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
-3. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
+3. **A bound per configuration.** An entry's ulp bound is its class's
+   (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
+   identity and the exact functions, refuses `np.exp`, `np.log`,
+   `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
+   `np.log10` (2) and `np.cbrt` (3), measured over 1,600,000 draws
+   (`function.py`, 2026-10-05). A translator that declares its own bound
+   per estimator would serve them within those, once each is measured over
+   200 seeds of fixtures.
+4. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
    (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
    grew about as lanes^2.5; since #350 they grow about as lanes^1.4
    (2,556 lanes: 3.2 s, master 5513891).
@@ -60,7 +67,11 @@ Easiest first; each is one family, one PR.
   2026-10-05). Classifying total calls (`exp`, `pow`, `fneg`) as
   trap-free, and `ln` under a CASE arm whose condition excludes `x <= 0`,
   would make it linear. `PowerTransformer` is capped at 12 features
-  meanwhile. Sent to the confit loop 2026-10-05.
+  meanwhile, and so is `FunctionTransformer` where its spelling calls a
+  function (`sqrt`, `floor`, `ceil`, `trunc`, `rint`, `sin`, `cos`):
+  `rint`, three instances, 35 vs 44 us at 12 features, 130 vs 80 at 24,
+  refused at 128; its call-free spellings (`abs`, `square`, `reciprocal`,
+  `sign`, ...) serve 128 features (2026-10-05). Sent to the confit loop 2026-10-05.
 - **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
   far slower than `-1.0 * x`, which is the same double: a 32-feature
   `QuantileTransformer` (3 quantiles) built in 2.8 s and served 64 rows in
@@ -124,6 +135,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (waiting on the owner, above); Box-Cox over more than 12 features, until
   confit knows a call that cannot trap (above). Where the twin rejects
   x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
+- `FunctionTransformer` with a `func` other than the identity and numpy's
+  `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
+  `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
+  (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
+  a string feature, or a boolean one except for the identity (numpy keeps
+  a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
+  on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
+  DuckDB function; `sin` and `cos` only where `kernel_is_duckdbs` finds
+  numpy's kernel bit-equal to DuckDB's. A spelling that calls a function
+  over more than 12 features (Needs from confit, the call that cannot trap).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
