@@ -8,9 +8,9 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
-   `AdditiveChi2Sampler` no longer waits on the machinery (a bound per
-   configuration landed), but on a bound that is not small: its lanes are
+1. **Non-linear maps:** `AdditiveChi2Sampler`. It no longer waits on the
+   machinery (a bound per configuration landed), but on a bound that is
+   not small: its lanes are
    `factor * cos(j * (s * log(x)))` and the same with `sin`, and numpy's
    `log`, 1 ulp from DuckDB's `ln`, reaches `cos` scaled by `j * s`, so the
    result parts by up to 8,192 ulps near a zero of `cos` (400,000 draws of
@@ -64,6 +64,25 @@ Easiest first; each is one family, one PR.
   through ctypes). Reproduction: `SELECT cbrt(x) AS y FROM __THIS__` served
   by `DuckDBInferFn` against `duckdb.sql` on the same column. Waits on it:
   `FunctionTransformer(np.cbrt)`, within 3 ulps of DuckDB's (2026-10-05).
+- **A value bound once in a SQL function body, and a build linear in the
+  parameters.** A function body is substituted as text, so an expression
+  read twice is spelled twice, and a recurrence whose every step reads
+  the previous one twice doubles per step. `SplineTransformer`'s de Boor
+  recurrence does (scipy's order, which the entry must keep): one lane of
+  one feature at degree 3, 5 knots, is about 7 KB of SQL, at degree 5
+  about 33 KB, and 32 features of degree 5 expand past the 4,000,000-token
+  cap; `periodic` repeats its mapped `x` (a remainder) at every read.
+  Apart from size, the build grows with the parameters times the body:
+  a confit-only function of 320 struct lanes, each a 9-arm CASE of
+  polynomial arithmetic over one of its DOUBLE parameters, builds in 2.7 s
+  over 4 parameters and 7.3 s over 32 (0.25, 0.63, 1.9, 7.3 s at 4, 8,
+  16, 32 parameters of 10 lanes each; release build, master 8a67154,
+  2026-10-05); the reproduction is in #384's description. 32 features
+  of degree 3, 8 knots, build in about 22 s (`error`) and 44 s
+  (`continue`); the spline entry refuses past an estimated 7 s build
+  meanwhile (spline.py, `_build_estimate`). A binding (a `let`, or a
+  nested function whose arguments are evaluated once) would make the
+  recurrence linear in the degree.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377): a constant CASE
@@ -160,6 +179,20 @@ Configurations a translator declines (`NotNative`), each with its ground:
   yet shown to read the same downstream); passthrough steps only, over a
   string feature (the step's `float()` raises). A `set_output` container
   between steps is not examined yet.
+- `SplineTransformer(sparse_output=True)`: a sparse output
+  (decisions/open/sparse-outputs.md). `extrapolation="linear"` at
+  `degree=0, n_knots=2` over two or more features: the twin's running
+  `degree` (spline.py) continues two lanes of one from the second feature
+  on, and writes a row above the knots into the previous feature's lane.
+  Knots that are not sorted, partly NaN, or span past a double, and a
+  spline whose `c` is not sklearn's shape (no fit makes these). A step
+  past an estimated 7 s build, per estimator (32 features of degree 3,
+  8 knots, and wider; Needs from confit, "A value bound once"), and any
+  step where scipy's `BSpline` does not round as the unfused recurrence
+  (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the
+  entry answers: NaN past the knots under `extrapolation="error"`, 0.0
+  for NaN under `handle_missing="error"`, and 0.0 above the knots under
+  `extrapolation="constant"` at `degree=0`.
 - A `ColumnTransformer` or `FeatureUnion` with a part that is not a
   catalog entry, or one registered with a bound; a sparse output
   (`sparse_output_`); a `set_output` container (the step's

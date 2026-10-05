@@ -53,6 +53,7 @@ from sklearn.preprocessing import (
     PowerTransformer,
     QuantileTransformer,
     RobustScaler,
+    SplineTransformer,
     StandardScaler,
     TargetEncoder,
 )
@@ -232,6 +233,88 @@ FIXTURES[QuantileTransformer] = [
     lambda: QuantileTransformer(n_quantiles=7),
     lambda: QuantileTransformer(n_quantiles=40),
     lambda: QuantileTransformer(n_quantiles=4, subsample=5, random_state=0),
+]
+
+
+def narrow(factory: Callable[[], Any], n: int) -> Callable[[], Any]:
+    """`factory`'s steps take at most `n` features: a translation whose
+    build time grows faster than its width (a family's measured widths
+    are in its module) is checked the same on fewer of them."""
+    factory.max_features = n  # type: ignore[attr-defined]
+    return factory
+
+
+def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
+    """A SplineTransformer given an array of knots, the same for each of
+    however many features its fit sees (the step draws its width)."""
+    base = np.array([-60.0, -2.5, 0.0, 1.0, 37.0, 900.0])
+
+    def make() -> SplineTransformer:
+        est = SplineTransformer(**params)
+
+        def fit(X, y=None):
+            del est.fit  # the class's own again
+            est.knots = np.tile(base[:, None], (1, np.shape(X)[1]))
+            return SplineTransformer.fit(est, X, y)
+
+        est.fit = fit
+        return est
+
+    return make
+
+
+# SplineTransformer: degrees 0 to 4, 2 to 8 knots of each kind, the five
+# extrapolations, both biases and both missing modes (degree 5 is in
+# test_spline_at_the_knots: its expression doubles per degree, and 32
+# features of it build in minutes, spline.py). Constant columns
+# make equal knots (all of them under "uniform", runs under "quantile",
+# where few-valued columns do too, and a zero period under "periodic"); a
+# column only missing makes NaN knots under "quantile". Rows at and beside
+# the knots are in test_spline_at_the_knots. From degree 2 the steps take
+# at most SPLINE_FEATURES features: the entry refuses past an estimated 7 s
+# build per estimator, but a step's instances compound it (1, 2, 3
+# instances of one 25-feature fit: 7.8, 16.7, 33.1 s), and the family's
+# gate share is about 120 s on 4 workers without the limit, 50 s with it.
+SPLINE_FEATURES = 8
+FIXTURES[SplineTransformer] = [
+    SplineTransformer,
+    lambda: SplineTransformer(degree=0, n_knots=2, extrapolation="continue"),
+    lambda: SplineTransformer(degree=0, n_knots=4, extrapolation="linear"),
+    lambda: SplineTransformer(degree=0, n_knots=3, extrapolation="periodic"),
+    lambda: SplineTransformer(
+        degree=1, n_knots=3, extrapolation="linear", include_bias=False
+    ),
+    lambda: SplineTransformer(degree=1, n_knots=2, extrapolation="periodic"),
+    *(
+        narrow(f, SPLINE_FEATURES)
+        for f in [
+            lambda: SplineTransformer(
+                degree=2, n_knots=6, knots="quantile", extrapolation="periodic"
+            ),
+            lambda: SplineTransformer(
+                degree=2,
+                n_knots=4,
+                knots="quantile",
+                extrapolation="constant",
+                order="F",
+            ),
+            lambda: SplineTransformer(degree=3, n_knots=8, extrapolation="error"),
+            lambda: SplineTransformer(
+                degree=3, n_knots=4, extrapolation="continue", handle_missing="error"
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=5, extrapolation="periodic", include_bias=False
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=4, knots="quantile", extrapolation="continue"
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=3, extrapolation="linear", handle_missing="error"
+            ),
+            _spline_with_knots(degree=2, extrapolation="continue"),
+            _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
+        ]
+    ),
 ]
 
 
@@ -633,6 +716,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # Mostly narrow; sometimes wide enough for a row reduction's blocks.
     wide = rng.random() < 0.3
     n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
+    n_features = min(n_features, getattr(cls_factory, "max_features", n_features))
     types = [
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
@@ -1156,16 +1240,164 @@ def test_a_step_is_held_to_its_loosest_instance(funcs, ulps):
     assert bound(step) == ulps
 
 
-def test_a_bounded_function_is_not_bit_exact():
-    # The bound is needed: at 0 numpy's log10 parts from DuckDB's.
+def test_a_bounded_function_is_held_to_its_bound_not_to_0():
+    # numpy picks its log10 kernel by CPU: on x86-64 with AVX-512 it parts
+    # from DuckDB's (glibc's) on some of these rows, elsewhere it may not.
+    # The check at 0 fails exactly where numpy and the native answer part;
+    # at the function's own bound it passes either way.
+    from confit import DuckDBInferFn
+
+    from sql_transform.native import function
+    from sql_transform.native._registry import query
+
     est = FunctionTransformer(np.log10).fit(np.zeros((2, 1)))
     step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
     x = np.random.default_rng(0).uniform(1e-3, 1e3, 2000)
     rows = pa.table({"__iid": pa.array([0] * len(x), pa.int64()), "x0": x})
     native = to_native(step, strict=True)
+    assert function.kernel_distance(np.log10) <= bound_of(est) == 2
     assert check(step, native, rows) == len(x)
-    with pytest.raises(ParityError, match="bound 0"):
-        check(step, native, rows, ulps=0)
+    served = DuckDBInferFn(
+        query(step),
+        row_tables={"__THIS__": rows.schema},
+        static_tables={},
+        udfs=[native],
+    ).infer_arrow(rows)
+    got = served.column("o").to_numpy()
+    parts = not np.array_equal(np.log10(x).view(np.int64), got.view(np.int64))
+    if parts:
+        with pytest.raises(ParityError, match="bound 0"):
+            check(step, native, rows, ulps=0)
+    else:
+        assert check(step, native, rows, ulps=0) == len(x)
+
+
+# ----------------------------------------------------------- SplineTransformer
+
+
+def _knot_rows(est: SplineTransformer, n_features: int) -> pa.Table:
+    """Rows on every knot of each feature's spline and one double either
+    side, with the fit range's ends, signed zeros, extremes and NaN."""
+    cols = []
+    for j in range(n_features):
+        t = np.asarray(est.bsplines_[j].t, dtype=np.float64)
+        vals = sorted(
+            {
+                float(w)
+                for v in t
+                for w in (np.nextafter(v, -np.inf), v, np.nextafter(v, np.inf))
+            }
+        )
+        cols.append([*vals, 0.0, -0.0, 1e300, -1e300, 5e-324, math.nan])
+    n = max(len(c) for c in cols)
+    table = {"__iid": pa.array([0] * n, pa.int64())}
+    for j, c in enumerate(cols):
+        table[f"x{j}"] = pa.array([c[i % len(c)] for i in range(n)], pa.float64())
+    return pa.table(table)
+
+
+SPLINE_AT_KNOTS = [
+    # Without the bias, one spline per feature leaves no lane: kept there.
+    {
+        "degree": d,
+        "n_knots": m,
+        "extrapolation": e,
+        "knots": kn,
+        "include_bias": b or (m - 1 if e == "periodic" else m + d - 1) == 1,
+    }
+    for d, m in [(0, 2), (0, 5), (1, 2), (1, 4), (2, 3), (3, 5), (3, 8), (5, 6)]
+    for e in ["continue", "error", "periodic", "constant", "linear"]
+    for kn, b in [("uniform", True), ("quantile", False)]
+    if not (e == "periodic" and m <= d)
+    and not (e == "linear" and (d, m) == (0, 2))  # refused, below
+]
+
+
+@pytest.mark.parametrize(
+    "params",
+    SPLINE_AT_KNOTS,
+    ids=lambda p: "-".join(str(v) for v in p.values()),
+)
+def test_spline_at_the_knots(params):
+    # Three features: spread ones, and one whose quantile knots repeat
+    # (few distinct values). `_find_interval` must land where scipy's does
+    # on each knot, and the extrapolations take over past the ends; under
+    # "linear" at degree 0 or 1 the twin's range narrows from the second
+    # feature on, and again from the third.
+    rng = np.random.default_rng(7)
+    X = np.column_stack(
+        [
+            rng.normal(3.0, 40.0, 30),
+            rng.integers(-2, 3, 30).astype(float),
+            rng.exponential(5.0, 30),
+        ]
+    )
+    est = SplineTransformer(**params).fit(X)
+    width = est.n_features_out_
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{j}", pa.float64()) for j in range(3)]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    rows = _knot_rows(est, 3)
+    assert check(step, to_native(step, strict=True), rows) > 0
+
+
+@pytest.mark.parametrize(
+    "params, reason",
+    [
+        ({"sparse_output": True}, r"sparse_output=True"),
+        # From the second feature on the twin continues two lanes of one:
+        # a row below raises, a row above writes the previous feature's.
+        (
+            {"degree": 0, "n_knots": 2, "extrapolation": "linear"},
+            "feature 1 continues 2 lanes of 1",
+        ),
+    ],
+    ids=["sparse", "linear-past-the-lanes"],
+)
+def test_spline_refuses(params, reason):
+    X = np.column_stack([np.arange(10.0), np.arange(10.0) ** 2])
+    est = SplineTransformer(**params).fit(X)
+    step = PythonTransform(
+        "tf", {0: est}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
+    )
+    with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+
+
+def test_spline_refuses_a_build_past_the_cap():
+    # 24 features of degree 3, 8 knots, "continue": built in 21 s; the
+    # estimate puts it past MAX_BUILD_S before confit is asked.
+    X = np.random.default_rng(0).normal(size=(50, 24)) * 10
+    est = SplineTransformer(n_knots=8, extrapolation="continue").fit(X)
+    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(24)])
+    returns = pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)])
+    step = PythonTransform("tf", {0: est}, takes, returns)
+    with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
+        to_native(step, strict=True)
+
+
+def test_this_platform_evaluates_splines_as_the_entry():
+    from sql_transform.native.spline import bspline_is_scipys
+
+    assert bspline_is_scipys()
+
+
+def test_a_failing_spline_probe_leaves_the_step_python(monkeypatch):
+    from sql_transform.native import spline
+
+    monkeypatch.setattr(spline, "bspline_is_scipys", lambda: False)
+    est = SplineTransformer().fit(np.arange(10.0)[:, None])
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)]),
+    )
+    with pytest.raises(NotNative, match="bspline_is_scipys"):
+        to_native(step, strict=True)
 
 
 # ---------------------------------------------------------- IsotonicRegression

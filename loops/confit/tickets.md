@@ -14,6 +14,7 @@ to `loops/confit/`, merged inline as #370. Nothing is in flight.
 |---|---|---|---|---|---|---|---|
 
 Next up, once a slot frees and the account's usage warning clears:
-struct-valued outputs (ruled class 3); emitting a shared
-value at its first reading step instead of before the first item (PLANS);
+struct-valued outputs (ruled class 3); a value bound once in a SQL
+function body (the catalog's SplineTransformer; PLANS); linear Cranelift
+builds of deep CASE trees (IsotonicRegression at 20,000 thresholds: 22 s);
 superlinear build time of long AND/OR chains (20,000 terms: about 23 s).

@@ -221,24 +221,30 @@ pub fn lower(
         fb.n_slots = n_slots;
         fb.lower_stage_head(stage, &mut live)?;
         // The projection's shared values go on the live stack above the
-        // slots, each dropped after the last step that reads it.
+        // slots, each computed just before the first item that reads it
+        // (directly or through another shared value) and dropped after the
+        // last step that reads it, so a value lives only across the items
+        // that use it: computing every one before the first item carried
+        // each across every later item's blocks (a catalog step's 256
+        // per-feature values rode all 6,000 blocks). A shared value cannot
+        // trap, and items are evaluated in order at the top level, so the
+        // value is ready wherever it is read.
         let exprs: Vec<SExpr> = stage.project.iter().map(|(_, e)| e.clone()).collect();
-        let (items, last_use) = match super::share::share(&exprs) {
+        let (defs, mut items) = match super::share::share(&exprs) {
             Some(sh) => {
                 fb.shared_at = vec![None; sh.defs.len()];
-                for (k, d) in sh.defs.iter().enumerate() {
-                    let lane = fb.emit(d, &mut live)?;
-                    live.push((lane, d.ty));
-                    fb.shared_at[k] = Some(live.len() - 1);
-                    fb.drop_dead_shared(&sh.last_use, k, &mut live);
-                }
-                (sh.items, sh.last_use)
+                (sh.defs, sh.items)
             }
             None => {
                 fb.shared_at.clear();
-                (exprs, Vec::new())
+                (Vec::new(), exprs)
             }
         };
+        let first = first_item(&defs, &mut items);
+        let last_use = until_item(&defs, &mut items, &first)
+            .into_iter()
+            .map(|u| u.map_or(usize::MAX, |ci| defs.len() + ci))
+            .collect::<Vec<_>>();
         let n_defs = last_use.len();
         if si + 1 < plan.stages.len() {
             // Every column, read or not, in SELECT order: its traps fire
@@ -246,6 +252,7 @@ pub fn lower(
             // a subquery. Each lane joins the live stack as soon as it
             // exists, so a later column's block splits carry it.
             for (ci, e) in items.iter().enumerate() {
+                fb.emit_shared_for(&defs, &first, ci, &mut live)?;
                 let lane = fb.emit(e, &mut live)?;
                 live.push((lane, e.ty));
                 fb.drop_dead_shared(&last_use, n_defs + ci, &mut live);
@@ -255,6 +262,7 @@ pub fn lower(
             continue;
         }
         for (ci, e) in items.iter().enumerate() {
+            fb.emit_shared_for(&defs, &first, ci, &mut live)?;
             // Not a `debug_assert`: this runs once per output column at
             // prepare, never per row, and it is the ONLY thing that catches
             // an arm which pushes lanes and forgets to truncate. A leak
@@ -309,6 +317,91 @@ pub fn lower(
     let statics = [statics, model_statics].concat();
 
     fb.finish(name, statics, in_cols, out_cols, regexes, udfs.to_vec())
+}
+
+/// Per shared value, the first item that reads it, directly or through a
+/// later shared value (which reads only earlier ones); `None` when none does.
+fn first_item(defs: &[SExpr], items: &mut [SExpr]) -> Vec<Option<usize>> {
+    fn reads(e: &mut SExpr, out: &mut Vec<u32>) {
+        stacker::maybe_grow(
+            super::frontend::RED_ZONE,
+            super::frontend::STACK_SEGMENT,
+            || {
+                if let SKind::Shared(k) = e.kind {
+                    out.push(k);
+                    return;
+                }
+                for c in e.children_mut() {
+                    reads(c, out);
+                }
+            },
+        )
+    }
+    let mut first: Vec<Option<usize>> = vec![None; defs.len()];
+    for (ci, e) in items.iter_mut().enumerate() {
+        let mut out = Vec::new();
+        reads(e, &mut out);
+        for k in out {
+            let f = &mut first[k as usize];
+            *f = Some(f.map_or(ci, |x| x.min(ci)));
+        }
+    }
+    for j in (0..defs.len()).rev() {
+        let Some(fj) = first[j] else { continue };
+        let mut out = Vec::new();
+        reads(&mut defs[j].clone(), &mut out);
+        for k in out {
+            let f = &mut first[k as usize];
+            *f = Some(f.map_or(fj, |x| x.min(fj)));
+        }
+    }
+    first
+}
+
+/// Per shared value, the last item before or at which it is read: by an
+/// item, or by a later shared value, which is computed just before its own
+/// first reader (`first_item`). It is dropped after that item.
+fn until_item(
+    defs: &[SExpr],
+    items: &mut [SExpr],
+    first: &[Option<usize>],
+) -> Vec<Option<usize>> {
+    fn reads(e: &mut SExpr, out: &mut Vec<u32>) {
+        stacker::maybe_grow(
+            super::frontend::RED_ZONE,
+            super::frontend::STACK_SEGMENT,
+            || {
+                if let SKind::Shared(k) = e.kind {
+                    out.push(k);
+                    return;
+                }
+                for c in e.children_mut() {
+                    reads(c, out);
+                }
+            },
+        )
+    }
+    let mut until: Vec<Option<usize>> = vec![None; defs.len()];
+    let mut bump = |k: u32, at: usize| {
+        let u = &mut until[k as usize];
+        *u = Some(u.map_or(at, |x| x.max(at)));
+    };
+    for (ci, e) in items.iter_mut().enumerate() {
+        let mut out = Vec::new();
+        reads(e, &mut out);
+        for k in out {
+            bump(k, ci);
+        }
+    }
+    for (j, d) in defs.iter().enumerate() {
+        let Some(at) = first[j] else { continue };
+        let mut out = Vec::new();
+        reads(&mut d.clone(), &mut out);
+        for k in out {
+            bump(k, at);
+        }
+    }
+    until
 }
 
 /// A value in the null-lane representation: payload + optional validity.
@@ -742,6 +835,26 @@ impl<'a> FB<'a> {
     /// (see [`super::share::Shared::last_use`]) off the live stack, so it
     /// stops riding later block transitions. Called between top-level
     /// steps, when nothing above the stage's own entries is pending.
+    /// Emit the shared values whose first reader is item `ci`, in order
+    /// (each reads only earlier ones, emitted by then).
+    fn emit_shared_for(
+        &mut self,
+        defs: &[SExpr],
+        first: &[Option<usize>],
+        ci: usize,
+        live: &mut Live,
+    ) -> Result<(), PrepareError> {
+        for (k, d) in defs.iter().enumerate() {
+            if first[k] != Some(ci) {
+                continue;
+            }
+            let lane = self.emit(d, live)?;
+            live.push((lane, d.ty));
+            self.shared_at[k] = Some(live.len() - 1);
+        }
+        Ok(())
+    }
+
     fn drop_dead_shared(&mut self, last_use: &[usize], step: usize, live: &mut Live) {
         for (k, &last) in last_use.iter().enumerate() {
             if last != step {
