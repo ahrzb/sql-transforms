@@ -16,14 +16,6 @@ Easiest first; each is one family, one PR.
    result parts by up to 8,192 ulps near a zero of `cos` (400,000 draws of
    `x`, `s = 0.5`, j = 1 and 2, 2026-10-05). It needs an owner ruling, as
    the matvec families do, or numpy's `log` kernel spelled to the bit.
-2. **`QuantileTransformer` as one search tree per feature:** its two
-   `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
-   with the other endpoint of each interval closed), so one tree whose
-   leaves compute both lines, with `x` at a breakpoint dispatched to the
-   neighbour piece the mirrored search picks, keeps the twin's arithmetic
-   and builds linearly (Needs from confit, "Two CASE trees"): the default
-   1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
-   and the caps could rise.
 
 ## Waiting on the owner
 
@@ -47,15 +39,16 @@ Easiest first; each is one family, one PR.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
-  tree(-x))` over `x = coalesce(p, NaN)`, the shape of
-  `QuantileTransformer`'s entry (`np.interp` both ways), builds in 0.46,
-  1.37, 4.48 s, and the entry at 4,000 quantiles in 16.2 s (release
-  build, master 49acad5). One tree whose leaves hold both lines builds in
-  0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
-  the message sent to the confit loop (2026-10-05). The entry is capped at
-  4,000 quantiles over the features and 4,000,000 in their squares
-  meanwhile (about 7 s at most); Next, item 2, is the entry-side
-  alternative.
+  tree(-x))` over `x = coalesce(p, NaN)` builds in 0.46, 1.37, 4.48 s
+  (release build, master 49acad5; a confit-only reproduction is in the
+  message sent to the confit loop, 2026-10-05). The catalog no longer
+  needs it: `QuantileTransformer` answers both searches from one tree
+  whose leaves compute both lines (T12), 0.5, 1.3, 2.7-3.2 s at 1,000,
+  2,000, 4,000 quantiles over one feature against 1.4, 4.7, 23 s for the
+  two trees (release build, one container, 2026-10-05); capped at 8,000
+  quantiles over an estimator's features (6-8 s at that sum). Low priority
+  for confit: a future entry that needs two trees in one expression would
+  raise it again.
 - **`cbrt` that answers DuckDB's.** confit's `cbrt` (`duck_cbrt`, Rust's
   `f64::cbrt`) is not DuckDB's, which is glibc's: over 200,000 draws
   (uniform in +-1e3 and +-exp(uniform(-700, 700))) they part on 99,438,
@@ -147,9 +140,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   Bin edges that are not sorted numbers (searchsorted's answer is then
   its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
-  `norm.ppf` has no SQL twin. Past 4,000 quantiles over an estimator's
-  features or 4,000,000 in their squares, where builds pass about 7 s
-  (Needs from confit, "Two CASE trees in one expression").
+  `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
+  features, where builds reach 6-8 s (`quantile.MAX_QUANTILES`).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
