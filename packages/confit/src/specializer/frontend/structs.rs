@@ -275,6 +275,18 @@ impl Binder<'_> {
         field: &str,
         rest: &[AccessExpr],
     ) -> Result<Option<SqlExpr>, PrepareError> {
+        Ok(self
+            .struct_pack_values(f, field)?
+            .map(|(values, pick)| field_read(f, &values, pick, rest)))
+    }
+
+    /// A plain `struct_pack(...)`'s field values in order, and the index of
+    /// `field` among them; see [`Self::struct_pack_field`].
+    pub(super) fn struct_pack_values<'f>(
+        &self,
+        f: &'f sqlparser::ast::Function,
+        field: &str,
+    ) -> Result<Option<(Vec<&'f SqlExpr>, usize)>, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         if !f.name.to_string().eq_ignore_ascii_case("struct_pack")
             || f.uses_odbc_syntax
@@ -310,7 +322,7 @@ impl Binder<'_> {
                 "Could not find key \"{field}\" in struct"
             )));
         };
-        Ok(Some(field_read(f, &values, pick, rest)))
+        Ok(Some((values, pick)))
     }
 
     /// A struct-VALUED projection item — `struct_pack(n := e, ...)`, or that

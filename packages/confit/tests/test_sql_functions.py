@@ -69,6 +69,31 @@ KEYWORD = SqlFunction(
     "kw", _schema(end=pa.int64()), pa.int64(), lambda e: S.case(e > 0, e).otherwise(-e)
 )
 INCR = SqlFunction("incr", _schema(n=pa.int64()), pa.int64(), lambda n: n + 1)
+# A struct body reading another struct function by field.
+WRAP = SqlFunction(
+    "wrap",
+    _schema(p=pa.int64(), q=pa.int64()),
+    pa.struct([("lo", pa.int64()), ("m2", F64)]),
+    lambda p, q: {
+        "lo": S.fn("stats", p, q).field("lo"),
+        "m2": S.fn("stats", q, p).field("mean") * S.lit(2.0),
+    },
+)
+# A field that traps: reading its sibling still traps.
+TRAPS = SqlFunction(
+    "traps",
+    _schema(n=pa.int64()),
+    pa.struct([("v", pa.int64()), ("big", pa.int64())]),
+    lambda n: {"v": n, "big": n * S.lit(9223372036854775807)},
+)
+# A NULL struct where the id is NULL: its body is a CASE.
+MAYBE = SqlFunction(
+    "maybe",
+    _schema(n=pa.int64()),
+    pa.struct([("v", pa.int64()), ("w", F64)]),
+    lambda n: {"v": n * 2, "w": n / S.lit(4)},
+    null_when=lambda n: n.isnull(),
+)
 
 
 @pytest.mark.parametrize(
@@ -92,6 +117,33 @@ INCR = SqlFunction("incr", _schema(n=pa.int64()), pa.int64(), lambda n: n + 1)
         ("SELECT stats(a, b).lo AS lo, stats(a, b).mean AS m FROM __THIS__", [STATS]),
         ("SELECT stats(a, b) AS st FROM __THIS__", [STATS]),
         ("SELECT stats(b, b).tag AS t FROM __THIS__", [STATS]),
+        # Reads of one call share its expansion; unaliased ones are named
+        # after the call, as DuckDB names them.
+        (
+            "SELECT stats(a, b).lo, stats(a, b).mean, stats(b, a).tag FROM __THIS__",
+            [STATS],
+        ),
+        (
+            "SELECT stats(a, b).lo AS o FROM __THIS__ WHERE stats(a, b).mean > 0",
+            [STATS],
+        ),
+        (
+            "SELECT CASE WHEN a > 0 THEN stats(a, b).mean ELSE stats(b, a).mean END "
+            "AS o FROM __THIS__",
+            [STATS],
+        ),
+        (
+            "SELECT stats(incr(b), b).lo AS o, stats(b, b).lo AS p FROM __THIS__",
+            [INCR, STATS],
+        ),
+        ("SELECT wrap(a, b).lo AS o, wrap(a, b).m2 AS p FROM __THIS__", [STATS, WRAP]),
+        (
+            "SELECT o FROM (SELECT stats(b, b).mean AS o FROM __THIS__) AS d "
+            "WHERE o > stats(1, 2).mean",
+            [STATS],
+        ),
+        ("SELECT traps(b).v AS o FROM __THIS__", [TRAPS]),
+        ("SELECT maybe(a).v AS o, maybe(b).w AS p FROM __THIS__", [MAYBE]),
         # An argument that traps (a = BIGINT max): both engines trap.
         ("SELECT incr(a) AS o FROM __THIS__", [INCR]),
         ("SELECT incr(incr(b)) AS o FROM __THIS__", [INCR]),
@@ -213,3 +265,45 @@ def test_a_builtin_name_refuses():
     abs_ = SqlFunction("abs", _schema(v=F64), F64, lambda v: v)
     with pytest.raises(ValueError, match="collides with the builtin"):
         _build("SELECT abs(x) AS o FROM __THIS__", [abs_])
+
+
+def test_a_wide_struct_function_builds_once_per_call():
+    # The native catalog's shape: n lanes, each a CASE over fitted groups
+    # ending in error(), every lane read. Each call expands once, so 128
+    # lanes over 3 groups build well inside the expansion budget.
+    n, groups = 128, 3
+
+    def body(iid, *xs):
+        out = {}
+        for i, x in enumerate(xs):
+            lane = None
+            for g in range(groups):
+                v = (S.coalesce(x, S.lit(float("nan"))) - S.lit(1.0 + g)) / S.lit(
+                    2.0 + i
+                )
+                lane = (
+                    S.case(iid == S.lit(g), v)
+                    if lane is None
+                    else lane.when(iid == S.lit(g), v)
+                )
+            out[f"f{i}"] = lane.when(iid.isnull(), S.lit(None, F64)).otherwise(
+                S.fn("error", S.lit("unknown id"))
+            )
+        return out
+
+    takes = pa.schema([("iid", pa.int64())] + [(f"x{i}", F64) for i in range(n)])
+    fn = SqlFunction("wide", takes, pa.struct([(f"f{i}", F64) for i in range(n)]), body)
+    args = ", ".join(["iid"] + [f"x{i}" for i in range(n)])
+    sql = "SELECT " + ", ".join(f"wide({args}).f{i} AS o{i}" for i in range(n))
+    sql += " FROM __THIS__"
+    rows = pa.table(
+        {"iid": [0, 2, None], **{f"x{i}": [float(i), None, -1.5] for i in range(n)}}
+    )
+    infer = DuckDBInferFn(
+        sql, row_tables={"__THIS__": rows.schema}, static_tables={}, udfs=[fn]
+    )
+    got = infer.infer_arrow(rows).to_pylist()
+    assert got[0]["o5"] == (5.0 - 1.0) / 7.0
+    assert got[2]["o5"] is None
+    with pytest.raises(Exception, match="unknown id"):
+        infer.infer_arrow(rows.slice(0, 1).set_column(0, "iid", pa.array([7])))

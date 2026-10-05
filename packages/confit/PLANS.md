@@ -40,24 +40,28 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-1. **Per-read expansion of a struct SQL function.** Each field read
-   `f(x).p` still splices the whole body into the query text, so parse and
-   bind cost grow with reads x body size (128 lanes, one fitted group:
-   about 2 s, mostly the frontend). Expanding one call once per distinct
-   argument list would make it linear.
+Nothing open; the catalog's PLANS "Needs from confit" is where new needs
+land.
 
-Delivered: a constant CASE result (`CAST('0.0' AS DOUBLE)`) is no longer a
-sibling trap (`can_trap`), so a struct read evaluates the read lane only; a
-Cranelift size limit refuses by name (`unsupported:`) instead of raising an
-internal error; and an expression past DuckDB's depth limit (1000) refuses
-by name instead of overflowing the stack; and `greatest`/`least` build as one
-flat CASE (n² in the argument count, where the pairwise fold was 4^n);
-a sibling kept for its traps is reduced to its trap skeleton (CASE
-conditions, NULL for trap-free results) and equal skeletons are kept once,
-so n reads of n lanes that share `ELSE error(..)` compile n lanes plus one
-check (128 lanes: 13.6 s -> 2.1 s); an AND/OR chain past 64 terms binds as
-a balanced tree, and bind, fold and lower grow their stack on demand, so a
-20000-term chain serves (about 23 s to build: still superlinear).
+Delivered:
+
+- A constant CASE result (`CAST('0.0' AS DOUBLE)`) is not a sibling trap
+  (`can_trap`).
+- A sibling kept for its traps is reduced to its trap skeleton (CASE
+  conditions, NULL for trap-free results), each distinct one kept once: n
+  reads of n lanes sharing `ELSE error(..)` compile n lanes plus one check.
+- A SQL function call read by field expands and parses once per distinct
+  call (`frontend/calls.rs`); its siblings' skeletons bind once per call and
+  scope. 128 lanes read 128 times build in 0.4 s (13.6 s before both), 128
+  lanes over 3 groups (past the 4M-token cap before) in 0.7 s, 256 lanes in
+  1.4 s. An unaliased read is named as DuckDB names it, `(f(x)).p`.
+- `greatest`/`least` build as one flat CASE (n² in the argument count, was
+  4^n).
+- A Cranelift size limit refuses by name (`unsupported:`).
+- An expression past DuckDB's depth limit (1000) refuses by name; an
+  AND/OR chain past 64 terms binds as a balanced tree, and bind, fold and
+  lower grow their stack on demand, so a 20000-term chain serves (about
+  23 s to build: still superlinear).
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
 

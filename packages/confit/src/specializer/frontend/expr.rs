@@ -123,6 +123,10 @@ impl Binder<'_> {
                 if f.name.to_string().eq_ignore_ascii_case(structs::SEQ_MARKER) {
                     return self.seq(f);
                 }
+                // A call marker outside a field read: its expansion.
+                if let Some((id, calls)) = calls::marker_call(e) {
+                    return self.expr_or_null(&calls[id].1);
+                }
                 if self.nullif_sqlnull(f)? {
                     return Ok(None);
                 }
@@ -134,6 +138,9 @@ impl Binder<'_> {
                 self.bind_or_sqlnull(e)
             }
             other => {
+                if let Some(read) = self.call_field(other)? {
+                    return Ok(read);
+                }
                 if let Some(sub) = self.desugar_struct_field(other)? {
                     return self.expr_or_null(&sub);
                 }

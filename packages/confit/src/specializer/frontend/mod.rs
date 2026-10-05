@@ -52,6 +52,7 @@ mod functions;
 mod typing;
 mod decimal;
 pub mod macros;
+mod calls;
 mod lists;
 mod naming;
 
@@ -137,6 +138,10 @@ pub fn frontend(
         // Reserved for the struct field-read marker.
         return Err(unsup(format!("reserved identifier {}", structs::SEQ_MARKER)));
     }
+    if sql.to_ascii_lowercase().contains(macros::CALL_MARKER) {
+        // Reserved for the SQL function call marker.
+        return Err(unsup(format!("reserved identifier {}", macros::CALL_MARKER)));
+    }
     if sql.contains('\u{1}') {
         // Reserved for the star-filter rewrite marker.
         return Err(unsup("control character U+0001 in SQL"));
@@ -147,12 +152,29 @@ pub fn frontend(
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     // SQL functions first, so their bodies pass through the same rewrites
     // as the query text they land in.
-    let tokens = macros::expand(tokens, macros)?;
-    let tokens = super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
-        super::rewrite::rewrite_parenless_replace(super::rewrite::rewrite_from_colon_aliases(
-            super::rewrite::rewrite_colon_aliases(tokens),
-        )),
-    ));
+    let macros::Expanded { tokens, calls } = macros::expand(tokens, macros)?;
+    let rewrite = |tokens| {
+        super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
+            super::rewrite::rewrite_parenless_replace(super::rewrite::rewrite_from_colon_aliases(
+                super::rewrite::rewrite_colon_aliases(tokens),
+            )),
+        ))
+    };
+    let tokens = rewrite(tokens);
+    // Each call read by field parses once; its reads bind against it.
+    let calls = calls
+        .into_iter()
+        .map(|c| {
+            let body = Parser::new(&dialect)
+                .with_tokens(rewrite(c.tokens))
+                .parse_expr()
+                .map_err(|e| {
+                    PrepareError::Bind(format!("sql function '{}': its body: {e}", c.name))
+                })?;
+            Ok((c.name, body))
+        })
+        .collect::<Result<Vec<_>, PrepareError>>()?;
+    let _calls = calls::Installed::new(calls);
     let statements = Parser::new(&dialect)
         .with_tokens(tokens)
         .parse_statements()
@@ -851,6 +873,9 @@ struct Binder<'a> {
     /// nullable, so that would be charged to essentially every struct
     /// column in the repo for a feature one query shape uses.
     minted_lanes: std::cell::RefCell<Vec<super::plan::InputLane>>,
+    /// Per SQL function call read by field, and scope: its siblings' trap
+    /// skeletons (see `calls`), bound once for every read.
+    call_siblings: std::cell::RefCell<std::collections::HashMap<calls::ScopeKey, calls::Siblings>>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.
