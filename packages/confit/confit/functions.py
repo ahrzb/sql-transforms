@@ -1,10 +1,10 @@
 """The functions a query may call, as classes: what `udfs=` accepts.
 
     Function                 name, takes, returns; deterministic
-    ├── ExternFunction       defined by a Python callable, which the engine calls
-    │   └── Ensemble         plus packed tree tables, which the engine scores
-    │                        natively, bit-equal to the callable
-    └── (SqlFunction)        defined by SQL; not yet
+    ├── SqlFunction          defined by a SQL expression over its parameters
+    └── ExternFunction       defined by a Python callable, which the engine calls
+        └── Ensemble         plus packed tree tables, which the engine scores
+                             natively, bit-equal to the callable
 
 The rule that sorts them: a function's DEFINITION is what the DuckDB oracle
 runs (`register`), and a subclass only adds what the engine may know about
@@ -32,7 +32,7 @@ from typing import Any
 
 import pyarrow as pa
 
-__all__ = ["Ensemble", "ExternFunction", "Function", "FunctionError"]
+__all__ = ["Ensemble", "ExternFunction", "Function", "FunctionError", "SqlFunction"]
 
 # The engine computes in these four, and nothing narrower crosses a call: a
 # narrower arrow type is refused rather than widened, which would make the
@@ -128,6 +128,109 @@ def _lanes(
             f" pa.list_({returns.value_type}, k)"
         )
     return (), [returns]
+
+
+class SqlFunction(Function):
+    """A function defined by a SQL expression over its parameters.
+
+    `body` receives one `confit.sql` expression per parameter, in `takes`
+    order, each already cast to its declared type, and returns the result:
+    an expression for a scalar `returns`, or a dict of one expression per
+    field for a struct `returns`.
+
+        scale = SqlFunction(
+            "scale", pa.schema([("x", pa.float64())]), pa.float64(),
+            lambda x: (x - S.lit(3.5)) * S.lit(2.0),
+        )
+        DuckDBInferFn("SELECT scale(a) AS z FROM __THIS__", ..., udfs=[scale])
+
+    The definition is `sql_body`, text with each parameter reference spelled
+    `CAST("x" AS <type>)` and the result cast to `returns`. DuckDB registers
+    it as a macro (`register`), which binds a call by substituting the
+    argument for each parameter; confit performs the same substitution, so
+    both engines bind one expression. That the engine inlines a call is how
+    it is served today, not part of the contract.
+
+    Unlike a declared extern, a parameter or field may have any type the
+    engine serves, since the body is ordinary SQL. A body reads only its
+    parameters; another column, which DuckDB would bind against the calling
+    query, refuses here.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        takes: pa.Schema,
+        returns: pa.DataType,
+        body: Callable[..., Any],
+    ) -> None:
+        from confit import sql as S
+
+        if not isinstance(name, str) or not S._IDENT.match(name):
+            raise FunctionError(
+                f"a sql function needs an identifier name, not {name!r}"
+            )
+        if not isinstance(takes, pa.Schema):
+            raise FunctionError(f"function {name}: takes must be a pa.Schema")
+        if not isinstance(returns, pa.DataType):
+            raise FunctionError(f"function {name}: returns must be a pa.DataType")
+        if len({n.lower() for n in takes.names}) != len(takes):
+            raise FunctionError(f"function {name}: parameter names collide")
+        self.name, self.takes, self.returns = name, takes, returns
+        params = [S.col(f.name).cast(_type_name(name, f.type)) for f in takes]
+        out = body(*params)
+        if pa.types.is_struct(returns):
+            fields = [returns.field(i) for i in range(returns.num_fields)]
+            if not isinstance(out, dict) or [k.lower() for k in out] != [
+                f.name.lower() for f in fields
+            ]:
+                raise FunctionError(
+                    f"function {name}: a struct return's body is a dict of"
+                    f" {[f.name for f in fields]}, in order"
+                )
+            exprs = [S._wrap(out[k]) for k in out]
+            rendered = ", ".join(
+                f"{S._quote_ident(f.name)} := {e.cast(_type_name(name, f.type)).sql()}"
+                for f, e in zip(fields, exprs, strict=True)
+            )
+            text = f"struct_pack({rendered})"
+        elif pa.types.is_list(returns) or pa.types.is_fixed_size_list(returns):
+            raise FunctionError(f"function {name}: a list return is not served yet")
+        else:
+            if isinstance(out, dict):
+                raise FunctionError(
+                    f"function {name}: a scalar return's body is one expression"
+                )
+            exprs = [S._wrap(out)]
+            text = exprs[0].cast(_type_name(name, returns)).sql()
+        allowed = set(takes.names)
+        for e in exprs:
+            for node in e.walk():
+                if isinstance(node, S.Column) and (
+                    len(node.path) != 1 or node.path[0] not in allowed
+                ):
+                    raise FunctionError(
+                        f"function {name}: the body reads {node.sql()}, which is not a"
+                        " parameter"
+                    )
+        self.sql_body = text
+
+    def register(self, con: Any) -> None:
+        from confit import sql as S
+
+        params = ", ".join(S._quote_ident(n) for n in self.takes.names)
+        con.execute(
+            f"CREATE MACRO {S._quote_ident(self.name)}({params}) AS {self.sql_body}"
+        )
+
+
+def _type_name(name: str, t: pa.DataType) -> str:
+    from confit import sql as S
+
+    try:
+        return S.type_name(t)
+    except TypeError as e:
+        raise FunctionError(f"function {name}: {e}") from None
 
 
 class ExternFunction(Function):

@@ -169,9 +169,32 @@ pub fn prepare_opaque(
     // fold of pure externs. Empty disables the fold.
     bind_eval: &[exec::ExternImpl],
 ) -> Result<Prepared, PrepareError> {
+    prepare_full(
+        sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval, &[],
+    )
+}
+
+/// [`prepare_opaque`] plus the declared SQL functions, each call of which
+/// is replaced by its body before the query is parsed
+/// ([`frontend::macros`]).
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_full(
+    sql: &str,
+    this_name: &str,
+    in_cols: &[ir::Col],
+    opaque: &[(usize, String)],
+    structs: &[plan::StructCol],
+    statics: &[plan::StaticTable],
+    many: bool,
+    udfs: &[ir::ExternSpec],
+    models: &[plan::ModelTable],
+    bind_eval: &[exec::ExternImpl],
+    macros: &[frontend::macros::SqlMacro],
+) -> Result<Prepared, PrepareError> {
     let (plan, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
         frontend::frontend(
             sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
+            macros,
         )?;
     let one_row_blocker = one_row_blocker(&plan, &joins, statics);
     let join_facts = joins

@@ -25,7 +25,8 @@ use crate::specializer::exec::{
 use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
-use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
+use crate::specializer::frontend::macros::SqlMacro;
+use crate::specializer::{prepare_full, StaticSpec, WideOut};
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
 /// Arrow is what the caller wrote.
@@ -638,9 +639,14 @@ fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, V
 ///
 /// Both lists share ONE name space with each other and with the builtins,
 /// because a call site resolves a name against all three.
-fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, Vec<TreeDecl>)> {
+#[allow(clippy::type_complexity)]
+fn parse_udfs(
+    py: Python<'_>,
+    udfs: Vec<Py<PyAny>>,
+) -> PyResult<(Vec<UdfDecl>, Vec<TreeDecl>, Vec<SqlMacro>)> {
     let mut out: Vec<UdfDecl> = Vec::new();
     let mut trees: Vec<TreeDecl> = Vec::new();
+    let mut macros: Vec<SqlMacro> = Vec::new();
     // One namespace: a call site resolves a name against both lists, so a
     // collision between them would bind the wrong implementation silently.
     let mut names: Vec<String> = Vec::new();
@@ -667,6 +673,26 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
             )));
         }
         names.push(name.clone());
+        // A SQL function: its body replaces each call before parsing, so it
+        // never becomes an extern. Its parameter types are already spelled in
+        // the body (`confit.SqlFunction` casts each reference), so only the
+        // names cross.
+        if b.hasattr("sql_body")? {
+            let body: String = b.getattr("sql_body")?.extract().map_err(|_| {
+                build_err(format!("bind error: sql function '{name}': `sql_body` must be a str"))
+            })?;
+            let params: Vec<String> = b
+                .getattr("takes")
+                .and_then(|t| t.getattr("names"))
+                .and_then(|n| n.extract())
+                .map_err(|_| {
+                    build_err(format!(
+                        "bind error: sql function '{name}': `takes` must be a pyarrow Schema"
+                    ))
+                })?;
+            macros.push(SqlMacro { name, params, body });
+            continue;
+        }
         let (_take_names, take_tys) = parse_takes(&name, &b.getattr("takes").map_err(|_| {
             build_err(format!("bind error: udf '{name}': `takes` must be a pyarrow Schema"))
         })?)?;
@@ -723,7 +749,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
             obj: obj.clone_ref(py),
         });
     }
-    Ok((out, trees))
+    Ok((out, trees, macros))
 }
 
 /// The engine-side implementations: one boxed trampoline per declared UDF.
@@ -1527,7 +1553,7 @@ impl DuckDBInferFn {
         udfs: Option<Vec<Py<PyAny>>>,
         shape: Option<String>,
     ) -> PyResult<Self> {
-        let (udf_decls, tree_decls) = parse_udfs(py, udfs.unwrap_or_default())?;
+        let (udf_decls, tree_decls, sql_macros) = parse_udfs(py, udfs.unwrap_or_default())?;
         let shape_c = Shape::parse(shape.as_deref())?;
         let (row_table, row_schema) = match row_tables.len() {
             1 => row_tables.into_iter().next().unwrap(),
@@ -1699,7 +1725,7 @@ impl DuckDBInferFn {
         // The same closures the runtime uses, handed to the binder so a pure
         // udf can constant-fold at build.
         let bind_impls = make_externs(py, &udf_decls);
-        let prepared = match prepare_opaque(
+        let prepared = match prepare_full(
             &sql,
             &row_table,
             &in_cols,
@@ -1710,6 +1736,7 @@ impl DuckDBInferFn {
             &extern_specs,
             &model_catalog,
             &bind_impls,
+            &sql_macros,
         ) {
             Ok(p) => p,
             Err(e) => return Err(build_err(e.to_string())),

@@ -53,6 +53,7 @@ A query calls functions passed in `udfs=`. `confit.functions` names the kinds:
 
 | class | defined by | how the engine serves it |
 |---|---|---|
+| `SqlFunction` | a SQL expression over its parameters | substitutes the arguments into the body, as DuckDB's macro does |
 | `ExternFunction` | a Python callable | calls it (or folds a call over constants at bind) |
 | `Ensemble(ExternFunction)` | the reference walk of its packed tree tables | scores the tables natively, bit-equal to the walk |
 
@@ -61,7 +62,10 @@ a subclass only adds what the engine may know, never a different meaning.
 How a call is evaluated is the engine's choice, not part of the contract.
 
 ```python
-from confit import ExternFunction, Ensemble
+from confit import ExternFunction, Ensemble, SqlFunction, sql as S
+
+scale = SqlFunction("scale", pa.schema([("x", pa.float64())]), pa.float64(),
+                    lambda x: (x - S.lit(3.5)) * S.lit(2.0))
 
 double = ExternFunction("double", pa.schema([("x", pa.float64())]), pa.float64(),
                         lambda x: None if x is None else (2 * x,))
@@ -71,11 +75,12 @@ score = Ensemble("score",
                  nodes=nodes, models=models, compare_grid="float32")
 
 fn = DuckDBInferFn(
-    "SELECT double(t.price) AS p2, score(p.est, t.price, t.sqft) AS s "
+    "SELECT scale(t.price) AS z, double(t.price) AS p2, "
+    "score(p.est, t.price, t.sqft) AS s "
     "FROM __THIS__ AS t LEFT JOIN params AS p ON t.country = p.country",
     row_tables={"__THIS__": row_schema},
     static_tables={"params": params},
-    udfs=[double, score],
+    udfs=[scale, double, score],
 )
 ```
 

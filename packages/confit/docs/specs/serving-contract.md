@@ -142,9 +142,12 @@ Struct returns have named lanes; fixed-size-list returns have unnamed lanes.
 A width-one list must instead declare its scalar element type. A UDF exposing
 `tree_tables()` supplies `(nodes, models, compare_grid)` for native scoring
 without a Python call on the row path. `confit.functions` spells the
-protocol as classes: `ExternFunction` (a callable) and `Ensemble` (packed tree
-tables plus their reference walk), each with a `register` that is its oracle
-definition (`tests/test_functions.py`). The protocol is specified by
+protocol as classes: `SqlFunction` (a SQL body, registered on DuckDB as a
+macro; a call is replaced by its body with the arguments substituted, as
+DuckDB binds a macro), `ExternFunction` (a callable) and `Ensemble` (packed
+tree tables plus their reference walk), each with a `register` that is its
+oracle definition (`tests/test_functions.py`, `tests/test_sql_functions.py`).
+An object exposing `sql_body` is a SQL function. The protocol is specified by
 `packages/confit/confit/_engine.pyi` and exercised by `test_udfs.py` and
 `test_tree_predict.py`.
 

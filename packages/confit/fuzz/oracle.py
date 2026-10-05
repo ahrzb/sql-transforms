@@ -422,7 +422,7 @@ def _discard() -> None:
             con.close()
 
 
-def _give_back(con: Oracle, tables: list[str], udfs: list[str]) -> None:
+def _give_back(con: Oracle, tables: list[str], udfs: list[tuple[str, bool]]) -> None:
     """End a case: close a fresh oracle; empty the reused one, and keep it
     only if its catalog then shows it empty."""
     if con is not _Reuse.con:
@@ -431,8 +431,11 @@ def _give_back(con: Oracle, tables: list[str], udfs: list[str]) -> None:
     try:
         for name in tables:
             con.execute(f'DROP TABLE IF EXISTS "{name}"')
-        for name in udfs:
-            con.remove_function(name)  # raises if it was never registered
+        for name, macro in udfs:
+            if macro:
+                con.execute(f'DROP MACRO "{name}"')  # raises if never created
+            else:
+                con.remove_function(name)  # raises if it was never registered
         (left,) = con.execute(
             "SELECT (SELECT count(*) FROM duckdb_tables())"
             " + (SELECT count(*) FROM duckdb_views() WHERE NOT internal)"
@@ -447,6 +450,11 @@ def _load(con: Oracle, case: G.Case, udf_objs) -> None:
     """The case's UDFs registered in `con` and its tables loaded as NATIVE
     tables."""
     for u in udf_objs:
+        if hasattr(u, "sql_body"):
+            # A SQL function: a macro over its parameters, by the protocol.
+            ps = ", ".join(f'"{n}"' for n in u.takes.names)
+            con.execute(f'CREATE MACRO "{u.name}"({ps}) AS {u.sql_body}')
+            continue
         params = [_DUCK_T[t] for t in u.takes.types]
         if hasattr(u, "instances"):
             params = ["BIGINT", *params]
@@ -499,7 +507,11 @@ def _duck_run(sql, case: G.Case, udf_objs, *, bracket: bool = True):
         con.optimizer_on()
         return off, _exec(con, sql)
     finally:
-        _give_back(con, [*case.statics, "__THIS__"], [u.name for u in udf_objs])
+        _give_back(
+            con,
+            [*case.statics, "__THIS__"],
+            [(u.name, hasattr(u, "sql_body")) for u in udf_objs],
+        )
 
 
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
