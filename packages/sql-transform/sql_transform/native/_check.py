@@ -64,7 +64,9 @@ def query(step: Any, id_col: str = "__iid") -> str:
 
 def _serve(sql: str, rows: pa.Table, fn: Any) -> list[dict] | Exception:
     try:
-        f = DuckDBInferFn(sql, row_tables={"__THIS__": rows.schema}, static_tables={}, udfs=[fn])
+        f = DuckDBInferFn(
+            sql, row_tables={"__THIS__": rows.schema}, static_tables={}, udfs=[fn]
+        )
         return f.infer_arrow(rows).to_pylist()
     except Exception as e:  # noqa: BLE001 — a trap is an answer here
         return e
@@ -122,8 +124,9 @@ def check(
                     if isinstance(a[k], float) and isinstance(b[k], float)
                     else "n/a"
                 )
+                row = rows.slice(i, 1).to_pylist()[0]
                 raise ParityError(
                     f"row {i} lane {k!r}: step {a[k]!r}, native {b[k]!r}"
-                    f" ({d} ulps, bound {ulps}); input {rows.slice(i, 1).to_pylist()[0]}"
+                    f" ({d} ulps, bound {ulps}); input {row}"
                 )
     return compared

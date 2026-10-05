@@ -90,7 +90,9 @@ def write() -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--write", action="store_true", help="regenerate docs/native/coverage.md")
+    p.add_argument(
+        "--write", action="store_true", help="regenerate docs/native/coverage.md"
+    )
     if p.parse_args().write:
         write()
     else:

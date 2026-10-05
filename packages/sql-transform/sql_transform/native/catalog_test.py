@@ -59,7 +59,9 @@ def _fit_matrix(rng: np.random.Generator, n_features: int) -> np.ndarray:
 def _step(cls_factory, seed: int) -> PythonTransform:
     rng = np.random.default_rng(seed)
     n_features = int(rng.integers(1, 5))
-    types = [pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)]
+    types = [
+        pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
+    ]
     takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
     instances = {}
     for k in range(int(rng.integers(1, 4))):
@@ -93,7 +95,9 @@ def _rows(step: PythonTransform, seed: int) -> pa.Table:
             else:
                 vals.append(rng.uniform(-1e3, 1e3))
         if f.type == pa.int64():
-            vals = [None if v is None else max(-(2**62), min(2**62, round(v))) for v in vals]
+            vals = [
+                None if v is None else max(-(2**62), min(2**62, round(v))) for v in vals
+            ]
         cols[f.name] = pa.array(vals, f.type)
     return pa.table(cols)
 
@@ -155,10 +159,13 @@ def test_a_reordered_translation_is_caught(monkeypatch):
     from sql_transform.native._helpers import f64
 
     def reordered(est, x):
-        return [(xi - f64(m)) * f64(1.0 / s) for xi, m, s in zip(x, est.mean_, est.scale_)]
+        terms = zip(x, est.mean_, est.scale_, strict=True)
+        return [(xi - f64(m)) * f64(1.0 / s) for xi, m, s in terms]
 
     entry = _registry._CATALOG[StandardScaler]
-    monkeypatch.setitem(_registry._CATALOG, StandardScaler, _registry.Entry(reordered, 0))
+    monkeypatch.setitem(
+        _registry._CATALOG, StandardScaler, _registry.Entry(reordered, 0)
+    )
     caught = 0
     for seed in range(8):
         step = _step(StandardScaler, seed)
