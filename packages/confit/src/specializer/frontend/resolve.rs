@@ -686,12 +686,34 @@ impl Binder<'_> {
                          but this column cannot be referenced before it is defined"
                     )));
                 }
+                // No column has the name, but a relation does: DuckDB binds
+                // it as that relation's whole row struct.
+                if self.is_relation(name) {
+                    return Err(unsup(format!(
+                        "relation '{name}' as a value (its whole row struct); \
+                         read its columns as {name}.col instead"
+                    )));
+                }
                 Err(PrepareError::Bind(format!(
                     "column '{name}' does not exist in scope"
                 )))
             }
             _ => Err(PrepareError::Bind(format!("ambiguous column '{name}' (qualify it)"))),
         }
+    }
+
+    /// Whether `name` is a relation in scope: the request table by its FROM
+    /// spelling, or a joined table by its alias (or name).
+    pub(super) fn is_relation(&self, name: &str) -> bool {
+        name.eq_ignore_ascii_case(&self.this_name)
+            || self.joins.iter().any(|sj| name.eq_ignore_ascii_case(&sj.name))
+    }
+
+    /// Whether a bare `name` binds as a column (DuckDB's first choice,
+    /// before the relation's row struct): anything but "does not exist".
+    pub(super) fn binds_as_column(&self, name: &str) -> bool {
+        !matches!(self.column(name), Err(PrepareError::Bind(m)) if m.contains("does not exist"))
+            && !matches!(self.column(name), Err(PrepareError::Unsupported(m)) if m.starts_with("relation '"))
     }
 
     /// `table.col` bind: the dynamic table by its FROM spelling, a joined

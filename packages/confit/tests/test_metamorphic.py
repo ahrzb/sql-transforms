@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -57,14 +56,13 @@ def test_every_spelling_of_a_struct_leaf_is_a_join_key(key):
     assert_parity(sql, rows, statics={"d": D}, expect="AGREE")
 
 
-def test_a_relation_read_as_a_struct_stays_refused():
-    # DuckDB reads a relation name as its row struct, so `d['k']['f']` is
-    # `d.k.f` there. confit does not serve relation-as-struct reads in any
-    # spelling; the key recognition above must not turn `d['k']` into the
-    # column `d.k` by accident.
-    sql = "SELECT a FROM __THIS__ LEFT JOIN d ON a = d['k']['f']"
-    with pytest.raises(ValueError, match="column 'd' does not exist"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": ROW}, static_tables={"d": D})
+@pytest.mark.parametrize("key", ["d['k']['f']", "(d).k.f", "struct_extract(d, 'k').f"])
+def test_a_relation_read_as_a_struct_is_its_column(key):
+    # DuckDB reads a relation name no column shares as its row struct, so
+    # `d['k']['f']` is `d.k.f` there, a join key like every spelling above.
+    sql = f"SELECT a, v FROM __THIS__ LEFT JOIN d ON a = {key}"
+    rows = pa.table({"a": pa.array([1, 2, 3, None], pa.int64())})
+    assert_parity(sql, rows, statics={"d": D}, expect="AGREE")
 
 
 # ------------------------------------------------- found by the nightly run

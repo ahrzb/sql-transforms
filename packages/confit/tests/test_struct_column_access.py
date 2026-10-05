@@ -120,3 +120,30 @@ def test_struct_column_access_refusals_duckdb_serves(sql):
     v = assert_parity(sql, T, statics={"d": D}, expect="REFUSED")
     assert v.oracle == "serves", f"oracle moved: {v.oracle}"
     assert "unsupported" in v.detail
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A relation no column shares is its row struct: each reads `t.k`.
+        "SELECT t['k'] AS o FROM __THIS__ AS t",
+        "SELECT (t).k AS o FROM __THIS__ AS t",
+        "SELECT struct_extract(t, 'K') AS o FROM __THIS__ AS t",
+        "SELECT __THIS__['k'] AS o FROM __THIS__",
+        "SELECT d['id'] AS o, (d).v['x'] AS p FROM __THIS__ LEFT JOIN d ON k = id",
+    ],
+)
+def test_a_relation_subscript_reads_its_column(sql):
+    assert_parity(sql, T, statics={"d": D}, expect="AGREE")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT t AS o FROM __THIS__ AS t",
+        "SELECT d AS o FROM __THIS__ LEFT JOIN d ON k = id",
+    ],
+)
+def test_a_whole_relation_value_refuses_by_name(sql):
+    v = assert_parity(sql, T, statics={"d": D}, expect="REFUSED")
+    assert v.oracle == "serves" and "as a value (its whole row struct)" in v.detail
