@@ -185,7 +185,7 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Expanded, Prepa
         macros,
         bodies,
         rounds: 0,
-        tokens: tokens.len(),
+        tokens: 0,
         calls: Vec::new(),
         keys: Vec::new(),
     };
@@ -212,24 +212,55 @@ fn read_by_field(toks: &[Token], end: usize) -> bool {
     matches!(next_solid(toks, dot), Some((_, Token::Word(_))))
 }
 
-fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, PrepareError> {
-    let macros = st.macros;
-    let mut toks = tokens;
-    // Everything before the last expansion is call-free, so the next search
-    // starts there.
-    let mut from = 0usize;
-    while let Some((at, m)) = find_call(&toks, from, macros) {
-        from = at;
-        st.rounds += 1;
-        if st.rounds > MAX_EXPANSIONS {
-            return Err(unsup(format!(
-                "sql function '{}' expands more than {MAX_EXPANSIONS} times (a body \
-                 that calls itself?)",
-                macros[m].name
-            )));
+/// `(body)` with every parameter reference spelled `(argument)`.
+fn substitute(body: &[Token], mac: &SqlMacro, args: &[Vec<Token>]) -> Vec<Token> {
+    let mut rep = Vec::with_capacity(body.len() + 2);
+    rep.push(Token::LParen);
+    for (j, t) in body.iter().enumerate() {
+        let param = match t {
+            // A quoted name, or a bare one that is not a keyword: a bare
+            // `end` is CASE's, never a parameter.
+            Token::Word(w)
+                if (w.quote_style == Some('"')
+                    || (w.quote_style.is_none() && w.keyword == Keyword::NoKeyword))
+                    && is_reference(body, j) =>
+            {
+                mac.params
+                    .iter()
+                    .position(|p| p.eq_ignore_ascii_case(&w.value))
+                    .filter(|_| !matches!(next_solid(body, j), Some((_, Token::LParen))))
+            }
+            _ => None,
+        };
+        match param {
+            Some(p) => {
+                rep.push(Token::LParen);
+                rep.extend(args[p].iter().cloned());
+                rep.push(Token::RParen);
+            }
+            None => rep.push(t.clone()),
         }
-        let open = next_solid(&toks, at).expect("found before a paren").0;
-        let (args, end) = split_args(&toks, open)?;
+    }
+    rep.push(Token::RParen);
+    rep
+}
+
+/// One pass over `tokens`, building the output as it goes: a call's
+/// arguments and its body expand recursively before they are appended, so
+/// no splice ever shifts the rest of a growing token vector (a query reading
+/// n fields of one wide function spliced n times into an O(n) vector).
+fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, PrepareError> {
+    stacker::maybe_grow(super::RED_ZONE, super::STACK_SEGMENT, || expand_here(&tokens, st))
+}
+
+fn expand_here(toks: &[Token], st: &mut State<'_>) -> Result<Vec<Token>, PrepareError> {
+    let macros = st.macros;
+    let mut out: Vec<Token> = Vec::with_capacity(toks.len());
+    let mut i = 0usize;
+    while let Some((at, m)) = find_call(toks, i, macros) {
+        out.extend_from_slice(&toks[i..at]);
+        let open = next_solid(toks, at).expect("found before a paren").0;
+        let (args, end) = split_args(toks, open)?;
         let mac = &macros[m];
         if args.len() != mac.params.len() {
             return Err(PrepareError::Bind(format!(
@@ -245,44 +276,36 @@ fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, Prepa
             a[lo..hi].to_vec()
         };
         let args: Vec<Vec<Token>> = args.iter().map(|a| trim(a)).collect();
-        let body = &st.bodies[m];
-        let mut rep = Vec::with_capacity(body.len() + 2);
-        rep.push(Token::LParen);
-        for (j, t) in body.iter().enumerate() {
-            let param = match t {
-                // A quoted name, or a bare one that is not a keyword: a
-                // bare `end` is CASE's, never a parameter.
-                Token::Word(w)
-                    if (w.quote_style == Some('"')
-                        || (w.quote_style.is_none() && w.keyword == Keyword::NoKeyword))
-                        && is_reference(body, j) =>
-                {
-                    mac
-                    .params
-                    .iter()
-                    .position(|p| p.eq_ignore_ascii_case(&w.value))
-                        .filter(|_| !matches!(next_solid(body, j), Some((_, Token::LParen))))
-                }
-                _ => None,
-            };
-            match param {
-                Some(p) => {
-                    rep.push(Token::LParen);
-                    rep.extend(args[p].iter().cloned());
-                    rep.push(Token::RParen);
-                }
-                None => rep.push(t.clone()),
+        let by_field = read_by_field(toks, end);
+        // A call read by field and already expanded is just its marker:
+        // building its expansion again, per read, was quadratic.
+        let key: String = args
+            .iter()
+            .map(|a| a.iter().map(|t| t.to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\u{0}");
+        let seen = if by_field {
+            st.keys.iter().position(|k| k.0 == m && k.1 == key)
+        } else {
+            None
+        };
+        // Only an expansion counts toward the cap, which stops a body that
+        // calls itself; a further read of an expanded call is a marker.
+        let rep = if seen.is_some() {
+            Vec::new()
+        } else {
+            st.rounds += 1;
+            if st.rounds > MAX_EXPANSIONS {
+                return Err(unsup(format!(
+                    "sql function '{}' expands more than {MAX_EXPANSIONS} times (a body \
+                     that calls itself?)",
+                    macros[m].name
+                )));
             }
-        }
-        rep.push(Token::RParen);
-        if read_by_field(&toks, end) {
-            // One expansion per distinct call, keyed by its spelling.
-            let key: String = args
-                .iter()
-                .map(|a| a.iter().map(|t| t.to_string()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\u{0}");
-            let id = match st.keys.iter().position(|k| *k == (m, key.clone())) {
+            substitute(&st.bodies[m], mac, &args)
+        };
+        if by_field {
+            let id = match seen {
                 Some(id) => id,
                 None => {
                     st.tokens += rep.len();
@@ -294,31 +317,31 @@ fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, Prepa
                     st.calls.len() - 1
                 }
             };
-            let mut marker = vec![
+            out.extend([
                 Token::LParen,
                 Token::make_word(CALL_MARKER, None),
                 Token::LParen,
                 Token::Number(id.to_string(), false),
-            ];
-            for a in &args {
-                marker.push(Token::Comma);
-                marker.extend(a.iter().cloned());
+            ]);
+            for a in args {
+                out.push(Token::Comma);
+                out.extend(expand_in(a, st)?);
             }
-            marker.push(Token::RParen);
-            marker.push(Token::RParen);
-            toks.splice(at..end, marker);
+            out.push(Token::RParen);
+            out.push(Token::RParen);
         } else {
-            st.tokens = st.tokens - (end - at) + rep.len();
-            toks.splice(at..end, rep);
+            out.extend(expand_in(rep, st)?);
         }
-        if st.tokens > MAX_TOKENS {
+        if out.len() + st.tokens > MAX_TOKENS {
             return Err(unsup(format!(
                 "sql function '{}' expands past {MAX_TOKENS} tokens",
                 mac.name
             )));
         }
+        i = end;
     }
-    Ok(toks)
+    out.extend_from_slice(&toks[i..]);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -410,6 +433,19 @@ mod tests {
         // Not a field read: inline, as before.
         let e = expand(tokenize("SELECT f(a) FROM t").unwrap(), &m).unwrap();
         assert!(e.calls.is_empty());
+    }
+
+    #[test]
+    fn reads_of_one_call_do_not_count_as_expansions() {
+        // 3000 reads of one call: one expansion, under the cap.
+        let m = [mac("f", &["x"], "struct_pack(p := x)")];
+        let reads: Vec<String> = (0..3000).map(|i| format!("f(a).p AS o{i}")).collect();
+        let e = expand(
+            tokenize(&format!("SELECT {} FROM t", reads.join(", "))).unwrap(),
+            &m,
+        )
+        .unwrap();
+        assert_eq!(e.calls.len(), 1);
     }
 
     #[test]
