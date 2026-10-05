@@ -1,0 +1,45 @@
+"""Fitted sklearn transformers as confit functions: the native catalog.
+
+    from sql_transform.native import to_native, explain_native, check
+
+    fn = to_native(step)       # a confit SqlFunction, or `step` itself
+    explain_native(step)       # what it becomes, or why not
+    check(step, fn, rows)      # swap-the-entry parity, raises on a breach
+
+`step` is a `PythonTransform`: fitted instances keyed by id, called as
+`name(id, features...)`. A translation is a drop-in replacement: same name,
+same call, same result (docs/native/goal.md says what "same" means). Where no
+translation exists, `to_native` hands back the step unchanged, which is
+always correct to serve, only slower.
+
+The catalog is one module per family (`scalers.py`, ...), each entry
+registered with `@translates(EstimatorClass)`. This package imports confit
+and sklearn and nothing else of sql_transform but the step class, so the
+rest of the package can change around it.
+"""
+
+from __future__ import annotations
+
+from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
+from sql_transform.native._check import ParityError, check
+from sql_transform.native._registry import (
+    Entry,
+    NotNative,
+    bound,
+    catalog,
+    explain_native,
+    to_native,
+    translates,
+)
+
+__all__ = [
+    "Entry",
+    "NotNative",
+    "bound",
+    "ParityError",
+    "catalog",
+    "check",
+    "explain_native",
+    "to_native",
+    "translates",
+]
