@@ -163,7 +163,7 @@ impl Binder<'_> {
             .all(|e| e.ty.dec().is_some() || e.ty.is_int());
         let any_null = bound.iter().any(|e| {
             e.as_ref()
-                .is_none_or(|e| bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf))
+                .is_none_or(folds_to_null)
         });
         any_dec && all_dec_or_int && any_null
     }
@@ -247,6 +247,10 @@ impl Binder<'_> {
                 let (mut ops, mut operands) = (Vec::new(), Vec::new());
                 flatten_bitops(e, &mut ops, &mut operands);
                 let mut acc = self.expr_or_null(operands[0])?;
+                // An integer literal adapts to its partner's width, as for
+                // `+` (`tiny >> 8` is TINYINT); only the run's first operand
+                // can be a literal on the left.
+                let mut left_lit = ast_int_literal(operands[0]);
                 for (o, rhs) in ops.iter().zip(&operands[1..]) {
                     let b = self.expr_or_null(rhs)?;
                     let (av, bv) = match (acc, b) {
@@ -263,7 +267,8 @@ impl Binder<'_> {
                             return Err(unsup("NULL <op> NULL without a typing context"))
                         }
                     };
-                    acc = Some(self.arith(flat_bitop(o), av, bv, (None, None))?);
+                    let lits = (left_lit.take(), ast_int_literal(rhs));
+                    acc = Some(self.arith(flat_bitop(o), av, bv, lits)?);
                 }
                 Ok(acc.expect("a flat-bitop run has at least one operator"))
             }
@@ -784,11 +789,7 @@ impl Binder<'_> {
             // NULL (CASE WHEN FALSE THEN 1.25 END) collapses exactly like a
             // bare NULL next to a decimal literal; DOUBLE-spelled foldable
             // NULLs do not (measured control).
-            let folds_null = |x: &Option<SExpr>| {
-                x.as_ref().is_none_or(|e| {
-                    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
-                })
-            };
+            let folds_null = |x: &Option<SExpr>| x.as_ref().is_none_or(folds_to_null);
             let dec_l = ast_decimal_literal(left);
             let dec_r = ast_decimal_literal(right);
             ((a.is_none() || (dec_l && folds_null(&a))) && b.is_some() && dec_r

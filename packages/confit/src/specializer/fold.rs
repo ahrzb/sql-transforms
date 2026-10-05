@@ -395,7 +395,20 @@ pub fn fold(e: SExpr) -> SExpr {
                         b: Box::new(b),
                     })
                 }
-                (Some(K::Val(x)), Some(K::Val(y))) => match arith(op, &x, &y) {
+                // Checked at the node's own width, not i64's: a constant CASE
+                // arm escapes into a TINYINT `*` (`100 * CASE WHEN TRUE THEN
+                // 100 ELSE tiny END`), and DuckDB traps that multiplication
+                // (nightly seeds 2729519, 3829756).
+                // A right shift by the width or more is 0 at a narrow width.
+                (Some(K::Val(_)), Some(K::Val(Lit::I64(y))))
+                    if op == ArithOp::Shr
+                        && super::lower::narrow_bits(ty).is_some_and(|bits| y >= bits) =>
+                {
+                    lit(Lit::I64(0), ty)
+                }
+                (Some(K::Val(x)), Some(K::Val(y))) => match arith(op, &x, &y).filter(|l| {
+                    !matches!((l, ty.int_range()), (Lit::I64(v), Some((lo, hi))) if !(lo..=hi).contains(v))
+                }) {
                     Some(l) => lit(l, ty),
                     // Would trap at run time — keep the node, keep the trap.
                     None => e(SKind::Arith {

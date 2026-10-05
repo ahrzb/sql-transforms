@@ -205,7 +205,10 @@ fn presence_lanes_are_minted_lazily() {
         super::plan::KeyCmp::Eq,
         "the top-level presence key is PLAIN"
     );
-    assert!(!val_paths(spec).contains(&vec!["w".to_string(), "mean".to_string()]));
+    // `w.mean` is a DOUBLE key leaf: it rides as a value lane only as the
+    // shadow that carries its real bits (`0.0` matches `-0.0`), once.
+    let wm = vec!["w".to_string(), "mean".to_string()];
+    assert_eq!(val_paths(spec).iter().filter(|p| **p == wm).count(), 1);
 }
 
 /// prepare + compile + run with static-table map data.
@@ -807,9 +810,11 @@ fn join_key_promotion_int_dyn_against_float_col() {
     // keys stay F64 (canonical bits).
     let schema = cols(&[("k", Ty::I64, false)]);
     let dim = stat("dim", &[("id", Ty::F64, false), ("v", Ty::I64, false)]);
+    // The DOUBLE key also rides as a shadow value: `0.0` matches `-0.0`,
+    // and a projected key is the static side's own bits.
     let data = StaticData::Map(vec![(
         vec![KeyBits::F64(1f64.to_bits())],
-        vec![ScalarVal::I64(10)],
+        vec![ScalarVal::I64(10), ScalarVal::F64(1.0)],
     )]);
     let got = run_join(
         "SELECT v FROM __THIS__ JOIN dim ON k = dim.id",
@@ -935,11 +940,11 @@ fn f64_probe_keys_canonicalize_negzero_and_nan() {
     let data = StaticData::Map(vec![
         (
             vec![KeyBits::F64((-0.0f64).to_bits())],
-            vec![ScalarVal::I64(1)],
+            vec![ScalarVal::I64(1), ScalarVal::F64(-0.0)],
         ),
         (
             vec![KeyBits::F64((f64::NAN).to_bits() ^ 1)],
-            vec![ScalarVal::I64(2)],
+            vec![ScalarVal::I64(2), ScalarVal::F64(f64::NAN)],
         ),
     ]);
     let got = run_join(
@@ -2864,7 +2869,8 @@ fn left_shift_trap_ladder() {
     // In-range boundary folds/computes fine; NULL masks the would-trap row.
     let schema2 = cols(&[("b", Ty::I64, true)]);
     let got = run_sql(
-        "SELECT 1 << 62 AS big, 1 << b AS masked FROM __THIS__",
+        // BIGINT: an INTEGER `1 << 62` is out of range on DuckDB.
+        "SELECT CAST(1 AS BIGINT) << 62 AS big, 1 << b AS masked FROM __THIS__",
         &schema2,
         batch(1, vec![c_i64(&[None])]),
     )

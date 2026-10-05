@@ -194,8 +194,18 @@ pub(super) fn bind_residual(
     let mut acc: Option<SExpr> = None;
     for c in raw {
         let bound = bool_context(fold(binder.expr(c)?), "JOIN ON condition")?;
+        // Sides are what the conjunct NAMES. The bound tree reads a key
+        // column through its probe-side reconstruction, which would make
+        // `(s0.k - s0.v) < s0.k` look two-sided; DuckDB's planner pushes it
+        // down as a filter on s0 and traps over every s0 row (nightly seed
+        // 2269747). So classify a second binding that keeps key reads on
+        // the static side.
+        binder.classify_keys.set(true);
+        let named = binder.expr(c);
+        binder.classify_keys.set(false);
+        let named = fold(named?);
         let (mut right, mut left, mut known) = (false, false, true);
-        scan_residual(&bound, j, &mut right, &mut left, &mut known);
+        scan_residual(&named, j, &mut right, &mut left, &mut known);
         let total = !may_trap(&bound);
         if !(total || (left && right && known)) {
             // Two different refusals wear one condition, and the message
@@ -286,7 +296,11 @@ pub(super) fn bind_on<'e>(
         // A bare identifier on the static side that also binds in the outer
         // scope is ambiguous (DuckDB rejects it too).
         if let SqlExpr::Identifier(id) = static_side {
-            if binder.column(&id.value).is_ok() {
+            // An outer name that is ambiguous on its own still binds there.
+            let outer = binder.column(&id.value);
+            if outer.is_ok()
+                || matches!(&outer, Err(PrepareError::Bind(m)) if m.starts_with("ambiguous"))
+            {
                 return Err(PrepareError::Bind(format!(
                     "ambiguous column '{}' in JOIN ON (qualify it)",
                     id.value
@@ -329,7 +343,18 @@ pub(super) fn bind_on<'e>(
                 )));
             }
         }
-        let key = fold(binder.expr(dyn_side)?);
+        *binder.beside.borrow_mut() = st
+            .cols
+            .iter()
+            .enumerate()
+            .filter(|(ci, _)| !st.is_leaf_lane(*ci as u32))
+            .map(|(_, c)| c.name.clone())
+            .chain(st.structs.iter().map(|s| s.name.clone()))
+            .chain(st.opaque.iter().map(|(c, _)| c.clone()))
+            .collect();
+        let key = binder.expr(dyn_side);
+        binder.beside.borrow_mut().clear();
+        let key = fold(key?);
         let key = promote_key(key, st, col)?;
         keys.push(key);
         key_cols.push(JoinKey {
@@ -692,8 +717,10 @@ pub(super) fn walk_key_fields(
 /// longer names one i64 (every i64 above 2^53 shares its double with a
 /// neighbour). Such a column rides as a shadow VALUE lane as well, so
 /// [`Binder::key_lane`] can read the real value instead of rebuilding it.
+/// A DOUBLE column is lossy against any probe: `0.0` matches `-0.0`, and the
+/// projected key is the STATIC side's bits (nightly seed 2678684).
 pub(super) fn key_is_lossy(key_ty: Ty, col_ty: Ty) -> bool {
-    key_ty == Ty::F64 && col_ty.is_int()
+    key_ty == Ty::F64 && (col_ty.is_int() || col_ty == Ty::F64)
 }
 
 /// The join's value lanes: every non-key column, then a shadow lane per

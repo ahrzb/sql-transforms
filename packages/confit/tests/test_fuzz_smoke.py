@@ -555,6 +555,36 @@ def test_the_second_nightly_findings_stay_fixed(seed, kind):
     assert oracle.run_case(gen.gen(seed)).kind == kind
 
 
+# Issue ahrzb/sql-transforms#305, the six sharded nights from 2026-09-29: one
+# representative per fixed class (tests/test_evaluation_order.py pins each
+# rule on its own).
+NIGHTLY_305_SHARDED = {
+    # a UDF field over a closed constant argument confit's fold left unfinished
+    **dict.fromkeys([1801793, 2254035, 2618315, 3015628, 3407126, 3811339], "AGREE"),
+    # a narrow-width constant overflow the i64 fold hid
+    **dict.fromkeys([2729519, 3829756, 2171165], "AGREE_TRAP"),
+    # a static-only trapping ON conjunct, read through the key column
+    **dict.fromkeys([2269747, 3078802, 4074032, 2070000], "REFUSED"),
+    # a bare name both sides have, inside a JOIN ON key expression
+    **dict.fromkeys([2017487, 2286850, 2926979, 3156364, 3589723], "REFUSED"),
+    # a DOUBLE join key projects the static side's bits (-0.0)
+    **dict.fromkeys([1913398, 2542589, 2678684, 3238498], "AGREE"),
+    # a closed NULL operand spares its trapping sibling
+    **dict.fromkeys(
+        [2300537, 2323487, 2682080, 2692152, 3195590, 3279357, 3471867, 3725798]
+        + [4025307, 3231941],
+        "AGREE",
+    ),
+    # WHERE BETWEEN's upper bound is checked last
+    3510602: "AGREE_TRAP",
+}
+
+
+@pytest.mark.parametrize("seed, kind", NIGHTLY_305_SHARDED.items())
+def test_the_sharded_nightly_findings_stay_fixed(seed, kind):
+    assert oracle.run_case(gen.gen(seed)).kind == kind
+
+
 @pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879])
 def test_the_first_nightly_spellings_stay_consistent(seed):
     from fuzz import metamorphic
