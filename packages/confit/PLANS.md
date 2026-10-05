@@ -20,6 +20,10 @@ records in `docs/decisions/open/`. Remove an item when it lands.
      (narrow left shifts likewise: `Overflow in left shift` / `Left-shift value
      8 is out of range`).
 
+   The 2026-10-05 night (seeds 4200000..4599999) is triaged: its three
+   live classes are fixed and pinned (`test_fuzz_smoke.py`); its TIMEOUT and
+   OPT_EMULATED cases are the two classes below.
+
    Still waiting from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
    TIMEOUT class where confit traps first while DuckDB builds a 2 GiB string
    (seed 1102717, EXCLUDED ratification).
