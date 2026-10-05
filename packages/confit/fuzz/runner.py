@@ -31,7 +31,7 @@ from pathlib import Path
 import duckdb
 from confit.oracle import Oracle
 
-from . import coverage
+from . import coverage, exclusions
 from . import gen as G
 from .oracle import PHASE_MARK, UNSHIPPED_FEATURES, case_inputs, unshipped_reach
 
@@ -392,6 +392,24 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
         by_side = "  ".join(f"{k} {c}" for k, c in sorted(sides.items()))
         line = f"  {kind:22} {len(hit):6}  {100 * len(hit) / n:5.1f}%"
         print(line + (f"  {by_side}" if kind != "SKIP" and hit else ""))
+
+    # Each exclusion's count against its expected rate (fuzz/exclusions.py):
+    # a count far above it means the scope reaches something new.
+    excluded = collections.Counter(
+        r["klass"] for r in results if r["kind"] == "EXCLUDED"
+    )
+    if excluded:
+        expected = {r.id: r.expected_per_100k for r in exclusions.RULES}
+        print("\n== exclusions (per rule, against its expected rate) ==")
+        for rule, c in excluded.most_common():
+            want = expected.get(rule)
+            mean = (want or 0) * len(results) / 100_000
+            flag = ""
+            if want is None:
+                flag = "  NOT A REGISTERED RULE"
+            elif c > max(3.0, 3 * mean + 3 * mean**0.5):
+                flag = f"  ABOVE EXPECTED (~{mean:.1f})"
+            print(f"  {rule:28} {c:6}{flag}")
 
     # Refusals keep the baseline's outcome for the same query. Grouped by it,
     # "DuckDB serves, we refuse" is the cost side of each refusal class; it

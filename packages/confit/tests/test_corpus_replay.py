@@ -28,11 +28,16 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pyarrow as pa
 from confit import DuckDBInferFn
 from confit.oracle import Oracle
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz import exclusions  # noqa: E402
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
@@ -53,19 +58,6 @@ MATCH_FLOOR = 539
 # corpus statement is one DuckDB answered, so "invalid against the declared
 # schema" cannot be the right reason, and such a refusal is a FAIL to look at.
 _CLEAN = ("unsupported:", "parse error:")
-
-# Documented oracle divergences (clean, not FAILs). Each entry must cite a
-# measured reason the divergence is IRREPRODUCIBLE row-locally.
-_KNOWN_DIVERGENT_SOURCES = {
-    # DuckDB's ILIKE result for a NUL-containing row DEPENDS ON SIBLING
-    # ROWS: pure-ASCII column stats select a NUL-safe ASCII kernel (row
-    # matches itself -> TRUE), while any non-ASCII sibling selects the
-    # generic kernel whose fold NUL-truncates (same row -> FALSE); measured
-    # in pins-wave1/pins_like.json. Statistics-dependent semantics
-    # cannot be reproduced by a row-at-a-time engine even in principle; the
-    # engine is NUL-transparent (the ASCII-kernel behavior).
-    "test/sql/function/string/test_ilike_embedded_null.test",
-}
 
 # Corpus spellings whose DECLARED input schema our row surface cannot
 # express — clean, not a divergence: the SQL is fine, the declaration is
@@ -164,8 +156,9 @@ def _replay(case: dict) -> tuple[str, str]:
         else:
             return "FAIL", f"build error: {type(e).__name__}: {msg}"
 
-    if case.get("source") in _KNOWN_DIVERGENT_SOURCES:
-        return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
+    excluded = exclusions.source_excluded(case.get("source"))
+    if excluded is not None:
+        return "unsupported", f"source exclusion {excluded.id} (fuzz/exclusions.py)"
     try:
         rows_in = arrow[driving].to_pylist()  # already TOTAL against row_schema
         got = [list(r.values()) for r in fn.infer_rows(rows_in)]

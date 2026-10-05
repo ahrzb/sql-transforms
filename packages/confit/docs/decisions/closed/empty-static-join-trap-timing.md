@@ -31,7 +31,12 @@ DuckDB returns no rows, confit traps).
    matches the rows-0 shapes above and diverges on the trapping ones, so it
    only moves the mismatch.
 
-**Proposed.** Option 1. The rows agree. Only the trap differs, and it depends on
-DuckDB's operator layout.
-
-**Ruling.** None yet.
+**Ruling (owner, 2026-10-05).** Option 1, with a witness: the difference is
+excluded only when it is this mechanism. The rule `empty-static-trap-timing` in
+`fuzz/exclusions.py` excuses a case when an INNER or CROSS join in its plan reads an
+empty static, confit traps on both backends, the optimizer-off baseline returns zero
+rows, and DuckDB, re-run with one row of plain non-NULL values added to each such
+static, traps with confit's error category. Any other difference in such a case (a
+different trap, rows, a backend split) stays a finding. Its canaries are the four seeds
+above; `tests/test_exclusions.py` also plants faults inside the scope and checks that
+they are not excused.

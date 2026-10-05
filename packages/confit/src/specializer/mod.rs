@@ -83,10 +83,26 @@ pub struct StaticSpec {
     pub vals: Vec<StaticVal>,
 }
 
+/// One join of the bound plan, as the exclusion rules read it
+/// (`fuzz/exclusions.py`): facts the binder already decided, not a new
+/// analysis. A CROSS JOIN, and an ON with no equality key, are `inner` with
+/// zero keys.
+#[derive(Clone, Debug)]
+pub struct JoinFact {
+    pub kind: &'static str,
+    /// The static table it reads; `None` for a multiplicity self-join,
+    /// which builds from the batch.
+    pub static_name: Option<String>,
+    pub keys: usize,
+    pub residual: bool,
+}
+
 /// The output of stage 1: a verified program plus, per map static, the
 /// recipe the caller uses to turn its table data into `StaticData`.
 #[derive(Debug)]
 pub struct Prepared {
+    /// Every join of the plan, in plan order (see [`JoinFact`]).
+    pub join_facts: Vec<JoinFact>,
     pub program: ir::Program,
     pub statics: Vec<StaticSpec>,
     /// Width-k UDF output fields, in projection order (see [`WideOut`]).
@@ -158,6 +174,18 @@ pub fn prepare_opaque(
             sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
         )?;
     let one_row_blocker = one_row_blocker(&plan, &joins, statics);
+    let join_facts = joins
+        .iter()
+        .map(|j| JoinFact {
+            kind: match j.kind {
+                plan::JoinKind::Inner => "inner",
+                plan::JoinKind::Left => "left",
+            },
+            static_name: (!j.batch).then(|| statics[j.table].name.clone()),
+            keys: j.key_cols.len(),
+            residual: j.residual.is_some(),
+        })
+        .collect();
     // THE one producer of the lane list. A minted lane is an ordinary input
     // column from here down — appended, so no caller lane index shifts —
     // and `all_in` is this vector's projection, not a second list built
@@ -250,6 +278,7 @@ pub fn prepare_opaque(
         "input lanes do not project to program.in_cols"
     );
     Ok(Prepared {
+        join_facts,
         program,
         statics: specs,
         wide_outputs,
