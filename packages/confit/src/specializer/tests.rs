@@ -4540,3 +4540,51 @@ fn a_subexpression_only_untaken_arms_hold_stays_lazy() {
         1
     );
 }
+
+#[test]
+fn a_shared_value_is_computed_before_its_first_reader() {
+    // Each shared value is emitted just before the first item that reads
+    // it, so it lives only across the items that use it: y's is computed
+    // after column 1 is stored, not before column 0 (lower.rs).
+    let ins = cols(&[("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let big = |v: &str| format!("(exp({v} * 2.0 + 1.0) * 3.0 - {v})");
+    let sql = format!(
+        "SELECT {bx} * 2.0 AS a, {bx} + 1.0 AS b, {by} * 2.0 AS c, {by} + 1.0 AS d FROM __THIS__",
+        bx = big("x"),
+        by = big("y"),
+    );
+    let p = prep(&sql, &ins).unwrap();
+    let insts: Vec<&Inst> = p.blocks.iter().flat_map(|b| &b.insts).collect();
+    let exps: Vec<usize> = (0..insts.len())
+        .filter(|&i| matches!(insts[i], Inst::Num1 { op: NumOp1::Fexp, .. }))
+        .collect();
+    let store1 = (0..insts.len())
+        .find(|&i| {
+            matches!(insts[i], Inst::Store { col: 1, .. } | Inst::StoreOpt { col: 1, .. })
+        })
+        .expect("column 1 is stored");
+    assert_eq!(exps.len(), 2, "one exp per shared value");
+    assert!(exps[0] < store1 && store1 < exps[1], "{exps:?} vs store {store1}");
+}
+
+#[test]
+fn a_shared_value_read_by_a_later_one_lives_until_that_one_is_computed() {
+    // `big` is read by columns a and b, and by `inner`, which columns c and
+    // d read: `inner` is computed just before c, so `big` must still be
+    // live there, past its last direct reader (b).
+    let ins = cols(&[("x", Ty::F64, true)]);
+    let big = "(exp(x * 2.0 + 1.0) * 3.0 - x)";
+    let inner = format!("({big} * {big} + 5.0 - x)");
+    let sql = format!(
+        "SELECT {big} * 2.0 AS a, {big} + 1.0 AS b, {inner} * 2.0 AS c, {inner} + 1.0 AS d \
+         FROM __THIS__"
+    );
+    let p = prep(&sql, &ins).expect("builds");
+    let exps = p
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter(|i| matches!(i, Inst::Num1 { op: NumOp1::Fexp, .. }))
+        .count();
+    assert_eq!(exps, 1, "big is computed once");
+}

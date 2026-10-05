@@ -7,9 +7,10 @@
 //! projection into a DAG and names each subexpression that would be
 //! evaluated more than once and CANNOT TRAP ([`can_trap`]: its kinds
 //! are all on the trap-free allowlist, which also keeps out everything
-//! impure — extern calls, tree models, `error()`). Lowering evaluates the
-//! named ones first, once per row reaching the projection, and every
-//! occurrence reads the value ([`SKind::Shared`]).
+//! impure — extern calls, tree models, `error()`). Lowering evaluates each
+//! named one once per row reaching the projection, just before the first
+//! item that reads it, and every occurrence reads the value
+//! ([`SKind::Shared`]).
 //!
 //! Evaluating such a value earlier than its occurrence, or where its CASE
 //! arm is not taken, is invisible: it cannot trap and has no effect. A
@@ -25,14 +26,10 @@ use super::plan::{can_trap, SExpr, SKind};
 /// A stage projection with its shared subexpressions named.
 pub struct Shared {
     /// The named subexpressions, each reading only earlier ones: lowering
-    /// evaluates them in this order before the first item.
+    /// evaluates each just before the first item that reads it.
     pub defs: Vec<SExpr>,
     /// The projection items, reading the defs through [`SKind::Shared`].
     pub items: Vec<SExpr>,
-    /// Per def, the last evaluation step that reads it: step `k` is def `k`
-    /// for `k < defs.len()`, else item `k - defs.len()`. A def's value is
-    /// dead after that step.
-    pub last_use: Vec<usize>,
 }
 
 /// The projection's shared subexpressions, or `None` when nothing is
@@ -107,34 +104,10 @@ pub fn share(items: &[SExpr]) -> Option<Shared> {
         dag: &dag,
         def_of: &def_of,
     };
-    let mut defs: Vec<SExpr> = order.iter().map(|&id| build.expr(id, true)).collect();
-    let mut items: Vec<SExpr> = roots.iter().map(|&r| build.expr(r, false)).collect();
+    let defs: Vec<SExpr> = order.iter().map(|&id| build.expr(id, true)).collect();
+    let items: Vec<SExpr> = roots.iter().map(|&r| build.expr(r, false)).collect();
 
-    let mut last_use = vec![0usize; defs.len()];
-    for (step, e) in defs.iter_mut().chain(items.iter_mut()).enumerate() {
-        mark_reads(e, step, &mut last_use);
-    }
-    Some(Shared {
-        defs,
-        items,
-        last_use,
-    })
-}
-
-fn mark_reads(e: &mut SExpr, step: usize, last_use: &mut [usize]) {
-    stacker::maybe_grow(
-        super::frontend::RED_ZONE,
-        super::frontend::STACK_SEGMENT,
-        || {
-            if let SKind::Shared(k) = e.kind {
-                last_use[k as usize] = step;
-                return;
-            }
-            for c in e.children_mut() {
-                mark_reads(c, step, last_use);
-            }
-        },
-    )
+    Some(Shared { defs, items })
 }
 
 /// The fewest nodes a shared subexpression has (see `Dag::worth_sharing`).
