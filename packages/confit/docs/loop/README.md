@@ -212,7 +212,14 @@ evidence, not the description alone.
    pin the new boundary.
 
 Give feedback as GitHub review comments on the PR, which the worker is
-subscribed to. Mark each comment either blocking or optional, and be
+subscribed to. **The supervisor and the workers share one GitHub account**, so
+a review cannot be "changes requested" (only COMMENT), and a worker's harness
+may skip the event as an echo of its own post. Always also deliver the review
+to the worker directly: `send_message` when the session has it, otherwise a
+one-shot Routine fired into the worker's session (`create_trigger` with
+`persistent_session_id` = the worker and `run_once_at` a minute out) whose
+prompt says the review is the supervisor's, names its id, and lists the
+blocking items. Mark each comment either blocking or optional, and be
 specific: the file, what is wrong, and what would satisfy you. The worker
 answers each comment with a push or a reasoned reply. When a comment is
 blocking and the worker cannot settle it, finish the fix yourself on their
@@ -240,6 +247,10 @@ branch with an ordinary commit; never force-push a worker's branch.
   seeds too.
 - **The native catalog loop.** Reproduce each request it sends, then fix it
   inline or ticket it. Tell that session when a fix lands.
+- **Reports.** Write one when a trigger in
+  [`docs/loop-reporting.md`](../../../../docs/loop-reporting.md) fires, in
+  `docs/reports/`, opening with that page's KPI block and ending with what
+  needs the owner. Title the PR `report: ...`. Never one per PR.
 - **Owner questions.** OPT_EMULATED classes, exclusions and open decisions go
   to the owner with evidence, never into code.
 - **Hygiene.**

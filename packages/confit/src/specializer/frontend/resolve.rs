@@ -115,7 +115,23 @@ impl Binder<'_> {
         }
         let key = match (key.ty, col.ty.ty) {
             (a, b) if a == b => key,
-            (a, b) if a.is_int() && b.is_int() => SExpr { ty: b, ..key },
+            (a, b) if a.is_integer() && b.is_integer() && a.lane() == b.lane() => {
+                SExpr { ty: b, ..key }
+            }
+            // A key compared on the i128 lane against a narrower column:
+            // where the join matched, the value is the column's, so the
+            // conversion back cannot fail.
+            (a, b) if a.is_integer() && b.is_integer() => {
+                let nullable = key.nullable;
+                SExpr {
+                    kind: SKind::Cast {
+                        inner: Box::new(key),
+                        trying: false,
+                    },
+                    ty: b,
+                    nullable,
+                }
+            }
             (a, b) => {
                 return Err(unsup(format!(
                     "projecting join key column '{}.{}': it is declared {} \
