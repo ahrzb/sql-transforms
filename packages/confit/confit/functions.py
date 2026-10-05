@@ -100,7 +100,9 @@ class Function:
         return f"{type(self).__name__}({self.name!r})"
 
 
-def _lanes(name: str, returns: pa.DataType) -> tuple[tuple[str, ...], list[pa.DataType]]:
+def _lanes(
+    name: str, returns: pa.DataType
+) -> tuple[tuple[str, ...], list[pa.DataType]]:
     if pa.types.is_struct(returns):
         if returns.num_fields == 0:
             raise FunctionError(f"function {name}: a struct return declares no fields")
@@ -290,10 +292,14 @@ class Ensemble(ExternFunction):
     ) -> None:
         self._declare(name, takes, pa.float64())
         if not len(takes):
-            raise FunctionError(f"function {name}: an ensemble scores at least one feature")
+            raise FunctionError(
+                f"function {name}: an ensemble scores at least one feature"
+            )
         for t in takes.types:
             if t not in (pa.int64(), pa.float64()):
-                raise FunctionError(f"function {name}: a tree feature is a number, not {t}")
+                raise FunctionError(
+                    f"function {name}: a tree feature is a number, not {t}"
+                )
         if compare_grid not in ("float32", "float64"):
             raise FunctionError(
                 f"function {name}: compare_grid {compare_grid!r} is not"
@@ -332,7 +338,9 @@ class Ensemble(ExternFunction):
         last = None
         for i, (m, t) in enumerate(zip(n["model_id"], n["tree_id"], strict=True)):
             if not 0 <= m < len(trees):
-                raise FunctionError(f"function {self.name}: node row {i} names model {m}")
+                raise FunctionError(
+                    f"function {self.name}: node row {i} names model {m}"
+                )
             if (m, t) != last:
                 trees[m].append([])
                 last = (m, t)

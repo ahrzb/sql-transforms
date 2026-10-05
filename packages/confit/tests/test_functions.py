@@ -16,8 +16,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn, Ensemble, ExternFunction, FunctionError
-from confit import compare
+from confit import DuckDBInferFn, Ensemble, ExternFunction, FunctionError, compare
 from confit.functions import _int_to_f32
 from confit.oracle import Oracle
 
@@ -237,15 +236,26 @@ def test_an_integer_narrows_to_float32_in_one_rounding(n):
 @pytest.mark.parametrize(
     "build, match",
     [
-        (lambda: ExternFunction("f", pa.schema([("x", pa.int32())]), pa.int64(), _double),
-         "takes type int32"),
-        (lambda: ExternFunction("f", F, pa.list_(pa.float64(), 1), _double),
-         "width-1 list"),
-        (lambda: ExternFunction("f", F, pa.list_(pa.float64()), _double),
-         "must declare its width"),
-        (lambda: ExternFunction(
-            "f", F, pa.struct([("a", pa.int64()), ("A", pa.int64())]), _double),
-         "collide case-insensitively"),
+        (
+            lambda: ExternFunction(
+                "f", pa.schema([("x", pa.int32())]), pa.int64(), _double
+            ),
+            "takes type int32",
+        ),
+        (
+            lambda: ExternFunction("f", F, pa.list_(pa.float64(), 1), _double),
+            "width-1 list",
+        ),
+        (
+            lambda: ExternFunction("f", F, pa.list_(pa.float64()), _double),
+            "must declare its width",
+        ),
+        (
+            lambda: ExternFunction(
+                "f", F, pa.struct([("a", pa.int64()), ("A", pa.int64())]), _double
+            ),
+            "collide case-insensitively",
+        ),
         (lambda: ExternFunction("f", F, pa.float64(), 3), "callable"),
         (lambda: ExternFunction("", F, pa.float64(), _double), "name"),
     ],
@@ -263,7 +273,8 @@ def test_a_bad_ensemble_declaration_refuses_at_construction():
     with pytest.raises(FunctionError, match="a number"):
         Ensemble("e", pa.schema([("s", pa.string())]), n, m, "float64")
     with pytest.raises(FunctionError, match="dense from 0"):
-        Ensemble("e", F, n, m.set_column(0, "model_id", pa.array([1], pa.int64())),
-                 "float64")
+        Ensemble(
+            "e", F, n, m.set_column(0, "model_id", pa.array([1], pa.int64())), "float64"
+        )
     with pytest.raises(FunctionError, match="column 'value'"):
         Ensemble("e", F, n.drop_columns(["value"]), m, "float64")
