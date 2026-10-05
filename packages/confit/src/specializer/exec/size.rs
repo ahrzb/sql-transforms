@@ -55,6 +55,9 @@ fn kind(inst: &Inst) -> Kind {
             | BinOp::Iand
             | BinOp::Ior
             | BinOp::Ixor
+            | BinOp::Hand
+            | BinOp::Hor
+            | BinOp::Hxor
             | BinOp::And
             | BinOp::Or
             | BinOp::Xor => Kind::Pure,
@@ -86,6 +89,10 @@ fn kind(inst: &Inst) -> Kind {
         | Inst::Ftoi { .. }
         | Inst::Itos { .. }
         | Inst::Ftos { .. }
+        | Inst::Htof { .. }
+        | Inst::Ftoh { .. }
+        | Inst::Htos { .. }
+        | Inst::StonOpt { .. }
         | Inst::StoiOpt { .. }
         | Inst::StofOpt { .. }
         | Inst::Round2f { .. }
@@ -155,10 +162,16 @@ fn checks_trap(inst: &Inst) -> bool {
                 | BinOp::Irem
                 | BinOp::Ishl
                 | BinOp::Flogb
+                | BinOp::Hadd
+                | BinOp::Hsub
+                | BinOp::Hmul
+                | BinOp::Hdiv
+                | BinOp::Hrem
         ),
         Inst::Num1 { op, .. } => matches!(
             op,
             NumOp1::Iabs
+                | NumOp1::Habs
                 | NumOp1::Ln
                 | NumOp1::Log2
                 | NumOp1::Log10
@@ -189,6 +202,9 @@ fn commutes(op: BinOp) -> bool {
             | BinOp::Iand
             | BinOp::Ior
             | BinOp::Ixor
+            | BinOp::Hand
+            | BinOp::Hor
+            | BinOp::Hxor
             | BinOp::And
             | BinOp::Or
             | BinOp::Xor
@@ -408,7 +424,13 @@ pub fn vreg_floor(p: &Program) -> Floor {
                     // equal arms as `x`.
                     let alias = match inst {
                         Inst::Bin {
-                            op: BinOp::Iand | BinOp::Ior | BinOp::And | BinOp::Or,
+                            op:
+                                BinOp::Iand
+                                | BinOp::Ior
+                                | BinOp::Hand
+                                | BinOp::Hor
+                                | BinOp::And
+                                | BinOp::Or,
                             a,
                             b,
                             ..
@@ -498,6 +520,7 @@ fn immediates(inst: &Inst, h: &mut impl Hasher) {
             Lit::F64(x) => (2u8, x.to_bits()).hash(h),
             Lit::Str(x) => (3u8, x).hash(h),
             Lit::Dec(x, ps, sc) => (4u8, *x, *ps, *sc).hash(h),
+            Lit::I128(x) => (5u8, *x).hash(h),
         },
         Inst::Bin { op, .. } => std::mem::discriminant(op).hash(h),
         Inst::Cmp { pred, ty, .. } => (std::mem::discriminant(pred), ty).hash(h),
@@ -658,6 +681,7 @@ entry:
         cols.extend((0..n).map(|i| col(format!("k{i}"), Ty::F64, false)));
         cols.extend((0..3).map(|i| col(format!("s{i}"), Ty::Str, true)));
         cols.push(col("d".into(), Ty::Dec(9, 2), true));
+        cols.push(col("h".into(), Ty::I128, true));
         // A fixed shuffle per column, so value numbering cannot line two up.
         let order = |j: usize| -> Vec<usize> {
             let mut o: Vec<usize> = (0..n).collect();
@@ -722,6 +746,9 @@ entry:
                 .collect::<Vec<_>>()
                 .join(", "),
             "length(upper(s0) || s1 || lower(s2)) AS a, s0 < s1 AS b, d * 1.25 + d AS c".into(),
+            "h + h * 3 AS a, (h & 7) | xor(h, 5) AS b, abs(h) AS c, CAST(h AS DOUBLE) AS e, \
+             CAST(h AS VARCHAR) AS f, h < 9 AS g"
+                .into(),
         ];
         for items in shapes {
             let sql = format!("SELECT {items} FROM t");
