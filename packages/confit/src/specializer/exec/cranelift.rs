@@ -146,7 +146,7 @@ extern "C" fn h_load_f64(p: *mut Cx, col: i64) -> f64 {
 extern "C" fn h_load_dec(p: *mut Cx, col: i64, opt: u8, hi_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     let v = match &c.input().cols[col as usize] {
-        ColData::Dec { data, valid, .. } => {
+        ColData::Dec { data, valid, .. } | ColData::I128 { data, valid } => {
             if opt != 0 && !valid.get(c.row).copied().unwrap_or(true) {
                 0
             } else {
@@ -863,6 +863,8 @@ fn ty_code(t: Ty) -> i64 {
         Ty::U8 => 108,
         Ty::U16 => 116,
         Ty::U32 => 132,
+        Ty::U64 => 164,
+        Ty::I128 => 128,
         Ty::Dec(p, s) => 1000 + 100 * p as i64 + s as i64,
         _ => 64,
     }
@@ -877,6 +879,8 @@ fn ty_of_code(c: i64) -> Ty {
         108 => Ty::U8,
         116 => Ty::U16,
         132 => Ty::U32,
+        164 => Ty::U64,
+        128 => Ty::I128,
         c => Ty::Dec(((c - 1000) / 100) as u8, ((c - 1000) % 100) as u8),
     }
 }
@@ -944,6 +948,52 @@ extern "C" fn h_dtos(p: *mut Cx, lo: i64, hi: i64, scale: i64, len_out: *mut i64
     r.off as i64
 }
 
+/// Mirrors interp: `hugeint::hugeint_arith` (`op` is a `BinOp` index into
+/// `H_OPS`), a trap on i128 overflow.
+extern "C" fn h_hugeint_arith(p: *mut Cx, alo: i64, ahi: i64, blo: i64, bhi: i64, op: i64, out: *mut Cell) {
+    let r = super::hugeint::hugeint_arith(H_OPS[op as usize], i128_of(alo, ahi), i128_of(blo, bhi))
+        .unwrap_or_else(|m| {
+            unsafe { cx(p) }.set_trap(m);
+            0
+        });
+    unsafe { *out = dec_cell(r) };
+}
+
+/// The i128 lane's checked ops, by their index on the helper ABI.
+const H_OPS: [BinOp; 5] = [BinOp::Hadd, BinOp::Hsub, BinOp::Hmul, BinOp::Hdiv, BinOp::Hrem];
+
+extern "C" fn h_hugeint_abs(p: *mut Cx, lo: i64, hi: i64, out: *mut Cell) {
+    let r = super::hugeint::hugeint_abs(i128_of(lo, hi)).unwrap_or_else(|m| {
+        unsafe { cx(p) }.set_trap(m);
+        0
+    });
+    unsafe { *out = dec_cell(r) };
+}
+
+extern "C" fn h_htof(lo: i64, hi: i64) -> f64 {
+    kernels::hugeint_to_f64(i128_of(lo, hi))
+}
+
+extern "C" fn h_ftoh(x: f64, out: *mut Cell) {
+    unsafe { *out = dec_cell(super::hugeint::f64_to_hugeint(x)) };
+}
+
+extern "C" fn h_htos(p: *mut Cx, lo: i64, hi: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let r = c.arena().push_fmt(format_args!("{}", i128_of(lo, hi)));
+    unsafe { *len_out = r.len as i64 };
+    r.off as i64
+}
+
+/// Mirrors interp: `hugeint::duck_ston`. The value lands in the cell (an
+/// i64-lane target in its low half); the flag is the return.
+extern "C" fn h_ston(p: *mut Cx, off: i64, len: i64, to: i64, out: *mut Cell) -> u8 {
+    let c = unsafe { cx(p) };
+    let r = super::hugeint::duck_ston(c.arena().get(span(off, len)), ty_of_code(to));
+    unsafe { *out = dec_cell(r.unwrap_or(0)) };
+    r.is_some() as u8
+}
+
 extern "C" fn h_int_to_dec(v: i64, scale: i64, out: *mut Cell) {
     unsafe { *out = dec_cell(kernels::int_to_dec(v, scale as u8)) };
 }
@@ -966,13 +1016,14 @@ extern "C" fn h_sload(p: *mut Cx, sid: i64, valid_out: *mut u8, cell_out: *mut C
             Ty::F64 => ScalarVal::F64(0.0),
             Ty::Str => ScalarVal::Str(String::new()),
             Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
+            Ty::I128 | Ty::U64 => ScalarVal::I128(0),
         }
     };
     let cell = match val {
         ScalarVal::I1(b) => [b as u64, 0],
         ScalarVal::I64(i) => [i as u64, 0],
         ScalarVal::F64(f) => [f.to_bits(), 0],
-        ScalarVal::Dec(d, ..) => dec_cell(d),
+        ScalarVal::Dec(d, ..) | ScalarVal::I128(d) => dec_cell(d),
         ScalarVal::Str(s) => {
             let r = c.arena().push_str(&s);
             [r.off as u64, r.len as u64]
@@ -1015,7 +1066,9 @@ extern "C" fn h_probe(
                     let v = arena.get(span(cell[0] as i64, cell[1] as i64));
                     s.as_str().cmp(v)
                 }
-                KeyBits::Dec(s, ..) => s.cmp(&((((cell[1] as u128) << 64) | cell[0] as u128) as i128)),
+                KeyBits::Dec(s, ..) | KeyBits::I128(s) => {
+                    s.cmp(&((((cell[1] as u128) << 64) | cell[0] as u128) as i128))
+                }
             };
             if ord != std::cmp::Ordering::Equal {
                 return ord;
@@ -1032,7 +1085,7 @@ extern "C" fn h_probe(
                     ScalarVal::I1(b) => [*b as u64, 0],
                     ScalarVal::I64(x) => [*x as u64, 0],
                     ScalarVal::F64(f) => [f.to_bits(), 0],
-                    ScalarVal::Dec(d, ..) => dec_cell(*d),
+                    ScalarVal::Dec(d, ..) | ScalarVal::I128(d) => dec_cell(*d),
                     ScalarVal::Str(s) => {
                         let r = arena.push_str(s);
                         [r.off as u64, r.len as u64]
@@ -1045,7 +1098,17 @@ extern "C" fn h_probe(
         None => {
             for (i, ty) in desc.val_tys.iter().enumerate() {
                 let cell: Cell = match ty {
-                    Ty::I1 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Dec(..) => [0, 0],
+                    Ty::I1
+                    | Ty::I8
+                    | Ty::I16
+                    | Ty::I32
+                    | Ty::I64
+                    | Ty::U8
+                    | Ty::U16
+                    | Ty::U32
+                    | Ty::Dec(..)
+                    | Ty::I128
+                    | Ty::U64 => [0, 0],
                     Ty::F64 => [0f64.to_bits(), 0],
                     Ty::Str => {
                         let r = arena.push_str("");
@@ -1110,8 +1173,10 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
                     Ty::Str => ScalarVal::Str(
                         arena.get(span(cell[0] as i64, cell[1] as i64)).to_string(),
                     ),
-                    // A UDF over DECIMAL refuses at bind.
-                    Ty::Dec(..) => unreachable!("a udf parameter is never a decimal"),
+                    // A UDF over DECIMAL or the i128 lane refuses at bind.
+                    Ty::Dec(..) | Ty::I128 | Ty::U64 => {
+                        unreachable!("a udf parameter is never a decimal or i128")
+                    }
                 })
             } else {
                 None
@@ -1130,7 +1195,9 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
                     ScalarVal::I1(x) => [*x as u64, 0],
                     ScalarVal::I64(x) => [*x as u64, 0],
                     ScalarVal::F64(x) => [x.to_bits(), 0],
-                    ScalarVal::Dec(..) => unreachable!("a udf return is never a decimal"),
+                    ScalarVal::Dec(..) | ScalarVal::I128(_) => {
+                        unreachable!("a udf return is never a decimal or i128")
+                    }
                     ScalarVal::Str(s) => {
                         let r = arena.push_str(s);
                         [r.off as u64, r.len as u64]
@@ -1191,7 +1258,7 @@ fn clif_ty(ty: Ty) -> types::Type {
         // it as-is, so the `V::Str(CVal, CVal)` split is not needed here.
         // The probes at the bottom of this file establish that cranelift
         // legalizes I128 arithmetic, `select` and block params on the host.
-        Ty::Dec(..) => types::I128,
+        Ty::Dec(..) | Ty::I128 | Ty::U64 => types::I128,
         Ty::Str => unreachable!("str values are two i64s, expanded at use sites"),
     }
 }
@@ -1605,10 +1672,10 @@ fn translate_inst(
         }
         Inst::Dcast { from, to, dst, a } => {
             let x = vals[&a.0].s();
-            let wide = if from.dec().is_some() {
-                x
-            } else {
+            let wide = if from.lane() == Ty::I64 {
                 b.ins().sextend(types::I128, x)
+            } else {
+                x
             };
             let (lo, hi) = b.ins().isplit(wide);
             let fc = icon(b, ty_code(*from));
@@ -1616,10 +1683,10 @@ fn translate_inst(
             let lp = b.ins().stack_addr(types::I64, slot_out, 0);
             call_h(b, module, "h_dec_cast", &[cxp, lo, hi, fc, tc, lp]);
             trap_check(b);
-            let t = if to.dec().is_some() {
-                types::I128
-            } else {
+            let t = if to.lane() == Ty::I64 {
                 types::I64
+            } else {
+                types::I128
             };
             vals.insert(dst.0, V::S(b.ins().stack_load(t, slot_out, 0)));
         }
@@ -1641,10 +1708,10 @@ fn translate_inst(
         }
         Inst::DcastOk { from, to, dst, a } => {
             let x = vals[&a.0].s();
-            let wide = if from.dec().is_some() {
-                x
-            } else {
+            let wide = if from.lane() == Ty::I64 {
                 b.ins().sextend(types::I128, x)
+            } else {
+                x
             };
             let (lo, hi) = b.ins().isplit(wide);
             let fc = icon(b, ty_code(*from));
@@ -1683,7 +1750,7 @@ fn translate_inst(
                                 Ty::I1 => b.ins().uextend(types::I64, v),
                                 Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => v,
                                 Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
-                                Ty::Dec(..) => unreachable!("a udf parameter is never a decimal"),
+                                Ty::Dec(..) | Ty::I128 | Ty::U64 => unreachable!("a udf parameter is never a decimal"),
                                 Ty::Str => unreachable!("str payload is a two-i64 V::Str"),
                             }
                         };
@@ -1728,7 +1795,7 @@ fn translate_inst(
                             let x = b.ins().stack_load(types::I64, slot_vals, base);
                             V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
                         }
-                        Ty::Dec(..) => unreachable!("a udf return is never a decimal"),
+                        Ty::Dec(..) | Ty::I128 | Ty::U64 => unreachable!("a udf return is never a decimal"),
                         Ty::Str => {
                             let o = b.ins().stack_load(types::I64, slot_vals, base);
                             let l = b.ins().stack_load(types::I64, slot_vals, base + 8);
@@ -1744,7 +1811,7 @@ fn translate_inst(
                 Lit::I1(x) => V::S(b.ins().iconst(types::I8, *x as i64)),
                 Lit::I64(x) => V::S(b.ins().iconst(types::I64, *x)),
                 Lit::F64(x) => V::S(b.ins().f64const(*x)),
-                Lit::Dec(x, ..) => {
+                Lit::Dec(x, ..) | Lit::I128(x) => {
                     // No `iconst.i128` in cranelift: build it from halves.
                     let lo = b.ins().iconst(types::I64, *x as u128 as u64 as i64);
                     let hi = b.ins().iconst(types::I64, ((*x as u128) >> 64) as u64 as i64);
@@ -1762,6 +1829,23 @@ fn translate_inst(
                 }
             };
             vals.insert(dst.0, v);
+        }
+        // The i128 lane's checked ops: one helper call, like the capped
+        // decimal ones; its bitwise ops are plain I128 instructions below.
+        Inst::Bin {
+            op: op @ (BinOp::Hadd | BinOp::Hsub | BinOp::Hmul | BinOp::Hdiv | BinOp::Hrem),
+            dst,
+            a,
+            b: rhs,
+        } => {
+            let (alo, ahi) = b.ins().isplit(vals[&a.0].s());
+            let (blo, bhi) = b.ins().isplit(vals[&rhs.0].s());
+            let opc = H_OPS.iter().position(|o| o == op).expect("an i128-lane op");
+            let oc = icon(b, opc as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            call_h(b, module, "h_hugeint_arith", &[cxp, alo, ahi, blo, bhi, oc, lp]);
+            trap_check(b);
+            vals.insert(dst.0, V::S(b.ins().stack_load(types::I128, slot_out, 0)));
         }
         Inst::Bin { op, dst, a, b: rhs } => {
             let (x, y) = (vals[&a.0].s(), vals[&rhs.0].s());
@@ -1792,9 +1876,12 @@ fn translate_inst(
                     let zero = icon(b, 0);
                     b.ins().select(inrange, shifted, zero)
                 }
-                BinOp::Iand | BinOp::And => b.ins().band(x, y),
-                BinOp::Ior | BinOp::Or => b.ins().bor(x, y),
-                BinOp::Ixor | BinOp::Xor => b.ins().bxor(x, y),
+                BinOp::Iand | BinOp::Hand | BinOp::And => b.ins().band(x, y),
+                BinOp::Ior | BinOp::Hor | BinOp::Or => b.ins().bor(x, y),
+                BinOp::Ixor | BinOp::Hxor | BinOp::Xor => b.ins().bxor(x, y),
+                BinOp::Hadd | BinOp::Hsub | BinOp::Hmul | BinOp::Hdiv | BinOp::Hrem => {
+                    unreachable!("handled by the arm above")
+                }
             };
             if matches!(
                 op,
@@ -1820,7 +1907,16 @@ fn translate_inst(
             let v = match ty {
                 // The scaled i128s compare as plain signed integers: one
                 // scale on both sides, guaranteed by the verifier.
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Dec(..) => {
+                Ty::I8
+                | Ty::I16
+                | Ty::I32
+                | Ty::I64
+                | Ty::U8
+                | Ty::U16
+                | Ty::U32
+                | Ty::Dec(..)
+                | Ty::I128
+                | Ty::U64 => {
                     let cc = match pred {
                         CmpPred::Eq => IntCC::Equal,
                         CmpPred::Ne => IntCC::NotEqual,
@@ -1891,6 +1987,36 @@ fn translate_inst(
             let off = call_h(b, module, "h_itos", &[cxp, vals[&a.0].s(), lp]).unwrap();
             let len = b.ins().stack_load(types::I64, slot_out, 0);
             vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::Htof { dst, a } => {
+            let (lo, hi) = b.ins().isplit(vals[&a.0].s());
+            let v = call_h(b, module, "h_htof", &[lo, hi]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::Ftoh { dst, a } => {
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            call_h(b, module, "h_ftoh", &[vals[&a.0].s(), lp]);
+            vals.insert(dst.0, V::S(b.ins().stack_load(types::I128, slot_out, 0)));
+        }
+        Inst::Htos { dst, a } => {
+            let (lo, hi) = b.ins().isplit(vals[&a.0].s());
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(b, module, "h_htos", &[cxp, lo, hi, lp]).unwrap();
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::StonOpt { to, flag, dst, a } => {
+            let (o, l) = vals[&a.0].str2();
+            let tc = icon(b, ty_code(*to));
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let f = call_h(b, module, "h_ston", &[cxp, o, l, tc, lp]).unwrap();
+            let t = if to.lane() == Ty::I128 {
+                types::I128
+            } else {
+                types::I64
+            };
+            vals.insert(flag.0, V::S(f));
+            vals.insert(dst.0, V::S(b.ins().stack_load(t, slot_out, 0)));
         }
         Inst::Ftos { dst, a } => {
             let lp = b.ins().stack_addr(types::I64, slot_out, 0);
@@ -2152,6 +2278,13 @@ fn translate_inst(
                     trap_check(b);
                     v
                 }
+                NumOp1::Habs => {
+                    let (lo, hi) = b.ins().isplit(x);
+                    let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+                    call_h(b, module, "h_hugeint_abs", &[cxp, lo, hi, lp]);
+                    trap_check(b);
+                    b.ins().stack_load(types::I128, slot_out, 0)
+                }
                 NumOp1::Fabs => b.ins().fabs(x),
                 NumOp1::Fneg => b.ins().fneg(x),
                 NumOp1::Fround => call_h(b, module, "h_fround", &[x]).unwrap(),
@@ -2190,7 +2323,7 @@ fn translate_inst(
                     V::S(call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap())
                 }
                 Ty::F64 => V::S(call_h(b, module, "h_load_f64", &[cxp, cv]).unwrap()),
-                Ty::Dec(..) => {
+                Ty::Dec(..) | Ty::I128 | Ty::U64 => {
                     let zero = b.ins().iconst(types::I8, 0);
                     let hp = b.ins().stack_addr(types::I64, slot_out, 0);
                     let lo = call_h(b, module, "h_load_dec", &[cxp, cv, zero, hp]).unwrap();
@@ -2229,7 +2362,7 @@ fn translate_inst(
                     let zero = b.ins().f64const(0.0);
                     V::S(b.ins().select(f, raw, zero))
                 }
-                Ty::Dec(..) => {
+                Ty::Dec(..) | Ty::I128 | Ty::U64 => {
                     let one = b.ins().iconst(types::I8, 1);
                     let hp = b.ins().stack_addr(types::I64, slot_out, 0);
                     let lo = call_h(b, module, "h_load_dec", &[cxp, cv, one, hp]).unwrap();
@@ -2281,7 +2414,7 @@ fn translate_inst(
                             Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
                             // The whole 16-byte cell: the i128 as the
                             // helper reads it back (lo, hi).
-                            Ty::Dec(..) => v,
+                            Ty::Dec(..) | Ty::I128 | Ty::U64 => v,
                             Ty::Str => unreachable!(),
                         };
                         b.ins().stack_store(as64, slot_keys, base);
@@ -2313,7 +2446,7 @@ fn translate_inst(
                     }
                     // The cell is 16 bytes wide, so the scaled i128 loads
                     // straight out of it.
-                    Ty::Dec(..) => V::S(b.ins().stack_load(types::I128, slot_vals, base)),
+                    Ty::Dec(..) | Ty::I128 | Ty::U64 => V::S(b.ins().stack_load(types::I128, slot_vals, base)),
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                         V::S(b.ins().stack_load(types::I64, slot_vals, base))
                     }
@@ -2404,7 +2537,7 @@ fn store(
             let v = vals[&val.0].s();
             call_h(b, module, "h_store_f64", &[cxp, cv, valid, v]);
         }
-        Ty::Dec(..) => {
+        Ty::Dec(..) | Ty::I128 | Ty::U64 => {
             let v = vals[&val.0].s();
             let (lo, hi) = b.ins().isplit(v);
             call_h(b, module, "h_store_dec", &[cxp, cv, valid, lo, hi]);
@@ -2447,7 +2580,7 @@ fn sload(
             V::S(b.ins().ireduce(types::I8, x))
         }
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => V::S(b.ins().stack_load(types::I64, slot_vals, 0)),
-        Ty::Dec(..) => V::S(b.ins().stack_load(types::I128, slot_vals, 0)),
+        Ty::Dec(..) | Ty::I128 | Ty::U64 => V::S(b.ins().stack_load(types::I128, slot_vals, 0)),
         Ty::F64 => {
             let x = b.ins().stack_load(types::I64, slot_vals, 0);
             V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
@@ -2501,6 +2634,12 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_store_dec", h_store_dec as *const u8),
     ("h_dec_to_f64", h_dec_to_f64 as *const u8),
     ("h_int_to_dec", h_int_to_dec as *const u8),
+    ("h_hugeint_arith", h_hugeint_arith as *const u8),
+    ("h_hugeint_abs", h_hugeint_abs as *const u8),
+    ("h_htof", h_htof as *const u8),
+    ("h_ftoh", h_ftoh as *const u8),
+    ("h_htos", h_htos as *const u8),
+    ("h_ston", h_ston as *const u8),
     ("h_dec_arith", h_dec_arith as *const u8),
     ("h_dec_cast", h_dec_cast as *const u8),
     ("h_dtos", h_dtos as *const u8),
@@ -2603,6 +2742,12 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_store_dec" => (&[ptr, I64, I8, I64, I64], None),
         "h_dec_to_f64" => (&[I64, I64, I64], Some(F64)),
         "h_int_to_dec" => (&[I64, I64, ptr], None),
+        "h_hugeint_arith" => (&[ptr, I64, I64, I64, I64, I64, ptr], None),
+        "h_hugeint_abs" => (&[ptr, I64, I64, ptr], None),
+        "h_htof" => (&[I64, I64], Some(F64)),
+        "h_ftoh" => (&[F64, ptr], None),
+        "h_htos" => (&[ptr, I64, I64, ptr], Some(I64)),
+        "h_ston" => (&[ptr, I64, I64, I64, ptr], Some(I8)),
         "h_dec_arith" => (&[ptr, I64, I64, I64, I64, I64, ptr], None),
         "h_dec_cast" => (&[ptr, I64, I64, I64, I64, ptr], None),
         "h_dtos" => (&[ptr, I64, I64, I64, ptr], Some(I64)),

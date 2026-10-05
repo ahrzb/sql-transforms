@@ -410,7 +410,6 @@ _OPAQUE_SHARED = [
     (pa.date32(), [datetime.date(2020, 1, 1), datetime.date(2021, 6, 30)], "t"),
     (pa.time64("us"), [datetime.time(1, 2, 3), datetime.time(4, 5, 6)], "t"),
     (pa.float32(), [1.5, 2.5], "t"),
-    (pa.uint64(), [3, 4], "t"),
     (pa.list_(pa.int64()), [[1, 2], [3]], "t"),
 ]
 

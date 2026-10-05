@@ -7,7 +7,8 @@ BIGINT otherwise; CASE / COALESCE / greatest take the smallest signed type
 holding both; a literal that fits an unsigned side takes its type. Overflow
 traps at the unsigned width. What DuckDB computes differently -- unary
 minus wraps, a DOUBLE is range-checked before rounding, shifts trap at the
-width -- refuses by name. UBIGINT and HUGEINT need the i128 lane.
+width -- refuses by name. UBIGINT and HUGEINT ride the i128 lane
+(tests/test_hugeint.py).
 """
 
 from __future__ import annotations
@@ -143,7 +144,7 @@ def test_both_boundaries_keep_the_unsigned_type():
     assert rows == got.to_pylist()
 
 
-@pytest.mark.parametrize("target", ["HUGEINT", "UHUGEINT", "UBIGINT", "UINT64"])
+@pytest.mark.parametrize("target", ["UHUGEINT", "UINT128"])
 @pytest.mark.parametrize("cast", ["CAST", "TRY_CAST"])
 def test_a_cast_to_an_unserved_width_refuses_by_name(cast, target):
     # Issue #220: these once typed as BIGINT and served DuckDB's refusals.

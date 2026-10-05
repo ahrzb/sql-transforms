@@ -912,11 +912,11 @@ pub fn can_trap(e: &SExpr) -> bool {
 fn cast_is_total(from: Ty, to: Ty) -> bool {
     match (from, to) {
         (a, b) if a == b => true,
-        (a, Ty::F64) => a.is_int() || a == Ty::I1,
-        (a, Ty::Str) => a.is_int() || a == Ty::I1 || a == Ty::F64 || a.dec().is_some(),
-        (Ty::I1, b) => b.is_int(),
-        (a, b) if a.is_int() && b.is_int() => {
-            let range = |t: Ty| t.int_range().unwrap_or((i64::MIN, i64::MAX));
+        (a, Ty::F64) => a.is_integer() || a == Ty::I1,
+        (a, Ty::Str) => a.is_integer() || a == Ty::I1 || a == Ty::F64 || a.dec().is_some(),
+        (Ty::I1, b) => b.is_integer(),
+        (a, b) if a.is_integer() && b.is_integer() => {
+            let range = |t: Ty| t.int_range128().expect("an integer width");
             let ((alo, ahi), (blo, bhi)) = (range(a), range(b));
             blo <= alo && ahi <= bhi
         }
@@ -975,7 +975,7 @@ pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
 /// it as a flag, so the dividend is always evaluated; the binder reads it
 /// for nullability.
 pub fn zero_divisor_nulls(op: ArithOp, ty: Ty) -> bool {
-    (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv
+    (op == ArithOp::Rem && ty.is_integer()) || op == ArithOp::IDiv
 }
 
 pub fn bind_foldable(e: &SExpr) -> bool {

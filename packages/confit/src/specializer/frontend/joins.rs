@@ -382,7 +382,7 @@ pub(super) fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExp
         // that lane and the build side rescales while the probe table is
         // built (duckdb::materialize_map). Past width 38 DuckDB caps the
         // type and the per-row cast can fail: refused, as for integers.
-        (Ty::Dec(p1, s1), b) if b.is_int() || b.dec().is_some() => {
+        (Ty::Dec(p1, s1), b) if b.is_integer() || b.dec().is_some() => {
             let (p2, s2) = b.dec().unwrap_or((int_dec_width(b), 0));
             let s = s1.max(s2);
             let p = u32::from((p1 - s1).max(p2 - s2)) + u32::from(s);
@@ -403,13 +403,18 @@ pub(super) fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExp
         (a, b) if a == b => Ok(key),
         // Integer widths share the key lane; the map stores i64 bits.
         (a, b) if a.is_int() && b.is_int() => Ok(key),
-        (a, Ty::F64) if a.is_int() => Ok(promote_f64(key)),
+        // Either side on the i128 lane: compare there (DuckDB's common
+        // type is UBIGINT or HUGEINT, which hold both sides exactly); the
+        // build side converts while the probe table is built, and a build
+        // value outside the key's width can match nothing.
+        (a, b) if a.is_integer() && b.is_integer() => Ok(widen_int(key, a.max_lane(b))),
+        (a, Ty::F64) if a.is_integer() => Ok(promote_f64(key)),
         // Static-side ints promote at materialization: the map key type
         // (the key expression's type) becomes F64 and the build side is
         // converted while the probe table is built. EVERY integer width:
         // DuckDB compares all four against a DOUBLE in double space, so
         // refusing the narrow three refused joins DuckDB serves.
-        (Ty::F64, b) if b.is_int() => Ok(key),
+        (Ty::F64, b) if b.is_integer() => Ok(key),
         // A DECIMAL build key, same precedent, no new key machinery: the
         // lane stays the PROBE's type and the build side converts while the
         // probe table is built (see duckdb::materialize_map).
@@ -423,8 +428,10 @@ pub(super) fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExp
         // (measured: CAST(1 AS DECIMAL(38,30)) = 10000000000::BIGINT is a
         // Conversion Error, = 1::BIGINT is true). Reproducing that needs a
         // row-time trap the key path has no shape for.
-        (a, Ty::Dec(_, s)) if a.is_int() => {
-            if u32::from(int_dec_width(a)) + u32::from(s) > 38 {
+        // A HUGEINT probe is DECIMAL(38, 0) there, whose cast can fail for
+        // any value past 38 digits: refused at every scale.
+        (a, Ty::Dec(_, s)) if a.is_integer() => {
+            if u32::from(int_dec_width(a)) + u32::from(s) > 38 || a == Ty::I128 {
                 return Err(PrepareError::Bind(format!(
                     "cannot join {} with {}: DuckDB compares these as DECIMAL(38,{s}) \
                      and the integer cast can fail per row",
@@ -442,11 +449,11 @@ pub(super) fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExp
         // Numeric probe vs VARCHAR build key: the build side converts while
         // the probe table is built (duckdb::materialize_map), to the probe's
         // type, as DuckDB casts it.
-        (a, Ty::Str) if a.is_int() || a == Ty::F64 => Ok(key),
+        (a, Ty::Str) if a.is_integer() || a == Ty::F64 => Ok(key),
         // VARCHAR probe vs numeric build key: DuckDB casts the probe per row
         // to the build column's type; a value that cannot convert traps,
         // as CAST does.
-        (Ty::Str, b) if b.is_int() || b == Ty::F64 => {
+        (Ty::Str, b) if b.is_integer() || b == Ty::F64 => {
             let nullable = key.nullable;
             Ok(SExpr {
                 kind: SKind::Cast {
@@ -739,7 +746,7 @@ pub(super) fn walk_key_fields(
 /// A DOUBLE column is lossy against any probe: `0.0` matches `-0.0`, and the
 /// projected key is the STATIC side's bits (nightly seed 2678684).
 pub(super) fn key_is_lossy(key_ty: Ty, col_ty: Ty) -> bool {
-    key_ty == Ty::F64 && (col_ty.is_int() || col_ty == Ty::F64)
+    key_ty == Ty::F64 && (col_ty.is_integer() || col_ty == Ty::F64)
 }
 
 /// The join's value lanes: every non-key column, then a shadow lane per

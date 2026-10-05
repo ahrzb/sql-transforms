@@ -29,7 +29,7 @@ def test_the_campaign_vocabulary_round_trips():
 def test_types_outside_the_vocabulary_are_named():
     with pytest.raises(TypeError, match="outside the campaign vocabulary"):
         parity.case(
-            "SELECT u FROM __THIS__", pa.table({"u": pa.array([1], pa.uint64())})
+            "SELECT u FROM __THIS__", pa.table({"u": pa.array([1.5], pa.float16())})
         )
 
 
