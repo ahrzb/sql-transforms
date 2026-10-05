@@ -418,7 +418,7 @@ pub(crate) fn dec_text(v: i128, scale: u8) -> String {
 /// `scaleb`/`int()`: the decimal context's 28-digit precision would round a
 /// 38-digit payload, which is the whole class this task exists to serve.
 fn decimal_parts(v: &Bound<'_, PyAny>, what: &str) -> PyResult<(i128, u8)> {
-    let bad = || build_err(format!("{what} holds a DECIMAL this build cannot serve: {v}"));
+    let bad = || build_err(format!("unsupported: {what} holds a DECIMAL this build cannot serve: {v}"));
     let t = v.call_method0("as_tuple").map_err(|_| bad())?;
     let sign: i32 = t.get_item(0)?.extract().map_err(|_| bad())?;
     let digits: Vec<u8> = t.get_item(1)?.extract().map_err(|_| bad())?;
@@ -1084,10 +1084,26 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                     }
                     Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
                     Ty::Str => KeyBits::Str(v.extract()?),
-                    // The key lane is the PROBE expression's type, and a
-                    // probe expression is a ROW expression — decimal row
-                    // columns are opaque, so nothing can produce one.
-                    Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
+                    // A DECIMAL probe lane is already the common type
+                    // (frontend::joins::promote_key): a decimal build value
+                    // rescales up into it exactly, an integer one is scaled.
+                    Ty::Dec(p, to) if is_dec(v)? => {
+                        let (m, s) = decimal_parts(
+                            v,
+                            &format!("static table '{}' key column '{name}'", spec.table),
+                        )?;
+                        match rescale(m, s, to) {
+                            Some(x) => KeyBits::Dec(x, p, to),
+                            None => return Ok(None),
+                        }
+                    }
+                    Ty::Dec(p, to) => {
+                        let i: i64 = v.extract()?;
+                        match rescale(i128::from(i), 0, to) {
+                            Some(x) => KeyBits::Dec(x, p, to),
+                            None => return Ok(None),
+                        }
+                    }
                 }))
             };
             let ty = k.map.ty;

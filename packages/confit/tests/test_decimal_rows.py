@@ -53,19 +53,64 @@ def test_a_decimal_row_column_agrees_with_the_oracle(sql):
     assert_parity(sql, ROWS)
 
 
-def test_a_decimal_join_key_against_a_decimal_build_key_still_refuses():
-    # PLANS, "Decimal remainders": DECIMAL probe keys are served against
-    # DOUBLE build keys only.
-    s = pa.table(
-        {"k": pa.array([D("1.5000")], pa.decimal128(9, 4)), "v": pa.array(["x"])}
+def _keys(ty, vals):
+    return pa.table(
+        {"k": pa.array(vals, ty), "v": pa.array([f"v{i}" for i in range(len(vals))])}
     )
-    v = assert_parity(
-        "SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d = s.k",
-        ROWS,
-        statics={"s": s},
-        expect="REFUSED",
-    )
-    assert "DECIMAL probe keys" in v.detail
+
+
+KEYS = {
+    "same": _keys(pa.decimal128(9, 4), [D("1.5000"), D("0.0000"), D("2.0000"), None]),
+    "coarse": _keys(pa.decimal128(4, 2), [D("1.50"), D("0.00"), D("-1.00"), None]),
+    "fine": _keys(pa.decimal128(18, 6), [D("0.010000"), D("1.500001"), D("3")]),
+    "wide": _keys(pa.decimal128(38, 0), [D("3"), D("-7"), D("10") ** 37]),
+    "i64": _keys(pa.int64(), [0, 1, 3, -7, None]),
+    "i8": _keys(pa.int8(), [0, 3, -7]),
+}
+
+
+@pytest.mark.parametrize(
+    "sql, key",
+    [
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d = s.k", "same"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d = s.k", "coarse"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON f = s.k", "fine"),
+        ("SELECT a, s.v FROM __THIS__ JOIN s ON d = s.k", "fine"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d = s.k", "i64"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON e = s.k", "i8"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON e = s.k", "i64"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON e = s.k", "wide"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d + 1.5 = s.k", "same"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON a * 0.5 = s.k", "coarse"),
+        (
+            "SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d IS NOT DISTINCT FROM s.k",
+            "same",
+        ),
+        (
+            "SELECT a, s.v FROM __THIS__ LEFT JOIN s ON f IS NOT DISTINCT FROM s.k",
+            "i64",
+        ),
+    ],
+)
+def test_a_decimal_join_key_agrees_with_the_oracle(sql, key):
+    # DuckDB compares in the common decimal type: the larger scale, the
+    # larger integral width (an integer is DECIMAL(width, 0)).
+    assert_parity(sql, ROWS, statics={"s": KEYS[key]})
+
+
+@pytest.mark.parametrize(
+    "sql, key, why",
+    [
+        # DECIMAL(38,0) against DECIMAL(9,4) needs width 42: DuckDB caps it
+        # at 38 and the per-row cast can fail.
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON e = s.k", "same", "38"),
+        ("SELECT a, s.v FROM __THIS__ LEFT JOIN s ON d = s.k", "str", "numeric"),
+    ],
+)
+def test_a_decimal_join_key_past_the_served_shapes_refuses_by_name(sql, key, why):
+    statics = {"s": KEYS.get(key) or _keys(pa.string(), ["1.5"])}
+    v = assert_parity(sql, ROWS, statics=statics, expect="REFUSED")
+    assert why in v.detail
 
 
 @pytest.mark.parametrize(

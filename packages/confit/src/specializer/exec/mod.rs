@@ -327,6 +327,9 @@ pub enum KeyBits {
     I64(i64),
     F64(u64),
     Str(String),
+    /// A DECIMAL key at the comparison type (p, s): the scaled i128. Every
+    /// key of one map shares (p, s), so the derived order is the value's.
+    Dec(i128, u8, u8),
 }
 
 impl KeyBits {
@@ -336,6 +339,7 @@ impl KeyBits {
             KeyBits::I64(_) => Ty::I64,
             KeyBits::F64(_) => Ty::F64,
             KeyBits::Str(_) => Ty::Str,
+            KeyBits::Dec(_, p, s) => Ty::Dec(*p, *s),
         }
     }
 }
@@ -343,8 +347,7 @@ impl KeyBits {
 /// The `(false, type default)` PAIR a NULL `IS NOT DISTINCT FROM` key
 /// stores — the same default the probe side masks to, so NULL keys land in
 /// ONE bucket and `cmp_key` can stay positional. Prepare-time / build-time
-/// only. [`KeyBits`] has no `Dec` variant, so this genuinely is a different
-/// table from [`null_val_payload`], not a copy of it.
+/// only.
 ///
 /// The `Eq`-key rule ("a NULL never matches, so drop the build row") is NOT
 /// here: it is per-site (drop the row / AND the probe flag / empty the
@@ -357,10 +360,7 @@ pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits> {
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(0),
             Ty::F64 => KeyBits::F64(0f64.to_bits()),
             Ty::Str => KeyBits::Str(String::new()),
-            // The key lane is the PROBE expression's type, and a probe
-            // expression is a ROW expression — decimal row columns are
-            // opaque, so nothing can produce one.
-            Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
+            Ty::Dec(p, s) => KeyBits::Dec(0, p, s),
         },
     ]
 }

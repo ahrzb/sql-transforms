@@ -376,9 +376,28 @@ pub(super) fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExp
         // DOUBLE build key DuckDB casts the probe to DOUBLE; every other
         // pairing needs a decimal probe lane the key path does not have.
         (Ty::Dec(..), Ty::F64) => Ok(dec_to_float(key)),
+        // Against a DECIMAL or integer build key DuckDB compares in the
+        // common decimal type (an integer is DECIMAL(width, 0)): the larger
+        // scale, the larger integral width. The probe widens exactly into
+        // that lane and the build side rescales while the probe table is
+        // built (duckdb::materialize_map). Past width 38 DuckDB caps the
+        // type and the per-row cast can fail: refused, as for integers.
+        (Ty::Dec(p1, s1), b) if b.is_int() || b.dec().is_some() => {
+            let (p2, s2) = b.dec().unwrap_or((int_dec_width(b), 0));
+            let s = s1.max(s2);
+            let p = u32::from((p1 - s1).max(p2 - s2)) + u32::from(s);
+            if p > 38 {
+                return Err(unsup(format!(
+                    "a DECIMAL({p1},{s1}) join key expression against DECIMAL({p2},{s2}) \
+                     -- DuckDB compares these as DECIMAL(38,{s}) and the cast can fail \
+                     per row"
+                )));
+            }
+            Ok(to_common(key, Ty::Dec(p as u8, s)))
+        }
         (Ty::Dec(p, s), b) => Err(unsup(format!(
             "a DECIMAL({p},{s}) join key expression against {} -- DECIMAL probe \
-             keys are served against DOUBLE build keys only",
+             keys are served against numeric build keys only",
             b.name()
         ))),
         (a, b) if a == b => Ok(key),

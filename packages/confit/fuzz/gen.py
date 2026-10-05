@@ -1093,6 +1093,45 @@ def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
     return on
 
 
+def _decimal_join_key(drng, query, row_schema, rows, dname, statics, tags) -> None:
+    """Key the first ON join of the outer query on the row DECIMAL too.
+
+    The expression grammar never binds a decimal, so this is the one place a
+    DECIMAL probe key meets a DECIMAL or BIGINT build key. Half the build
+    values are row values carried over (rescaled when exact), so keys match.
+    """
+    j = next((j for j in query.body.joins if j.on is not None), None)
+    if j is None or query.body.frm != "__THIS__":
+        return
+    sch, srows = statics[j.table]
+    kname = f"k{len(sch)}"
+    spec = drng.choice(DECIMALS + ("int64",)) + "?"
+    sch[kname] = spec
+    seen = [r[dname] for r in rows if r[dname] is not None]
+    for r in srows:
+        v = _cell(drng, spec)
+        if seen and drng.random() < 0.5:
+            v = _carried(drng.choice(seen), spec.rstrip("?"), v)
+        r[kname] = v
+    j.on = Bin(
+        "AND",
+        Bin("=", Col(dname, "__THIS__", "float"), Col(kname, j.table, "float")),
+        j.on,
+    )
+    tags.append("decimal-key")
+
+
+def _carried(v: decimal.Decimal, storage: str, fallback):
+    """`v` at `storage` when that is exact, else `fallback`."""
+    if storage == "int64":
+        return int(v) if v == v.to_integral_value() and abs(v) < 2**63 else fallback
+    p, s = (int(x) for x in storage[len("decimal(") : -1].split(","))
+    q = v.quantize(decimal.Decimal(1).scaleb(-s), context=decimal.Context(prec=80))
+    if q != v or len(q.as_tuple().digits) > p:
+        return fallback
+    return q
+
+
 def gen(seed: int) -> Case:
     """The whole case for `seed`: schemas, data, UDF/tree specs and the query
     AST. Seeded end to end, so the repro for any finding is its seed alone."""
@@ -1106,6 +1145,7 @@ def gen(seed: int) -> Case:
     # generator of its own so no draw of any other seed moves. Decimals are
     # not SEMANTIC (the expression grammar does not bind them), so star
     # expansion and the row boundary are where this one is observable.
+    drng = dname = None
     if seed % 7 == 3:
         drng = random.Random(seed * 7919 + 1)  # noqa: S311
         spec = drng.choice(DECIMALS) + ("?" if drng.random() < 0.5 else "")
@@ -1168,6 +1208,8 @@ def gen(seed: int) -> Case:
 
     env = Env([(None, c, t) for c, t, _ in leaves(row_schema)], udfs, tree)
     query = _query(rng, env, statics, tags, hostile_ids)
+    if seed % 7 == 3:
+        _decimal_join_key(drng, query, row_schema, rows, dname, statics, tags)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
     output = rng.choice([None] * 4 + ["dict", "model"])
