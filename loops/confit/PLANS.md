@@ -55,18 +55,9 @@ Open, low priority (the catalog caps it meanwhile):
 
 Follow-ups from the shared-subexpression work:
 
-- `greatest`/`least` over n shared arguments keeps all n live across its n²
-  blocks (64 arguments: 9 s to build, 128: 106 s); a tournament (the catalog's
-  `row_max`) is linear to lower, but its text is cubic in the row and passes
-  the 4M-token macro cap at 64 lanes.
 - Sharing covers a stage's projection only: not WHERE, join keys, or the
   `shape="many"` loop; and only trap-free subexpressions (a repeated `sqrt`
   is evaluated where it stands, its trap-free operand once).
-- A shared value is computed before the first item, so pure work that only
-  an untaken CASE arm reads now runs on every row. Correct (it cannot trap)
-  but possibly slower; not seen in the Normalizer numbers. Emitting each
-  value at its first reading step, or under the arm when one arm holds
-  every read, would avoid it.
 - A CASE lowers to blocks even when every arm is a trap-free leaf, so the
   catalog's `coalesce(x, NaN)` per term splits three blocks, and its
   right-nested l2 sum carries its pending partial sums through each:
@@ -76,6 +67,27 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- Sharing (#363) no longer hoists what only CASE arms hold: a subexpression
+  is shared when evaluated unconditionally and more than once, or twice
+  behind one gate (the CASE conditions on its path, hash-consed, so a
+  `null_when` function's field reads gate alike). QuantileTransformer with
+  three instances serves a 64-row call in 1,388 µs again (21,480 after
+  #363, 1,153 before); Normalizer l1/l2/max at 32 features still build in
+  0.1-0.3 s. A value shared behind a gate is computed for every row,
+  including rows that do not open the gate (one evaluation, where those
+  rows paid none); hoisting into the gated arm would avoid it.
+- `round(DOUBLE)` (`SKind::Round`) is trap-free, and `sin`/`cos`/`tan`
+  under a CASE guard that rules out the infinities (`abs(x) = inf` passed,
+  `abs(x) < k` or `abs(x) <> inf` taken) cannot raise, so a struct read does
+  not evaluate them beside the read field: the catalog's guarded-`sin`
+  FunctionTransformer at 64 features serves a 64-row call in 0.62 ms
+  (1,370 µs per row before).
+- `greatest`/`least` over I64, F64 or VARCHAR arguments lower as a running
+  extreme (`SKind::Extreme`): linear in the arguments, each evaluated once in
+  order. The catalog's max norm, `greatest(abs(x1), ..., abs(xn))`, builds in
+  0.011 s at 128 arguments (6.1 s before) and 0.1 s at 1,024 (refused past
+  the size limit at 256 before). BOOLEAN, DECIMAL and the i128 lane keep the
+  flat CASE.
 - The early size refusal (#358) verifies the oversized program only under
   debug assertions, as the tests and the nightly build it; a release build
   refuses the 520-lane test program in 2.5 s (6.0 s with the verify). With

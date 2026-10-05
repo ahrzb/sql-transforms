@@ -982,6 +982,52 @@ impl<'a> FB<'a> {
                     val,
                 })
             }
+            SKind::Extreme { greatest, args } => {
+                // A running extreme: each argument in order, replacing the
+                // held one when it is not NULL and the held one is NULL or
+                // strictly beaten, so ties keep the first. The held lane
+                // stays live while the next argument may branch to a trap.
+                let pred = if *greatest { CmpPred::Gt } else { CmpPred::Lt };
+                let lane_ty = e.ty.lane();
+                let mut held = self.emit(&args[0], live)?;
+                for a in &args[1..] {
+                    live.push((held, e.ty));
+                    let l = self.emit(a, live)?;
+                    let (m, _) = live.pop().expect("pushed above");
+                    let beats = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred,
+                        ty: lane_ty,
+                        dst: beats,
+                        a: l.val,
+                        b: m.val,
+                    });
+                    let take = match m.flag {
+                        None => beats,
+                        Some(mv) => {
+                            let m_null = self.not(mv);
+                            self.bin(BinOp::Or, m_null, beats)
+                        }
+                    };
+                    let take = match l.flag {
+                        None => take,
+                        Some(lv) => self.bin(BinOp::And, lv, take),
+                    };
+                    let val = self.fresh();
+                    self.inst(Inst::Select {
+                        dst: val,
+                        cond: take,
+                        a: l.val,
+                        b: m.val,
+                    });
+                    let flag = match (l.flag, m.flag) {
+                        (Some(lv), Some(mv)) => Some(self.bin(BinOp::Or, lv, mv)),
+                        _ => None,
+                    };
+                    held = Lane { flag, val };
+                }
+                Ok(held)
+            }
             SKind::Seq { items, pick } => {
                 // In order, so the first trap is DuckDB's field order's. The
                 // answer stays live across the items after it, which may

@@ -726,12 +726,28 @@ impl Binder<'_> {
                         }
                     })
                     .collect();
+                let nullable = bound.iter().all(|e| e.nullable);
+                if bound.len() == 1 {
+                    return Ok(bound.into_iter().next().expect("one"));
+                }
+                // One lane DuckDB orders as its comparisons do: a running
+                // extreme, linear in the arguments (lower.rs).
+                if matches!(unified.lane(), Ty::I64 | Ty::F64 | Ty::Str) {
+                    return Ok(SExpr {
+                        kind: SKind::Extreme {
+                            greatest: name == "greatest",
+                            args: bound,
+                        },
+                        ty: unified,
+                        nullable,
+                    });
+                }
                 let pred = if name == "greatest" {
                     CmpPred::Ge
                 } else {
                     CmpPred::Le
                 };
-                // A flat CASE: the first argument that is not NULL and wins
+                // BOOLEAN, DECIMAL and the i128 lane: a flat CASE: the first argument that is not NULL and wins
                 // every comparison against a non-NULL other is the answer
                 // (the sequential fold's first maximal element). Each
                 // argument appears n times, where folding pairwise cloned
@@ -754,10 +770,6 @@ impl Binder<'_> {
                     },
                     ty: Ty::I1,
                 };
-                let nullable = bound.iter().all(|e| e.nullable);
-                if bound.len() == 1 {
-                    return Ok(bound.into_iter().next().expect("one"));
-                }
                 let mut arms = Vec::with_capacity(bound.len());
                 for (i, a) in bound.iter().enumerate() {
                     let mut cond = is_null(a, true);

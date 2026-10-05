@@ -457,6 +457,7 @@ pub struct SExpr {
     pub nullable: bool,
 }
 
+
 #[derive(Clone, PartialEq)]
 pub enum SKind {
     /// Input column, by index into the dynamic table's schema.
@@ -479,6 +480,14 @@ pub enum SKind {
     /// `error('msg')` as a CASE result: typed like a NULL there (DuckDB's
     /// SQLNULL), and trapping with the full message whenever evaluated.
     Raise(String),
+    /// greatest/least over arguments of one I64, F64 or VARCHAR lane: the
+    /// first argument that is not NULL and that no later one beats (NULL
+    /// only when every argument is), DuckDB's order (NaN above +inf).
+    /// Lowered as a running extreme, each argument evaluated once in order.
+    Extreme {
+        greatest: bool,
+        args: Vec<SExpr>,
+    },
     /// Evaluate every item in order, for its traps, and answer item `pick`:
     /// a field read over `struct_pack`, which builds every field on DuckDB
     /// (so a sibling's trap fires) and answers one. Items that cannot trap
@@ -758,6 +767,7 @@ impl SExpr {
             | SKind::JoinHit(_)
             | SKind::Shared(_) => Vec::new(),
             SKind::Seq { items, .. } => items.iter_mut().collect(),
+            SKind::Extreme { args, .. } => args.iter_mut().collect(),
             SKind::Arith { a, b, .. }
             | SKind::Cmp { a, b, .. }
             | SKind::And { a, b }
@@ -860,6 +870,7 @@ pub fn may_trap(e: &SExpr) -> bool {
             arms.iter().any(|(c, r)| may_trap(c) || may_trap(r))
                 || default.as_deref().is_some_and(may_trap)
         }
+        SKind::Extreme { args, .. } => args.iter().any(may_trap),
         // Arith overflows, CAST fails, ABS traps on i64::MIN, tree_predict
         // rejects an unknown model id — and anything not named above is
         // simply unclassified. All of it counts as trapping. Total ops land
@@ -906,6 +917,15 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
             let strict = !matches!(op, Op::Fsqrt);
             any(&[a], facts) || !facts.iter().any(|&(c, taken)| guards(c, taken, a, strict))
         }
+        // sin/cos/tan raise exactly on +-inf (measured, DuckDB 1.5.5: "input
+        // value inf is out of range"; NaN is NaN). Under a CASE guard that
+        // rules the infinities out, they cannot.
+        SKind::MathF1 {
+            op: Op::Fsin | Op::Fcos | Op::Ftan,
+            a,
+        } => any(&[a], facts) || !facts.iter().any(|&(c, taken)| finite_guard(c, taken, a)),
+        // ROUND(DOUBLE): total, like `Fround`, which it lowers to.
+        SKind::Round(a) => any(&[a], facts),
         SKind::Case { arms, default } => {
             let depth = facts.len();
             let mut trap = false;
@@ -939,6 +959,7 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
             any(&[inner], facts)
         }
         SKind::Seq { items, .. } => items.iter().any(|x| can_trap_under(x, facts)),
+        SKind::Extreme { args, .. } => args.iter().any(|x| can_trap_under(x, facts)),
         _ => can_trap_here(e),
     }
 }
@@ -992,6 +1013,51 @@ fn guards(c: &SExpr, taken: bool, a: &SExpr, strict: bool) -> bool {
     }
 }
 
+/// Whether condition `c`, TRUE (`taken`) or else FALSE or NULL, leaves `a`
+/// finite, NaN or NULL: the values on which sin/cos/tan cannot raise. The
+/// guard reads `abs(a)` against a constant: `abs(a) = inf` passed,
+/// `abs(a) <> inf` taken, `abs(a) < k` taken, `abs(a) <= k` taken for a
+/// finite k (NaN compares FALSE with `=` and `<`, and TRUE with `<>`, all of
+/// which leave it to an arm where it is harmless).
+fn finite_guard(c: &SExpr, taken: bool, a: &SExpr) -> bool {
+    match (&c.kind, taken) {
+        (SKind::Or { a: l, b: r }, false) | (SKind::And { a: l, b: r }, true) => {
+            finite_guard(l, taken, a) || finite_guard(r, taken, a)
+        }
+        (SKind::Cmp { pred, a: l, b: r }, _) => {
+            let (pred, x, k) = match (lit_f64(r), lit_f64(l)) {
+                (Some(k), _) => (*pred, l, k),
+                (None, Some(k)) => {
+                    let mirrored = match pred {
+                        CmpPred::Lt => CmpPred::Gt,
+                        CmpPred::Le => CmpPred::Ge,
+                        CmpPred::Gt => CmpPred::Lt,
+                        CmpPred::Ge => CmpPred::Le,
+                        p => *p,
+                    };
+                    (mirrored, r, k)
+                }
+                _ => return false,
+            };
+            let inner = match &strip_float(x).kind {
+                SKind::Abs(i) | SKind::MathF1 { op: super::ir::NumOp1::Fabs, a: i } => i,
+                _ => return false,
+            };
+            if strip_float(inner) != strip_float(a) {
+                return false;
+            }
+            let inf = k == f64::INFINITY;
+            match (pred, taken) {
+                (CmpPred::Eq, false) | (CmpPred::Ge, false) | (CmpPred::Ne, true) => inf,
+                (CmpPred::Lt, true) => true,
+                (CmpPred::Le, true) => k.is_finite(),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 fn strip_float(e: &SExpr) -> &SExpr {
     match &e.kind {
         SKind::IntToFloat(a) => strip_float(a),
@@ -1033,6 +1099,7 @@ fn can_trap_here(e: &SExpr) -> bool {
                 || default.as_deref().is_some_and(can_trap)
         }
         SKind::Seq { items, .. } => items.iter().any(can_trap),
+        SKind::Extreme { args, .. } => args.iter().any(can_trap),
         // A closed constant that folds to a value (`CAST('0.0' AS DOUBLE)`,
         // how a typed constant is spelled) cannot trap: fold leaves a
         // failing cast in place, to trap at run time.
@@ -1162,6 +1229,7 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         // `error()` is never folded at bind: it raises when a row reaches it.
         SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
         SKind::Seq { items, .. } => items.iter().all(bind_foldable),
+        SKind::Extreme { args, .. } => args.iter().all(bind_foldable),
         SKind::Lit(_) | SKind::NullOf => true,
         SKind::Arith { a, b, .. }
         | SKind::Cmp { a, b, .. }

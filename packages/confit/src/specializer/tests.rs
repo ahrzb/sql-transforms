@@ -4479,6 +4479,10 @@ fn a_sibling_that_cannot_raise_is_not_evaluated() {
         ("CASE WHEN x > 0 THEN ln(x) END", NumOp1::Ln),
         ("CASE WHEN x < 0 OR x IS NULL THEN 0.0 ELSE sqrt(x) END", NumOp1::Fsqrt),
         ("CASE WHEN 0 >= x THEN NULL ELSE exp(0.5 * ln(x)) END", NumOp1::Ln),
+        ("CASE WHEN abs(x) = CAST('inf' AS DOUBLE) THEN NULL ELSE sin(x) END", NumOp1::Fsin),
+        ("CASE WHEN abs(x) < CAST('inf' AS DOUBLE) THEN cos(x) END", NumOp1::Fcos),
+        ("CASE WHEN abs(x) <= 1e300 THEN tan(x) END", NumOp1::Ftan),
+        ("round(x) * 2.0", NumOp1::Fround),
     ] {
         assert_eq!(num1_count(&read(p), op), 0, "{p}");
     }
@@ -4491,7 +4495,48 @@ fn a_sibling_that_cannot_raise_is_not_evaluated() {
         ("CASE WHEN x <= 0 AND x > 1 THEN NULL ELSE ln(x) END", NumOp1::Ln),
         ("CASE WHEN x < -1 THEN NULL ELSE sqrt(x) END", NumOp1::Fsqrt),
         ("CASE WHEN x <= 0 THEN NULL ELSE ln(x + 1.0) END", NumOp1::Ln),
+        ("sin(x)", NumOp1::Fsin),
+        ("CASE WHEN x = CAST('inf' AS DOUBLE) THEN NULL ELSE sin(x) END", NumOp1::Fsin),
+        ("CASE WHEN abs(x) > 1.0 THEN cos(x) END", NumOp1::Fcos),
+        ("CASE WHEN abs(x) <= CAST('inf' AS DOUBLE) THEN tan(x) END", NumOp1::Ftan),
     ] {
         assert_eq!(num1_count(&read(p), op), 1, "{p}");
     }
+}
+
+#[test]
+fn a_subexpression_only_untaken_arms_hold_stays_lazy() {
+    // share.rs computes a shared value before the first item, so it shares
+    // only what that costs no row: a subexpression evaluated
+    // unconditionally (and more than once), or twice behind one gate. One
+    // held by different CASE arms (a catalog step's instance arms) is
+    // evaluated in its arm, where only the rows taking it pay.
+    let ins = cols(&[("x", Ty::F64, true), ("k", Ty::I64, true)]);
+    let big = "(exp(x * 2.0 + 1.0) * 3.0 - x)";
+    let count = |sql: &str| num1_count(&prep(sql, &ins).unwrap(), NumOp1::Fexp);
+    // Unconditional twice: shared, one evaluation.
+    assert_eq!(count(&format!("SELECT {big} * 2.0 AS a, {big} + 1.0 AS b FROM __THIS__")), 1);
+    // Different arms of one dispatch: lazy, one per arm.
+    assert_eq!(
+        count(&format!(
+            "SELECT CASE WHEN k = 0 THEN {big} WHEN k = 1 THEN {big} * 2.0 END AS a FROM __THIS__"
+        )),
+        2
+    );
+    assert_eq!(
+        count(&format!(
+            "SELECT CASE WHEN k = 0 THEN {big} END AS a, \
+             CASE WHEN k = 1 THEN {big} * 2.0 END AS b FROM __THIS__"
+        )),
+        2
+    );
+    // Behind one gate in two CASEs (a null_when function's field reads):
+    // shared.
+    assert_eq!(
+        count(&format!(
+            "SELECT CASE WHEN k IS NULL THEN NULL ELSE {big} END AS a, \
+             CASE WHEN k IS NULL THEN NULL ELSE {big} * 2.0 END AS b FROM __THIS__"
+        )),
+        1
+    );
 }
