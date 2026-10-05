@@ -46,19 +46,15 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **A subexpression shared within one call** (the confit loop's ticket
-  T1, in progress). A `Normalizer` lane is `x_j / g(norm(x))`, and every
-  lane repeats the row norm verbatim, so the body is O(n²) in the
-  features. Measured on master 5513891 through `to_native`: l1 1.4 s and
-  l2 3.3 s at 16 features; at 32 confit refuses past its compiled-size
-  limit after 6.9 s (l1) and 16.7 s (l2), at 48 after 23.7 s and 46.7 s.
-  A native `Normalizer` call is 2x the twin's speed where other scalers
-  are about 30x. Evaluating identical pure subexpressions of a call once
-  (or a local binding in a SQL function body) makes it O(n). The max norm
-  is capped at 8 features meanwhile. Sent to the confit loop 2026-10-05.
-- **An early size refusal** (the confit loop's ticket T2, in progress):
-  the refusals above arrive after Cranelift has spent its time (up to
-  47 s), which `to_native` pays before falling back to Python.
+- **A `greatest` that builds linearly.** One `greatest` over n DOUBLEs
+  builds in 0.20 s at n = 32, 1.0 s at 64 and 6.1 s at 128, and past
+  Cranelift's size limit at 256, where a sum of the same n builds in 3 to
+  11 ms; nested two-way `greatest` calls repeat their arguments (a
+  balanced tree of them over a 32-feature `Normalizer` row: 87 s); and the
+  expansion cap counts a body before shared subexpressions are found, so
+  the CASE tournament the max norm used refuses at 48 features (release
+  build, master f0fa925). `Normalizer(norm="max")` spells one `greatest`
+  and is capped at 48 features (6.4 s) meanwhile.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
@@ -73,7 +69,7 @@ Easiest first; each is one family, one PR.
   alternative.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
-#353, #362): a constant CASE
+#353, #358, #362, #363): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -92,7 +88,13 @@ a negation) and `ln` under a CASE guard that excludes x <= 0 as trap-free,
 so a field read leaves the other lanes unevaluated (Box-Cox at 64
 features, one instance: 3,448 us per row and a 15.6 s build before, 52 us
 and 0.18 s with a guard arm the entry adds; a negation builds and serves
-as `-1.0 * x` does, and the entries spell `-x` again).
+as `-1.0 * x` does, and the entries spell `-x` again); a repeated pure
+subexpression computed once per row, and a refusal past Cranelift's
+registers right after lowering (a `Normalizer` repeats its norm in every
+lane: l1 and l2 at 32 features were refused after 6.9 s and 16.7 s,
+master 5513891, and now build in 0.10 s and 0.22 s and serve a row in 1.6
+and 5.1 us against the twin's 250 to 300; at 128 features they build in
+1.8 s and 5.1 s; the max norm's cap goes from 8 features to 48).
 
 ## Left Python
 
@@ -114,9 +116,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   and a sparse row is not a float). A note for the step, not the catalog.
 - An encoder over a boolean feature: the fixtures make no boolean features
   yet, for any entry.
-- `Normalizer(norm="max")` over more than 8 features, and any norm whose
-  body confit does not build, until a subexpression is shared within a call
-  (above).
+- `Normalizer(norm="max")` over more than 48 features, until confit's
+  `greatest` builds linearly (Needs from confit).
 - `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
   for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
   twin rounds x to float32 before it bins it, which the entry does not

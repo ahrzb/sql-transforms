@@ -86,10 +86,13 @@ def _robust(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     return out
 
 
-# The widest max norm served: its tournament is quadratic in the row and
-# every lane repeats it (2 s to build at 8 features, 15 s at 12;
-# 2026-10-05), until confit shares a subexpression within a call (PLANS).
-_MAX_NORM_WIDTH = 8
+# The widest max norm served. confit computes the norm every lane repeats
+# once per row (#363), but its `greatest` builds in time that grows faster
+# than the square of its arity: one instance builds in 0.20 s at 16
+# features, 1.9 s at 32, 6.4 s at 48 and 16.6 s at 64, and serves a row
+# in 1 to 18 us against the twin's 230 to 320 (release build, master
+# f0fa925, 2026-10-05; PLANS, "Needs from confit").
+_MAX_NORM_WIDTH = 48
 
 
 @translates(Normalizer)
@@ -99,8 +102,8 @@ def _normalizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.E
     # einsum; max: `np.max(abs(X), axis=1)`, exact), a norm under
     # 10 * eps read as 1.0, then `X /= norm`. NaN and infinity raise in the
     # twin, so the row is finite wherever the twin answers. Every lane
-    # repeats the norm (a SQL function has no shared subexpression), so a
-    # wide row outgrows what confit expands and stays Python.
+    # repeats the norm, which confit computes once per row (#363): l1 and
+    # l2 build in 1.8 s and 5.1 s at 128 features.
     if est.norm == "l1":
         norm = row_sum([S.fn("abs", xi) for xi in x])
     elif est.norm == "l2":
@@ -114,9 +117,9 @@ def _normalizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.E
         if len(x) > _MAX_NORM_WIDTH:
             raise NotNative(
                 f"Normalizer(norm='max') over {len(x)} features: every lane"
-                f" repeats a row maximum quadratic in the row, past"
-                f" {_MAX_NORM_WIDTH} (PLANS, 'A subexpression shared within one"
-                " call')"
+                f" repeats a row maximum whose build grows faster than the square"
+                f" of the row, past {_MAX_NORM_WIDTH} (PLANS, 'A greatest that"
+                " builds linearly')"
             )
         norm = row_max([S.fn("abs", xi) for xi in x])
     else:
