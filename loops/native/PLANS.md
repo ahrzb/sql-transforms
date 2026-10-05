@@ -1,14 +1,16 @@
 # Native catalog plans
 
 The working list for [the loop](README.md): open work only, highest value
-first. Remove an item when it lands.
+first. Remove an item when it lands. What is in flight, and who has it, is
+on the board: [tickets.md](tickets.md).
 
 ## Next
 
 Easiest first; each is one family, one PR.
 
 1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
-   numpy ufuncs with a SQL twin, `AdditiveChi2Sampler`.
+   numpy ufuncs with a SQL twin (native T2, in progress), and
+   `AdditiveChi2Sampler`.
 2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
    entries as `compose.py` composes a `Pipeline`'s.
 3. **Show served compositions in coverage.md:** sklearn's transformer

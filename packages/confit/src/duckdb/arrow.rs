@@ -784,6 +784,32 @@ pub fn emit(
                 }
                 let vals = PyList::new(py, values)?;
                 let kw = pyo3::types::PyDict::new(py);
+                // A HUGEINT child past 38 digits leaves as DuckDB exports
+                // it: the raw i128 in a decimal128(38,0), which pa.array
+                // refuses to build from a Decimal. Build at decimal256(39,0)
+                // and cast down unchecked, keeping the raw value.
+                if child_tys.contains(&crate::specializer::ir::Ty::I128) {
+                    let wide = |t: crate::specializer::ir::Ty| match t {
+                        crate::specializer::ir::Ty::I128 => pa.call_method1("decimal256", (39, 0)),
+                        t => lane_ty(t),
+                    };
+                    let wide_ty = if field_names.is_empty() {
+                        pa.call_method1("list_", (wide(child_tys[0])?,))?
+                    } else {
+                        let members = field_names
+                            .iter()
+                            .zip(&child_tys)
+                            .map(|(fname, t)| pa.call_method1("field", (fname.as_str(), wide(*t)?)))
+                            .collect::<PyResult<Vec<_>>>()?;
+                        pa.call_method1("struct", (PyList::new(py, members)?,))?
+                    };
+                    kw.set_item("type", wide_ty)?;
+                    let built = pa.call_method("array", (vals,), Some(&kw))?;
+                    let cast_kw = pyo3::types::PyDict::new(py);
+                    cast_kw.set_item("safe", false)?;
+                    arrays.push(built.call_method("cast", (out_ty,), Some(&cast_kw))?);
+                    continue;
+                }
                 kw.set_item("type", out_ty)?;
                 arrays.push(pa.call_method("array", (vals,), Some(&kw))?);
                 continue;

@@ -314,7 +314,7 @@ SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 # they grow about as lanes^1.4, and PLANS "Next" raises it.
 MAX_LANES = 300
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
-# (NATIVE_SEEDS=200, docs/native/reports.md).
+# (NATIVE_SEEDS=200, loops/native/report-format.md).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
 
 
