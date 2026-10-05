@@ -392,6 +392,7 @@ pub(super) fn bind_from<'a>(
         classify_keys: std::cell::Cell::new(false),
         beside: std::cell::RefCell::new(Vec::new()),
         minted_lanes: std::cell::RefCell::new(ctx.minted_lanes),
+        call_siblings: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 

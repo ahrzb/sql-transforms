@@ -338,6 +338,20 @@ fn function(f: &sqlparser::ast::Function) -> Option<String> {
     }
     let name = f.name.to_string();
     let lower = name.trim_matches('"').to_ascii_lowercase();
+    // A SQL function call read by field prints as the call, as DuckDB names
+    // a macro call (`(pair(a)).lo`).
+    if lower == super::macros::CALL_MARKER {
+        let (id, calls) = super::calls::marker_call(&SqlExpr::Function(f.clone()))?;
+        let args = super::calls::marker_args(f)
+            .iter()
+            .map(print)
+            .collect::<Option<Vec<_>>>()?;
+        return Some(format!(
+            "{}({})",
+            ident(&calls[id].0.to_ascii_lowercase()),
+            args.join(", ")
+        ));
+    }
     let args = args_of(f)?;
     Some(match lower.as_str() {
         "coalesce" | "ifnull" => format!("COALESCE({args})"),

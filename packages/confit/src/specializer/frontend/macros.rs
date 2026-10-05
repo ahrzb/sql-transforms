@@ -115,12 +115,50 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, PrepareError> {
         .map_err(|e| PrepareError::Parse(e.to_string()))
 }
 
+/// The marker a struct field read over a SQL function call becomes:
+/// `(__cf_call(id, arg1, ..., argn)).field`, `id` indexing [`Expanded::calls`].
+/// The arguments stay in place, so whatever walks the query sees them; the
+/// body, with the arguments substituted, is expanded and parsed once per
+/// distinct call (see [`Expanded`]). The name is reserved.
+pub const CALL_MARKER: &str = "__cf_call";
+
+/// One distinct SQL function call read by field: the function's name (an
+/// unaliased read is named after the call, as DuckDB names it) and its
+/// expansion, `(body)` with the arguments substituted.
+#[derive(Clone, Debug)]
+pub struct Call {
+    pub name: String,
+    pub tokens: Vec<Token>,
+}
+
+/// The expanded query, and the calls it reads fields of. A call read by
+/// several fields (`f(x).a, f(x).b, ...`) is expanded once here rather than
+/// once per read, which made a function with n fields read n times cost n^2
+/// tokens.
+#[derive(Debug)]
+pub struct Expanded {
+    pub tokens: Vec<Token>,
+    pub calls: Vec<Call>,
+}
+
+struct State<'m> {
+    macros: &'m [SqlMacro],
+    bodies: Vec<Vec<Token>>,
+    rounds: usize,
+    tokens: usize,
+    calls: Vec<Call>,
+    keys: Vec<(usize, String)>,
+}
+
 /// Replace every call of a declared SQL function by its body, innermost
 /// last: an argument's own calls, and calls in a body, expand in later
-/// rounds.
-pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Vec<Token>, PrepareError> {
+/// rounds. A call read by field becomes a [`CALL_MARKER`].
+pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Expanded, PrepareError> {
     if macros.is_empty() {
-        return Ok(tokens);
+        return Ok(Expanded {
+            tokens,
+            calls: Vec::new(),
+        });
     }
     let bodies = macros
         .iter()
@@ -131,6 +169,7 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Vec<Token>, Pre
             if m.body.contains('\u{1}')
                 || lower.contains("__glob_pat")
                 || lower.contains(super::structs::SEQ_MARKER)
+                || lower.contains(CALL_MARKER)
             {
                 return Err(unsup(format!(
                     "sql function '{}': a reserved marker in its body",
@@ -142,15 +181,47 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Vec<Token>, Pre
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut st = State {
+        macros,
+        bodies,
+        rounds: 0,
+        tokens: tokens.len(),
+        calls: Vec::new(),
+        keys: Vec::new(),
+    };
+    let tokens = expand_in(tokens, &mut st)?;
+    // A call's expansion may hold calls of its own, read by field or not.
+    let mut i = 0;
+    while i < st.calls.len() {
+        let toks = std::mem::take(&mut st.calls[i].tokens);
+        st.calls[i].tokens = expand_in(toks, &mut st)?;
+        i += 1;
+    }
+    Ok(Expanded {
+        tokens,
+        calls: st.calls,
+    })
+}
+
+/// Is the call ending just before `end` read by field (`f(x).name`)?
+fn read_by_field(toks: &[Token], end: usize) -> bool {
+    let next = toks[end..].iter().position(|t| !is_ws(t)).map(|i| end + i);
+    let Some(dot) = next.filter(|&i| matches!(toks[i], Token::Period)) else {
+        return false;
+    };
+    matches!(next_solid(toks, dot), Some((_, Token::Word(_))))
+}
+
+fn expand_in(tokens: Vec<Token>, st: &mut State<'_>) -> Result<Vec<Token>, PrepareError> {
+    let macros = st.macros;
     let mut toks = tokens;
-    let mut rounds = 0usize;
     // Everything before the last expansion is call-free, so the next search
     // starts there.
     let mut from = 0usize;
     while let Some((at, m)) = find_call(&toks, from, macros) {
         from = at;
-        rounds += 1;
-        if rounds > MAX_EXPANSIONS {
+        st.rounds += 1;
+        if st.rounds > MAX_EXPANSIONS {
             return Err(unsup(format!(
                 "sql function '{}' expands more than {MAX_EXPANSIONS} times (a body \
                  that calls itself?)",
@@ -168,7 +239,13 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Vec<Token>, Pre
                 args.len()
             )));
         }
-        let body = &bodies[m];
+        let trim = |a: &[Token]| -> Vec<Token> {
+            let lo = a.iter().position(|t| !is_ws(t)).unwrap_or(0);
+            let hi = a.iter().rposition(|t| !is_ws(t)).map_or(0, |i| i + 1);
+            a[lo..hi].to_vec()
+        };
+        let args: Vec<Vec<Token>> = args.iter().map(|a| trim(a)).collect();
+        let body = &st.bodies[m];
         let mut rep = Vec::with_capacity(body.len() + 2);
         rep.push(Token::LParen);
         for (j, t) in body.iter().enumerate() {
@@ -191,23 +268,55 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Vec<Token>, Pre
             match param {
                 Some(p) => {
                     rep.push(Token::LParen);
-                    let a = &args[p];
-                    let lo = a.iter().position(|t| !is_ws(t)).unwrap_or(0);
-                    let hi = a.iter().rposition(|t| !is_ws(t)).map_or(0, |i| i + 1);
-                    rep.extend(a[lo..hi].iter().cloned());
+                    rep.extend(args[p].iter().cloned());
                     rep.push(Token::RParen);
                 }
                 None => rep.push(t.clone()),
             }
         }
         rep.push(Token::RParen);
-        if toks.len() - (end - at) + rep.len() > MAX_TOKENS {
+        if read_by_field(&toks, end) {
+            // One expansion per distinct call, keyed by its spelling.
+            let key: String = args
+                .iter()
+                .map(|a| a.iter().map(|t| t.to_string()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\u{0}");
+            let id = match st.keys.iter().position(|k| *k == (m, key.clone())) {
+                Some(id) => id,
+                None => {
+                    st.tokens += rep.len();
+                    st.keys.push((m, key));
+                    st.calls.push(Call {
+                        name: mac.name.clone(),
+                        tokens: rep,
+                    });
+                    st.calls.len() - 1
+                }
+            };
+            let mut marker = vec![
+                Token::LParen,
+                Token::make_word(CALL_MARKER, None),
+                Token::LParen,
+                Token::Number(id.to_string(), false),
+            ];
+            for a in &args {
+                marker.push(Token::Comma);
+                marker.extend(a.iter().cloned());
+            }
+            marker.push(Token::RParen);
+            marker.push(Token::RParen);
+            toks.splice(at..end, marker);
+        } else {
+            st.tokens = st.tokens - (end - at) + rep.len();
+            toks.splice(at..end, rep);
+        }
+        if st.tokens > MAX_TOKENS {
             return Err(unsup(format!(
                 "sql function '{}' expands past {MAX_TOKENS} tokens",
                 mac.name
             )));
         }
-        toks.splice(at..end, rep);
     }
     Ok(toks)
 }
@@ -221,7 +330,7 @@ mod tests {
     }
 
     fn run(sql: &str, macros: &[SqlMacro]) -> Result<String, PrepareError> {
-        expand(tokenize(sql).unwrap(), macros).map(|t| text(&t))
+        expand(tokenize(sql).unwrap(), macros).map(|t| text(&t.tokens))
     }
 
     fn mac(name: &str, params: &[&str], body: &str) -> SqlMacro {
@@ -286,6 +395,21 @@ mod tests {
         assert!(matches!(run("SELECT f(a, b) FROM t", &m), Err(PrepareError::Bind(_))));
         assert!(matches!(run("SELECT f() FROM t", &m), Err(PrepareError::Bind(_))));
         assert!(matches!(run("SELECT f(a,) FROM t", &m), Err(PrepareError::Parse(_))));
+    }
+
+    #[test]
+    fn a_call_read_by_field_expands_once() {
+        let m = [mac("f", &["x"], "struct_pack(p := x, q := x + 1)")];
+        let e = expand(tokenize("SELECT f(a).p, f(a).q, f(b).p FROM t").unwrap(), &m).unwrap();
+        assert_eq!(
+            text(&e.tokens),
+            "SELECT (__cf_call(0,a)).p, (__cf_call(0,a)).q, (__cf_call(1,b)).p FROM t"
+        );
+        assert_eq!(e.calls.len(), 2);
+        assert_eq!(text(&e.calls[1].tokens), "(struct_pack(p := (b), q := (b) + 1))");
+        // Not a field read: inline, as before.
+        let e = expand(tokenize("SELECT f(a) FROM t").unwrap(), &m).unwrap();
+        assert!(e.calls.is_empty());
     }
 
     #[test]
