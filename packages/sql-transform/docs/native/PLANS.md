@@ -7,47 +7,47 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **Selectors:** `VarianceThreshold`, `SelectKBest`, `SelectPercentile`,
-   `SelectFpr`/`Fdr`/`Fwe`, `GenericUnivariateSelect`, `SelectFromModel`,
-   `RFE`, `RFECV`, `SequentialFeatureSelector`: `transform` keeps a fitted
-   column subset.
-2. **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
+1. **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
    `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
    `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
    (x scores), `LinearDiscriminantAnalysis`: a matvec, so a measured bound
    (`_helpers.dot`).
-3. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
-4. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
+2. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
+3. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
    (`handle_unknown`, `drop`, infrequent categories), `TargetEncoder`
    (transform of new rows only). Needs string features in the fixtures.
-5. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 4).
-6. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+4. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 3).
+5. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`, `SkewedChi2Sampler`, `RBFSampler`,
    `PolynomialCountSketch`.
-7. **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
+6. **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
    `BisectingKMeans`, `Birch` (`transform` = distances).
-8. **Compositions:** a step whose instances are `Pipeline`s of catalog
+7. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
 ## Needs from confit
 
-- **Per-read expansion** (confit PLANS' first item for this catalog). A
-  field read expands the function's whole body, so build time grows with
-  reads × body. Through `to_native` (which builds the all-lanes query
-  once), with one / three fitted groups, on master 6306c8f:
-  `StandardScaler` 0.09 / 0.27 s at 32 features, 0.35 / 1.0 s at 64,
-  1.6 s / past the 4M-token cap at 128; `MinMaxScaler(clip=True)`
-  0.27 / 0.86 s at 32, 1.2 / 4.2 s at 64; `Normalizer` (every lane repeats
-  the row norm) l1 1.6 s and l2 3.3 s at 16, and at 32 refused past the
-  compiled-size limit, but only after 10 s (l1) and 26 s (l2) of building;
-  max 1.8 s at 8, where it is capped meanwhile. Served since #336–#338: a
-  constant CASE result counts as trap-free (a 32-lane step serves a
-  64-row call in 331 µs, against 297 µs inline and 5,081 µs before), a
-  named refusal past Cranelift's size limit, `greatest`/`least` without
-  the exponential fold, and binary-search dispatch over many instances.
+- **A subexpression shared within one call.** A `Normalizer` lane is
+  `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
+  body is O(n²) in the features. Measured on master b851298 through
+  `to_native`: l1 1.5 s and l2 3.4 s at 16 features; at 32 confit refuses
+  past its compiled-size limit after 8 s (l1) and 19 s (l2), and at 48 l1
+  after 36 s while l2 fails to parse (`Expected: ), found: WHEN`) a
+  definition DuckDB serves (554k characters, parenthesis depth 32).
+  Evaluating identical pure subexpressions of a call once (or a local
+  binding in a SQL function body) makes it O(n). The max norm is capped at
+  8 features meanwhile. Sent to the confit loop 2026-10-05.
+
+Served since this catalog began (#336–#339): a constant CASE result counts
+as trap-free (a 32-lane step serves a 64-row call in 331 µs, against
+297 µs inline and 5,081 µs before); a named refusal past Cranelift's size
+limit; `greatest`/`least` without the exponential fold; binary-search
+dispatch over many instances; and a field read expands its call once
+(`StandardScaler` at 128 features and three groups builds in 1.2 s, where
+it passed the token cap).
 
 ## Left Python
 
@@ -62,8 +62,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `SimpleImputer` fitted on object data (strings), whose output is not a
   float the step can return; a `missing_values` that is neither NaN nor a
   number (`None`, `pd.NA`, a string); `MissingIndicator(sparse=True)`.
-- `Normalizer(norm="max")` over more than 8 features, until per-read
-  expansion (above).
+- A selector that keeps no feature, or whose `get_support()` raises (as
+  its `transform` would).
+- `Normalizer(norm="max")` over more than 8 features, and any norm whose
+  body confit does not build, until a subexpression is shared within a call
+  (above).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
