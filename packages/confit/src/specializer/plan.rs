@@ -1154,80 +1154,69 @@ pub fn zero_divisor_nulls(op: ArithOp, ty: Ty) -> bool {
 }
 
 pub fn bind_foldable(e: &SExpr) -> bool {
-    // Breadth first: an input is usually near the top, and a recursive walk
-    // that reaches it only after a deep operand made a left-deep chain of n
-    // terms cost n per level, n^2 in all, at every level the binder asks.
-    let mut queue = std::collections::VecDeque::from([e]);
-    while let Some(e) = queue.pop_front() {
-        match &e.kind {
-            // A slot never folds: constants do not fold across a query level
-            // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
-            // all on zero rows).
-            SKind::Col(_)
-            | SKind::Slot(_)
-            | SKind::StaticCol { .. }
-            | SKind::JoinHit(_)
-            | SKind::Shared(_) => return false,
-            // `error()` is never folded at bind: it raises when a row reaches it.
-            SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => {
-                return false
-            }
-            SKind::Seq { items, .. } => queue.extend(items),
-            SKind::Lit(_) | SKind::NullOf => {}
-            SKind::Arith { a, b, .. }
-            | SKind::Cmp { a, b, .. }
-            | SKind::And { a, b }
-            | SKind::Or { a, b }
-            | SKind::Concat { a, b }
-            | SKind::Str2 { a, b, .. }
-            | SKind::MathF2 { a, b, .. }
-            | SKind::Str2i { a, n: b, .. }
-            | SKind::Round2 { a, n: b, .. }
-            | SKind::DecArith { a, b, .. }
-            | SKind::Trim { a, chars: b, .. } => queue.extend([a.as_ref(), b.as_ref()]),
-            SKind::Not(a)
-            | SKind::IsNull { inner: a, .. }
-            | SKind::IntToFloat(a)
-            | SKind::DecToFloat(a)
-            | SKind::IntToDec { a, .. }
-            | SKind::DecCast(a)
-            | SKind::DecTryCast(a)
-            | SKind::DecUnary { a, .. }
-            | SKind::IntToFloat32(a)
-            | SKind::Cast { inner: a, .. }
-            | SKind::StrCase { a, .. }
-            | SKind::Abs(a)
-            | SKind::Round(a)
-            | SKind::SLen { a, .. }
-            | SKind::ReMatch { a, .. }
-            | SKind::ReExtract { a, .. }
-            | SKind::ReReplace { a, .. }
-            | SKind::MathF1 { a, .. }
-            | SKind::Sord { a, .. }
-            | SKind::StripAccents(a)
-            | SKind::Reverse(a) => queue.push_back(a),
-            SKind::Substr { a, start, len } => {
-                queue.extend([a.as_ref(), start.as_ref()]);
-                queue.extend(len.as_deref());
-            }
-            SKind::Like { a, p, esc, .. } => {
-                queue.extend([a.as_ref(), p.as_ref()]);
-                queue.extend(esc.as_deref());
-            }
-            SKind::Str3 { a, b, c, .. } => queue.extend([a.as_ref(), b.as_ref(), c.as_ref()]),
-            SKind::Spad { a, len, pad, .. } => {
-                queue.extend([a.as_ref(), len.as_ref(), pad.as_ref()])
-            }
-            SKind::Sslice { a, lo, hi } => queue.extend([a.as_ref(), lo.as_ref(), hi.as_ref()]),
-            SKind::Case { arms, default } => {
-                for (c, r) in arms {
-                    queue.extend([c, r]);
-                }
-                queue.extend(default.as_deref());
-            }
+    match &e.kind {
+        // A slot never folds: constants do not fold across a query level
+        // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
+        // all on zero rows).
+        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) | SKind::Shared(_) => false,
+        // `error()` is never folded at bind: it raises when a row reaches it.
+        SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
+        SKind::Seq { items, .. } => items.iter().all(bind_foldable),
+        SKind::Lit(_) | SKind::NullOf => true,
+        SKind::Arith { a, b, .. }
+        | SKind::Cmp { a, b, .. }
+        | SKind::And { a, b }
+        | SKind::Or { a, b }
+        | SKind::Concat { a, b }
+        | SKind::Str2 { a, b, .. }
+        | SKind::MathF2 { a, b, .. }
+        | SKind::Str2i { a, n: b, .. }
+        | SKind::Round2 { a, n: b, .. }
+        | SKind::DecArith { a, b, .. }
+        | SKind::Trim { a, chars: b, .. } => bind_foldable(a) && bind_foldable(b),
+        SKind::Not(a)
+        | SKind::IsNull { inner: a, .. }
+        | SKind::IntToFloat(a)
+        | SKind::DecToFloat(a)
+        | SKind::IntToDec { a, .. }
+        | SKind::DecCast(a)
+        | SKind::DecTryCast(a)
+        | SKind::DecUnary { a, .. }
+        | SKind::IntToFloat32(a)
+        | SKind::Cast { inner: a, .. }
+        | SKind::StrCase { a, .. }
+        | SKind::Abs(a)
+        | SKind::Round(a)
+        | SKind::SLen { a, .. }
+        | SKind::ReMatch { a, .. }
+        | SKind::ReExtract { a, .. }
+        | SKind::ReReplace { a, .. }
+        | SKind::MathF1 { a, .. }
+        | SKind::Sord { a, .. }
+        | SKind::StripAccents(a)
+        | SKind::Reverse(a) => bind_foldable(a),
+        SKind::Substr { a, start, len } => {
+            bind_foldable(a)
+                && bind_foldable(start)
+                && len.as_deref().map_or(true, bind_foldable)
+        }
+        SKind::Like { a, p, esc, .. } => {
+            bind_foldable(a) && bind_foldable(p) && esc.as_deref().map_or(true, bind_foldable)
+        }
+        SKind::Str3 { a, b, c, .. } => {
+            bind_foldable(a) && bind_foldable(b) && bind_foldable(c)
+        }
+        SKind::Spad { a, len, pad, .. } => {
+            bind_foldable(a) && bind_foldable(len) && bind_foldable(pad)
+        }
+        SKind::Sslice { a, lo, hi } => {
+            bind_foldable(a) && bind_foldable(lo) && bind_foldable(hi)
+        }
+        SKind::Case { arms, default } => {
+            arms.iter().all(|(c, r)| bind_foldable(c) && bind_foldable(r))
+                && default.as_deref().map_or(true, bind_foldable)
         }
     }
-    true
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division
