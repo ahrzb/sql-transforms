@@ -98,7 +98,7 @@ Easiest first; each is one family, one PR.
   polynomial arithmetic over one of its DOUBLE parameters, builds in 2.7 s
   over 4 parameters and 7.3 s over 32 (0.25, 0.63, 1.9, 7.3 s at 4, 8,
   16, 32 parameters of 10 lanes each; release build, master 8a67154,
-  2026-10-05); the reproduction is in the spline PR's description. The
+  2026-10-05); the reproduction is in #384's description. The
   spline entry serves whatever confit builds: 32 features of degree 3,
   8 knots, build in about 22 s (`error`) and 44 s (`continue`). A
   binding (a `let`, or a nested function whose arguments are evaluated
