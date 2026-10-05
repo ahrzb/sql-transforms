@@ -61,6 +61,9 @@ from threadpoolctl import threadpool_limits
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
     NotNative,
+    ParityError,
+    bound,
+    bound_of,
     catalog,
     check,
     explain_native,
@@ -252,7 +255,9 @@ FIXTURES[IsotonicRegression] = [
 
 # FunctionTransformer: the identity validated and not, and each function
 # served, unvalidated (the twin then answers NaN and infinity) and, for a
-# few, validated.
+# few, validated; each bounded function both ways. Each is held to its own
+# bound (`function._BOUNDS`), the rest to 0.
+BOUNDED = [np.exp, np.log, np.log2, np.log10, np.tan]
 FUNCTIONS = [
     np.abs,
     np.fabs,
@@ -269,6 +274,7 @@ FUNCTIONS = [
     np.sign,
     np.sin,
     np.cos,
+    *BOUNDED,
 ]
 FIXTURES[FunctionTransformer] = [
     FunctionTransformer,
@@ -277,6 +283,7 @@ FIXTURES[FunctionTransformer] = [
     lambda: FunctionTransformer(np.sqrt, validate=True),
     lambda: FunctionTransformer(np.rint, validate=True),
     lambda: FunctionTransformer(np.reciprocal, validate=True),
+    *((lambda f=f: FunctionTransformer(f, validate=True)) for f in BOUNDED),
 ]
 
 # Pipeline: compositions across families, a passthrough and a None step, and
@@ -765,6 +772,30 @@ def test_an_entry_matches_its_twin(cls, j, seed):
 # ------------------------------------------------------------------ framework
 
 
+def test_a_per_estimator_bound_needs_a_ceiling():
+    from sql_transform.native import translates
+
+    with pytest.raises(ValueError, match="needs a ceiling above 0"):
+        translates(type("_Fake", (), {}), bound=lambda est: 0)
+
+
+def test_a_bound_past_its_ceiling_raises():
+    from sql_transform.native import Entry
+
+    entry = Entry(lambda est, x, types: x, 2, lambda est: 3)
+    assert entry.varies
+    with pytest.raises(ValueError, match="past the class's ceiling of 2"):
+        entry.bound(object())
+
+
+def test_a_class_bound_reads_as_before():
+    from sql_transform.native import Entry
+
+    entry = Entry(lambda est, x, types: x, 4)
+    assert not entry.varies
+    assert entry.bound(object()) == 4
+
+
 def _scaler_step() -> PythonTransform:
     return _step(StandardScaler, 0)
 
@@ -975,12 +1006,14 @@ def test_a_power_transform_without_a_small_bound_stays_python(make, reason):
 
 # Doubles where an elementwise function's spelling can part from numpy's:
 # signed zeros, subnormals, halves (rint), the largest non-integer doubles,
-# infinities, NaN (and NULL, read as NaN), near pi.
+# infinities, NaN (and NULL, read as NaN), near pi, and where exp overflows
+# (past 709.78) and underflows to a subnormal and to 0 (past -745.13).
 SPECIALS = [
     0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308, -1e-310, 0.5, -0.5,
     1.5, -1.5, 2.5, -2.5, 0.49999999999999994, -0.49999999999999994, 1.0, -1.0,
     4503599627370495.5, -4503599627370495.5, 4503599627370497.0, 1e300, -1e300,
     math.inf, -math.inf, math.nan, None, 3.141592653589793, -7.25, 1e-300,
+    709.78, 709.79, 710.0, -740.0, -745.2, -746.0, 1e308, -1.7976931348623157e308,
 ]  # fmt: skip
 
 
@@ -1018,12 +1051,12 @@ def _sum_rows(X):
 @pytest.mark.parametrize(
     "est, types, reason",
     [
-        (FunctionTransformer(np.exp), None, r"func=np\.exp\): .*1 ulp"),
-        (FunctionTransformer(np.log), None, r"func=np\.log\): .*1 ulp"),
-        (FunctionTransformer(np.log2), None, r"func=np\.log2\): .*1 ulp"),
-        (FunctionTransformer(np.tan), None, r"func=np\.tan\): .*1 ulp"),
-        (FunctionTransformer(np.log10), None, r"func=np\.log10\): .*2 ulp"),
-        (FunctionTransformer(np.cbrt), None, r"func=np\.cbrt\): .*3 ulp"),
+        (FunctionTransformer(np.cbrt), None, r"func=np\.cbrt\): confit's cbrt is not"),
+        (
+            FunctionTransformer(np.cbrt, validate=True),
+            None,
+            "confit's cbrt is not DuckDB's",
+        ),
         (FunctionTransformer(np.log1p), None, "DuckDB has no log1p"),
         (FunctionTransformer(np.expm1), None, "DuckDB has no expm1"),
         (FunctionTransformer(np.arctan), None, r"func=np\.arctan\): not a function"),
@@ -1042,6 +1075,7 @@ def _sum_rows(X):
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
         (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
+        (FunctionTransformer(np.log), [pa.bool_()], "boolean feature"),
     ],
     ids=lambda v: None,
 )
@@ -1054,21 +1088,84 @@ def test_a_function_transformer_refuses(est, types, reason):
         to_native(step, strict=True)
 
 
-def test_a_failing_kernel_probe_leaves_sin_python(monkeypatch):
+@pytest.mark.parametrize("func", [np.sin, *BOUNDED], ids=lambda f: f.__name__)
+def test_a_failing_kernel_probe_leaves_the_function_python(monkeypatch, func):
     from sql_transform.native import function
 
     def refuse(*args, **kwargs):
         raise RuntimeError("no engine")
 
     monkeypatch.setattr(function, "DuckDBInferFn", refuse)
-    function.kernel_is_confits.cache_clear()
+    function.kernel_distance.cache_clear()
     try:
-        est = FunctionTransformer(np.sin).fit(np.zeros((2, 1)))
+        est = FunctionTransformer(func).fit(np.zeros((2, 1)))
         step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
-        with pytest.raises(NotNative, match="kernel is not confit's"):
+        with pytest.raises(NotNative, match="the kernel probe did not run"):
             to_native(step, strict=True)
     finally:
-        function.kernel_is_confits.cache_clear()
+        function.kernel_distance.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "func, distance, reason",
+    [
+        (np.sin, 1, "1 ulps from confit's on the probe, past the entry's bound of 0"),
+        (np.exp, 2, "2 ulps from confit's on the probe, past the entry's bound of 1"),
+        (np.log10, 3, "3 ulps .* past the entry's bound of 2"),
+        (np.tan, 1 << 64, "past the entry's bound of 1"),
+    ],
+    ids=lambda v: None,
+)
+def test_a_kernel_past_its_bound_leaves_the_function_python(
+    monkeypatch, func, distance, reason
+):
+    # numpy picks its kernel by CPU: one further from confit's than the
+    # bound measured here is not served.
+    from sql_transform.native import function
+
+    monkeypatch.setattr(function, "kernel_distance", lambda f: distance)
+    est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+
+
+def test_this_platforms_kernels_are_within_their_bounds():
+    from sql_transform.native import function
+
+    for func in function._PROBED:
+        est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+        assert function.kernel_distance(func) <= bound_of(est), func.__name__
+
+
+@pytest.mark.parametrize(
+    "funcs, ulps",
+    [
+        ([None, np.sqrt, np.sin], 0),
+        ([np.exp], 1),
+        ([None, np.log10], 2),
+        ([np.exp, np.log10, np.abs], 2),
+    ],
+    ids=lambda v: None,
+)
+def test_a_step_is_held_to_its_loosest_instance(funcs, ulps):
+    instances = {
+        k: FunctionTransformer(f).fit(np.zeros((2, 1))) for k, f in enumerate(funcs)
+    }
+    step = PythonTransform("tf", instances, pa.schema([("x0", pa.float64())]))
+    assert bound(step) == ulps
+
+
+def test_a_bounded_function_is_not_bit_exact():
+    # The bound is needed: at 0 numpy's log10 parts from DuckDB's.
+    est = FunctionTransformer(np.log10).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    x = np.random.default_rng(0).uniform(1e-3, 1e3, 2000)
+    rows = pa.table({"__iid": pa.array([0] * len(x), pa.int64()), "x0": x})
+    native = to_native(step, strict=True)
+    assert check(step, native, rows) == len(x)
+    with pytest.raises(ParityError, match="bound 0"):
+        check(step, native, rows, ulps=0)
 
 
 # ---------------------------------------------------------- IsotonicRegression

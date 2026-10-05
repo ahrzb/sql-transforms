@@ -3,14 +3,15 @@
     uv run python -m sql_transform.native.coverage --write
 
 regenerates the table in loops/native/coverage.md; `coverage_test.py` fails
-while the file is stale (`--modules` prints the counts per sklearn module,
-for the milestone reports). Every transformer sklearn lists is in exactly
-one row: native (in the catalog, with its bound), composition (served by
-composing entries, not an entry of its own; "served" when the catalog
-composes it), out of scope (with the reason, from loops/native/goal.md
-"Scope"), or not yet. A composition the catalog serves that sklearn does
-not list as a transformer (`Pipeline`, not a `TransformerMixin`) gets a row
-of its own, outside the counts.
+while the file is stale. For the milestone reports, `--modules` prints the
+counts per sklearn module and `--bounds` the KPI `nonzero_ulp_bounds`.
+Every transformer sklearn lists is in exactly one row: native (in the
+catalog, with its bound), composition (served by composing entries, not
+an entry of its own; "served" when the catalog composes it), out of
+scope (with the reason, from loops/native/goal.md "Scope"), or not yet.
+A composition the catalog serves that sklearn does not list as a
+transformer (`Pipeline`, not a `TransformerMixin`) gets a row of its own,
+outside the counts.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from sklearn.utils import all_estimators
 
-from sql_transform.native._registry import catalog
+from sql_transform.native._registry import Entry, catalog
 
 DOC = Path(__file__).parents[4] / "loops" / "native" / "coverage.md"
 BEGIN, END = "<!-- coverage:begin -->", "<!-- coverage:end -->"
@@ -63,6 +64,24 @@ def _classes() -> dict[str, type]:
     return {**listed, **served}
 
 
+def _exactness(entry: Entry) -> str:
+    """An entry's bound as the table reads it. A per-estimator bound runs
+    from bit-exact (the configurations whose own bound is 0) to the
+    class's ceiling."""
+    b = entry.ulps
+    if b == 0:
+        return "bit-exact"
+    if entry.varies:
+        return f"bit-exact; within {b} ulps for some configurations"
+    return f"within {b} ulps"
+
+
+def nonzero_ulp_bounds() -> int:
+    """The KPI of that name (loops/native/report-format.md): the catalog
+    classes some configuration of which is served within a bound above 0."""
+    return sum(1 for e in catalog().values() if e.ulps)
+
+
 def rows() -> list[tuple[str, str, str]]:
     native = {c.__name__: e for c, e in catalog().items()}
     out = []
@@ -75,8 +94,7 @@ def rows() -> list[tuple[str, str, str]]:
                 note += "; served over bit-exact entries"
             out.append((name, "composition", note))
         elif name in native:
-            b = native[name].ulps
-            out.append((name, "native", "bit-exact" if b == 0 else f"within {b} ulps"))
+            out.append((name, "native", _exactness(native[name])))
         elif name in OUT_OF_SCOPE:
             out.append((name, "out of scope", OUT_OF_SCOPE[name]))
         else:
@@ -142,10 +160,15 @@ if __name__ == "__main__":
     p.add_argument(
         "--modules", action="store_true", help="print the counts per sklearn module"
     )
+    p.add_argument(
+        "--bounds", action="store_true", help="print the KPI nonzero_ulp_bounds"
+    )
     a = p.parse_args()
     if a.write:
         write()
     elif a.modules:
         print(modules())
+    elif a.bounds:
+        print(f"nonzero_ulp_bounds: {nonzero_ulp_bounds()}")
     else:
         print(table())

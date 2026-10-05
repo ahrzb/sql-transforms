@@ -23,7 +23,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `FeatureAgglomeration` | native | bit-exact |
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
 | `FeatureUnion` | composition | concatenates parts' outputs; served over bit-exact entries |
-| `FunctionTransformer` | native | bit-exact |
+| `FunctionTransformer` | native | bit-exact; within 2 ulps for some configurations |
 | `GaussianRandomProjection` | not yet |  |
 | `GenericUnivariateSelect` | native | bit-exact |
 | `HashingVectorizer` | out of scope | input is text documents |
