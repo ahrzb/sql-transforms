@@ -10,7 +10,7 @@ at construction.
 ## Required behavior
 
 An accepted transform must preserve the behavior defined by the
-[oracle contract](oracle/README.md). Unsupported constructs must be rejected at
+[oracle contract](../../packages/confit/docs/oracle/README.md). Unsupported constructs must be rejected at
 construction with a diagnostic identifying the construct. Accepted transforms
 may still encounter data-dependent runtime errors.
 
@@ -32,8 +32,8 @@ a reason to exclude a transform from the target.
 
 ## Supporting specifications
 
-- [Serving contract](specs/serving-contract.md): API, UDFs, and detailed restrictions.
-- [Oracle](oracle/README.md): the SQL reference and comparison rules.
+- [Serving contract](../../packages/confit/docs/specs/serving-contract.md): API, UDFs, and detailed restrictions.
+- [Oracle](../../packages/confit/docs/oracle/README.md): the SQL reference and comparison rules.
 - [Decisions](decisions/README.md): open questions, rulings in force, and postponed ones.
-- [Success measures](specs/success-measures.md): correctness controls, coverage, and latency.
-- [Dated reports](reports/): measurements and implementation gaps, not requirements.
+- [Success measures](../../packages/confit/docs/specs/success-measures.md): correctness controls, coverage, and latency.
+- [Dated reports](../../packages/confit/docs/reports): measurements and implementation gaps, not requirements.

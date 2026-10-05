@@ -24,6 +24,7 @@ from fuzz import gen, oracle  # noqa: E402
 from fuzz.parity import case, table, verdict  # noqa: E402
 
 DOCS = Path(__file__).parents[1] / "docs"
+REPO = Path(__file__).parents[3]
 
 # ------------------------------------------------------------------ current
 
@@ -43,7 +44,9 @@ def test_a_record_cites_its_ledger_entry_and_ruling(rec):
     assert f"**{rec.ledger}**" in text, f"no ledger entry '{rec.ledger}'"
     assert rec.status in ("ruled", "kept")
     if rec.status == "ruled":
-        assert (DOCS / rec.ruling).is_file(), f"no ruling at docs/{rec.ruling}"
+        # A ruling is a package doc, or a loop's decision record (loops/).
+        base = REPO if rec.ruling.startswith("loops/") else DOCS
+        assert (base / rec.ruling).is_file(), f"no ruling at {rec.ruling}"
     else:
         row = next(line for line in text.splitlines() if f"**{rec.ledger}**" in line)
         assert "kept" in row, f"{rec.id} is kept but the ledger says otherwise"

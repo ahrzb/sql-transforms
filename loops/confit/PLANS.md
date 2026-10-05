@@ -1,10 +1,10 @@
 # Confit plans
 
 My working list: open work only, highest value first within each section.
-Facts about what confit does live in `docs/`; questions waiting on a ruling are
-records in `docs/decisions/open/`. Remove an item when it lands. How the loop
-runs (inline or with workers, and how work becomes tickets):
-`docs/loop/README.md`; the live tickets: `docs/loop/tickets.md`.
+Facts about what confit does live in `packages/confit/docs/`; questions waiting
+on a ruling are records in [decisions/open/](decisions/). Remove an item when it
+lands. How the loop runs: [README.md](README.md); the live tickets:
+[tickets.md](tickets.md).
 
 ## Next
 
@@ -13,7 +13,7 @@ runs (inline or with workers, and how work becomes tickets):
    metamorphic suite) and files red runs as a "Nightly campaign findings"
    issue. Triage each filed class to a fix, a named exclusion, or an
    open-divergence pin. The first six sharded nights are triaged
-   (`docs/reports/2026-10-05-sharded-nightly-triage.md`); still open from them:
+   ([reports/2026-10-05-sharded-nightly-triage.md](reports/2026-10-05-sharded-nightly-triage.md)); still open from them:
    - `nullif(NULL, x)` drops `x`, which DuckDB evaluates and can trap on
      (seeds 3058298, 3722953). The adoptable-NULL channel has no node that
      evaluates an operand for its trap only;
@@ -37,13 +37,31 @@ runs (inline or with workers, and how work becomes tickets):
 
 ## For the native catalog
 
-`sql_transform.native` (its own loop, `packages/sql-transform/docs/native/`)
+`sql_transform.native` (its own loop, [loops/native/](../native/README.md))
 lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-Nothing the catalog has asked for is open; its PLANS "Needs from confit"
-is where new needs land. Follow-ups from the shared-subexpression work:
+Open, low priority (the catalog caps it meanwhile):
+
+- **Two CASE trees in one expression build superlinearly** (asked
+  2026-10-05). QuantileTransformer's entry, `0.5*(tree(c) - tree(-c))` with
+  `c = coalesce(x, NaN)` and q bisection leaves per tree, built in 4.48 s at
+  q=2,000 on 49acad5; after #363 it builds in 0.28 / 0.66 / 1.76 s at q =
+  500 / 1,000 / 2,000, against 0.10 / 0.21 / 0.46 s for one tree of the
+  column: about 3.8 times one tree, growing a little faster than q. Find
+  where the remaining superlinear term is (the per-leaf `c` is shared now)
+  before the catalog lifts its 4,000-quantile cap.
+
+Follow-ups from the early size refusal (#358):
+
+- The early refusal verifies the program before it refuses, so a lowering
+  bug in an oversized program stays `Internal`; verify is now the largest
+  part of a refusal (2.1 s of l2×32, 4.0 s of the 520-lane program).
+  Verifying only under debug assertions on that path keeps the coverage
+  (the nightly runs debug-assertion builds) and saves those seconds.
+
+Follow-ups from the shared-subexpression work:
 
 - `greatest`/`least` over n shared arguments keeps all n live across its n²
   blocks (64 arguments: 9 s to build, 128: 106 s); a tournament (the catalog's
@@ -119,7 +137,7 @@ Delivered:
   lower grow their stack on demand, so a 20000-term chain serves (about
   23 s to build: still superlinear).
 
-## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
+## Query classes (in the ruled order: [decisions/closed/next-query-classes.md](decisions/closed/next-query-classes.md))
 
 The first five are ruled, in this order; the rest follow.
 
@@ -220,7 +238,7 @@ The first five are ruled, in this order; the rest follow.
 - **Native transform families.** A fitted transformer costs ~118 µs per row
   against 1.4 µs without it (`bench_transforms.py`, 2026-09-26); nearly all is
   sklearn's `transform()`. The parity bound is ruled
-  (`docs/decisions/closed/native-transform-parity-bounds.md`); the route is
+  ([decisions/closed/native-transform-parity-bounds.md](decisions/closed/native-transform-parity-bounds.md)); the route is
   the owner's SQL-defined transforms proposal, with Rust kernels for what SQL
   cannot express (see "Waiting on the owner").
 - **Serving vs the Python twin.** 1.20–1.80x slower at n=64 on a fresh

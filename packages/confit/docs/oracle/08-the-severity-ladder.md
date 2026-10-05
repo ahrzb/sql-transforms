@@ -30,7 +30,7 @@ still a contract violation, not agreement, not an approved exception, and not a
 satisfied target. Decimal literal typing and rounding were severity-2 features in
 flight on exactly those terms until decimal expressions shipped.
 
-*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#limits-on-process-rules).
+*Decision:* [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#limits-on-process-rules).
 
 *Evidence:* the indexed divergences in [the ledger](07-the-divergence-ledger.md).
 
@@ -38,7 +38,7 @@ flight on exactly those terms until decimal expressions shipped.
 
 **claim: countable-rung-four.** Counting the cost of conservative refusals is
 [refusal-outcome reporting](04-verdicts-agreement-abstention-refusal.md), not another
-rule. The [policy decision](../decisions/closed/oracle-policy.md#reporting-and-measurement)
+rule. The [policy decision](../../../../loops/confit/decisions/closed/oracle-policy.md#reporting-and-measurement)
 does not require a new verdict kind or make every such refusal a correctness defect.
 The campaign report groups refusals by DuckDB's outcome for the same query
 (claim: refusal-absorb); divergence: bind-time-constant-refusals has no twin measuring

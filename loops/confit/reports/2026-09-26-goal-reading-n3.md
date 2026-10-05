@@ -1,7 +1,7 @@
 # Goal yardsticks, reading N=3 (2026-09-26)
 
 **What this is.** The third reading of the yardsticks in
-[success measures](../specs/success-measures.md), taken on master `bc167f4` on
+[success measures](../../../packages/confit/docs/specs/success-measures.md), taken on master `bc167f4` on
 2026-09-26, the same day as [reading N=2](2026-09-26-goal-reading.md) (master `24aafe8`).
 It does not edit N=2: it reads the same measures, with the same commands, and the column
 that matters is the delta. It also reads the campaign twice: once with N=2's generator, so

@@ -1,7 +1,7 @@
 # Ordering and nondeterminism
 
 Settled ordering and nondeterminism policy comes from the
-[oracle policy record](../decisions/closed/oracle-policy.md).
+[oracle policy record](../../../../loops/confit/decisions/closed/oracle-policy.md).
 
 ## Decision rule
 
@@ -18,7 +18,7 @@ Two ruled exceptions are narrower than a general nondeterminism allowance:
   rather than exact bits.
 
 *Evidence:* `packages/confit/docs/known-limitations.md` (introduction), claim:
-optimizer-on-reading, and the [fold decision](../decisions/closed/static-only-queries.md).
+optimizer-on-reading, and the [fold decision](../../../../loops/confit/decisions/closed/static-only-queries.md).
 The rule is also law P21 in [properties](../properties.md), with its pinning tests.
 
 **claim: disposition-table.** Apply the narrowest ruled action. Do not convert a source
@@ -26,7 +26,7 @@ of variation into a general tolerance.
 
 | variation source | required action | authority |
 |---|---|---|
-| request-batch dependence, or no request table | outside the model ([goal](../goal.md#scope)) | serving-contract scope; fold decision |
+| request-batch dependence, or no request table | outside the model ([goal](../../../../loops/confit/goal.md#scope)) | serving-contract scope; fold decision |
 | unspecified DuckDB row sequence | compare DuckDB as a multiset; enforce confit's order through self-legs | claim: compare-modes; claim: serving-row-order |
 | hidden table statistics | remove the dependency where possible; otherwise exclude only the measured source | claim: optimizer-on-reading; claim: statistics-dependent-exclusion |
 | two DuckDB evaluation paths disagree and the identity selects neither | refuse the construct by name | claim: evaluation-path-disagreement |
@@ -149,7 +149,7 @@ rows differs between thread settings. The independent fit/serving path uses
 would apply to the oracle as a whole, never as a caller, campaign, or per-case choice.
 
 *Evidence:* P11 in `packages/confit/docs/properties.md`, `confit.oracle.Oracle.__init__`,
-and the [fold decision](../decisions/closed/static-only-queries.md).
+and the [fold decision](../../../../loops/confit/decisions/closed/static-only-queries.md).
 
 **claim: order-sensitive-family-contract.** An order-sensitive value family is refused
 until its comparison contract is clear. That contract names either the oracle setting

@@ -49,7 +49,7 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # TYPE. The 9 table-function statements (`FROM range(1) ...`, no base
 # table) matched only through the static-only fold; a query that reads no
 # request table is outside the model and the fold is removed
-# (docs/decisions/closed/static-only-queries.md), so they refuse now. A
+# (loops/confit/decisions/closed/static-only-queries.md), so they refuse now. A
 # drop below this is a regression.
 MATCH_FLOOR = 539
 

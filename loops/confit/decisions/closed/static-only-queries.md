@@ -14,7 +14,7 @@ than on confit. Confit defines no frozen-fold contract.
 - **Float reductions.** `sum` and `avg` over `DOUBLE` have no single oracle
   answer: on one measured table, twenty multi-threaded DuckDB runs produced twenty
   distinct bit patterns. That family is compared within the declared
-  [float-reduction bound](../../oracle/05-the-comparison-contract.md#floating-point-comparisons).
+  [float-reduction bound](../../../../packages/confit/docs/oracle/05-the-comparison-contract.md#floating-point-comparisons).
   The oracle does not pin `threads = 1`.
 
 ## Ground: a fold is not a function of the query

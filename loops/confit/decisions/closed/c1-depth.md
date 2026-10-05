@@ -11,7 +11,7 @@ one is the control?
   passes at 1,500 in 58.8 s, against 7.6 s for the whole file at 25, so about 50 s
   more per gate run.
 - **Amend C1's text to 25.** A change to a correctness control, so it goes through
-  review per the [success measures](../../specs/success-measures.md#standing-rule).
+  review per the [success measures](../../../../packages/confit/docs/specs/success-measures.md#standing-rule).
 
 **Ruling (owner, 2026-09-27).** Raise the default to 1,500. Amending the
 written control to 25 would weaken it, not correct documentation; the ~50 s

@@ -116,7 +116,7 @@ the model and refuses at build, naming the first construct the binder meets:
 the driving relation (`table 's' as the driving relation (must be the dynamic
 table …)`), `FROM-less SELECT`, or a clause such as `ORDER BY`. Run such a
 query on DuckDB. The ruling is
-[static-only queries](decisions/closed/static-only-queries.md).
+[static-only queries](../../../loops/confit/decisions/closed/static-only-queries.md).
 
 ## 3. Type-system boundaries
 

@@ -121,7 +121,7 @@ class Rule:
 
     id: str
     ledger: str  # the anchor in docs/oracle/07-the-divergence-ledger.md
-    ruling: str  # the decision that admits it (a path under docs/)
+    ruling: str  # the decision that admits it (under docs/, or a loops/ record)
     claim: str
     canaries: tuple[int, ...]
     expected_per_100k: float  # the nightly flags a count far above this
@@ -279,7 +279,7 @@ RULES: tuple[Rule, ...] = (
     Rule(
         id="empty-static-trap-timing",
         ledger="divergence: empty-static-trap-timing",
-        ruling="decisions/closed/empty-static-join-trap-timing.md",
+        ruling="loops/confit/decisions/closed/empty-static-join-trap-timing.md",
         claim=(
             "An INNER or CROSS join on an empty static outputs no rows on "
             "either engine, so the only observable is whether the row side "

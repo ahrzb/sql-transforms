@@ -1,6 +1,6 @@
 # Success measures
 
-The [goal](../goal.md) sets the priorities. These are the five correctness
+The [goal](../../../../loops/confit/goal.md) sets the priorities. These are the five correctness
 controls (C1–C5) and two optimization measures (D1–D2), including checks owned by
 `sql_transform`, which keeps ownership of its checks.
 
@@ -22,7 +22,7 @@ instead of the DuckDB reference.
 Gate: `packages/sql-transform/sql_transform/_projection_test.py`, `gate()` and
 the seeded differential controlled by `MARGINALIZE_FUZZ_N` (seed 20260729).
 The default depth is 1,500 cases, so every gate run is a widening-depth run
-([C1 depth](../decisions/closed/c1-depth.md)).
+([C1 depth](../../../../loops/confit/decisions/closed/c1-depth.md)).
 
 ### Engine parity (C2)
 

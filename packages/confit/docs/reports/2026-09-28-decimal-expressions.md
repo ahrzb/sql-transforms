@@ -1,7 +1,7 @@
 # Decimal expressions, measured against the goal (2026-09-28)
 
 **What this is.** A reading of the decimal-expressions work against
-[the goal](../goal.md). It follows that document's three commitments:
+[the goal](../../../../loops/confit/goal.md). It follows that document's three commitments:
 - accepted transforms keep the oracle contract;
 - unsupported constructs refuse by name;
 - the SQL surface grows without weakening the contract, at in-process latency.

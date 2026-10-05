@@ -64,7 +64,7 @@ productions, which shift the seed stream, cannot change the denominator.
 **Phase 2 serves** a derived table or CTE whose body reads static tables only,
 without aggregation, joined to the request row path. The query as a whole still
 reads the request table; this is not the removed whole-query fold
-([static-only queries](../decisions/closed/static-only-queries.md)).
+([static-only queries](../../../../loops/confit/decisions/closed/static-only-queries.md)).
 
 **Stays refused, by name**: aggregation, `GROUP BY`, `DISTINCT`, `ORDER BY`,
 row limits or windows over request rows at any level; a CTE referenced twice;
@@ -291,4 +291,4 @@ scaffolding.
 Rulings on the open questions: (1) staged pipeline approved, PR 1
 behavior-preserving; (2) phase 2 approved under the conditions above; (3)
 exclusions kept; (4) C1 default depth raised to 1,500
-([C1 depth](../decisions/closed/c1-depth.md)).
+([C1 depth](../../../../loops/confit/decisions/closed/c1-depth.md)).
