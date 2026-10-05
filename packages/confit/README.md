@@ -86,6 +86,23 @@ every tree and `models` one header per model (base, `sum`/`mean`,
 any object with `name`, `takes`, `returns`, `__call__` (and `instances`,
 `tree_tables()` for a tree model) is accepted too.
 
+### Building SQL
+
+`confit.sql` builds SQL as a tree, in the shape of DuckDB's Python expression
+API, and renders it losslessly: a constant carries its type
+(`lit(0.1)` renders `CAST('0.1' AS DOUBLE)`), so the text means the value it
+was built from. `to_duckdb()` gives the same expression as a DuckDB object.
+
+```python
+from confit import sql as S
+
+a, x = S.col("a"), S.col("x")
+q = (S.select(S.case(a.isnull(), S.lit(0.0)).otherwise(x * 2.0).alias("z"))
+      .from_("__THIS__")
+      .where(a > 0))
+DuckDBInferFn(q.sql(), row_tables=..., static_tables=...)
+```
+
 Confit knows no ML library. A packer supplies the tables: sql-transform's
 `TreeBasedTransform` packs sklearn's `DecisionTreeRegressor`,
 `RandomForestRegressor`, `ExtraTreesRegressor` and
