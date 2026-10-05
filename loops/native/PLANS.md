@@ -68,11 +68,17 @@ Easiest first; each is one family, one PR.
   2026-10-05). Classifying total calls (`exp`, `pow`, `fneg`) as
   trap-free, and `ln` under a CASE arm whose condition excludes `x <= 0`,
   would make it linear. `PowerTransformer` is capped at 12 features
-  meanwhile, and so is `FunctionTransformer` where its spelling calls a
-  function (`sqrt`, `floor`, `ceil`, `trunc`, `rint`, `sin`, `cos`):
-  `rint`, three instances, 35 vs 44 us at 12 features, 130 vs 80 at 24,
-  refused at 128; its call-free spellings (`abs`, `square`, `reciprocal`,
-  `sign`, ...) serve 128 features (2026-10-05). Sent to the confit loop 2026-10-05.
+  meanwhile. Sent to the confit loop 2026-10-05.
+- **`sin` and `cos` under a guard.** DuckDB's `sin` and `cos` raise on an
+  infinity, so `can_trap` counts them as trapping even under
+  `CASE WHEN abs(x) = inf THEN NaN ELSE sin(x) END` (or
+  `x = inf OR x = -inf`), and a struct field read evaluates every lane's
+  call: `FunctionTransformer(np.sin)`, three instances, 1,024-row batches,
+  44 vs 92 us per row against the Python step at 12 features, 281 vs 125
+  at 32 (build 1.7 s), master 49acad5 with #362, 2026-10-05. A guard rule
+  for them, as #362 gave `ln` and `sqrt`, would make it linear; the
+  entry caps `sin` and `cos` at 12 features meanwhile. Every other
+  `FunctionTransformer` spelling serves 128 features.
 - **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
   far slower than `-1.0 * x`, which is the same double: a 32-feature
   `QuantileTransformer` (3 quantiles) built in 2.8 s and served 64 rows in
@@ -144,8 +150,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
   on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
   DuckDB function; `sin` and `cos` only where `kernel_is_duckdbs` finds
-  numpy's kernel bit-equal to DuckDB's. A spelling that calls a function
-  over more than 12 features (Needs from confit, the call that cannot trap).
+  numpy's kernel bit-equal to DuckDB's, and over at most 12 features
+  (Needs from confit, `sin` and `cos` under a guard).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

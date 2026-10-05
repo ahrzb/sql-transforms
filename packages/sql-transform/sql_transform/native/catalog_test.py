@@ -803,7 +803,7 @@ def _sum_rows(X):
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
         (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
-        (FunctionTransformer(np.rint), [pa.float64()] * 13, "over 13 features"),
+        (FunctionTransformer(np.sin), [pa.float64()] * 13, "over 13 features"),
     ],
     ids=lambda v: None,
 )
