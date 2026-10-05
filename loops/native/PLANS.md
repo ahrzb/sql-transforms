@@ -8,7 +8,14 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `AdditiveChi2Sampler`.
+1. **Non-linear maps:** `AdditiveChi2Sampler`. It no longer waits on the
+   machinery (a bound per configuration landed), but on a bound that is
+   not small: its lanes are
+   `factor * cos(j * (s * log(x)))` and the same with `sin`, and numpy's
+   `log`, 1 ulp from DuckDB's `ln`, reaches `cos` scaled by `j * s`, so the
+   result parts by up to 8,192 ulps near a zero of `cos` (400,000 draws of
+   `x`, `s = 0.5`, j = 1 and 2, 2026-10-05). It needs an owner ruling, as
+   the matvec families do, or numpy's `log` kernel spelled to the bit.
 2. **`QuantileTransformer` as one search tree per feature:** its two
    `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
    with the other endpoint of each interval closed), so one tree whose
@@ -17,14 +24,6 @@ Easiest first; each is one family, one PR.
    and builds linearly (Needs from confit, "Two CASE trees"): the default
    1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
    and the caps could rise.
-3. **A bound per configuration.** An entry's ulp bound is its class's
-   (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
-   identity and the exact functions, refuses `np.exp`, `np.log`,
-   `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
-   `np.log10` (2) and `np.cbrt` (3), measured over 1,600,000 draws
-   (`function.py`, 2026-10-05). A translator that declares its own bound
-   per estimator would serve them within those, once each is measured over
-   200 seeds of fixtures.
 
 ## Waiting on the owner
 
@@ -57,7 +56,14 @@ Easiest first; each is one family, one PR.
   4,000 quantiles over the features and 4,000,000 in their squares
   meanwhile (about 7 s at most); Next, item 2, is the entry-side
   alternative.
-
+- **`cbrt` that answers DuckDB's.** confit's `cbrt` (`duck_cbrt`, Rust's
+  `f64::cbrt`) is not DuckDB's, which is glibc's: over 200,000 draws
+  (uniform in +-1e3 and +-exp(uniform(-700, 700))) they part on 99,438,
+  by up to 3 ulps; e.g. `cbrt(23.64324940051347)` is 2.8701354167475395
+  in confit and 2.87013541674754 in DuckDB 1.5.5 (and glibc's `cbrt`
+  through ctypes). Reproduction: `SELECT cbrt(x) AS y FROM __THIS__` served
+  by `DuckDBInferFn` against `duckdb.sql` on the same column. Waits on it:
+  `FunctionTransformer(np.cbrt)`, within 3 ulps of DuckDB's (2026-10-05).
 - **A value bound once in a SQL function body, and a build linear in the
   parameters.** A function body is substituted as text, so an expression
   read twice is spelled twice, and a recurrence whose every step reads
@@ -154,12 +160,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `FunctionTransformer` with a `func` other than the identity and numpy's
   `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
-  (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
-  a string feature, or a boolean one except for the identity (numpy keeps
-  a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
-  on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
-  DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
-  numpy's kernel bit-equal to confit's.
+  (bit-exact) and `exp`, `log`, `log2`, `tan` (within 1 ulp) and `log10`
+  (within 2) (lambdas, partials, user functions, other ufuncs); with
+  `kw_args`; over a string feature, or a boolean one except for the
+  identity (numpy keeps a boolean row boolean). `cbrt`, 3 ulps from
+  DuckDB's, waits on confit's `cbrt` answering DuckDB's (Needs from
+  confit); `log1p` and `expm1` have no DuckDB function. `sin` and `cos`,
+  and the bounded functions, only where `kernel_distance` finds numpy's
+  kernel within the function's bound of confit's (numpy picks its kernel
+  by CPU). A bounded function does not compose: a `Pipeline`,
+  `ColumnTransformer` or `FeatureUnion` refuses it, naming its bound.
 - A `Pipeline` with a step that is not a catalog entry, or one
   registered with a bound (a later step does not keep it bounded:
   `x - mean_` near `mean_`); with `transform_input` (which only transforms

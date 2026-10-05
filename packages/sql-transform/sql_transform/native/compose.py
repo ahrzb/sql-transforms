@@ -13,8 +13,9 @@ catalog entry, and composes the same way.
 
 Only bit-exact steps compose: a lane within k ulps of its twin, read by a
 later step, is not within k ulps after it (`x - mean_` near `mean_` turns
-a 4-ulp difference into any number of ulps), so a step registered with a
-bound refuses the pipeline.
+a 4-ulp difference into any number of ulps), so a step whose own bound is
+not 0 refuses the pipeline. The bound read is the step's, not its class's:
+`FunctionTransformer()` composes, `FunctionTransformer(np.exp)` does not.
 """
 
 from __future__ import annotations
@@ -82,10 +83,11 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             raise NotNative(
                 f"Pipeline step {name!r}: no translation for {type(step).__name__}"
             )
-        if entry.ulps:
+        ulps = entry.bound(step)
+        if ulps:
             raise NotNative(
                 f"Pipeline step {name!r}: {type(step).__name__} is within"
-                f" {entry.ulps} ulps, which no later step keeps bounded"
+                f" {ulps} ulps, which no later step keeps bounded"
             )
         why = _float64_out(step) if k < len(steps) - 1 else None
         if why:
@@ -227,9 +229,10 @@ def _part(
     entry = catalog().get(type(part))
     if entry is None:
         raise NotNative(f"{where}: no translation for {type(part).__name__}")
-    if entry.ulps:
+    ulps = entry.bound(part)
+    if ulps:
         raise NotNative(
-            f"{where}: {type(part).__name__} is within {entry.ulps} ulps;"
+            f"{where}: {type(part).__name__} is within {ulps} ulps;"
             " a composition serves bit-exact parts only"
         )
     if _passes(part) and pa.string() in types:

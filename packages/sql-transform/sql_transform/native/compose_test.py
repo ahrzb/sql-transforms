@@ -69,6 +69,14 @@ class _MyPipeline(Pipeline):
             "step 'powertransformer': PowerTransformer is within 4 ulps",
         ),
         (
+            lambda: make_pipeline(FunctionTransformer(np.exp), StandardScaler()),
+            "step 'functiontransformer': FunctionTransformer is within 1 ulps",
+        ),
+        (
+            lambda: make_pipeline(StandardScaler(), FunctionTransformer(np.log2)),
+            "step 'functiontransformer': FunctionTransformer is within 1 ulps",
+        ),
+        (
             lambda: make_pipeline(MissingIndicator(features="all"), StandardScaler()),
             "step 'missingindicator': MissingIndicator is not the last step"
             " and its output is boolean",
@@ -102,12 +110,15 @@ class _MyPipeline(Pipeline):
         "unknown",
         "bounded-first",
         "bounded-last",
+        "bounded-function-first",
+        "bounded-function-last",
         "boolean",
         "nested",
         "nested-boolean",
         "subclass",
     ],
 )
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_a_pipeline_names_the_step_it_refuses(make, reason):
     step = _numeric(make())
     with pytest.raises(NotNative, match=reason):
@@ -251,6 +262,13 @@ class _MyScaler(StandardScaler):
         ),
         (
             lambda: ColumnTransformer(
+                [("log", FunctionTransformer(np.log10, validate=True), [0])],
+                remainder="passthrough",
+            ),
+            "part 'log': FunctionTransformer is within 2 ulps",
+        ),
+        (
+            lambda: ColumnTransformer(
                 [("s", StandardScaler(), [0])], remainder=PCA(n_components=1)
             ),
             "part 'remainder': no translation for PCA",
@@ -318,6 +336,12 @@ class _MyScaler(StandardScaler):
             " passes columns through as objects",
         ),
         (
+            lambda: FeatureUnion(
+                [("pass", "passthrough"), ("tan", FunctionTransformer(np.tan))]
+            ),
+            "FeatureUnion part 'tan': FunctionTransformer is within 1 ulps",
+        ),
+        (
             lambda: FeatureUnion([("p", PCA(n_components=1))]),
             "FeatureUnion part 'p': no translation for PCA",
         ),
@@ -351,6 +375,7 @@ class _MyScaler(StandardScaler):
         "ct-unknown",
         "ct-subclass",
         "ct-bounded",
+        "ct-bounded-function",
         "ct-remainder",
         "ct-object-func",
         "ct-object-func-nested",
@@ -360,6 +385,7 @@ class _MyScaler(StandardScaler):
         "ct-integer-weight",
         "ct-inexact-weight",
         "ct-not-last",
+        "fu-bounded-function",
         "fu-unknown",
         "fu-weighted-passthrough",
         "fu-weight-type",
@@ -432,3 +458,26 @@ def test_a_column_transformer_reads_columns_as_its_twin_does():
         }
     )
     assert check(step, to_native(step, strict=True), rows) == 4
+
+
+def test_an_exact_function_composes_where_a_bounded_one_does_not():
+    # The part's own bound decides, not its class's ceiling.
+    exact = FeatureUnion(
+        [("id", FunctionTransformer()), ("sqrt", FunctionTransformer(np.sqrt))]
+    )
+    step = _numeric(make_pipeline(exact, StandardScaler()))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0, 0, None], pa.int64()),
+            "x0": pa.array([4.0, -0.0, 1.5]),
+            "x1": pa.array([2.0, float("nan"), 9.0]),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == 3
+    bounded = FeatureUnion(
+        [("id", FunctionTransformer()), ("exp", FunctionTransformer(np.exp))]
+    )
+    with pytest.raises(
+        NotNative, match="part 'exp': FunctionTransformer is within 1 ulps"
+    ):
+        to_native(_numeric(bounded), strict=True)
