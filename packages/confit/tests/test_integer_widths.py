@@ -828,9 +828,10 @@ def test_a_left_miss_on_a_double_probe_key_is_still_null():
 #
 #   float32 static, s.v * 3.0   duck 0.30000001192092896 FLOAT
 #                               ours 0.30000000447034836 DOUBLE
-#   uint64  static, s.v         duck 7 UINT64   ours 7 INT64
 #
-# The ROW path and the static catalogue refuse both for exactly this reason.
+# The ROW path and the static catalogue refuse it for exactly this reason.
+# (uint64 once widened to INT64 the same way; it is UBIGINT on the i128 lane
+# now, tests/test_hugeint.py.)
 _STATIC_ROW = pa.schema([pa.field("k", pa.int64(), nullable=False)])
 
 
@@ -847,8 +848,9 @@ def _static_fn(arrow_ty, val, expr="s.v"):
     ("arrow_ty", "val"),
     [
         (pa.float32(), 0.1),
-        # uint8/16/32 serve (tests/test_unsigned.py); uint64 needs i128.
-        (pa.uint64(), 7),
+        # Every unsigned width serves (tests/test_unsigned.py and
+        # tests/test_hugeint.py); halffloat is past the engine too.
+        (pa.float16(), 0.5),
     ],
 )
 def test_unserved_static_type_refuses_by_name(arrow_ty, val):

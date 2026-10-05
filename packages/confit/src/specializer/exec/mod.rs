@@ -7,6 +7,7 @@
 
 pub mod casemap;
 pub mod cranelift;
+pub mod hugeint;
 pub mod interp;
 pub mod kernels;
 pub mod size;
@@ -74,6 +75,11 @@ pub enum ColData {
         valid: Vec<bool>,
         data: Vec<i128>,
     },
+    /// The i128 integer lane: HUGEINT, and UBIGINT as its narrow width.
+    I128 {
+        valid: Vec<bool>,
+        data: Vec<i128>,
+    },
 }
 
 impl ColData {
@@ -103,6 +109,10 @@ impl ColData {
                 valid: Vec::new(),
                 data: Vec::new(),
             },
+            Ty::I128 | Ty::U64 => ColData::I128 {
+                valid: Vec::new(),
+                data: Vec::new(),
+            },
         }
     }
 
@@ -126,7 +136,7 @@ impl ColData {
                 buf.clear();
                 spans.clear();
             }
-            ColData::Dec { valid, data, .. } => {
+            ColData::Dec { valid, data, .. } | ColData::I128 { valid, data } => {
                 valid.clear();
                 data.clear();
             }
@@ -173,6 +183,7 @@ impl ColData {
             ColData::F64 { .. } => Ty::F64,
             ColData::Str { .. } => Ty::Str,
             ColData::Dec { p, s, .. } => Ty::Dec(*p, *s),
+            ColData::I128 { .. } => Ty::I128,
         }
     }
 
@@ -182,7 +193,7 @@ impl ColData {
             ColData::I64 { data, .. } => data.len(),
             ColData::F64 { data, .. } => data.len(),
             ColData::Str { spans, .. } => spans.len(),
-            ColData::Dec { data, .. } => data.len(),
+            ColData::Dec { data, .. } | ColData::I128 { data, .. } => data.len(),
         }
     }
 
@@ -303,6 +314,8 @@ pub enum ScalarVal {
     /// checks against the declared value type, and unlike the narrow ints
     /// a Dec's scale does not erase.
     Dec(i128, u8, u8),
+    /// A value of the i128 integer lane (HUGEINT, UBIGINT).
+    I128(i128),
 }
 
 impl ScalarVal {
@@ -313,6 +326,7 @@ impl ScalarVal {
             ScalarVal::F64(_) => Ty::F64,
             ScalarVal::Str(_) => Ty::Str,
             ScalarVal::Dec(_, p, s) => Ty::Dec(*p, *s),
+            ScalarVal::I128(_) => Ty::I128,
         }
     }
 }
@@ -331,6 +345,8 @@ pub enum KeyBits {
     /// A DECIMAL key at the comparison type (p, s): the scaled i128. Every
     /// key of one map shares (p, s), so the derived order is the value's.
     Dec(i128, u8, u8),
+    /// A key of the i128 integer lane.
+    I128(i128),
 }
 
 impl KeyBits {
@@ -341,6 +357,7 @@ impl KeyBits {
             KeyBits::F64(_) => Ty::F64,
             KeyBits::Str(_) => Ty::Str,
             KeyBits::Dec(_, p, s) => Ty::Dec(*p, *s),
+            KeyBits::I128(_) => Ty::I128,
         }
     }
 }
@@ -362,6 +379,7 @@ pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits> {
             Ty::F64 => KeyBits::F64(0f64.to_bits()),
             Ty::Str => KeyBits::Str(String::new()),
             Ty::Dec(p, s) => KeyBits::Dec(0, p, s),
+            Ty::I128 | Ty::U64 => KeyBits::I128(0),
         },
     ]
 }
@@ -377,6 +395,7 @@ pub(crate) fn null_val_payload(ty: Ty) -> ScalarVal {
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
         Ty::Dec(p, s) => ScalarVal::Dec(0, p, s),
+        Ty::I128 | Ty::U64 => ScalarVal::I128(0),
     }
 }
 
@@ -459,8 +478,10 @@ pub enum OutCol {
     I64(Vec<(bool, i64)>),
     F64(Vec<(bool, f64)>),
     Str(Vec<(bool, StrRef)>),
-    /// Scaled i128 payloads. Little-endian i128 IS arrow's decimal128
-    /// layout on this target, so the emit writes the slice straight out.
+    /// i128 payloads: a DECIMAL's scaled integer, or a value of the i128
+    /// integer lane (the column's declared type tells which). Little-endian
+    /// i128 IS arrow's decimal128 layout on this target, so the emit writes
+    /// the slice straight out.
     Dec(Vec<(bool, i128)>),
 }
 
@@ -497,9 +518,10 @@ pub enum RegVal {
     I64(i64),
     F64(f64),
     Str(StrRef),
-    /// A DECIMAL's scaled integer. The (p, s) is static — it lives in the
-    /// program's types, not in the register — so only the payload rides
-    /// here. The enum grows from 24 to 32 bytes; the register frame is
+    /// The i128 register: a DECIMAL's scaled integer, or a value of the
+    /// i128 integer lane (HUGEINT / UBIGINT). The type is static — the
+    /// (p, s) or the integer width lives in the program's types, not in the
+    /// register — so only the payload rides here. The enum grows from 24 to 32 bytes; the register frame is
     /// per-CALL and tens of slots wide, so this is noise.
     Dec(i128),
 }

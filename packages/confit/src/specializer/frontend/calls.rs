@@ -21,9 +21,60 @@ thread_local! {
 pub(super) struct Installed(Rc<Vec<(String, SqlExpr)>>);
 
 impl Installed {
-    pub(super) fn new(calls: Vec<(String, SqlExpr)>) -> Self {
+    pub(super) fn new(mut calls: Vec<(String, SqlExpr)>) -> Self {
+        split_case_arms(&mut calls);
         let prev = CALLS.with(|c| c.replace(Rc::new(calls)));
         Installed(prev)
+    }
+}
+
+/// A call whose expansion is a CASE over struct_packs (a `null_when` wraps
+/// the body as `CASE WHEN c THEN NULL ELSE struct_pack(...) END`): each
+/// struct_pack arm becomes a call of its own, `__cf_call(arm)`, so a field
+/// read over the CASE reads each arm through [`Binder::call_field`] and its
+/// sibling cache instead of re-binding every field per read.
+fn split_case_arms(calls: &mut Vec<(String, SqlExpr)>) {
+    for id in 0..calls.len() {
+        let next = calls.len();
+        let mut body = &mut calls[id].1;
+        while let SqlExpr::Nested(i) = body {
+            body = i;
+        }
+        let SqlExpr::Case {
+            conditions,
+            else_result,
+            ..
+        } = body
+        else {
+            continue;
+        };
+        let mut arms: Vec<&mut SqlExpr> = conditions.iter_mut().map(|w| &mut w.result).collect();
+        if let Some(e) = else_result {
+            arms.push(e);
+        }
+        let mut split = Vec::new();
+        for arm in arms {
+            let mut inner: &SqlExpr = arm;
+            while let SqlExpr::Nested(i) = inner {
+                inner = i;
+            }
+            let SqlExpr::Function(f) = inner else {
+                continue;
+            };
+            if !(f.name.0.len() == 1 && f.name.to_string().eq_ignore_ascii_case("struct_pack")) {
+                continue;
+            }
+            let sub = next + split.len();
+            let Ok(marker) = Parser::new(&GenericDialect {})
+                .try_with_sql(&format!("{}({sub})", macros::CALL_MARKER))
+                .and_then(|mut p| p.parse_expr())
+            else {
+                continue;
+            };
+            split.push(std::mem::replace(arm, marker));
+        }
+        let name = calls[id].0.clone();
+        calls.extend(split.into_iter().map(|a| (name.clone(), a)));
     }
 }
 
@@ -76,6 +127,22 @@ pub(super) fn marker_args(f: &sqlparser::ast::Function) -> Vec<SqlExpr> {
         .collect()
 }
 
+/// The marker `base` (with its arguments) standing for call `id` instead.
+fn with_id(base: &SqlExpr, id: usize) -> SqlExpr {
+    let mut out = base.clone();
+    if let SqlExpr::Function(f) = &mut out {
+        if let sqlparser::ast::FunctionArguments::List(list) = &mut f.args {
+            if let Some(sqlparser::ast::FunctionArg::Unnamed(
+                sqlparser::ast::FunctionArgExpr::Expr(SqlExpr::Value(v)),
+            )) = list.args.first_mut()
+            {
+                v.value = SqlValue::Number(id.to_string(), false);
+            }
+        }
+    }
+    out
+}
+
 /// What a read's siblings bind to depends on the scope it binds in; the
 /// cache is keyed by this as well as the call.
 pub(super) type ScopeKey = (usize, usize, usize, u32, bool, usize);
@@ -85,11 +152,50 @@ pub(super) type ScopeKey = (usize, usize, usize, u32, bool, usize);
 pub(super) type Siblings = Rc<Vec<(usize, SExpr)>>;
 
 impl Binder<'_> {
-    fn scope_key(&self, id: usize) -> ScopeKey {
+    fn scope_key(&self, id: usize, marker: &SqlExpr) -> ScopeKey {
+        // A lateral alias bound since the last read changes what the call
+        // binds to only when the call's ARGUMENTS name it (the body names
+        // only its parameters); counting every alias would miss the cache
+        // on each projection item (n reads, n^2 binds). The words come from
+        // the marker, which carries the arguments, not from the expansion,
+        // whose struct field names are often the output aliases
+        // (`f(x)."f0" AS "f0"`).
+        let args = match marker {
+            SqlExpr::Function(f) => marker_args(f),
+            _ => Vec::new(),
+        };
+        let words = if args.is_empty() {
+            Rc::default()
+        } else {
+            self.call_words
+                .borrow_mut()
+                .entry(id)
+                .or_insert_with(|| {
+                    Rc::new(
+                        args.iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .filter(|w| !w.is_empty())
+                            .map(str::to_ascii_lowercase)
+                            .collect(),
+                    )
+                })
+                .clone()
+        };
+        // A marker without arguments (a split CASE arm bound bare) counts
+        // every alias.
+        let aliases = self
+            .bound_aliases
+            .borrow()
+            .iter()
+            .filter(|(a, _)| words.is_empty() || words.contains(&a.to_ascii_lowercase()))
+            .count();
         (
             id,
             self.joins.len(),
-            self.bound_aliases.borrow().len(),
+            aliases,
             self.in_guarded.get(),
             self.classify_keys.get(),
             self.beside.borrow().len(),
@@ -120,6 +226,31 @@ impl Binder<'_> {
         while let SqlExpr::Nested(i) = body {
             body = i;
         }
+        if let SqlExpr::Case { .. } = body {
+            // Its struct_pack arms were split into calls of their own
+            // (`split_case_arms`): each arm reads as that call, spelled with
+            // this call's arguments, so it shares their scope key.
+            let mut case = body.clone();
+            if let SqlExpr::Case {
+                conditions,
+                else_result,
+                ..
+            } = &mut case
+            {
+                let arms = conditions
+                    .iter_mut()
+                    .map(|w| &mut w.result)
+                    .chain(else_result.iter_mut().map(|e| &mut **e));
+                for arm in arms {
+                    if let Some((sub, _)) = marker_call(arm) {
+                        *arm = with_id(base, sub);
+                    }
+                }
+            }
+            return self
+                .expr_or_null(&structs::case_field(&case, access_chain))
+                .map(Some);
+        }
         let SqlExpr::Function(f) = body else {
             // Not a struct_pack: read it as written.
             let read = SqlExpr::CompoundFieldAccess {
@@ -146,7 +277,7 @@ impl Binder<'_> {
         if values.len() == 1 {
             return self.expr_or_null(&picked).map(Some);
         }
-        let key = self.scope_key(id);
+        let key = self.scope_key(id, base);
         let cached = self.call_siblings.borrow().get(&key).cloned();
         let siblings: Siblings = match cached {
             Some(s) => s,

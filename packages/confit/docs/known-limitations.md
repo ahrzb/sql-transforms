@@ -11,7 +11,7 @@ the ones still without one.
 **The contract.** For any SQL you hand it, the engine does exactly one of:
 
 1. **Serve it bit-for-bit identical to DuckDB** (verified continuously
-   against DuckDB's own test corpus: 539 of 678 statements as of 2026-09-26,
+   against DuckDB's own test corpus: 542 of 678 statements as of 2026-10-05,
    recorded in [`reports/corpus-counts.json`](reports/corpus-counts.json)), or
 2. **Refuse loudly at BUILD time** — `DuckDBInferFn(...)` raises a
    `ValueError` naming the construct. Nothing is ever silently wrong or
@@ -120,16 +120,18 @@ query on DuckDB. The ruling is
 
 ## 3. Type-system boundaries
 
-The engine computes in exactly four types: `i64`, `f64`, UTF-8 string,
-bool. Measured consequences:
+The engine computes in exactly five types: `i64`, `i128` (DECIMAL's scaled
+integer, HUGEINT and UBIGINT), `f64`, UTF-8 string, bool. Measured
+consequences:
 
 - **f32 base tables reject** (`engine is f64-only`).
 - **A static column is served at its declared arrow type or refused by
   name** — never widened into a neighbouring lane, on the static and row
   paths alike. Widening diverges: `float32` in value AND type (`s.v * 3.0`
   over `0.1` is `0.30000001192092896`/FLOAT on DuckDB, `0.30000000447034836`/DOUBLE
-  in f64), unsigned in type (`uint64` stays UINT64 in DuckDB). The two
-  exceptions that are served are measured equivalent, not convenient:
+  in f64). Every unsigned width has a lane of its own (`uint64` is UBIGINT
+  on the i128 lane). The two exceptions that are served are measured
+  equivalent, not convenient:
   `large_string`/`utf8` (DuckDB normalises them to VARCHAR) and the
   decimal tiers (below).
 - **DECIMAL columns, row and static, serve EXACTLY**: the payload is
@@ -190,13 +192,23 @@ bool. Measured consequences:
   same lane (columns, statics and CAST targets, with DuckDB's own operator
   and unification lattices; `tests/test_unsigned.py`); unary minus over
   one (DuckDB wraps it), a shift, and a CAST from DOUBLE to one (DuckDB
-  range-checks before rounding) refuse by name. HUGEINT, UBIGINT and
-  UHUGEINT are not served — they refuse by name rather than collapse to
-  i64 (see the static-column entry above). The same holds for CAST
-  targets: only TINYINT, SMALLINT, INTEGER, BIGINT, the three unsigned
-  widths, DOUBLE, VARCHAR and BOOLEAN (and DuckDB's aliases for them) are
-  served; every other target — HUGEINT, UBIGINT, UHUGEINT, FLOAT/REAL,
-  INTERVAL, dates — refuses with `CAST target type <T>`.
+  range-checks before rounding) refuse by name.
+- **HUGEINT and UBIGINT compute on an i128 lane** (`tests/test_hugeint.py`),
+  as UTINYINT..UINTEGER do on the i64 one: checked i128 arithmetic, UBIGINT
+  range-checked to `[0, 2^64)`, DuckDB's operator and family lattices
+  (`u64 + i64` is HUGEINT, `u64 + 1` UBIGINT), its literal typing
+  (9223372036854775808 is HUGEINT), its string parser and its
+  HUGEINT->DOUBLE conversion (two roundings). HUGEINT leaves as
+  `decimal128(38, 0)`, as DuckDB exports it, past 38 digits too; UBIGINT as
+  `uint64`. No arrow input type reads as HUGEINT. Refused by name: unary
+  minus over UBIGINT (DuckDB wraps it), shifts over either width,
+  `round`/`trunc` with digits over either, a string literal in an
+  `IN`/`BETWEEN` beside either, and UHUGEINT (a literal past
+  HUGEINT, a CAST target), which does not survive the Arrow trip. CAST
+  targets: TINYINT through HUGEINT, every unsigned width but UHUGEINT,
+  DOUBLE, DECIMAL, VARCHAR and BOOLEAN (and DuckDB's aliases for them) are
+  served; every other target — UHUGEINT, FLOAT/REAL, INTERVAL, dates —
+  refuses with `CAST target type <T>`.
 
 ## 4. Semantics descoped after measurement
 

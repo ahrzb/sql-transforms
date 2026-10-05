@@ -279,6 +279,7 @@ pub fn ingest<'py>(
                 | (Ty::U8, "uint8")
                 | (Ty::U16, "uint16")
                 | (Ty::U32, "uint32")
+                | (Ty::U64, "uint64")
                 | (Ty::F64, "double")
                 | (Ty::I1, "bool")
                 | (Ty::Str, "string")
@@ -404,6 +405,20 @@ pub fn ingest<'py>(
                     });
                 }
                 ColData::Dec { p, s, valid, data }
+            }
+            // UBIGINT widens into the i128 lane. No arrow type reads as
+            // HUGEINT (decimal128(38, 0) is a DECIMAL), so the check above
+            // has already refused one.
+            Ty::U64 | Ty::I128 => {
+                let mut valid = Vec::with_capacity(rows);
+                let mut data = Vec::with_capacity(rows);
+                for i in 0..rows {
+                    let v = valid_at(i);
+                    null_seen |= !v;
+                    valid.push(v);
+                    data.push(if v { unsafe { raw.data::<u64>(1).get(i) as i128 } } else { 0 });
+                }
+                ColData::I128 { valid, data }
             }
         };
         if null_seen && !ct.nullable {
@@ -628,6 +643,12 @@ fn pa_ty<'py>(pa: &Bound<'py, PyModule>, t: Ty) -> PyResult<Bound<'py, PyAny>> {
         // int16/int32/int64/int128 storage under the default
         // ArrowFormatVersion::V1_0 (arrow_converter.cpp:236-262).
         Ty::Dec(p, s) => pa.call_method1("decimal128", (p, s)),
+        // DuckDB exports HUGEINT as decimal128(38, 0) whatever the value,
+        // past 38 digits too (measured: 2^127 - 1 comes back as a 39-digit
+        // Decimal), and UBIGINT as uint64. Such an array fails pyarrow's
+        // `validate(full=True)`, on DuckDB's export and here alike.
+        Ty::I128 => pa.call_method1("decimal128", (38, 0)),
+        Ty::U64 => pa.call_method0("uint64"),
     }
 }
 
@@ -724,6 +745,9 @@ pub fn emit(
                     // A struct_pack field can be a DECIMAL expression; a UDF
                     // return never is.
                     crate::specializer::ir::Ty::Dec(p, s) => pa.call_method1("decimal128", (p, s)),
+                    t @ (crate::specializer::ir::Ty::I128 | crate::specializer::ir::Ty::U64) => {
+                        pa_ty(&pa, t)
+                    }
                 };
                 // Unnamed extern: list<elem>; named extern: struct keyed by
                 // the declared names, matching DuckDB's output.
@@ -760,6 +784,32 @@ pub fn emit(
                 }
                 let vals = PyList::new(py, values)?;
                 let kw = pyo3::types::PyDict::new(py);
+                // A HUGEINT child past 38 digits leaves as DuckDB exports
+                // it: the raw i128 in a decimal128(38,0), which pa.array
+                // refuses to build from a Decimal. Build at decimal256(39,0)
+                // and cast down unchecked, keeping the raw value.
+                if child_tys.contains(&crate::specializer::ir::Ty::I128) {
+                    let wide = |t: crate::specializer::ir::Ty| match t {
+                        crate::specializer::ir::Ty::I128 => pa.call_method1("decimal256", (39, 0)),
+                        t => lane_ty(t),
+                    };
+                    let wide_ty = if field_names.is_empty() {
+                        pa.call_method1("list_", (wide(child_tys[0])?,))?
+                    } else {
+                        let members = field_names
+                            .iter()
+                            .zip(&child_tys)
+                            .map(|(fname, t)| pa.call_method1("field", (fname.as_str(), wide(*t)?)))
+                            .collect::<PyResult<Vec<_>>>()?;
+                        pa.call_method1("struct", (PyList::new(py, members)?,))?
+                    };
+                    kw.set_item("type", wide_ty)?;
+                    let built = pa.call_method("array", (vals,), Some(&kw))?;
+                    let cast_kw = pyo3::types::PyDict::new(py);
+                    cast_kw.set_item("safe", false)?;
+                    arrays.push(built.call_method("cast", (out_ty,), Some(&cast_kw))?);
+                    continue;
+                }
                 kw.set_item("type", out_ty)?;
                 arrays.push(pa.call_method("array", (vals,), Some(&kw))?);
                 continue;
@@ -863,6 +913,19 @@ pub fn emit(
                 // x86-64 little-endian i128 IS arrow's decimal128 layout,
                 // so the payload slice goes straight into the buffer — the
                 // same `cast_bytes` shape the i64 lane uses.
+                // UBIGINT computes in the i128 lane and emits as uint64; the
+                // lowering's range trap already proved every value fits.
+                OutCol::Dec(v) if c.ty.ty == Ty::U64 => {
+                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                    let data: Vec<u64> = v.iter().map(|(_, x)| *x as u64).collect();
+                    (
+                        pa_ty(&pa, Ty::U64)?,
+                        vb,
+                        vec![py_buffer
+                            .call1((PyBytes::new(py, &cast_bytes(&data, 8)),))?
+                            .unbind()],
+                    )
+                }
                 OutCol::Dec(v) => {
                     let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
                     let data: Vec<i128> = v.iter().map(|(_, x)| *x).collect();

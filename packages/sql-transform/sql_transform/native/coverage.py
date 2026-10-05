@@ -3,8 +3,9 @@
     uv run python -m sql_transform.native.coverage --write
 
 regenerates the table in docs/native/coverage.md; `coverage_test.py` fails
-while the file is stale. Every transformer sklearn lists is in exactly one
-row: native (in the catalog, with its bound), composition (served by
+while the file is stale (`--modules` prints the counts per sklearn module,
+for the milestone reports). Every transformer sklearn lists is in exactly
+one row: native (in the catalog, with its bound), composition (served by
 composing entries, not an entry of its own), out of scope (with the reason,
 from docs/native/goal.md "Scope"), or not yet.
 """
@@ -79,6 +80,30 @@ def table() -> str:
     return "\n".join(lines)
 
 
+STATUSES = ("native", "not yet", "composition", "out of scope")
+
+
+def modules() -> str:
+    """The same rows counted per sklearn module, for the milestone reports
+    (docs/native/reports.md, "Scoreboard")."""
+    status = {n: s for n, s, _ in rows()}
+    counts: dict[str, dict[str, int]] = {}
+    for name, cls in all_estimators(type_filter="transformer"):
+        module = "sklearn." + cls.__module__.split(".")[1]
+        counts.setdefault(module, dict.fromkeys(STATUSES, 0))[status[name]] += 1
+    total = {s: sum(c[s] for c in counts.values()) for s in STATUSES}
+    lines = [
+        "| module | " + " | ".join(STATUSES) + " |",
+        "|---|" + "---|" * len(STATUSES),
+        *(
+            f"| `{m}` | " + " | ".join(str(c[s]) for s in STATUSES) + " |"
+            for m, c in sorted(counts.items())
+        ),
+        "| **total** | " + " | ".join(f"**{total[s]}**" for s in STATUSES) + " |",
+    ]
+    return "\n".join(lines)
+
+
 def block(text: str) -> str:
     return text[text.index(BEGIN) : text.index(END) + len(END)]
 
@@ -93,7 +118,13 @@ if __name__ == "__main__":
     p.add_argument(
         "--write", action="store_true", help="regenerate docs/native/coverage.md"
     )
-    if p.parse_args().write:
+    p.add_argument(
+        "--modules", action="store_true", help="print the counts per sklearn module"
+    )
+    a = p.parse_args()
+    if a.write:
         write()
+    elif a.modules:
+        print(modules())
     else:
         print(table())

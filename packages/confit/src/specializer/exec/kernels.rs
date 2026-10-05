@@ -41,7 +41,7 @@ const DOUBLE_POWERS_OF_TEN: [f64; 39] = [
 /// hugeint.cpp:649-661. TWO roundings (the halves convert separately), not
 /// Rust's correctly-rounded `as f64`, so it is spelled out rather than
 /// simplified.
-fn hugeint_to_f64(v: i128) -> f64 {
+pub(crate) fn hugeint_to_f64(v: i128) -> f64 {
     let lower = v as u128 as u64;
     let upper = ((v as u128) >> 64) as u64 as i64;
     if upper == -1 {
@@ -200,6 +200,8 @@ fn int_phys_name(t: Ty) -> &'static str {
         Ty::U8 => "UINT8",
         Ty::U16 => "UINT16",
         Ty::U32 => "UINT32",
+        Ty::U64 => "UINT64",
+        Ty::I128 => "INT128",
         _ => "INT64",
     }
 }
@@ -218,9 +220,23 @@ fn int_phys_name(t: Ty) -> &'static str {
 ///   `CanScaleDownDecimal` (decimal_cast.cpp:100-185), half away from zero.
 /// - Dec -> integer: `TryCastDecimalToNumeric` (cast_operators.cpp:2568-2583),
 ///   half away from zero, then the target's range.
+/// - integer -> integer across the two lanes (`TryCastWithOverflowCheck`,
+///   numeric_cast.hpp): the target's range.
 pub fn dec_cast(v: i128, from: Ty, to: Ty) -> Result<i128, String> {
     match (from, to) {
-        (f, Ty::Dec(tp, ts)) if f.is_int() => {
+        (f, t) if f.is_integer() && t.is_integer() => {
+            let (lo, hi) = t.int_range128().expect("an integer width");
+            if v < lo || v > hi {
+                return Err(format!(
+                    "Type {} with value {v} can't be cast because the value is out of range \
+                     for the destination type {}",
+                    int_phys_name(f),
+                    int_phys_name(t)
+                ));
+            }
+            Ok(v)
+        }
+        (f, Ty::Dec(tp, ts)) if f.is_integer() => {
             let lim = dpow10(tp - ts);
             if v >= lim || v <= -lim {
                 return Err(format!("Could not cast value {v} to DECIMAL({tp},{ts})"));
@@ -267,12 +283,12 @@ pub fn dec_cast(v: i128, from: Ty, to: Ty) -> Result<i128, String> {
                 Ok(x / 2)
             }
         }
-        (Ty::Dec(_, ss), t) if t.is_int() => {
+        (Ty::Dec(_, ss), t) if t.is_integer() => {
             let power = dpow10(ss);
             let rounding = if v < 0 { -power } else { power } / 2;
             let r = (v + rounding) / power;
-            let (lo, hi) = t.int_range().unwrap_or((i64::MIN, i64::MAX));
-            if r < lo as i128 || r > hi as i128 {
+            let (lo, hi) = t.int_range128().expect("an integer width");
+            if r < lo || r > hi {
                 return Err(format!(
                     "Failed to cast decimal value {r} to type {}",
                     int_phys_name(t)
@@ -301,8 +317,9 @@ pub(super) fn call_extern(
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
         // A UDF taking or returning a DECIMAL refuses at bind, so no Dec
-        // ever reaches an extern boundary.
+        // ever reaches an extern boundary; nor does the i128 lane.
         Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
+        Ty::I128 | Ty::U64 => ScalarVal::I128(0),
     };
     match (imp.fun)(args).map_err(Trap)? {
         // Whole-call NULL: every component flag false.
@@ -629,7 +646,7 @@ pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
         NumOp1::Ffloor => duck_floor,
         NumOp1::Fceil => duck_ceil,
         NumOp1::Ftrunc => duck_trunc,
-        NumOp1::Iabs | NumOp1::Fabs | NumOp1::Fneg | NumOp1::Fround => {
+        NumOp1::Iabs | NumOp1::Habs | NumOp1::Fabs | NumOp1::Fneg | NumOp1::Fround => {
             unreachable!("legacy unaries keep dedicated arms")
         }
     }
@@ -1385,24 +1402,94 @@ pub(crate) fn duck_stof(s: &str) -> Option<f64> {
     s.trim_ascii().parse::<f64>().ok()
 }
 
-pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
-    // StringUtil::CharacterIsSpace -- includes \v, which Rust's
-    // is_ascii_whitespace deliberately does not.
-    fn is_space(c: u8) -> bool {
-        matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+/// StringUtil::CharacterIsSpace -- includes \v, which Rust's
+/// is_ascii_whitespace deliberately does not.
+pub(crate) fn duck_is_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+/// The exponent of an integer parse: IntegerCastLoop with the SIMPLE
+/// operation at StoreType = int16: digits and underscores, trailing spaces,
+/// a barren trailing '.', and nothing else.
+pub(crate) fn duck_exp_loop(b: &[u8]) -> Option<i16> {
+    let neg = b[0] == b'-';
+    let start = if neg || b[0] == b'+' { 1 } else { 0 };
+    let mut pos = start;
+    let mut result: i16 = 0;
+    while pos < b.len() {
+        let c = b[pos];
+        if !c.is_ascii_digit() {
+            if c == b'.' {
+                let number_before_period = pos > start;
+                pos += 1;
+                if pos < b.len() && b[pos].is_ascii_digit() {
+                    return None; // HandleDecimal refuses on the simple op
+                }
+                if !number_before_period {
+                    return None;
+                }
+                if pos >= b.len() {
+                    break;
+                }
+            }
+            if duck_is_space(b[pos]) {
+                pos += 1;
+                while pos < b.len() {
+                    if !duck_is_space(b[pos]) {
+                        return None;
+                    }
+                    pos += 1;
+                }
+                break;
+            }
+            return None;
+        }
+        let d = (c - b'0') as i16;
+        if neg {
+            if result < (i16::MIN + d) / 10 {
+                return None;
+            }
+            result = result * 10 - d;
+        } else {
+            if result > (i16::MAX - d) / 10 {
+                return None;
+            }
+            result = result * 10 + d;
+        }
+        pos += 1;
+        if pos != b.len() && b[pos] == b'_' {
+            pos += 1;
+            if pos == b.len() || !b[pos].is_ascii_digit() {
+                return None;
+            }
+        }
     }
+    if pos <= start {
+        return None;
+    }
+    Some(result)
+}
+
+
+/// One `TrySimpleIntegerCast` per DuckDB StoreType: `duck_stoi` at
+/// int64 (the signed widths, and the narrow unsigned ones after their sign
+/// check), `duck_stou64` at uint64 (UBIGINT: `IntegerCastData<uint64_t>`
+/// and `IntegerDecimalCastData<uint64_t>`, whose wraps happen at u64).
+macro_rules! int_parser {
+    ($name:ident, $t:ty, $digits:expr) => {
+pub(crate) fn $name(s: &str) -> Option<$t> {
 
     // IntegerCastOperation::HandleDigit at StoreType = int64: NEGATIVE
-    // accumulates downward so i64::MIN parses without a magnitude detour.
-    fn handle_digit(result: &mut i64, digit: u8, neg: bool) -> Option<()> {
-        let d = digit as i64;
+    // accumulates downward so $t::MIN parses without a magnitude detour.
+    fn handle_digit(result: &mut $t, digit: u8, neg: bool) -> Option<()> {
+        let d = digit as $t;
         if neg {
-            if *result < (i64::MIN + d) / 10 {
+            if *result < (<$t>::MIN + d) / 10 {
                 return None;
             }
             *result = *result * 10 - d;
         } else {
-            if *result > (i64::MAX - d) / 10 {
+            if *result > (<$t>::MAX - d) / 10 {
                 return None;
             }
             *result = *result * 10 + d;
@@ -1411,8 +1498,8 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
     }
 
     // IntegerDecimalCastOperation::Finalize, minus the width narrowing the
-    // caller owns; the +-1 is checked so a round off i64's edge refuses.
-    fn finalize(mut result: i64, mut decimal: i64, mut digits: u16, neg: bool) -> Option<i64> {
+    // caller owns; the +-1 is checked so a round off $t's edge refuses.
+    fn finalize(mut result: $t, mut decimal: $t, mut digits: u16, neg: bool) -> Option<$t> {
         while decimal > 10 {
             decimal /= 10;
             digits = digits.wrapping_sub(1);
@@ -1428,9 +1515,9 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
     }
 
     // IntegerDecimalCastOperation::HandleExponent, wrap-for-wrap: `power`
-    // wraps i64 exactly where the C++ does (19 kept fraction digits against
+    // wraps $t exactly where the C++ does (19 kept fraction digits against
     // a smaller exponent), and the observed x86 behavior is the contract.
-    fn handle_exponent(mut result: i64, mut decimal: i64, digits: u16, exponent: i16, neg: bool) -> Option<i64> {
+    fn handle_exponent(mut result: $t, mut decimal: $t, digits: u16, exponent: i16, neg: bool) -> Option<$t> {
         let mut e = exponent as i32;
         if e < 0 {
             // the parsed fraction is DISCARDED; the digit shifted out of the
@@ -1443,8 +1530,9 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
                     break;
                 }
             }
+            #[allow(unused_comparisons)]
             if decimal < 0 {
-                decimal = -decimal;
+                decimal = (0 as $t).wrapping_sub(decimal);
             }
             return finalize(result, decimal, 1, neg);
         }
@@ -1456,10 +1544,10 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
             return finalize(result, decimal, digits, neg);
         }
         let mut e2 = exponent as i32 - digits as i32;
-        let mut remainder: i64 = 0;
+        let mut remainder: $t = 0;
         if e2 < 0 {
-            if -e2 <= 19 {
-                let mut power: i64 = 1;
+            if -e2 <= $digits {
+                let mut power: $t = 1;
                 while e2 < 0 {
                     e2 += 1;
                     power = power.wrapping_mul(10);
@@ -1484,74 +1572,12 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
         finalize(result, remainder, digits, neg)
     }
 
-    // the exponent reuses IntegerCastLoop with the SIMPLE operation at
-    // StoreType = int16: digits and underscores, trailing spaces, a barren
-    // trailing '.', and nothing else.
-    fn exp_loop(b: &[u8]) -> Option<i16> {
-        let neg = b[0] == b'-';
-        let start = if neg || b[0] == b'+' { 1 } else { 0 };
-        let mut pos = start;
-        let mut result: i16 = 0;
-        while pos < b.len() {
-            let c = b[pos];
-            if !c.is_ascii_digit() {
-                if c == b'.' {
-                    let number_before_period = pos > start;
-                    pos += 1;
-                    if pos < b.len() && b[pos].is_ascii_digit() {
-                        return None; // HandleDecimal refuses on the simple op
-                    }
-                    if !number_before_period {
-                        return None;
-                    }
-                    if pos >= b.len() {
-                        break;
-                    }
-                }
-                if is_space(b[pos]) {
-                    pos += 1;
-                    while pos < b.len() {
-                        if !is_space(b[pos]) {
-                            return None;
-                        }
-                        pos += 1;
-                    }
-                    break;
-                }
-                return None;
-            }
-            let d = (c - b'0') as i16;
-            if neg {
-                if result < (i16::MIN + d) / 10 {
-                    return None;
-                }
-                result = result * 10 - d;
-            } else {
-                if result > (i16::MAX - d) / 10 {
-                    return None;
-                }
-                result = result * 10 + d;
-            }
-            pos += 1;
-            if pos != b.len() && b[pos] == b'_' {
-                pos += 1;
-                if pos == b.len() || !b[pos].is_ascii_digit() {
-                    return None;
-                }
-            }
-        }
-        if pos <= start {
-            return None;
-        }
-        Some(result)
-    }
-
     // IntegerCastLoop over the decimal grammar, StoreType = int64.
-    fn cast_loop(b: &[u8], neg: bool) -> Option<i64> {
+    fn cast_loop(b: &[u8], neg: bool) -> Option<$t> {
         let start_pos = if neg || b[0] == b'+' { 1 } else { 0 };
         let mut pos = start_pos;
-        let mut result: i64 = 0;
-        let mut decimal: i64 = 0;
+        let mut result: $t = 0;
+        let mut decimal: $t = 0;
         let mut decimal_digits: u16 = 0;
         while pos < b.len() {
             let c = b[pos];
@@ -1561,9 +1587,9 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
                     pos += 1;
                     let start_digit = pos;
                     while pos < b.len() && b[pos].is_ascii_digit() {
-                        // HandleDecimal: past i64 capacity the digits DROP
-                        let d = (b[pos] - b'0') as i64;
-                        if decimal <= (i64::MAX - d) / 10 {
+                        // HandleDecimal: past $t capacity the digits DROP
+                        let d = (b[pos] - b'0') as $t;
+                        if decimal <= (<$t>::MAX - d) / 10 {
                             decimal_digits += 1;
                             decimal = decimal * 10 + d;
                         }
@@ -1582,10 +1608,10 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
                         break;
                     }
                 }
-                if is_space(b[pos]) {
+                if duck_is_space(b[pos]) {
                     pos += 1;
                     while pos < b.len() {
-                        if !is_space(b[pos]) {
+                        if !duck_is_space(b[pos]) {
                             return None;
                         }
                         pos += 1;
@@ -1600,7 +1626,7 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
                     if pos >= b.len() {
                         return None;
                     }
-                    let exp = exp_loop(&b[pos..])?;
+                    let exp = duck_exp_loop(&b[pos..])?;
                     return handle_exponent(result, decimal, decimal_digits, exp, neg);
                 }
                 return None;
@@ -1622,11 +1648,11 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
 
     // Integer{Hex,Binary}CastLoop: b[0] is the 'x'/'b' marker; digits and
     // underscores only -- no sign reaches here, no trailing anything.
-    fn radix_loop(b: &[u8], radix: u32) -> Option<i64> {
+    fn radix_loop(b: &[u8], radix: u32) -> Option<$t> {
         let mut pos = 1;
-        let mut result: i64 = 0;
+        let mut result: $t = 0;
         while pos < b.len() {
-            let d = (b[pos] as char).to_digit(radix)? as i64;
+            let d = (b[pos] as char).to_digit(radix)? as $t;
             pos += 1;
             if pos != b.len() && b[pos] == b'_' {
                 pos += 1;
@@ -1634,10 +1660,10 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
                     return None;
                 }
             }
-            if result > (i64::MAX - d) / radix as i64 {
+            if result > (<$t>::MAX - d) / radix as $t {
                 return None;
             }
-            result = result * radix as i64 + d;
+            result = result * radix as $t + d;
         }
         if pos <= 1 {
             return None;
@@ -1650,7 +1676,7 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
     // signed '0x' falls into the decimal grammar and refuses at the 'x'.
     let b = s.as_bytes();
     let mut lo = 0;
-    while lo < b.len() && is_space(b[lo]) {
+    while lo < b.len() && duck_is_space(b[lo]) {
         lo += 1;
     }
     let b = &b[lo..];
@@ -1670,6 +1696,11 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
     }
     cast_loop(b, false)
 }
+    };
+}
+
+int_parser!(duck_stoi, i64, 19);
+int_parser!(duck_stou64, u64, 20);
 
 #[cfg(test)]
 mod tests {
