@@ -156,6 +156,14 @@ Configurations a translator declines (`NotNative`), each with its ground:
   yet shown to read the same downstream); passthrough steps only, over a
   string feature (the step's `float()` raises). A `set_output` container
   between steps is not examined yet.
+- `IsotonicRegression` with float32 thresholds (the twin casts its input
+  to float32), past 8,000 thresholds (about 6 s to build; one CASE tree
+  builds in about 0.7 ms a threshold, 22 s at 20,000), with thresholds
+  further apart than a double spans, or on a platform whose `np.interp`
+  fuses its multiply-add (`quantile.interp_is_numpys`). Where the twin
+  raises (`out_of_bounds="raise"` outside the range, NaN, infinity), the
+  entry answers NaN, or the constant of a one-threshold fit (goal.md,
+  "Tolerated differences").
 - `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
   `np.max` and `np.min` included: on a tie of signed zeros numpy's SIMD
   reduction answers the zero its lane order reaches, neither the first
@@ -171,5 +179,5 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
   `RadiusNeighborsTransformer`, `IterativeImputer`, `RandomTreesEmbedding`,
   `BernoulliRBM`, `NMF`/`MiniBatchNMF`, the dictionary learners,
-  `SparsePCA`, `LatentDirichletAllocation`, `IsotonicRegression`,
+  `SparsePCA`, `LatentDirichletAllocation`,
   `NeighborhoodComponentsAnalysis`. Each needs a design first.
