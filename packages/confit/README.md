@@ -47,34 +47,44 @@ The shape is a build-time proof about output multiplicity, not a runtime check:
 A serving stack that assumes row alignment gets a build-time error rather than a
 silently misaligned batch.
 
-## Fitted models
+## Functions
 
-A fitted tree ensemble is a transform like any other: an object passed in
-`udfs=` and called by its own name with the instance id first. What makes it
-native is one method, `tree_tables()`, returning `(nodes, models,
-compare_grid)` — two Arrow tables (every split and leaf of every tree, and
-one header per model: base, `sum`/`mean`, `identity`/`sigmoid`) plus the
-threshold grid (`"float32"` or `"float64"`). The engine then scores it with
-a native instruction, with no Python on the row path.
+A query calls functions passed in `udfs=`. `confit.functions` names the kinds:
+
+| class | defined by | how the engine serves it |
+|---|---|---|
+| `ExternFunction` | a Python callable | calls it (or folds a call over constants at bind) |
+| `Ensemble(ExternFunction)` | the reference walk of its packed tree tables | scores the tables natively, bit-equal to the walk |
+
+A function's definition is what the DuckDB oracle runs (`f.register(con)`);
+a subclass only adds what the engine may know, never a different meaning.
+How a call is evaluated is the engine's choice, not part of the contract.
 
 ```python
-class Trees:
-    name = "score"
-    takes = pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
-    returns = pa.float64()
-    instances = {0: ..., 1: ...}           # model ids, leading argument
+from confit import ExternFunction, Ensemble
 
-    def tree_tables(self):
-        return nodes, models, "float32"    # pa.Table, pa.Table, grid
+double = ExternFunction("double", pa.schema([("x", pa.float64())]), pa.float64(),
+                        lambda x: None if x is None else (2 * x,))
+
+score = Ensemble("score",
+                 takes=pa.schema([("price", pa.float64()), ("sqft", pa.float64())]),
+                 nodes=nodes, models=models, compare_grid="float32")
 
 fn = DuckDBInferFn(
-    "SELECT score(p.est, t.price, t.sqft) AS p "
+    "SELECT double(t.price) AS p2, score(p.est, t.price, t.sqft) AS s "
     "FROM __THIS__ AS t LEFT JOIN params AS p ON t.country = p.country",
     row_tables={"__THIS__": row_schema},
     static_tables={"params": params},
-    udfs=[Trees()],
+    udfs=[double, score],
 )
 ```
+
+An `Ensemble` takes the model id first. `nodes` holds every split and leaf of
+every tree and `models` one header per model (base, `sum`/`mean`,
+`identity`/`sigmoid`); `compare_grid` is the threshold grid (`"float32"` or
+`"float64"`). The classes spell the structural protocol the engine reads, so
+any object with `name`, `takes`, `returns`, `__call__` (and `instances`,
+`tree_tables()` for a tree model) is accepted too.
 
 Confit knows no ML library. A packer supplies the tables: sql-transform's
 `TreeBasedTransform` packs sklearn's `DecisionTreeRegressor`,
