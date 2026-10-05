@@ -20,6 +20,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.cluster import FeatureAgglomeration
+from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import (
     RFE,
@@ -38,7 +39,7 @@ from sklearn.feature_selection import (
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
     Binarizer,
     FunctionTransformer,
@@ -52,6 +53,7 @@ from sklearn.preprocessing import (
     PowerTransformer,
     QuantileTransformer,
     RobustScaler,
+    SplineTransformer,
     StandardScaler,
     TargetEncoder,
 )
@@ -60,6 +62,9 @@ from threadpoolctl import threadpool_limits
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
     NotNative,
+    ParityError,
+    bound,
+    bound_of,
     catalog,
     check,
     explain_native,
@@ -231,6 +236,88 @@ FIXTURES[QuantileTransformer] = [
 ]
 
 
+def narrow(factory: Callable[[], Any], n: int) -> Callable[[], Any]:
+    """`factory`'s steps take at most `n` features: a translation whose
+    build time grows faster than its width (a family's measured widths
+    are in its module) is checked the same on fewer of them."""
+    factory.max_features = n  # type: ignore[attr-defined]
+    return factory
+
+
+def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
+    """A SplineTransformer given an array of knots, the same for each of
+    however many features its fit sees (the step draws its width)."""
+    base = np.array([-60.0, -2.5, 0.0, 1.0, 37.0, 900.0])
+
+    def make() -> SplineTransformer:
+        est = SplineTransformer(**params)
+
+        def fit(X, y=None):
+            del est.fit  # the class's own again
+            est.knots = np.tile(base[:, None], (1, np.shape(X)[1]))
+            return SplineTransformer.fit(est, X, y)
+
+        est.fit = fit
+        return est
+
+    return make
+
+
+# SplineTransformer: degrees 0 to 4, 2 to 8 knots of each kind, the five
+# extrapolations, both biases and both missing modes (degree 5 is in
+# test_spline_at_the_knots: its expression doubles per degree, and 32
+# features of it build in minutes, spline.py). Constant columns
+# make equal knots (all of them under "uniform", runs under "quantile",
+# where few-valued columns do too, and a zero period under "periodic"); a
+# column only missing makes NaN knots under "quantile". Rows at and beside
+# the knots are in test_spline_at_the_knots. From degree 2 the steps take
+# at most SPLINE_FEATURES features: the entry refuses past an estimated 7 s
+# build per estimator, but a step's instances compound it (1, 2, 3
+# instances of one 25-feature fit: 7.8, 16.7, 33.1 s), and the family's
+# gate share is about 120 s on 4 workers without the limit, 50 s with it.
+SPLINE_FEATURES = 8
+FIXTURES[SplineTransformer] = [
+    SplineTransformer,
+    lambda: SplineTransformer(degree=0, n_knots=2, extrapolation="continue"),
+    lambda: SplineTransformer(degree=0, n_knots=4, extrapolation="linear"),
+    lambda: SplineTransformer(degree=0, n_knots=3, extrapolation="periodic"),
+    lambda: SplineTransformer(
+        degree=1, n_knots=3, extrapolation="linear", include_bias=False
+    ),
+    lambda: SplineTransformer(degree=1, n_knots=2, extrapolation="periodic"),
+    *(
+        narrow(f, SPLINE_FEATURES)
+        for f in [
+            lambda: SplineTransformer(
+                degree=2, n_knots=6, knots="quantile", extrapolation="periodic"
+            ),
+            lambda: SplineTransformer(
+                degree=2,
+                n_knots=4,
+                knots="quantile",
+                extrapolation="constant",
+                order="F",
+            ),
+            lambda: SplineTransformer(degree=3, n_knots=8, extrapolation="error"),
+            lambda: SplineTransformer(
+                degree=3, n_knots=4, extrapolation="continue", handle_missing="error"
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=5, extrapolation="periodic", include_bias=False
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=4, knots="quantile", extrapolation="continue"
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=3, extrapolation="linear", handle_missing="error"
+            ),
+            _spline_with_knots(degree=2, extrapolation="continue"),
+            _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
+        ]
+    ),
+]
+
+
 # IsotonicRegression: one feature (the generator reads its one-d input tag)
 # and a continuous target. `increasing` only shapes the fit; `y_max=-0.0`
 # leaves -0.0 values, where numpy's exact arm at a threshold matters. Ties
@@ -251,7 +338,9 @@ FIXTURES[IsotonicRegression] = [
 
 # FunctionTransformer: the identity validated and not, and each function
 # served, unvalidated (the twin then answers NaN and infinity) and, for a
-# few, validated.
+# few, validated; each bounded function both ways. Each is held to its own
+# bound (`function._BOUNDS`), the rest to 0.
+BOUNDED = [np.exp, np.log, np.log2, np.log10, np.tan]
 FUNCTIONS = [
     np.abs,
     np.fabs,
@@ -268,6 +357,7 @@ FUNCTIONS = [
     np.sign,
     np.sin,
     np.cos,
+    *BOUNDED,
 ]
 FIXTURES[FunctionTransformer] = [
     FunctionTransformer,
@@ -276,6 +366,7 @@ FIXTURES[FunctionTransformer] = [
     lambda: FunctionTransformer(np.sqrt, validate=True),
     lambda: FunctionTransformer(np.rint, validate=True),
     lambda: FunctionTransformer(np.reciprocal, validate=True),
+    *((lambda f=f: FunctionTransformer(f, validate=True)) for f in BOUNDED),
 ]
 
 # Pipeline: compositions across families, a passthrough and a None step, and
@@ -311,6 +402,120 @@ FIXTURES[Pipeline] = [
             ("prep", make_pipeline(SimpleImputer(), StandardScaler())),
             ("poly", PolynomialFeatures(include_bias=False)),
             ("bin", Binarizer()),
+        ]
+    ),
+]
+
+
+# ColumnTransformer and FeatureUnion. Column specs hold at every width the
+# generator draws (1 to 32): callables over the fit matrix, a short slice,
+# a boolean mask; a part whose selection is empty is skipped, as sklearn
+# skips it. An encoder part selects the string columns, beside a numeric
+# part over the rest; the generator reads the tags of the first part
+# (`_runs`), so an encoder or imputer goes first to get strings or holes.
+
+
+def _string_cols(X: np.ndarray) -> list[int]:
+    # A string feature is fitted as str or None; a number as a float.
+    if X.dtype != object:
+        return []
+    return [
+        j
+        for j in range(X.shape[1])
+        if any(v is None or isinstance(v, str) for v in X[:, j])
+    ]
+
+
+def _number_cols(X: np.ndarray) -> list[int]:
+    strings = set(_string_cols(X))
+    return [j for j in range(X.shape[1]) if j not in strings]
+
+
+def _evens(X: np.ndarray) -> list[int]:
+    return list(range(0, X.shape[1], 2))
+
+
+def _odds(X: np.ndarray) -> list[int]:
+    return list(range(1, X.shape[1], 2))
+
+
+def _thirds(X: np.ndarray) -> np.ndarray:
+    return np.arange(X.shape[1]) % 3 == 1
+
+
+def _onehot() -> OneHotEncoder:
+    return OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+
+
+FIXTURES[ColumnTransformer] = [
+    lambda: ColumnTransformer(
+        [("std", StandardScaler(), _evens), ("minmax", MinMaxScaler(), _odds)]
+    ),
+    lambda: ColumnTransformer(
+        [
+            ("first", RobustScaler(), slice(0, 1)),
+            ("mask", Binarizer(threshold=0.5), _thirds),
+            ("maxabs", MaxAbsScaler(clip=True), lambda X: [X.shape[1] - 1]),
+        ],
+        remainder="passthrough",
+    ),
+    lambda: ColumnTransformer(
+        [("std", StandardScaler(), _evens)], remainder=PolynomialFeatures()
+    ),
+    lambda: ColumnTransformer(
+        [("std", StandardScaler(), _evens), ("pass", "passthrough", _odds)],
+        transformer_weights={"std": 0.1},
+    ),
+    lambda: ColumnTransformer(
+        [("enc", _onehot(), _string_cols), ("num", StandardScaler(), _number_cols)]
+    ),
+    lambda: ColumnTransformer(
+        [
+            (
+                "enc",
+                OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+                _string_cols,
+            ),
+            ("num", make_pipeline(SimpleImputer(), StandardScaler()), _number_cols),
+        ],
+        transformer_weights={"enc": -3.0},
+    ),
+    lambda: ColumnTransformer(
+        [
+            ("imp", SimpleImputer(strategy="median", add_indicator=True), _evens),
+            ("maxabs", MaxAbsScaler(), _odds),
+        ],
+        remainder="passthrough",
+    ),
+]
+
+FIXTURES[FeatureUnion] = [
+    lambda: FeatureUnion([("std", StandardScaler()), ("minmax", MinMaxScaler())]),
+    lambda: FeatureUnion(
+        [
+            ("imp", SimpleImputer()),
+            ("ind", MissingIndicator(features="all")),
+            ("std", StandardScaler(with_mean=False)),
+        ]
+    ),
+    lambda: FeatureUnion(
+        [("std", StandardScaler()), ("robust", RobustScaler())],
+        transformer_weights={"robust": 0.3},
+    ),
+    lambda: FeatureUnion(
+        [("minmax", MinMaxScaler()), ("gone", "drop"), ("pass", "passthrough")]
+    ),
+    lambda: FeatureUnion(
+        [
+            ("pipe", make_pipeline(SimpleImputer(), StandardScaler())),
+            ("pass", "passthrough"),
+        ],
+        transformer_weights={"pipe": 2},
+    ),
+    lambda: FeatureUnion(
+        [
+            ("bins", KBinsDiscretizer(n_bins=3, encode="onehot-dense")),
+            ("poly", PolynomialFeatures(include_bias=False)),
         ]
     ),
 ]
@@ -491,19 +696,27 @@ def _step(cls_factory, seed: int, variant: int = 0) -> PythonTransform:
 
 def _runs(est: Any) -> list[Any]:
     """The estimators `transform` runs, in order: `est`, or a pipeline's
-    steps that run, nested ones flattened. A `Pipeline`'s own tags do not
-    say what it takes: sklearn 1.9 copies only `pairwise` (first step) and
-    `sparse` (all steps) from its steps, so `allow_nan` and `categorical`
-    read False. The generator reads its steps' instead."""
-    if not isinstance(est, Pipeline):
+    steps that run, or a column transformer's or union's parts (remainder
+    last), nested ones flattened. A composition's own tags do not say what
+    it takes: sklearn 1.9 copies only `pairwise` (a pipeline's first step)
+    and `sparse` (all steps or parts) from its estimators, so `allow_nan`
+    and `categorical` read False. The generator reads theirs instead."""
+    if isinstance(est, Pipeline):
+        return [r for _, _, s in est._iter() for r in _runs(s)]
+    if isinstance(est, ColumnTransformer):
+        parts = [t for _, t, _ in est.transformers] + [est.remainder]
+    elif isinstance(est, FeatureUnion):
+        parts = [t for _, t in est.transformer_list]
+    else:
         return [est]
-    return [r for _, _, s in est._iter() for r in _runs(s)]
+    return [r for t in parts if not isinstance(t, str) for r in _runs(t)]
 
 
 def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # Mostly narrow; sometimes wide enough for a row reduction's blocks.
     wide = rng.random() < 0.3
     n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
+    n_features = min(n_features, getattr(cls_factory, "max_features", n_features))
     types = [
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
@@ -641,6 +854,30 @@ def test_an_entry_matches_its_twin(cls, j, seed):
 
 
 # ------------------------------------------------------------------ framework
+
+
+def test_a_per_estimator_bound_needs_a_ceiling():
+    from sql_transform.native import translates
+
+    with pytest.raises(ValueError, match="needs a ceiling above 0"):
+        translates(type("_Fake", (), {}), bound=lambda est: 0)
+
+
+def test_a_bound_past_its_ceiling_raises():
+    from sql_transform.native import Entry
+
+    entry = Entry(lambda est, x, types: x, 2, lambda est: 3)
+    assert entry.varies
+    with pytest.raises(ValueError, match="past the class's ceiling of 2"):
+        entry.bound(object())
+
+
+def test_a_class_bound_reads_as_before():
+    from sql_transform.native import Entry
+
+    entry = Entry(lambda est, x, types: x, 4)
+    assert not entry.varies
+    assert entry.bound(object()) == 4
 
 
 def _scaler_step() -> PythonTransform:
@@ -853,12 +1090,14 @@ def test_a_power_transform_without_a_small_bound_stays_python(make, reason):
 
 # Doubles where an elementwise function's spelling can part from numpy's:
 # signed zeros, subnormals, halves (rint), the largest non-integer doubles,
-# infinities, NaN (and NULL, read as NaN), near pi.
+# infinities, NaN (and NULL, read as NaN), near pi, and where exp overflows
+# (past 709.78) and underflows to a subnormal and to 0 (past -745.13).
 SPECIALS = [
     0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308, -1e-310, 0.5, -0.5,
     1.5, -1.5, 2.5, -2.5, 0.49999999999999994, -0.49999999999999994, 1.0, -1.0,
     4503599627370495.5, -4503599627370495.5, 4503599627370497.0, 1e300, -1e300,
     math.inf, -math.inf, math.nan, None, 3.141592653589793, -7.25, 1e-300,
+    709.78, 709.79, 710.0, -740.0, -745.2, -746.0, 1e308, -1.7976931348623157e308,
 ]  # fmt: skip
 
 
@@ -896,12 +1135,12 @@ def _sum_rows(X):
 @pytest.mark.parametrize(
     "est, types, reason",
     [
-        (FunctionTransformer(np.exp), None, r"func=np\.exp\): .*1 ulp"),
-        (FunctionTransformer(np.log), None, r"func=np\.log\): .*1 ulp"),
-        (FunctionTransformer(np.log2), None, r"func=np\.log2\): .*1 ulp"),
-        (FunctionTransformer(np.tan), None, r"func=np\.tan\): .*1 ulp"),
-        (FunctionTransformer(np.log10), None, r"func=np\.log10\): .*2 ulp"),
-        (FunctionTransformer(np.cbrt), None, r"func=np\.cbrt\): .*3 ulp"),
+        (FunctionTransformer(np.cbrt), None, r"func=np\.cbrt\): confit's cbrt is not"),
+        (
+            FunctionTransformer(np.cbrt, validate=True),
+            None,
+            "confit's cbrt is not DuckDB's",
+        ),
         (FunctionTransformer(np.log1p), None, "DuckDB has no log1p"),
         (FunctionTransformer(np.expm1), None, "DuckDB has no expm1"),
         (FunctionTransformer(np.arctan), None, r"func=np\.arctan\): not a function"),
@@ -920,6 +1159,7 @@ def _sum_rows(X):
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
         (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
+        (FunctionTransformer(np.log), [pa.bool_()], "boolean feature"),
     ],
     ids=lambda v: None,
 )
@@ -932,21 +1172,232 @@ def test_a_function_transformer_refuses(est, types, reason):
         to_native(step, strict=True)
 
 
-def test_a_failing_kernel_probe_leaves_sin_python(monkeypatch):
+@pytest.mark.parametrize("func", [np.sin, *BOUNDED], ids=lambda f: f.__name__)
+def test_a_failing_kernel_probe_leaves_the_function_python(monkeypatch, func):
     from sql_transform.native import function
 
     def refuse(*args, **kwargs):
         raise RuntimeError("no engine")
 
     monkeypatch.setattr(function, "DuckDBInferFn", refuse)
-    function.kernel_is_confits.cache_clear()
+    function.kernel_distance.cache_clear()
     try:
-        est = FunctionTransformer(np.sin).fit(np.zeros((2, 1)))
+        est = FunctionTransformer(func).fit(np.zeros((2, 1)))
         step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
-        with pytest.raises(NotNative, match="kernel is not confit's"):
+        with pytest.raises(NotNative, match="the kernel probe did not run"):
             to_native(step, strict=True)
     finally:
-        function.kernel_is_confits.cache_clear()
+        function.kernel_distance.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "func, distance, reason",
+    [
+        (np.sin, 1, "1 ulps from confit's on the probe, past the entry's bound of 0"),
+        (np.exp, 2, "2 ulps from confit's on the probe, past the entry's bound of 1"),
+        (np.log10, 3, "3 ulps .* past the entry's bound of 2"),
+        (np.tan, 1 << 64, "past the entry's bound of 1"),
+    ],
+    ids=lambda v: None,
+)
+def test_a_kernel_past_its_bound_leaves_the_function_python(
+    monkeypatch, func, distance, reason
+):
+    # numpy picks its kernel by CPU: one further from confit's than the
+    # bound measured here is not served.
+    from sql_transform.native import function
+
+    monkeypatch.setattr(function, "kernel_distance", lambda f: distance)
+    est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+
+
+def test_this_platforms_kernels_are_within_their_bounds():
+    from sql_transform.native import function
+
+    for func in function._PROBED:
+        est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+        assert function.kernel_distance(func) <= bound_of(est), func.__name__
+
+
+@pytest.mark.parametrize(
+    "funcs, ulps",
+    [
+        ([None, np.sqrt, np.sin], 0),
+        ([np.exp], 1),
+        ([None, np.log10], 2),
+        ([np.exp, np.log10, np.abs], 2),
+    ],
+    ids=lambda v: None,
+)
+def test_a_step_is_held_to_its_loosest_instance(funcs, ulps):
+    instances = {
+        k: FunctionTransformer(f).fit(np.zeros((2, 1))) for k, f in enumerate(funcs)
+    }
+    step = PythonTransform("tf", instances, pa.schema([("x0", pa.float64())]))
+    assert bound(step) == ulps
+
+
+def test_a_bounded_function_is_held_to_its_bound_not_to_0():
+    # numpy picks its log10 kernel by CPU: on x86-64 with AVX-512 it parts
+    # from DuckDB's (glibc's) on some of these rows, elsewhere it may not.
+    # The check at 0 fails exactly where numpy and the native answer part;
+    # at the function's own bound it passes either way.
+    from confit import DuckDBInferFn
+
+    from sql_transform.native import function
+    from sql_transform.native._registry import query
+
+    est = FunctionTransformer(np.log10).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    x = np.random.default_rng(0).uniform(1e-3, 1e3, 2000)
+    rows = pa.table({"__iid": pa.array([0] * len(x), pa.int64()), "x0": x})
+    native = to_native(step, strict=True)
+    assert function.kernel_distance(np.log10) <= bound_of(est) == 2
+    assert check(step, native, rows) == len(x)
+    served = DuckDBInferFn(
+        query(step),
+        row_tables={"__THIS__": rows.schema},
+        static_tables={},
+        udfs=[native],
+    ).infer_arrow(rows)
+    got = served.column("o").to_numpy()
+    parts = not np.array_equal(np.log10(x).view(np.int64), got.view(np.int64))
+    if parts:
+        with pytest.raises(ParityError, match="bound 0"):
+            check(step, native, rows, ulps=0)
+    else:
+        assert check(step, native, rows, ulps=0) == len(x)
+
+
+# ----------------------------------------------------------- SplineTransformer
+
+
+def _knot_rows(est: SplineTransformer, n_features: int) -> pa.Table:
+    """Rows on every knot of each feature's spline and one double either
+    side, with the fit range's ends, signed zeros, extremes and NaN."""
+    cols = []
+    for j in range(n_features):
+        t = np.asarray(est.bsplines_[j].t, dtype=np.float64)
+        vals = sorted(
+            {
+                float(w)
+                for v in t
+                for w in (np.nextafter(v, -np.inf), v, np.nextafter(v, np.inf))
+            }
+        )
+        cols.append([*vals, 0.0, -0.0, 1e300, -1e300, 5e-324, math.nan])
+    n = max(len(c) for c in cols)
+    table = {"__iid": pa.array([0] * n, pa.int64())}
+    for j, c in enumerate(cols):
+        table[f"x{j}"] = pa.array([c[i % len(c)] for i in range(n)], pa.float64())
+    return pa.table(table)
+
+
+SPLINE_AT_KNOTS = [
+    # Without the bias, one spline per feature leaves no lane: kept there.
+    {
+        "degree": d,
+        "n_knots": m,
+        "extrapolation": e,
+        "knots": kn,
+        "include_bias": b or (m - 1 if e == "periodic" else m + d - 1) == 1,
+    }
+    for d, m in [(0, 2), (0, 5), (1, 2), (1, 4), (2, 3), (3, 5), (3, 8), (5, 6)]
+    for e in ["continue", "error", "periodic", "constant", "linear"]
+    for kn, b in [("uniform", True), ("quantile", False)]
+    if not (e == "periodic" and m <= d)
+    and not (e == "linear" and (d, m) == (0, 2))  # refused, below
+]
+
+
+@pytest.mark.parametrize(
+    "params",
+    SPLINE_AT_KNOTS,
+    ids=lambda p: "-".join(str(v) for v in p.values()),
+)
+def test_spline_at_the_knots(params):
+    # Three features: spread ones, and one whose quantile knots repeat
+    # (few distinct values). `_find_interval` must land where scipy's does
+    # on each knot, and the extrapolations take over past the ends; under
+    # "linear" at degree 0 or 1 the twin's range narrows from the second
+    # feature on, and again from the third.
+    rng = np.random.default_rng(7)
+    X = np.column_stack(
+        [
+            rng.normal(3.0, 40.0, 30),
+            rng.integers(-2, 3, 30).astype(float),
+            rng.exponential(5.0, 30),
+        ]
+    )
+    est = SplineTransformer(**params).fit(X)
+    width = est.n_features_out_
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{j}", pa.float64()) for j in range(3)]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    rows = _knot_rows(est, 3)
+    assert check(step, to_native(step, strict=True), rows) > 0
+
+
+@pytest.mark.parametrize(
+    "params, reason",
+    [
+        ({"sparse_output": True}, r"sparse_output=True"),
+        # From the second feature on the twin continues two lanes of one:
+        # a row below raises, a row above writes the previous feature's.
+        (
+            {"degree": 0, "n_knots": 2, "extrapolation": "linear"},
+            "feature 1 continues 2 lanes of 1",
+        ),
+    ],
+    ids=["sparse", "linear-past-the-lanes"],
+)
+def test_spline_refuses(params, reason):
+    X = np.column_stack([np.arange(10.0), np.arange(10.0) ** 2])
+    est = SplineTransformer(**params).fit(X)
+    step = PythonTransform(
+        "tf", {0: est}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
+    )
+    with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+
+
+def test_spline_refuses_a_build_past_the_cap():
+    # 24 features of degree 3, 8 knots, "continue": built in 21 s; the
+    # estimate puts it past MAX_BUILD_S before confit is asked.
+    X = np.random.default_rng(0).normal(size=(50, 24)) * 10
+    est = SplineTransformer(n_knots=8, extrapolation="continue").fit(X)
+    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(24)])
+    returns = pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)])
+    step = PythonTransform("tf", {0: est}, takes, returns)
+    with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
+        to_native(step, strict=True)
+
+
+def test_this_platform_evaluates_splines_as_the_entry():
+    from sql_transform.native.spline import bspline_is_scipys
+
+    assert bspline_is_scipys()
+
+
+def test_a_failing_spline_probe_leaves_the_step_python(monkeypatch):
+    from sql_transform.native import spline
+
+    monkeypatch.setattr(spline, "bspline_is_scipys", lambda: False)
+    est = SplineTransformer().fit(np.arange(10.0)[:, None])
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)]),
+    )
+    with pytest.raises(NotNative, match="bspline_is_scipys"):
+        to_native(step, strict=True)
 
 
 # ---------------------------------------------------------- IsotonicRegression

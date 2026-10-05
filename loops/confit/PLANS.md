@@ -76,6 +76,22 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- `cbrt` is DuckDB's bit for bit on Linux: the kernel calls glibc's, looked
+  up in `libm.so.6` (the toolchain's own `cbrt`, which both `f64::cbrt` and
+  an `extern "C"` declaration reached, differed on about half of 100,001
+  draws by up to 3 ulps; reported by the native loop, #388). A sweep of
+  exp, ln, log2, log10, sqrt, sin, cos, tan, pow, log(b, x), fmod, `//` and
+  `%` over 100,000 draws each found no other difference.
+- A shared value is computed just before the first item that reads it and
+  dropped after its last reader, so it lives only across the items that use
+  it (before, every one was computed before the first item and rode every
+  later item's blocks). The SplineTransformer-shaped repro (320 struct
+  lanes, 9-arm CASE polynomials) builds in 1.4-1.5 s at 4, 8, 16 or 32
+  parameters (2.9 s at 4 and 4.3 s at 32 before); QuantileTransformer
+  serves its 3-instance step in 1,135 µs. Open from the same request: a
+  value bound once in a SQL function body (de Boor reads each round twice,
+  so a lane's text doubles per degree; 32 features at degree 5 pass the
+  4M-token cap).
 - Sharing (#363) no longer hoists what only CASE arms hold: a subexpression
   is shared when evaluated unconditionally and more than once, or twice
   behind one gate (the CASE conditions on its path, hash-consed, so a

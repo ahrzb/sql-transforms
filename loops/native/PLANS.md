@@ -8,22 +8,14 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
-2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
-   entries as `compose.py` composes a `Pipeline`'s.
-3. **Show served compositions in coverage.md:** sklearn's transformer
-   list has no `Pipeline` (it is not a `TransformerMixin`), so the
-   scoreboard does not show the one composition the catalog serves. A
-   "served" note on composition rows, with `Pipeline` added from
-   `catalog()`, would.
-4. **A bound per configuration.** An entry's ulp bound is its class's
-   (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
-   identity and the exact functions, refuses `np.exp`, `np.log`,
-   `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
-   `np.log10` (2) and `np.cbrt` (3), measured over 1,600,000 draws
-   (`function.py`, 2026-10-05). A translator that declares its own bound
-   per estimator would serve them within those, once each is measured over
-   200 seeds of fixtures.
+1. **Non-linear maps:** `AdditiveChi2Sampler`. It no longer waits on the
+   machinery (a bound per configuration landed), but on a bound that is
+   not small: its lanes are
+   `factor * cos(j * (s * log(x)))` and the same with `sin`, and numpy's
+   `log`, 1 ulp from DuckDB's `ln`, reaches `cos` scaled by `j * s`, so the
+   result parts by up to 8,192 ulps near a zero of `cos` (400,000 draws of
+   `x`, `s = 0.5`, j = 1 and 2, 2026-10-05). It needs an owner ruling, as
+   the matvec families do, or numpy's `log` kernel spelled to the bit.
 
 ## Waiting on the owner
 
@@ -54,9 +46,36 @@ Easiest first; each is one family, one PR.
   whose leaves compute both lines (T12), 0.5, 1.3, 2.7-3.2 s at 1,000,
   2,000, 4,000 quantiles over one feature against 1.4, 4.7, 23 s for the
   two trees (release build, one container, 2026-10-05); capped at 8,000
-  quantiles over an estimator's features (6-8 s at that sum). Low priority for
-  confit: a future entry that needs two trees in one expression would
+  quantiles over an estimator's features (6-8 s at that sum). Low priority
+  for confit: a future entry that needs two trees in one expression would
   raise it again.
+- **`cbrt` that answers DuckDB's.** confit's `cbrt` (`duck_cbrt`, Rust's
+  `f64::cbrt`) is not DuckDB's, which is glibc's: over 200,000 draws
+  (uniform in +-1e3 and +-exp(uniform(-700, 700))) they part on 99,438,
+  by up to 3 ulps; e.g. `cbrt(23.64324940051347)` is 2.8701354167475395
+  in confit and 2.87013541674754 in DuckDB 1.5.5 (and glibc's `cbrt`
+  through ctypes). Reproduction: `SELECT cbrt(x) AS y FROM __THIS__` served
+  by `DuckDBInferFn` against `duckdb.sql` on the same column. Waits on it:
+  `FunctionTransformer(np.cbrt)`, within 3 ulps of DuckDB's (2026-10-05).
+- **A value bound once in a SQL function body, and a build linear in the
+  parameters.** A function body is substituted as text, so an expression
+  read twice is spelled twice, and a recurrence whose every step reads
+  the previous one twice doubles per step. `SplineTransformer`'s de Boor
+  recurrence does (scipy's order, which the entry must keep): one lane of
+  one feature at degree 3, 5 knots, is about 7 KB of SQL, at degree 5
+  about 33 KB, and 32 features of degree 5 expand past the 4,000,000-token
+  cap; `periodic` repeats its mapped `x` (a remainder) at every read.
+  Apart from size, the build grows with the parameters times the body:
+  a confit-only function of 320 struct lanes, each a 9-arm CASE of
+  polynomial arithmetic over one of its DOUBLE parameters, builds in 2.7 s
+  over 4 parameters and 7.3 s over 32 (0.25, 0.63, 1.9, 7.3 s at 4, 8,
+  16, 32 parameters of 10 lanes each; release build, master 8a67154,
+  2026-10-05); the reproduction is in #384's description. 32 features
+  of degree 3, 8 knots, build in about 22 s (`error`) and 44 s
+  (`continue`); the spline entry refuses past an estimated 7 s build
+  meanwhile (spline.py, `_build_estimate`). A binding (a `let`, or a
+  nested function whose arguments are evaluated once) would make the
+  recurrence linear in the degree.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377): a constant CASE
@@ -133,12 +152,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `FunctionTransformer` with a `func` other than the identity and numpy's
   `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
-  (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
-  a string feature, or a boolean one except for the identity (numpy keeps
-  a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
-  on a bound per configuration (Next, item 5); `log1p` and `expm1` have no
-  DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
-  numpy's kernel bit-equal to confit's.
+  (bit-exact) and `exp`, `log`, `log2`, `tan` (within 1 ulp) and `log10`
+  (within 2) (lambdas, partials, user functions, other ufuncs); with
+  `kw_args`; over a string feature, or a boolean one except for the
+  identity (numpy keeps a boolean row boolean). `cbrt`, 3 ulps from
+  DuckDB's, waits on confit's `cbrt` answering DuckDB's (Needs from
+  confit); `log1p` and `expm1` have no DuckDB function. `sin` and `cos`,
+  and the bounded functions, only where `kernel_distance` finds numpy's
+  kernel within the function's bound of confit's (numpy picks its kernel
+  by CPU). A bounded function does not compose: a `Pipeline`,
+  `ColumnTransformer` or `FeatureUnion` refuses it, naming its bound.
 - A `Pipeline` with a step that is not a catalog entry, or one
   registered with a bound (a later step does not keep it bounded:
   `x - mean_` near `mean_`); with `transform_input` (which only transforms
@@ -148,6 +171,36 @@ Configurations a translator declines (`NotNative`), each with its ground:
   yet shown to read the same downstream); passthrough steps only, over a
   string feature (the step's `float()` raises). A `set_output` container
   between steps is not examined yet.
+- `SplineTransformer(sparse_output=True)`: a sparse output
+  (decisions/open/sparse-outputs.md). `extrapolation="linear"` at
+  `degree=0, n_knots=2` over two or more features: the twin's running
+  `degree` (spline.py) continues two lanes of one from the second feature
+  on, and writes a row above the knots into the previous feature's lane.
+  Knots that are not sorted, partly NaN, or span past a double, and a
+  spline whose `c` is not sklearn's shape (no fit makes these). A step
+  past an estimated 7 s build, per estimator (32 features of degree 3,
+  8 knots, and wider; Needs from confit, "A value bound once"), and any
+  step where scipy's `BSpline` does not round as the unfused recurrence
+  (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the
+  entry answers: NaN past the knots under `extrapolation="error"`, 0.0
+  for NaN under `handle_missing="error"`, and 0.0 above the knots under
+  `extrapolation="constant"` at `degree=0`.
+- A `ColumnTransformer` or `FeatureUnion` with a part that is not a
+  catalog entry, or one registered with a bound; a sparse output
+  (`sparse_output_`); a `set_output` container (the step's
+  `transform(...)[0]` misreads a DataFrame row); a string column passed
+  through (the step's `float()`); column names, which need a DataFrame,
+  and a scalar column, which hands the part a 1-D array. In a
+  `ColumnTransformer`, a part whose first step is a
+  `FunctionTransformer(func, validate=False)`: it is handed an object
+  array, on which `np.sqrt` raises and the exact functions answer as
+  Python floats do (conservative for those). A weight that is not a
+  double, on a float32 output (multiplied in float32), or an integer
+  weight on an output that may not be float64 or over a boolean feature
+  (an integer product has no -0.0); a weighted passthrough in a
+  `FeatureUnion` (the twin multiplies the step's list, which raises). A
+  `ColumnTransformer` with a passthrough part before the last step of a
+  `Pipeline` (its object output, as for the `Pipeline` rule above).
 - `IsotonicRegression` with float32 thresholds (the twin casts its input
   to float32), past 8,000 thresholds (about 6 s to build; one CASE tree
   builds in about 0.7 ms a threshold, 22 s at 20,000), with thresholds
