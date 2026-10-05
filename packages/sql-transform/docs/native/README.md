@@ -44,7 +44,8 @@ can do without the owner.
    measurement (seeds, max, date) in the translator's docstring. Never
    raise a bound to make a failure pass: find the order first.
 7. **Done.** Regenerate coverage
-   (`uv run python -m sql_transform.native.coverage --write`), then
+   (`uv run python -m sql_transform.native.coverage --write`), `git add`
+   the new files (pre-commit skips untracked ones), then
    `uv run pre-commit run --all-files` and `uv run python scripts/gate.py`.
    Open a PR, wait for CI, squash-merge with the expected head SHA.
 8. **Update PLANS.** Remove the item; add what the cycle found (a gap in
