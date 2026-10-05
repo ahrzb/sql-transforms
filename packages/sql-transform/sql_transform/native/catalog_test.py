@@ -8,6 +8,7 @@ registered class to estimator factories covering its configurations, and
 
 from __future__ import annotations
 
+import os
 import random
 import warnings
 from collections.abc import Callable
@@ -196,6 +197,9 @@ SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 # checks the same translation, only slower: a 1,351-lane PolynomialFeatures
 # draw took 115 s.
 MAX_LANES = 300
+# Seeds per configuration: 8 in the gate; a milestone report sweeps more
+# (NATIVE_SEEDS=200, docs/native/reports.md).
+SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
 
 
 def _fit_matrix(
@@ -384,7 +388,7 @@ def test_every_entry_has_fixtures():
         pytest.param(c, j, s, id=f"{c.__name__}-{j}-{s}")
         for c, fs in FIXTURES.items()
         for j in range(len(fs))
-        for s in range(8)
+        for s in range(SEEDS)
     ],
 )
 def test_an_entry_matches_its_twin(cls, j, seed):
