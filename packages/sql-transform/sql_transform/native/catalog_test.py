@@ -16,7 +16,14 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import (
+    Binarizer,
+    MaxAbsScaler,
+    MinMaxScaler,
+    Normalizer,
+    RobustScaler,
+    StandardScaler,
+)
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -34,10 +41,36 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
         lambda: StandardScaler(with_std=False),
         lambda: StandardScaler(with_mean=False, with_std=False),
     ],
+    MinMaxScaler: [
+        MinMaxScaler,
+        lambda: MinMaxScaler(feature_range=(-2.5, 7.0)),
+        lambda: MinMaxScaler(clip=True),
+        lambda: MinMaxScaler(feature_range=(-1.0, 0.0), clip=True),
+    ],
+    MaxAbsScaler: [MaxAbsScaler, lambda: MaxAbsScaler(clip=True)],
+    RobustScaler: [
+        RobustScaler,
+        lambda: RobustScaler(with_centering=False),
+        lambda: RobustScaler(with_scaling=False),
+        lambda: RobustScaler(with_centering=False, with_scaling=False),
+        lambda: RobustScaler(quantile_range=(10.0, 90.0), unit_variance=True),
+    ],
+    Normalizer: [
+        lambda: Normalizer("l1"),
+        lambda: Normalizer("l2"),
+        lambda: Normalizer("max"),
+    ],
+    Binarizer: [
+        Binarizer,
+        lambda: Binarizer(threshold=2.5),
+        lambda: Binarizer(threshold=-40.0),
+    ],
 }
 
-# Serving values beyond the fit's range: signed zeros, extremes, NULL.
+# Serving values beyond the fit's range: signed zeros, extremes.
 EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324]
+# A row of only these has a norm under sklearn's zero-scale threshold.
+SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 
 
 def _fit_matrix(rng: np.random.Generator, n_features: int) -> np.ndarray:
@@ -58,7 +91,9 @@ def _fit_matrix(rng: np.random.Generator, n_features: int) -> np.ndarray:
 
 def _step(cls_factory, seed: int) -> PythonTransform:
     rng = np.random.default_rng(seed)
-    n_features = int(rng.integers(1, 5))
+    # Mostly narrow; sometimes wide enough for a row reduction's blocks.
+    wide = rng.random() < 0.3
+    n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
     types = [
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
@@ -79,21 +114,27 @@ def _step(cls_factory, seed: int) -> PythonTransform:
     return PythonTransform("tf", instances, takes, returns)
 
 
+def _value(rng: random.Random, regime: str) -> float | None:
+    r = rng.random()
+    if regime == "nulls" and r < 0.3:
+        return None
+    if regime == "edges" and r < 0.3:
+        return rng.choice(EDGES)
+    if regime == "small":
+        return rng.choice(SMALL)
+    return rng.uniform(-1e3, 1e3)
+
+
 def _rows(step: PythonTransform, seed: int) -> pa.Table:
     rng = random.Random(seed)  # noqa: S311
     n = 40
     ids = [rng.choice([None, *step.instances]) for _ in range(n)]
+    # A row's regime: plain values; some edges; some NULLs (where most
+    # twins answer and a validating one raises); or all small.
+    regimes = rng.choices(["plain", "edges", "nulls", "small"], [55, 15, 15, 15], k=n)
     cols: dict[str, pa.Array] = {"__iid": pa.array(ids, pa.int64())}
     for f in step.takes:
-        vals: list[Any] = []
-        for _ in range(n):
-            r = rng.random()
-            if r < 0.1:
-                vals.append(None)
-            elif r < 0.25:
-                vals.append(rng.choice(EDGES))
-            else:
-                vals.append(rng.uniform(-1e3, 1e3))
+        vals = [_value(rng, g) for g in regimes]
         if f.type == pa.int64():
             vals = [
                 None if v is None else max(-(2**62), min(2**62, round(v))) for v in vals
@@ -117,7 +158,13 @@ def test_every_entry_has_fixtures():
 )
 def test_an_entry_matches_its_twin(cls, j, seed):
     step = _step(FIXTURES[cls][j], seed)
-    native = to_native(step, strict=True)
+    try:
+        native = to_native(step, strict=True)
+    except NotNative as e:
+        # A wide step may outgrow what confit builds; a narrow one may not.
+        if len(step.takes) <= 4:
+            raise
+        pytest.skip(f"stays Python: {e}")
     assert check(step, native, _rows(step, seed)) > 0
 
 

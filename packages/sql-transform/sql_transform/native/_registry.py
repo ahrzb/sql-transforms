@@ -14,8 +14,11 @@ cannot serve this estimator's configuration raises `NotNative` naming why.
 The framework does the rest, the same way for every entry: one
 `SqlFunction` named like the step, taking the instance id then the
 features, whose every lane selects the instance's expression by id
-(`CASE WHEN id = 0 THEN ... WHEN id = 1 THEN ... END`; a NULL id matches no
-arm and is NULL, as the step's own NULL id is).
+(`CASE WHEN id = 0 THEN ... WHEN id IN (1, 2) THEN ... END`, instances
+whose lane is the same SQL sharing an arm; a NULL id matches no arm and is
+NULL, as the step's own NULL id is). Before it is returned, confit builds
+it into the query reading every lane (`query`): a translation confit
+refuses leaves the step Python.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
-from confit import Function, SqlFunction
+from confit import DuckDBInferFn, Function, SqlFunction
 from confit import sql as S
 
 from sql_transform._udf import PythonTransform
@@ -80,7 +83,9 @@ def _feature(param: S.Expr, t: pa.DataType) -> S.Expr:
     as is."""
     if t == pa.string():
         return param
-    return S.coalesce(param.cast(pa.float64()), S.lit(float("nan")))
+    # `SqlFunction` already cast the parameter to its declared type.
+    x = param if t == pa.float64() else param.cast(pa.float64())
+    return S.coalesce(x, S.lit(float("nan")))
 
 
 def _lanes(step: PythonTransform) -> list[tuple[str | None, pa.DataType]]:
@@ -121,17 +126,62 @@ def _translate(step: Any) -> SqlFunction:
             per_id.append((k, out))
 
         def select(j: int) -> S.Expr:
-            (k0, out0), *rest = per_id
-            e = S.case(iid == S.lit(k0), out0[j])
-            for k, out in rest:
-                e = e.when(iid == S.lit(k), out[j])
+            # Instances whose lane is the same SQL (a stateless estimator,
+            # or equal fits) share one arm.
+            arms: dict[str, tuple[list[int], S.Expr]] = {}
+            for k, out in per_id:
+                arms.setdefault(out[j].sql(), ([], out[j]))[0].append(k)
+
+            def hit(ks: list[int]) -> S.Expr:
+                return iid == S.lit(ks[0]) if len(ks) == 1 else iid.isin(*ks)
+
+            (ks0, v0), *rest = arms.values()
+            e = S.case(hit(ks0), v0)
+            for ks, v in rest:
+                e = e.when(hit(ks), v)
             return e
 
         if lanes[0][0] is None:
             return select(0)
         return {name: select(j) for j, (name, _) in enumerate(lanes)}
 
-    return SqlFunction(step.name, takes, step.returns, body)
+    fn = SqlFunction(step.name, takes, step.returns, body)
+    _builds(step, fn)
+    return fn
+
+
+def query(step: Any, id_col: str = _ID) -> str:
+    """The query reading every output lane of one call of `step`: what
+    `to_native` builds and `check` serves with both entries."""
+    args = ", ".join([S.col(id_col).sql(), *(S.col(n).sql() for n in step.takes.names)])
+    call = f"{step.name}({args})"
+    r = step.returns
+    if pa.types.is_struct(r):
+        items = [
+            f"{call}.{S.col(r.field(i).name).sql()} AS {S.col(r.field(i).name).sql()}"
+            for i in range(r.num_fields)
+        ]
+    else:
+        items = [f"{call} AS o"]
+    return f"SELECT {', '.join(items)} FROM __THIS__"  # noqa: S608
+
+
+def _builds(step: PythonTransform, fn: SqlFunction) -> None:
+    """Raise `NotNative` unless confit builds `fn` into `query(step)`, so a
+    translation it refuses (one too large to expand, say) leaves the step
+    Python rather than failing where it is served."""
+    schema = pa.schema([pa.field(_ID, pa.int64()), *step.takes])
+    try:
+        DuckDBInferFn(
+            query(step, _ID),
+            row_tables={"__THIS__": schema},
+            static_tables={},
+            udfs=[fn],
+        )
+    except (ValueError, RuntimeError) as e:
+        # A refusal (ValueError), or a limit met while compiling, such as
+        # Cranelift's function size (RuntimeError): the step stays Python.
+        raise NotNative(f"confit does not build it: {e}") from None
 
 
 def bound(step: Any) -> int:
