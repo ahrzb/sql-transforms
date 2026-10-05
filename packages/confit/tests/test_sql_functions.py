@@ -83,8 +83,7 @@ INCR = SqlFunction("incr", _schema(n=pa.int64()), pa.int64(), lambda n: n + 1)
         ),
         ("SELECT a FROM __THIS__ WHERE scale(x) BETWEEN -10 AND 10", [SCALE]),
         (
-            "SELECT CASE WHEN a > 0 THEN scale(x) ELSE scale(y) END AS o "
-            "FROM __THIS__",
+            "SELECT CASE WHEN a > 0 THEN scale(x) ELSE scale(y) END AS o FROM __THIS__",
             [SCALE],
         ),
         ("SELECT twice(x) AS o FROM __THIS__", [SCALE, TWICE]),
