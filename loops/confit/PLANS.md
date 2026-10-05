@@ -55,10 +55,6 @@ Open, low priority (the catalog caps it meanwhile):
 
 Follow-ups from the shared-subexpression work:
 
-- `greatest`/`least` over n shared arguments keeps all n live across its n²
-  blocks (64 arguments: 9 s to build, 128: 106 s); a tournament (the catalog's
-  `row_max`) is linear to lower, but its text is cubic in the row and passes
-  the 4M-token macro cap at 64 lanes.
 - Sharing covers a stage's projection only: not WHERE, join keys, or the
   `shape="many"` loop; and only trap-free subexpressions (a repeated `sqrt`
   is evaluated where it stands, its trap-free operand once).
@@ -76,6 +72,12 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- `greatest`/`least` over I64, F64 or VARCHAR arguments lower as a running
+  extreme (`SKind::Extreme`): linear in the arguments, each evaluated once in
+  order. The catalog's max norm, `greatest(abs(x1), ..., abs(xn))`, builds in
+  0.011 s at 128 arguments (6.1 s before) and 0.1 s at 1,024 (refused past
+  the size limit at 256 before). BOOLEAN, DECIMAL and the i128 lane keep the
+  flat CASE.
 - The early size refusal (#358) verifies the oversized program only under
   debug assertions, as the tests and the nightly build it; a release build
   refuses the 520-lane test program in 2.5 s (6.0 s with the verify). With

@@ -66,3 +66,59 @@ def test_many_arguments_build_quickly():
         static_tables={},
     )
     assert time.perf_counter() - t < 5
+
+
+INTS = pa.table(
+    {
+        "i": pa.array([1, None, -128, 127, 0], pa.int8()),
+        "j": pa.array([1, 5, None, -5, 0], pa.int32()),
+        "h": pa.array([2**63 - 1, None, -(2**63), 0, None], pa.int64()),
+        "z": pa.array([-0.0, 0.0, None, float("nan"), float("-inf")], pa.float64()),
+        "w": pa.array([0.0, -0.0, float("nan"), float("nan"), None], pa.float64()),
+    }
+)
+
+
+@pytest.mark.parametrize("fn", ["greatest", "least"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        "i, j",
+        "j, i, h",
+        "i, i, i",
+        "h, j",
+        "z, w",
+        "w, z, 0.0",
+        "i, j, z",
+        "NULL, i, NULL",
+    ],
+)
+def test_the_running_extreme_agrees_on_widths_ties_and_nan(fn, args):
+    # Lowered as a running extreme (lower.rs, SKind::Extreme): the first
+    # maximal argument wins a tie (-0.0 before 0.0), NaN orders above +inf,
+    # NULLs are skipped, and the result keeps the unified width.
+    assert_parity(f"SELECT {fn}({args}) AS o FROM __THIS__", INTS)
+
+
+def test_the_first_trapping_argument_traps_first():
+    # Every argument is evaluated in order, so the first one that traps
+    # names the error, as on DuckDB.
+    assert_parity(
+        "SELECT greatest(j, CAST(h AS INTEGER), h + 1) AS o FROM __THIS__",
+        INTS,
+        trap="(?i)out of range|overflow|conver",
+    )
+
+
+def test_hundreds_of_arguments_build_linearly():
+    n = 512
+    sch = pa.schema([(f"x{i}", pa.float64()) for i in range(n)])
+    args = ", ".join(f"abs(x{i})" for i in range(n))
+    t = time.perf_counter()
+    DuckDBInferFn(
+        f"SELECT greatest({args}) AS o FROM __THIS__",
+        row_tables={"__THIS__": sch},
+        static_tables={},
+    )
+    # 0.05 s on a release build (the flat CASE refused past 128 arguments).
+    assert time.perf_counter() - t < 20
