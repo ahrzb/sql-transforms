@@ -479,6 +479,14 @@ pub enum SKind {
     /// `error('msg')` as a CASE result: typed like a NULL there (DuckDB's
     /// SQLNULL), and trapping with the full message whenever evaluated.
     Raise(String),
+    /// Evaluate every item in order, for its traps, and answer item `pick`:
+    /// a field read over `struct_pack`, which builds every field on DuckDB
+    /// (so a sibling's trap fires) and answers one. Items that cannot trap
+    /// are dropped at bind, so every item but `pick` can trap.
+    Seq {
+        items: Vec<SExpr>,
+        pick: usize,
+    },
     /// Arithmetic after type promotion: both sides already the same `Ty`
     /// (the frontend inserts `IntToFloat` where DuckDB promotes).
     Arith {
@@ -744,6 +752,7 @@ impl SExpr {
             | SKind::NullOf
             | SKind::Raise(_)
             | SKind::JoinHit(_) => Vec::new(),
+            SKind::Seq { items, .. } => items.iter_mut().collect(),
             SKind::Arith { a, b, .. }
             | SKind::Cmp { a, b, .. }
             | SKind::And { a, b }
@@ -881,6 +890,7 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
         // `error()` is never folded at bind: it raises when a row reaches it.
         SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
+        SKind::Seq { items, .. } => items.iter().all(bind_foldable),
         SKind::Lit(_) | SKind::NullOf => true,
         SKind::Arith { a, b, .. }
         | SKind::Cmp { a, b, .. }

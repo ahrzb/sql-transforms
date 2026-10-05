@@ -40,11 +40,9 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-1. **A field read over a CASE-valued struct** (`(CASE ... END).p` refuses),
-   so a NULL id can answer a NULL struct.
-2. **List-valued SQL functions** (`SqlFunction` refuses list returns), for
+1. **List-valued SQL functions** (`SqlFunction` refuses list returns), for
    steps with unnamed width-k output.
-3. **Dispatch on many instances**: a constant lookup in place of the CASE
+2. **Dispatch on many instances**: a constant lookup in place of the CASE
    ladder over fitted groups.
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)

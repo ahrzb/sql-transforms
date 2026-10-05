@@ -893,6 +893,22 @@ impl<'a> FB<'a> {
                     val,
                 })
             }
+            SKind::Seq { items, pick } => {
+                // In order, so the first trap is DuckDB's field order's. The
+                // answer stays live across the items after it, which may
+                // branch to a trap.
+                let mut held = false;
+                for (i, it) in items.iter().enumerate() {
+                    let l = self.emit(it, live)?;
+                    if i == *pick {
+                        live.push((l, it.ty));
+                        held = true;
+                    }
+                }
+                debug_assert!(held, "pick is an item");
+                let (l, _) = live.pop().expect("pushed above");
+                Ok(l)
+            }
             SKind::Raise(msg) => {
                 // Reaching it traps; the continuation (a NULL lane) is
                 // unreachable but keeps the block shape every caller expects.

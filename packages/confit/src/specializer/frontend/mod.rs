@@ -125,6 +125,10 @@ pub fn frontend(
         // Reserved for the GLOB rewrite marker — never valid user SQL.
         return Err(unsup("reserved identifier __glob_pat"));
     }
+    if sql.to_ascii_lowercase().contains(structs::SEQ_MARKER) {
+        // Reserved for the struct field-read marker.
+        return Err(unsup(format!("reserved identifier {}", structs::SEQ_MARKER)));
+    }
     if sql.contains('\u{1}') {
         // Reserved for the star-filter rewrite marker.
         return Err(unsup("control character U+0001 in SQL"));

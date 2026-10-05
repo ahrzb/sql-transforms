@@ -136,7 +136,10 @@ class SqlFunction(Function):
     `body` receives one `confit.sql` expression per parameter, in `takes`
     order, each already cast to its declared type, and returns the result:
     an expression for a scalar `returns`, or a dict of one expression per
-    field for a struct `returns`.
+    field for a struct `returns`. For a struct, `null_when` (called like
+    `body`) is the condition under which the whole struct is NULL rather
+    than a struct of fields: `CASE WHEN <null_when> THEN NULL ELSE
+    struct_pack(...) END`.
 
         scale = SqlFunction(
             "scale", pa.schema([("x", pa.float64())]), pa.float64(),
@@ -163,6 +166,8 @@ class SqlFunction(Function):
         takes: pa.Schema,
         returns: pa.DataType,
         body: Callable[..., Any],
+        *,
+        null_when: Callable[..., Any] | None = None,
     ) -> None:
         from confit import sql as S
 
@@ -194,6 +199,12 @@ class SqlFunction(Function):
                 for f, e in zip(fields, exprs, strict=True)
             )
             text = f"struct_pack({rendered})"
+            if null_when is not None:
+                cond = S._wrap(null_when(*params))
+                exprs.append(cond)
+                text = f"CASE WHEN {cond.sql()} THEN NULL ELSE {text} END"
+        elif null_when is not None:
+            raise FunctionError(f"function {name}: null_when is for a struct return")
         elif pa.types.is_list(returns) or pa.types.is_fixed_size_list(returns):
             raise FunctionError(f"function {name}: a list return is not served yet")
         else:

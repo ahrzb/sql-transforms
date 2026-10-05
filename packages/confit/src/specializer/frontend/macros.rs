@@ -127,7 +127,11 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Vec<Token>, Pre
         .map(|m| {
             // The markers the token rewrites reserve are as invalid in a
             // body as in the query it lands in.
-            if m.body.contains('\u{1}') || m.body.to_ascii_lowercase().contains("__glob_pat") {
+            let lower = m.body.to_ascii_lowercase();
+            if m.body.contains('\u{1}')
+                || lower.contains("__glob_pat")
+                || lower.contains(super::structs::SEQ_MARKER)
+            {
                 return Err(unsup(format!(
                     "sql function '{}': a reserved marker in its body",
                     m.name
