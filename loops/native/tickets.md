@@ -11,9 +11,11 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 |---|---|---|---|---|---|---|---|
 | T6 | `SplineTransformer`, dense output | `claude/native-spline` | — | `catalog_test.py`, `__init__.py`, PLANS | `session_014t6cVSh3kwJS3HYM64qom4` | | in progress |
 | T7 | adopt confit #374, #375 and #377: re-measure the max norm, `sin`/`cos` and the multi-instance `QuantileTransformer` | `claude/native-adopt` | — | `scalers.py`, `function.py`, PLANS | inline | #378 | in review |
+| T8 | `ColumnTransformer` and `FeatureUnion` of catalog entries | `claude/native-compose` | — | `compose.py`, `catalog_test.py`, PLANS | `session_01YVd4KRieYvTaH5SkrQPYX4` | | in progress |
 
-Next up, once a slot frees: `ColumnTransformer` and `FeatureUnion`, then
-`AdditiveChi2Sampler`. Inline: served compositions in coverage.md, and
+Next up, once a slot frees: `AdditiveChi2Sampler` (its `log`, `cos` and
+`sin` are numpy's own kernels, so it waits on a bound per configuration,
+PLANS "Next" item 5). Inline: served compositions in coverage.md, and
 `QuantileTransformer` as one search tree per feature.
 
 ## T6: `SplineTransformer`, dense output
@@ -93,3 +95,90 @@ tested. Gate green, coverage regenerated. The PR states scipy's operation
 sequence as you read it, and the timings.
 
 **Branch:** `claude/native-spline` (create it from `origin/master`). This is native T6 on the board, `loops/native/tickets.md`.
+
+## T8: `ColumnTransformer` and `FeatureUnion` of catalog entries
+
+**Goal.** A step whose instances are fitted `ColumnTransformer`s or
+`FeatureUnion`s of catalog entries serves natively and bit-exact: each
+part's translation over its own columns, concatenated in the twin's order,
+with weights applied. `Pipeline` already composes this way (T1, #368).
+Together they cover the deployed shape "impute and scale the numbers,
+encode the strings, concatenate".
+
+**The twins.**
+- sklearn 1.9 `ColumnTransformer.transform`
+  (`sklearn/compose/_column_transformer.py`).
+- sklearn 1.9 `FeatureUnion.transform` (`sklearn/pipeline.py`).
+
+Both call `_transform_one`, which returns `res * weight` when a weight is
+set, and then `_hstack`. Read in the installed sklearn:
+- the order of the fitted parts (`transformers_`, `remainder` included);
+- how columns are selected on a numpy row: indices, slices, boolean masks
+  and callables, resolved at fit. Names need a DataFrame, which the step
+  never passes;
+- `"drop"` and `"passthrough"`, and `transformer_weights`;
+- when `_hstack` returns a sparse matrix (`sparse_output_`,
+  `sparse_threshold`).
+
+**Pointers.** Extend `compose.py`, which composes a `Pipeline` through
+`catalog()`. A part gets its own columns' expressions and declared types,
+and the lanes it returns are DOUBLE.
+
+**Rules.**
+- Every part must be a catalog entry registered at 0 ulps (a nested
+  `Pipeline` counts), or `"drop"` or `"passthrough"`. Anything else raises
+  `NotNative` naming the part. Register both classes at 0.
+- Also `NotNative`, naming the cause:
+  - a sparse output (`sparse_output_`);
+  - a string column passed through (the step reads lanes with `float()`);
+  - column specs that need a DataFrame.
+- A weight multiplies its part's output. Spell `x * w` with the weight as
+  a DOUBLE literal: that is the twin's double.
+- Instance dispatch, `null_when` and width work as for any entry.
+  `to_native`'s trial build refuses what confit cannot build.
+
+**Fixtures.** Your own `FIXTURES[ColumnTransformer]` and
+`FIXTURES[FeatureUnion]` blocks.
+- Column specs must work at every width the generator draws, 1 to 32
+  features: use slices and callables, or index lists guarded for width.
+- `ColumnTransformer`:
+  - two and three parts;
+  - `remainder` both `"drop"` and `"passthrough"`;
+  - one weighted part;
+  - an encoder part over string columns beside a scaler over numeric
+    ones;
+  - a nested `Pipeline` part.
+- `FeatureUnion`:
+  - two and three parts;
+  - one weighted part;
+  - a `"drop"` part and a `"passthrough"` part.
+- Check what `ColumnTransformer.__sklearn_tags__` and
+  `FeatureUnion.__sklearn_tags__` report for input tags (strings, NaN).
+- Extend the generator as little as possible (as T1 did with `_runs`), so
+  that an encoder part gets string columns and an imputer part gets
+  holes, while every other entry's draws stay unchanged. Say what you did.
+
+**confit today.** Nothing the family needs is known to be missing. On
+master:
+- a repeated pure subexpression is computed once per row where it costs
+  nothing (#363, #377);
+- the total unaries, `round`, and guarded `ln`/`sqrt`/`sin`/`cos` count as
+  unable to trap (#362, #375);
+- `greatest` and `least` lower as a running extreme (#374).
+
+If a width is slow, measure it and tell the supervisor rather than
+capping it silently.
+
+**Acceptance.**
+- Bit-exact: 8 seeds in the gate. Run `NATIVE_SEEDS=200` once over your
+  configurations and report it.
+- Every refusal named and tested.
+- Gate green, coverage regenerated. Both classes are "composition" rows in
+  coverage.md: leave `coverage.py`'s categories as they are. PLANS "Next"
+  item 3 (showing served compositions) is a separate ticket; say what you
+  would show.
+- The PR states the twins' operation sequence as you read it, and the
+  build and serve times of the widest fixture.
+
+**Branch:** `claude/native-compose` (create it from `origin/master`). This
+is native T8 on the board, `loops/native/tickets.md`.
