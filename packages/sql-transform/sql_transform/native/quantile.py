@@ -18,18 +18,46 @@ answers its last reference ascending and its first descending.
 `np.interp` is numpy's C `arr_interp` (numpy 2.5,
 `numpy/_core/src/multiarray/compiled_base.c`). On sorted `xp` its
 `binary_search_with_guess` finds the last `j` with `xp[j] <= x`, whatever
-its guess; an `x` strictly inside then answers `fp[j]` when `x == xp[j]`,
-else `slope * (x - xp[j]) + fp[j]` with `slope = (fp[j+1] - fp[j]) /
-(xp[j+1] - xp[j])` (precomputed when `len(xp) <= len(x)`, by the same
-expression), retrying from `xp[j+1]` on a NaN. The entry spells that as a
-balanced CASE over the intervals `xp[j] < xp[j+1]` (depth log2 of their
-count), each leaf the interval's line, with the slopes computed here in
-the same float64 arithmetic. The `x == xp[j]` arm is kept only where it
-changes the answer (an infinite slope, whose line is NaN at `xp[j]`); the
-NaN retry is never taken inside an interval whose width is finite, and a
-fit with an infinite width stays Python. `interp_is_numpys` checks that
-this platform's `np.interp` rounds as the leaves do (a compiler may fuse
-the multiply-add, which SQL cannot spell).
+its guess (a linear scan `x >= xp[i]` below five points, else bisection
+on `x >= xp[mid]`, both after the guess's checks narrow the same
+invariant); an `x` strictly inside then answers `fp[j]` when `x ==
+xp[j]`, else `slope * (x - xp[j]) + fp[j]` with `slope = (fp[j+1] -
+fp[j]) / (xp[j+1] - xp[j])` (precomputed when `len(xp) <= len(x)`, by the
+same expression), retrying from `xp[j+1]` on a NaN.
+
+Both searches, one tree. Let `v_0 < ... < v_d` be the distinct values of
+`q`, `first(v)` and `last(v)` the first and last index of `v`'s run (a run
+of one: `first == last`; -0.0 and 0.0 are one value). For `x` strictly
+inside `(v_0, v_d)`:
+
+- Ascending, `np.interp(x, q, r)` lands on `j = last(v_i)` for `v_i <= x
+  < v_{i+1}`, the piece `[q[j], q[j+1]]` with `q[j+1] = v_{i+1}`.
+- Mirrored, `xp = -q[::-1]` puts `q[m]` at index `n-1-m`, and the last
+  index with `-q[m] <= -x` is the smallest `m` with `q[m] >= x`. So the
+  search lands on `m = first(v_{i+1})` for `v_i < x <= v_{i+1}`, the
+  piece `[-q[m], -q[m-1]]` with `m-1 = last(v_i)`: the same pair of
+  quantiles as the ascending piece, read from its other end.
+
+So strictly between `v_i` and `v_{i+1}` both searches take the pair
+`(last(v_i), first(v_{i+1}))`, and a leaf over `[v_i, v_{i+1})` answers
+`0.5 * (up(x) - down(-x))` with each line in its own search's arithmetic
+(`_pieces` of `q` and of `-q[::-1]`, the slopes as numpy computes them).
+At `x == v_i` (`i >= 1`; `x <= v_0` is answered before the tree) the
+ascending search takes its exact arm on that same leaf, `r[last(v_i)]`,
+and the mirrored search its exact arm on the piece that ends at `v_i`,
+`-r[first(v_i)]`; the twin answers `0.5 * (r[last(v_i)] -
+-r[first(v_i)])`, computed here. The leaf keeps an `x == v_i` arm with
+that constant only where its lines do not already answer it, bit for bit:
+a run (the two arms read different references), an infinite slope (`inf
+* 0` is NaN), or a mirrored line that rounds off at its far end. A fit of
+continuous values needs none. The tree bisects on `x < v_i` (depth log2
+of `d`), as one search would.
+
+The NaN retry is never taken: inside an interval whose width is finite, a
+line is NaN only at its start with an infinite slope, which the arm
+answers, and a fit with an infinite width stays Python.
+`interp_is_numpys` checks that this platform's `np.interp` rounds as the
+leaves do (a compiler may fuse the multiply-add, which SQL cannot spell).
 """
 
 from __future__ import annotations
@@ -46,16 +74,19 @@ from sklearn.preprocessing import QuantileTransformer
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, translates
 
-# The most quantiles served per estimator, over its features: their sum
-# and the sum of their squares. A feature of q quantiles builds in about
-# 0.57 ms * q + 0.87 us * q^2 (one feature: 1.4 s at 1,000, 4.4 s at
-# 2,000, 16 s at 4,000; PLANS, "Needs from confit"), so the sum bounds the
-# first term and the squares the second. The slowest steps served: the
-# default 1,000 quantiles over four features build in 6.7 s, 500 over
-# eight in 5.3 s, 100 over 40 in 3.6 s, and each serves 64 rows 18 to 35
-# times faster than the twin (release build, master 49acad5, 2026-10-05).
-MAX_QUANTILES = 4000
-MAX_SQUARES = 4_000_000
+# The most quantiles served per estimator, summed over its features. One
+# tree builds about linearly in its leaves (one feature: 0.5 s at 1,000
+# quantiles, 1.25 s at 2,000, 2.9 s at 4,000, 6.6 s at 8,000, where both
+# searches as two trees took 1.6, 5.5 and 25 s up to 4,000), and so does an
+# estimator in its total: 8,000 quantiles as 4,000 over two features build
+# in 6.8-7.3 s, 2,000 over four in 7.1-7.2 s, 1,000 over eight in 7.0-7.2
+# s, 100 over 80 in 6.1-6.2 s, 10 over 800 in 8.3-8.7 s (warm; the first
+# build in a process within 15% of these), against 11.7 s for the old cap's
+# slowest, 1,000 over four, on the same container. Fits with runs build
+# faster: fewer leaves outweigh their arms. Serving 64 rows is 28 times
+# faster than the twin at 1,000 over one feature, 2 times at 8,000 over
+# one, 12 times at 10 over 800 (release build, 2026-10-05).
+MAX_QUANTILES = 8000
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
 # `slope * (x - start) + value`, or `value` at `start` when `exact`.
@@ -88,24 +119,9 @@ def _line(x: Any, piece: _Piece) -> Any:
     return slope * (x - start) + value
 
 
-def _leaf(x: S.Expr, piece: _Piece) -> S.Expr:
-    if piece[3]:
-        return S.case(x == f64(piece[0]), f64(piece[2])).otherwise(_line(x, piece))
-    return _line(x, piece)
-
-
-def _tree(x: S.Expr, pieces: list[_Piece]) -> S.Expr:
-    """The piece `x` falls in, by bisection on the starts."""
-    if len(pieces) == 1:
-        return _leaf(x, pieces[0])
-    mid = len(pieces) // 2
-    return S.case(x < f64(pieces[mid][0]), _tree(x, pieces[:mid])).otherwise(
-        _tree(x, pieces[mid:])
-    )
-
-
 def _interp_py(x: float, pieces: list[_Piece]) -> float:
-    """What `_tree` answers, on a Python float."""
+    """What `np.interp` answers strictly inside `(xp[0], xp[-1])`, as
+    `_pieces` reads it, on a Python float."""
     piece = next(p for p in reversed(pieces) if p[0] <= x)
     if piece[3] and x == piece[0]:
         return piece[2]
@@ -137,6 +153,61 @@ def interp_is_numpys() -> bool:
     return True
 
 
+# One interval `[v, w)` between neighbouring distinct quantiles, as both
+# searches see it: the ascending piece, the mirrored piece over `(v, w]`,
+# and what the twin answers at `x == v` where their lines do not.
+_Leaf = tuple[_Piece, _Piece, float | None]
+
+
+def _both(x: Any, up: _Piece, down: _Piece) -> Any:
+    """The twin's `0.5 * (interp(x) - interp(-x))` off the breakpoints."""
+    if isinstance(x, S.Expr):
+        return f64(0.5) * (_line(x, up) - _line(-x, down))
+    return 0.5 * (_line(x, up) - _line(-x, down))
+
+
+def _same_double(a: float, b: float) -> bool:
+    return repr(a) == repr(b)  # -0.0 is not 0.0, NaN is NaN
+
+
+def _leaves(q: np.ndarray, r: np.ndarray) -> list[_Leaf]:
+    """One leaf per interval strictly inside `(q[0], q[-1])`, in order
+    (the module docstring derives which piece each search lands on)."""
+    up = _pieces(q, r)
+    down = _pieces(-q[::-1], -r[::-1])[::-1]
+    out: list[_Leaf] = []
+    for i, (u, d) in enumerate(zip(up, down, strict=True)):
+        at = None
+        if i:
+            # At x == v both exact arms: the ascending one answers u's
+            # value, the mirrored one the value of the piece ending at v.
+            # When v is zero the other zero answers as u[0] does: both
+            # values are nonzero past the first leaf, so a zero offset's
+            # sign never shows.
+            want = 0.5 * (u[2] - down[i - 1][2])
+            if not _same_double(_both(u[0], u, d), want):
+                at = want
+        out.append((u, d, at))
+    return out
+
+
+def _leaf(x: S.Expr, leaf: _Leaf) -> S.Expr:
+    up, down, at = leaf
+    if at is None:
+        return _both(x, up, down)
+    return S.case(x == f64(up[0]), f64(at)).otherwise(_both(x, up, down))
+
+
+def _tree(x: S.Expr, leaves: list[_Leaf]) -> S.Expr:
+    """The leaf `x` falls in, by bisection on the interval starts."""
+    if len(leaves) == 1:
+        return _leaf(x, leaves[0])
+    mid = len(leaves) // 2
+    return S.case(x < f64(leaves[mid][0][0]), _tree(x, leaves[:mid])).otherwise(
+        _tree(x, leaves[mid:])
+    )
+
+
 def _feature(x: S.Expr, q: np.ndarray, r: np.ndarray) -> S.Expr:
     n = len(q)
     if n == 1:
@@ -152,16 +223,15 @@ def _feature(x: S.Expr, q: np.ndarray, r: np.ndarray) -> S.Expr:
             "QuantileTransformer: quantiles unsorted or partly NaN, where"
             " numpy's interp search answers by its guess"
         )
-    up = _pieces(q, r)
-    down = _pieces(-q[::-1], -r[::-1])
+    leaves = _leaves(q, r)
     # Below q[0] the two interps answer r[0] and -r[0], above q[-1] r[-1]
     # and -r[-1]: 0.0 and 1.0, as the bounds do at q[0] and q[-1] (the
     # lower bound last). NaN first: DuckDB orders it above every number.
     e = S.case(isnan(x), x).when(x <= f64(q[0]), f64(0.0))
-    if not up:  # q[0] == q[-1]: nothing lies inside
+    if not leaves:  # q[0] == q[-1]: nothing lies inside
         return e.otherwise(f64(1.0))
     e = e.when(x >= f64(q[-1]), f64(1.0))
-    return e.otherwise(f64(0.5) * (_tree(x, up) - _tree(-x, down)))
+    return e.otherwise(_tree(x, leaves))
 
 
 @translates(QuantileTransformer)
@@ -172,11 +242,11 @@ def _quantile(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             " scipy's norm.ppf has no SQL twin"
         )
     q, n = est.n_quantiles_, len(x)
-    if q * n > MAX_QUANTILES or q * q * n > MAX_SQUARES:
+    if q * n > MAX_QUANTILES:
         raise NotNative(
             f"QuantileTransformer with {q} quantiles over {n} features:"
-            f" {q * n} quantiles and {q * q * n} squared, past the"
-            f" {MAX_QUANTILES} and {MAX_SQUARES} confit builds in seconds"
+            f" {q * n} quantiles, past the {MAX_QUANTILES} confit builds in"
+            " seconds"
         )
     if not interp_is_numpys():
         raise NotNative(

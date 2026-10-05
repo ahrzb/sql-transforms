@@ -16,15 +16,7 @@ Easiest first; each is one family, one PR.
    scoreboard does not show the one composition the catalog serves. A
    "served" note on composition rows, with `Pipeline` added from
    `catalog()`, would.
-4. **`QuantileTransformer` as one search tree per feature:** its two
-   `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
-   with the other endpoint of each interval closed), so one tree whose
-   leaves compute both lines, with `x` at a breakpoint dispatched to the
-   neighbour piece the mirrored search picks, keeps the twin's arithmetic
-   and builds linearly (Needs from confit, "Two CASE trees"): the default
-   1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
-   and the caps could rise.
-5. **A bound per configuration.** An entry's ulp bound is its class's
+4. **A bound per configuration.** An entry's ulp bound is its class's
    (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
    identity and the exact functions, refuses `np.exp`, `np.log`,
    `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
@@ -55,15 +47,16 @@ Easiest first; each is one family, one PR.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
-  tree(-x))` over `x = coalesce(p, NaN)`, the shape of
-  `QuantileTransformer`'s entry (`np.interp` both ways), builds in 0.46,
-  1.37, 4.48 s, and the entry at 4,000 quantiles in 16.2 s (release
-  build, master 49acad5). One tree whose leaves hold both lines builds in
-  0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
-  the message sent to the confit loop (2026-10-05). The entry is capped at
-  4,000 quantiles over the features and 4,000,000 in their squares
-  meanwhile (about 7 s at most); Next, item 4, is the entry-side
-  alternative.
+  tree(-x))` over `x = coalesce(p, NaN)` builds in 0.46, 1.37, 4.48 s
+  (release build, master 49acad5; a confit-only reproduction is in the
+  message sent to the confit loop, 2026-10-05). The catalog no longer
+  needs it: `QuantileTransformer` answers both searches from one tree
+  whose leaves compute both lines (T12), 0.5, 1.25, 2.9 s at 1,000, 2,000,
+  4,000 quantiles over one feature against 1.6, 5.5, 25 s for the two
+  trees, measured on one container, 2026-10-05; capped at 8,000 quantiles
+  over an estimator's features (6-9 s at that sum). Low priority for
+  confit: a future entry that needs two trees in one expression would
+  raise it again.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377): a constant CASE
@@ -128,9 +121,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   Bin edges that are not sorted numbers (searchsorted's answer is then
   its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
-  `norm.ppf` has no SQL twin. Past 4,000 quantiles over an estimator's
-  features or 4,000,000 in their squares, where builds pass about 7 s
-  (Needs from confit, "Two CASE trees in one expression").
+  `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
+  features, where builds reach 6-9 s (`quantile.MAX_QUANTILES`).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
