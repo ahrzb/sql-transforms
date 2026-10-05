@@ -74,9 +74,11 @@ def widest(cls) -> tuple[object, object, int, int, list[str]]:
     raise SystemExit(f"no fixture of {cls.__name__} translates")
 
 
-def rows(step, seed: int) -> pa.Table:
-    """64 rows the twin answers: fitted ids, finite values, and for an
-    encoder each row's values among its own instance's categories."""
+def rows(step, seed: int, positive: bool = False) -> pa.Table:
+    """64 rows the twin answers: fitted ids, finite values (strictly
+    positive for an estimator that rejects the rest, as the fixture's
+    `positive` flag says), and for an encoder each row's values among its
+    own instance's categories."""
     rng = random.Random(seed)  # noqa: S311
     ids = [rng.choice(list(step.instances)) for _ in range(ROWS)]
     cols: dict[str, pa.Array] = {"__iid": pa.array(ids, pa.int64())}
@@ -93,9 +95,10 @@ def rows(step, seed: int) -> pa.Table:
             elif f.type == pa.string():
                 vals.append(rng.choice(fixtures.VOCAB))
             elif f.type == pa.int64():
-                vals.append(rng.randint(-3, 3))
+                vals.append(rng.randint(1, 3) if positive else rng.randint(-3, 3))
             else:
-                vals.append(rng.uniform(-1e3, 1e3))
+                lo = 1e-3 if positive else -1e3
+                vals.append(rng.uniform(lo, 1e3))
         if f.type == pa.int64():
             vals = [None if v is None else int(v) for v in vals]
         elif f.type != pa.string():
@@ -189,7 +192,7 @@ def main() -> None:
         step, native, j, seed, declined = widest(cls)
         if declined:
             capped[cls.__name__] = declined
-        table = rows(step, seed)
+        table = rows(step, seed, getattr(fixtures.FIXTURES[cls][j], "positive", False))
         sql = query(step)
         schema = {"__THIS__": table.schema}
         t = time.perf_counter()
