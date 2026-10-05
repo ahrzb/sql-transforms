@@ -873,6 +873,23 @@ impl Binder<'_> {
                         "{name} takes exactly 2 arguments"
                     )));
                 };
+                if let Some(elems) = list_literal(s) {
+                    return self.list_element(&elems, n);
+                }
+                // Over a CASE: the subscript spelling, which reads into each
+                // arm (`structs::case_field`).
+                let mut base: &SqlExpr = s;
+                while let SqlExpr::Nested(i) = base {
+                    base = i;
+                }
+                if matches!(base, SqlExpr::Case { .. }) {
+                    return self.expr(&SqlExpr::CompoundFieldAccess {
+                        root: Box::new(s.clone()),
+                        access_chain: vec![AccessExpr::Subscript(Subscript::Index {
+                            index: n.clone(),
+                        })],
+                    });
+                }
                 let Some(bs) = self.expr_or_null(s)? else {
                     return Ok(null_of(Ty::Str));
                 };

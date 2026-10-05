@@ -40,9 +40,10 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **List-valued SQL functions.** A step with unnamed width-k output
-  declares a fixed-size list return; `SqlFunction` refuses list returns, so
-  such steps stay Python.
+- **List-valued SQL functions**: served now. `SqlFunction` takes a
+  `pa.list_(t, k)` return (a body of k expressions; `null_when` too), read
+  whole or by constant index (`packages/confit/tests/test_list_literals.py`).
+  Adopt it: `_lanes` stops refusing an unnamed width-k step.
 - **`error()`**: served now, as a CASE result with a constant message
   (`packages/confit/tests/test_error_function.py`). Adopt it: each lane's
   dispatch gains `WHEN id IS NULL THEN NULL ELSE error('...')`, and goal.md's

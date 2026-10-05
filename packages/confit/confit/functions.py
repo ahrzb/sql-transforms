@@ -135,11 +135,11 @@ class SqlFunction(Function):
 
     `body` receives one `confit.sql` expression per parameter, in `takes`
     order, each already cast to its declared type, and returns the result:
-    an expression for a scalar `returns`, or a dict of one expression per
-    field for a struct `returns`. For a struct, `null_when` (called like
-    `body`) is the condition under which the whole struct is NULL rather
-    than a struct of fields: `CASE WHEN <null_when> THEN NULL ELSE
-    struct_pack(...) END`.
+    an expression for a scalar `returns`, a dict of one expression per field
+    for a struct `returns`, or a list of k expressions for a
+    `pa.list_(t, k)` return. For a struct or a list, `null_when` (called like
+    `body`) is the condition under which the whole value is NULL rather than
+    a value of NULL parts: `CASE WHEN <null_when> THEN NULL ELSE ... END`.
 
         scale = SqlFunction(
             "scale", pa.schema([("x", pa.float64())]), pa.float64(),
@@ -199,14 +199,21 @@ class SqlFunction(Function):
                 for f, e in zip(fields, exprs, strict=True)
             )
             text = f"struct_pack({rendered})"
-            if null_when is not None:
-                cond = S._wrap(null_when(*params))
-                exprs.append(cond)
-                text = f"CASE WHEN {cond.sql()} THEN NULL ELSE {text} END"
-        elif null_when is not None:
-            raise FunctionError(f"function {name}: null_when is for a struct return")
-        elif pa.types.is_list(returns) or pa.types.is_fixed_size_list(returns):
-            raise FunctionError(f"function {name}: a list return is not served yet")
+        elif pa.types.is_fixed_size_list(returns):
+            _lanes(name, returns)  # a width of at least 2
+            k, t = returns.list_size, _type_name(name, returns.value_type)
+            if not isinstance(out, list | tuple) or len(out) != k:
+                raise FunctionError(
+                    f"function {name}: a width-{k} list return's body is a list of"
+                    f" {k} expressions"
+                )
+            exprs = [S._wrap(x) for x in out]
+            text = "[" + ", ".join(e.cast(t).sql() for e in exprs) + "]"
+        elif pa.types.is_list(returns) or pa.types.is_large_list(returns):
+            raise FunctionError(
+                f"function {name}: a list return declares its width,"
+                f" pa.list_({returns.value_type}, k)"
+            )
         else:
             if isinstance(out, dict):
                 raise FunctionError(
@@ -214,6 +221,16 @@ class SqlFunction(Function):
                 )
             exprs = [S._wrap(out)]
             text = exprs[0].cast(_type_name(name, returns)).sql()
+        if null_when is not None:
+            if not (
+                pa.types.is_struct(returns) or pa.types.is_fixed_size_list(returns)
+            ):
+                raise FunctionError(
+                    f"function {name}: null_when is for a struct or list return"
+                )
+            cond = S._wrap(null_when(*params))
+            exprs.append(cond)
+            text = f"CASE WHEN {cond.sql()} THEN NULL ELSE {text} END"
         allowed = set(takes.names)
         for e in exprs:
             for node in e.walk():

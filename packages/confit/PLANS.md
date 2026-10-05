@@ -40,9 +40,7 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-1. **List-valued SQL functions** (`SqlFunction` refuses list returns), for
-   steps with unnamed width-k output.
-2. **Dispatch on many instances**: a constant lookup in place of the CASE
+1. **Dispatch on many instances**: a constant lookup in place of the CASE
    ladder over fitted groups.
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
@@ -62,7 +60,9 @@ The first five are ruled, in this order; the rest follow.
   (it is BIGINT on DuckDB); the bare 9223372036854775808, and the minimum
   negated twice, are HUGEINT and refuse.
 - **Non-scalar values.** Whole structs, struct literals, bracket access, lists
-  and list-valued regex forms; `SELECT s.*` over struct-carrying statics.
+  and list-valued regex forms (served so far: a list literal read by a
+  constant index or projected whole, with elements of one type,
+  `tests/test_list_literals.py`; a field read over struct_pack or a CASE); `SELECT s.*` over struct-carrying statics.
   Needs nested output at the Arrow boundary. `decimal256` statics are blocked
   upstream (DuckDB refuses them at Arrow registration).
 - **More than one join under `shape='many'`** (`src/specializer/lower.rs`);

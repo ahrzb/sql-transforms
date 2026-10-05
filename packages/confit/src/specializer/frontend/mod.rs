@@ -52,6 +52,7 @@ mod functions;
 mod typing;
 mod decimal;
 pub mod macros;
+mod lists;
 
 use self::refusal::*;
 use self::from::*;
@@ -59,6 +60,7 @@ use self::joins::*;
 use self::star::*;
 use self::typing::*;
 use self::decimal::*;
+use self::lists::*;
 
 pub use self::functions::{is_builtin, BUILTIN_NAMES};
 

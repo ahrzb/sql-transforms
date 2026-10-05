@@ -704,6 +704,23 @@ impl Binder<'_> {
                 if let Some(sub) = self.desugar_struct_field(e)? {
                     return self.expr(&sub);
                 }
+                // Any access over a CASE reads into the arm taken: the chain
+                // moves into each arm (`structs::case_field`).
+                {
+                    let mut base: &SqlExpr = root;
+                    while let SqlExpr::Nested(i) = base {
+                        base = i;
+                    }
+                    if matches!(base, SqlExpr::Case { .. }) {
+                        return self.expr(&structs::case_field(base, access_chain));
+                    }
+                }
+                // An element read over a list literal.
+                if let (Some(elems), [AccessExpr::Subscript(Subscript::Index { index })]) =
+                    (list_literal(root), access_chain.as_slice())
+                {
+                    return self.list_element(&elems, index);
+                }
                 // Field read over a declared wide extern: a lane off one
                 // shared ecall.
                 if let [AccessExpr::Dot(SqlExpr::Identifier(id))] = access_chain.as_slice() {
