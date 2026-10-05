@@ -36,5 +36,18 @@ class 2); these 238 are the recoverable part.
 **Ruling (owner, 2026-09-27), partial.** Derived tables and row-local CTEs
 first, per the approved
 [design](../../specs/2026-09-26-row-local-subqueries-design.md): phase 1 over
-the request table, phase 2 over static tables (projection only). The order of
-the remaining candidates is still open.
+the request table, phase 2 over static tables (projection only).
+
+**Ruling (owner, 2026-10-05).** The owner left the order to the maintainer:
+pick one, easiest first, and stick to it. The order:
+
+1. DECIMAL as a row-column lane (the i128 lane exists for expressions; this
+   finishes decimals).
+2. HUGEINT and the unsigned family on the same i128 lane.
+3. Struct-valued outputs (also what multi-output SQL transforms need).
+4. More than one join under `shape='many'`.
+5. Per-row aggregation over matched static rows.
+
+Native transform families leave this list: the owner proposed modelling most
+transformers as SQL-defined transforms instead (a design under discussion,
+2026-10-05), with Rust kernels for the rest.

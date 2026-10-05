@@ -35,19 +35,14 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Waiting on the owner
 
-- `docs/decisions/open/`: the order of the query classes after derived tables
-  and CTEs, native-transform parity bounds.
+- SQL-defined transforms (owner's proposal, 2026-10-05): a spec first, or
+  build. Settled: confit only applies fitted transforms; fitting is not its
+  concern.
 
-## Query classes (large; order is the owner's call)
+## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
 
-- **Scalar/correlated/`IN` subqueries, a CTE referenced twice, set
-  operations.** Blanket bans today; only batch-dependent forms are out of
-  scope. Row-local derived tables and CTEs are in Next.
-- **Per-row aggregation over matched static rows** (correlated scalar
-  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
-  over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
-  float-reduction bound's algorithm and edge domain
-  (`docs/oracle/05-the-comparison-contract.md`).
+The first five are ruled, in this order; the rest follow.
+
 - **Decimal remainders.** Decimal expressions serve
   (docs/specs/decimal-expressions.md). Still refused by name: casts from
   DOUBLE/VARCHAR/BOOLEAN into a DECIMAL (DuckDB's double->decimal rounding
@@ -60,9 +55,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   exact `sum`/`product` at decimal128(38,0). `-9223372036854775808` serves
   (it is BIGINT on DuckDB); the bare 9223372036854775808, and the minimum
   negated twice, are HUGEINT and refuse.
-- **float32** (needs f32 arithmetic, not widening), **temporal types**
-  (columns, casts, literals, functions; opaque temporal join keys could use a
-  key-only lane), **BLOB**.
 - **Non-scalar values.** Whole structs, struct literals, bracket access, lists
   and list-valued regex forms; `SELECT s.*` over struct-carrying statics.
   Needs nested output at the Arrow boundary. `decimal256` statics are blocked
@@ -71,6 +63,17 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   struct keys under `many` (plain equality only in the fan-out loop); struct
   keys whose field-name sets differ refuse where DuckDB serves a constant-empty
   join.
+- **Per-row aggregation over matched static rows** (correlated scalar
+  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
+  over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
+  float-reduction bound's algorithm and edge domain
+  (`docs/oracle/05-the-comparison-contract.md`).
+- **Scalar/correlated/`IN` subqueries, a CTE referenced twice, set
+  operations.** Blanket bans today; only batch-dependent forms are out of
+  scope. Row-local derived tables and CTEs are in Next.
+- **float32** (needs f32 arithmetic, not widening), **temporal types**
+  (columns, casts, literals, functions; opaque temporal join keys could use a
+  key-only lane), **BLOB**.
 - **Parse-divergence guards.** `^`, prefix `~`, `#`, `NOT GLOB` wait on the
   dialect frontend's parser replacing sqlparser; the regex reject list on an
   RE2-compatible engine.
@@ -119,7 +122,10 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 - **Native transform families.** A fitted transformer costs ~118 µs per row
   against 1.4 µs without it (`bench_transforms.py`, 2026-09-26); nearly all is
-  sklearn's `transform()`. Waits on the parity-bound ruling.
+  sklearn's `transform()`. The parity bound is ruled
+  (`docs/decisions/closed/native-transform-parity-bounds.md`); the route is
+  the owner's SQL-defined transforms proposal, with Rust kernels for what SQL
+  cannot express (see "Waiting on the owner").
 - **Serving vs the Python twin.** 1.20–1.80x slower at n=64 on a fresh
   release wheel. Bisect against `a6fa318` (regression vs the twin's change of
   identity). Record the n=64 ratio; the n=1 twin cell swings 2x.
