@@ -14,4 +14,10 @@ for the same query without it (`benchmarks/bench_transforms.py`, 2026-09-26), an
 nearly all of it is sklearn's `transform()`. Native families wait on this bound:
 kpi: transformer-parity (C4) moves only by reviewed decision.
 
-**Ruling.** None yet.
+**Ruling (owner, 2026-10-05).** Bit-equal is the target, relaxed slightly
+where it cannot hold: floats do not align exactly when the operation order
+differs. So a native entry is bit-exact wherever its operation order is the
+twin's (the scaler and tree tiers, and any SQL-defined transform against
+DuckDB), and within a small per-family ulp bound otherwise (matvec tiers,
+whose sums sklearn orders through NumPy/BLAS). Each family declares its bound
+with the measurement that fixed it, gated by swap-the-entry.
