@@ -86,8 +86,8 @@ def _robust(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 # The widest max norm served: its tournament is quadratic in the row and
-# every lane repeats it, so confit's build grows as n^4 (2 s at 8 features,
-# 15 s at 12; 2026-10-05) until a read expands only its own field.
+# every lane repeats it (2 s to build at 8 features, 15 s at 12;
+# 2026-10-05), until confit shares a subexpression within a call (PLANS).
 _MAX_NORM_WIDTH = 8
 
 
@@ -112,9 +112,10 @@ def _normalizer(est: Any, x: list[S.Expr]) -> list[S.Expr]:
     elif est.norm == "max":
         if len(x) > _MAX_NORM_WIDTH:
             raise NotNative(
-                f"Normalizer(norm='max') over {len(x)} features: the row maximum"
-                f" builds in time growing as n^4 past {_MAX_NORM_WIDTH} (PLANS,"
-                " 'Per-read expansion')"
+                f"Normalizer(norm='max') over {len(x)} features: every lane"
+                f" repeats a row maximum quadratic in the row, past"
+                f" {_MAX_NORM_WIDTH} (PLANS, 'A subexpression shared within one"
+                " call')"
             )
         norm = row_max([S.fn("abs", xi) for xi in x])
     else:

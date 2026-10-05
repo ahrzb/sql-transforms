@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**8 of 68** in-scope transformers are native (84 listed by sklearn).
+**19 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -25,7 +25,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `FeatureUnion` | composition | concatenates parts' outputs |
 | `FunctionTransformer` | not yet |  |
 | `GaussianRandomProjection` | not yet |  |
-| `GenericUnivariateSelect` | not yet |  |
+| `GenericUnivariateSelect` | native | bit-exact |
 | `HashingVectorizer` | out of scope | input is text documents |
 | `IncrementalPCA` | not yet |  |
 | `Isomap` | not yet |  |
@@ -65,18 +65,18 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `PowerTransformer` | not yet |  |
 | `QuantileTransformer` | not yet |  |
 | `RBFSampler` | not yet |  |
-| `RFE` | not yet |  |
-| `RFECV` | not yet |  |
+| `RFE` | native | bit-exact |
+| `RFECV` | native | bit-exact |
 | `RadiusNeighborsTransformer` | not yet |  |
 | `RandomTreesEmbedding` | not yet |  |
 | `RobustScaler` | native | bit-exact |
-| `SelectFdr` | not yet |  |
-| `SelectFpr` | not yet |  |
-| `SelectFromModel` | not yet |  |
-| `SelectFwe` | not yet |  |
-| `SelectKBest` | not yet |  |
-| `SelectPercentile` | not yet |  |
-| `SequentialFeatureSelector` | not yet |  |
+| `SelectFdr` | native | bit-exact |
+| `SelectFpr` | native | bit-exact |
+| `SelectFromModel` | native | bit-exact |
+| `SelectFwe` | native | bit-exact |
+| `SelectKBest` | native | bit-exact |
+| `SelectPercentile` | native | bit-exact |
+| `SequentialFeatureSelector` | native | bit-exact |
 | `SimpleImputer` | native | bit-exact |
 | `SkewedChi2Sampler` | not yet |  |
 | `SparseCoder` | not yet |  |
@@ -90,7 +90,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `TargetEncoder` | not yet |  |
 | `TfidfTransformer` | out of scope | input is a sparse count matrix |
 | `TruncatedSVD` | not yet |  |
-| `VarianceThreshold` | not yet |  |
+| `VarianceThreshold` | native | bit-exact |
 | `VotingClassifier` | composition | averages parts' predictions |
 | `VotingRegressor` | composition | averages parts' predictions |
 <!-- coverage:end -->

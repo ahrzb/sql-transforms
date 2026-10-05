@@ -17,7 +17,22 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.decomposition import PCA
+from sklearn.feature_selection import (
+    RFE,
+    RFECV,
+    GenericUnivariateSelect,
+    SelectFdr,
+    SelectFpr,
+    SelectFromModel,
+    SelectFwe,
+    SelectKBest,
+    SelectPercentile,
+    SequentialFeatureSelector,
+    VarianceThreshold,
+    f_regression,
+)
 from sklearn.impute import MissingIndicator, SimpleImputer
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.preprocessing import (
     Binarizer,
     MaxAbsScaler,
@@ -26,6 +41,7 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
+from threadpoolctl import threadpool_limits
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -41,6 +57,15 @@ from sql_transform.native import (
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Skipping features without any observed values:UserWarning"
 )
+
+
+@pytest.fixture(autouse=True)
+def _one_blas_thread():
+    # The suite runs on xdist workers, and BLAS threads per worker
+    # oversubscribe the cores: an RFECV fixture took 35 s instead of 0.4 s.
+    with threadpool_limits(limits=1):
+        yield
+
 
 FIXTURES: dict[type, list[Callable[[], Any]]] = {
     StandardScaler: [
@@ -96,6 +121,28 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
         lambda: MissingIndicator(features="all"),
         lambda: MissingIndicator(missing_values=-1.0, error_on_new=False),
     ],
+    VarianceThreshold: [VarianceThreshold],
+    SelectKBest: [lambda: SelectKBest(k=1), lambda: SelectKBest(f_regression, k=1)],
+    SelectPercentile: [lambda: SelectPercentile(percentile=50)],
+    SelectFpr: [lambda: SelectFpr(alpha=0.5)],
+    SelectFdr: [lambda: SelectFdr(alpha=0.5)],
+    SelectFwe: [lambda: SelectFwe(alpha=0.5)],
+    GenericUnivariateSelect: [
+        lambda: GenericUnivariateSelect(mode="percentile", param=50)
+    ],
+    SelectFromModel: [
+        lambda: SelectFromModel(LogisticRegression()),
+        lambda: SelectFromModel(
+            LogisticRegression(), max_features=1, threshold=-np.inf
+        ),
+    ],
+    RFE: [lambda: RFE(LogisticRegression(), n_features_to_select=1)],
+    RFECV: [lambda: RFECV(LogisticRegression(), cv=2)],
+    SequentialFeatureSelector: [
+        lambda: SequentialFeatureSelector(
+            LinearRegression(), n_features_to_select=1, cv=2
+        )
+    ],
 }
 
 # Serving values beyond the fit's range: signed zeros, extremes.
@@ -106,19 +153,20 @@ SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 
 def _fit_matrix(
     rng: np.random.Generator,
+    kinds: list[int],
     types: list[pa.DataType],
     holes: list[str | None],
     marker: float,
-) -> np.ndarray:
-    """One instance's fit data, a column per feature type (an integer one
-    rounded). `holes[j]` says where column j is missing, the same for every
-    instance of a step (so fitted widths agree): None nowhere (and never
-    holding the marker), "some" in about a fifth of its rows and at least
-    one, "all" everywhere. `marker` spells missing."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """One instance's fit data, a column per feature of its kind (an integer
+    one rounded), and a binary target. `kinds` and `holes` are the step's,
+    the same for every instance, as a feature keeps its nature across
+    fitted groups: `holes[j]` is None for nowhere missing (and never
+    holding the marker), "some" for about a fifth of the rows and at least
+    one, "all" for everywhere. `marker` spells missing."""
     n = int(rng.integers(5, 60))
     cols = []
-    for t, hole in zip(types, holes, strict=True):
-        kind = rng.integers(5)
+    for kind, t, hole in zip(kinds, types, holes, strict=True):
         if kind == 0:
             c = rng.normal(rng.uniform(-100, 100), rng.uniform(0.01, 50), n)
         elif kind == 1:
@@ -139,17 +187,30 @@ def _fit_matrix(
             c[rng.random(n) < 0.2] = marker
             c[rng.integers(n)] = marker
         cols.append(c)
-    return np.column_stack(cols)
+    y = (rng.random(n) < 0.5).astype(int)
+    y[:4] = (0, 1, 0, 1)  # two of each class, for a 2-fold split
+    return np.column_stack(cols), y
 
 
 def _step(cls_factory, seed: int) -> PythonTransform:
     rng = np.random.default_rng(seed)
+    # A shape the estimator cannot fit (a selector asked for more features
+    # than the step has) or that keeps no lane is drawn again.
+    for _ in range(20):
+        step = _draw(rng, cls_factory)
+        if step is not None:
+            return step
+    raise AssertionError(f"no fixture of {cls_factory} fits in 20 draws")
+
+
+def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # Mostly narrow; sometimes wide enough for a row reduction's blocks.
     wide = rng.random() < 0.3
     n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
     types = [
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
+    kinds = [int(rng.integers(5)) for _ in range(n_features)]
     takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
     # Missing values in the fit data, for an estimator that takes them: an
     # imputer's own `missing_values`, or NaN where sklearn says it allows it.
@@ -166,13 +227,25 @@ def _step(cls_factory, seed: int) -> PythonTransform:
         ]
         if hasattr(proto, "missing_values") and "some" not in holes:
             holes[int(rng.integers(n_features))] = "some"
-    instances = {}
+    # Every fit gets a target (an unsupervised one ignores it). A step's
+    # instances share one width, as a fitted step's do: an instance that
+    # fits to another width ends the step before it.
+    instances: dict[int, Any] = {}
+    width = 0
     with warnings.catch_warnings():  # all-missing columns, by design
         warnings.simplefilter("ignore")
-        for k in range(int(rng.integers(1, 4))):
-            X = _fit_matrix(rng, types, holes, marker)
-            instances[k] = cls_factory().fit(X)
-        width = np.asarray(instances[0].transform(X[:1])).reshape(1, -1).shape[1]
+        try:
+            for k in range(int(rng.integers(1, 4))):
+                X, y = _fit_matrix(rng, kinds, types, holes, marker)
+                est = cls_factory().fit(X, y)
+                w = np.asarray(est.transform(X[:1])).reshape(1, -1).shape[1]
+                if k and w != width:
+                    break
+                instances[k], width = est, w
+        except ValueError:
+            return None
+    if width == 0:
+        return None
     if width == 1:
         returns = pa.float64()
     elif rng.random() < 0.3:  # unnamed lanes

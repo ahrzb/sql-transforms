@@ -12,16 +12,17 @@ same call, same result (docs/native/goal.md says what "same" means). Where no
 translation exists, `to_native` hands back the step unchanged, which is
 always correct to serve, only slower.
 
-The catalog is one module per family (`scalers.py`, `impute.py`, ...), each entry
-registered with `@translates(EstimatorClass)`. This package imports confit
-and sklearn and nothing else of sql_transform but the step class, so the
-rest of the package can change around it.
+The catalog is one module per family (`scalers.py`, `impute.py`,
+`select.py`, ...), each entry registered with `@translates(EstimatorClass)`.
+This package imports confit and sklearn and nothing else of sql_transform
+but the step class, so the rest of the package can change around it.
 """
 
 from __future__ import annotations
 
 from sql_transform.native import impute as _impute  # noqa: F401  (registers)
 from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
+from sql_transform.native import select as _select  # noqa: F401  (registers)
 from sql_transform.native._check import ParityError, check
 from sql_transform.native._registry import (
     Entry,
