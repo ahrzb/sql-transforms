@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**24 of 68** in-scope transformers are native (84 listed by sklearn).
+**26 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -62,8 +62,8 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `PatchExtractor` | out of scope | input is images |
 | `PolynomialCountSketch` | not yet |  |
 | `PolynomialFeatures` | native | bit-exact |
-| `PowerTransformer` | not yet |  |
-| `QuantileTransformer` | not yet |  |
+| `PowerTransformer` | native | within 4 ulps |
+| `QuantileTransformer` | native | bit-exact |
 | `RBFSampler` | not yet |  |
 | `RFE` | native | bit-exact |
 | `RFECV` | native | bit-exact |

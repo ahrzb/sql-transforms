@@ -43,6 +43,8 @@ from sklearn.preprocessing import (
     OneHotEncoder,
     OrdinalEncoder,
     PolynomialFeatures,
+    PowerTransformer,
+    QuantileTransformer,
     RobustScaler,
     StandardScaler,
     TargetEncoder,
@@ -210,6 +212,56 @@ FIXTURES[KBinsDiscretizer] = [
     ),
 ]
 
+# QuantileTransformer: the fits have 5 to 60 rows, so n_quantiles_ is the
+# row count past it; few distinct values (kind 4) make runs of equal
+# quantiles. quantile_test.py serves the default 1,000 quantiles.
+FIXTURES[QuantileTransformer] = [
+    QuantileTransformer,
+    lambda: QuantileTransformer(n_quantiles=2),
+    lambda: QuantileTransformer(n_quantiles=7),
+    lambda: QuantileTransformer(n_quantiles=40),
+    lambda: QuantileTransformer(n_quantiles=4, subsample=5, random_state=0),
+]
+
+
+def positive(factory: Callable[[], Any]) -> Callable[[], Any]:
+    """`factory`'s fits and rows draw strictly positive numbers (an
+    estimator that rejects the rest): absolute values, a fitted zero made
+    one. A serving zero stays, for the twin to reject."""
+    factory.positive = True  # type: ignore[attr-defined]
+    return factory
+
+
+# Fitted lambdas pinned on and around scipy's Box-Cox branches (`log`
+# under |lambda| 1e-19; past `lambda * log(x)` 709.78, `exp`, which the
+# rows' 1e300 and 1e-300 reach), one per feature in turn.
+BOX_COX_LAMBDAS = [0.0, 1e-20, -1e-20, 1e-19, -1e-19, -3e-12, 3.0, -50.0, 2.0]
+
+
+def _pinned_box_cox() -> PowerTransformer:
+    """A Box-Cox PowerTransformer(standardize=False) whose fit then pins
+    `lambdas_` to BOX_COX_LAMBDAS, where no fit lands."""
+    est = PowerTransformer("box-cox", standardize=False)
+
+    def fit(X, y=None):
+        del est.fit  # the class's own again
+        PowerTransformer.fit(est, X, y)
+        n = len(est.lambdas_)
+        est.lambdas_ = np.array(
+            [BOX_COX_LAMBDAS[j % len(BOX_COX_LAMBDAS)] for j in range(n)]
+        )
+        return est
+
+    est.fit = fit
+    return est
+
+
+# Box-Cox only, unstandardized: what the entry serves (power.py).
+FIXTURES[PowerTransformer] = [
+    positive(lambda: PowerTransformer("box-cox", standardize=False)),
+    positive(_pinned_box_cox),
+]
+
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]
 UNSEEN = ["zz", "", "A"]
@@ -233,6 +285,7 @@ def _fit_matrix(
     types: list[pa.DataType],
     holes: list[str | None],
     marker: float,
+    positive: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """One instance's fit data, a column per feature of its kind (an integer
     one rounded), and a binary target. `kinds` and `holes` are the step's,
@@ -266,6 +319,9 @@ def _fit_matrix(
             c = rng.integers(-3, 4, n).astype(float)  # few distinct values
         if t == pa.int64():
             c = np.round(c)
+        if positive:
+            c = np.abs(c)
+            c[c == 0] = 1.0
         if not np.isnan(marker):
             c[c == marker] = marker + 1.0
         if hole == "all":
@@ -309,6 +365,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     ]
     kinds = [int(rng.integers(5)) for _ in range(n_features)]
     proto = cls_factory()
+    positive = getattr(cls_factory, "positive", False)
     if proto.__sklearn_tags__().input_tags.categorical:
         # Categories: few distinct values per feature, about half of them
         # strings (kind 5..8: two to five of VOCAB).
@@ -341,7 +398,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
         warnings.simplefilter("ignore")
         try:
             for k in range(int(rng.integers(1, 4))):
-                X, y = _fit_matrix(rng, kinds, types, holes, marker)
+                X, y = _fit_matrix(rng, kinds, types, holes, marker, positive)
                 est = cls_factory().fit(X, y)
                 w = np.asarray(est.transform(X[:1])).reshape(1, -1).shape[1]
                 if k and w != width:
@@ -373,7 +430,7 @@ def _value(rng: random.Random, regime: str) -> float | None:
     return rng.uniform(-1e3, 1e3)
 
 
-def _rows(step: PythonTransform, seed: int) -> pa.Table:
+def _rows(step: PythonTransform, seed: int, positive: bool = False) -> pa.Table:
     rng = random.Random(seed)  # noqa: S311
     n = 40
     ids = [rng.choice([None, *step.instances]) for _ in range(n)]
@@ -395,6 +452,8 @@ def _rows(step: PythonTransform, seed: int) -> pa.Table:
             cols[f.name] = pa.array(strs, pa.string())
             continue
         vals = [_value(rng, g) for g in regimes]
+        if positive:
+            vals = [None if v is None else abs(v) for v in vals]
         if f.type == pa.int64():
             vals = [
                 None if v is None else max(-(2**62), min(2**62, round(v))) for v in vals
@@ -417,7 +476,8 @@ def test_every_entry_has_fixtures():
     ],
 )
 def test_an_entry_matches_its_twin(cls, j, seed):
-    step = _step(FIXTURES[cls][j], seed, j)
+    make = FIXTURES[cls][j]
+    step = _step(make, seed, j)
     try:
         native = to_native(step, strict=True)
     except NotNative as e:
@@ -425,7 +485,8 @@ def test_an_entry_matches_its_twin(cls, j, seed):
         if len(step.takes) <= 4:
             raise
         pytest.skip(f"stays Python: {e}")
-    assert check(step, native, _rows(step, seed)) > 0
+    rows = _rows(step, seed, getattr(make, "positive", False))
+    assert check(step, native, rows) > 0
 
 
 # ------------------------------------------------------------------ framework
@@ -619,4 +680,19 @@ def test_kbins_refuses(make, why):
         pa.float64(),
     )
     with pytest.raises(NotNative, match=why):
+        to_native(step, strict=True)
+
+
+@pytest.mark.parametrize(
+    "make, reason",
+    [
+        (PowerTransformer, "method='yeo-johnson'"),
+        (lambda: PowerTransformer(standardize=False), "method='yeo-johnson'"),
+        (lambda: PowerTransformer("box-cox"), "standardize=True"),
+    ],
+    ids=["yeo-johnson", "yeo-johnson-unstandardized", "box-cox-standardized"],
+)
+def test_a_power_transform_without_a_small_bound_stays_python(make, reason):
+    step = _step(positive(lambda: make()), 0)
+    with pytest.raises(NotNative, match=reason):
         to_native(step, strict=True)

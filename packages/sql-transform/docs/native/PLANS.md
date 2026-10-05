@@ -7,19 +7,15 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
-   `standardize`), `QuantileTransformer` (interpolation over quantiles),
-   `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
-   twin, `AdditiveChi2Sampler`. In progress, wave 1 (subagents.md):
-   `PowerTransformer` on `claude/native-power`
-   (`session_01KRvmpULPVDQtRxRx6XrBRG`), `QuantileTransformer` on
-   `claude/native-quantile` (`session_01Y2x9kvyGhHrtr9VTsDFv8R`).
+1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
+   numpy ufuncs with a SQL twin, `AdditiveChi2Sampler`.
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
-3. **Wider fixtures:** `MAX_LANES` (300) was set while builds grew about as
-   lanes^2.5; since #350 they grow about as lanes^1.4 (2,556 lanes: 3.2 s),
-   so the fixtures can draw wider steps.
+3. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
+   (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
+   grew about as lanes^2.5; since #350 they grow about as lanes^1.4
+   (2,556 lanes: 3.2 s, master 5513891).
 
 ## Waiting on the owner
 
@@ -29,6 +25,10 @@ Easiest first; each is one family, one PR.
   (x scores), `LinearDiscriminantAnalysis`: a BLAS matvec whose order the
   entry cannot follow, and whose error is not small in ulps of the result
   (decisions/open/matvec-parity-bound.md).
+- **`PowerTransformer`'s Yeo-Johnson, and either method with
+  `standardize=True`:** no small bound in ulps of the result, as for the
+  matvec families (decisions/open/power-parity-bound.md, measured).
+  Box-Cox with `standardize=False` is native, within 4 ulps.
 - **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
   `BisectingKMeans`, `Birch` (`transform` = distances, through BLAS), and
   the samplers that project through a matrix: `RBFSampler`,
@@ -49,6 +49,24 @@ Easiest first; each is one family, one PR.
 - **An early size refusal** (the confit loop's ticket T2, in progress):
   the refusals above arrive after Cranelift has spent its time (up to
   47 s), which `to_native` pays before falling back to Python.
+- **A call confit knows cannot trap.** `can_trap` counts every call as
+  one that may trap (`ln`, `exp`, even unary minus), so a struct field
+  read keeps the other lanes' calls and serving grows as the square of the
+  width. Box-Cox (`native/power.py`), one instance, per row against the
+  Python step: 0.3 vs 118 us at 1 feature, 39 vs 183 at 8, 90 vs 192 at
+  12, 179 vs 209 at 16, 393 vs 267 at 24; build 0.15 s at 8, 2.1 s at 24,
+  13 s at 32 with three instances, and at 64 (three instances) confit
+  refuses past Cranelift's size limit after 26 s (master b926e88,
+  2026-10-05). Classifying total calls (`exp`, `pow`, `fneg`) as
+  trap-free, and `ln` under a CASE arm whose condition excludes `x <= 0`,
+  would make it linear. `PowerTransformer` is capped at 12 features
+  meanwhile. Sent to the confit loop 2026-10-05.
+- **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
+  far slower than `-1.0 * x`, which is the same double: a 32-feature
+  `QuantileTransformer` (3 quantiles) built in 2.8 s and served 64 rows in
+  32 ms with `-x`, against 0.35 s and 1.1 ms with the product (master
+  b926e88). The entry spells the product meanwhile. Sent to the confit
+  loop 2026-10-05.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353): a constant CASE
@@ -96,6 +114,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
   spell (a cast to FLOAT would have to round as numpy does, unproven).
   Bin edges that are not sorted numbers (searchsorted's answer is then
   its search order's), which no strategy fits on finite data.
+- `QuantileTransformer(output_distribution="normal")`: scipy's
+  `norm.ppf` has no SQL twin. Past 2,000 quantiles per estimator (summed
+  over its features), a cap set before #350 (Next, item 3). Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
+  feature missing everywhere is served), quantiles further apart than a
+  double spans, or a platform whose `np.interp` fuses its multiply-add
+  (`quantile.interp_is_numpys` probes it).
+- `PowerTransformer(method="yeo-johnson")` and `standardize=True`
+  (waiting on the owner, above); Box-Cox over more than 12 features, until
+  confit knows a call that cannot trap (above). Where the twin rejects
+  x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
