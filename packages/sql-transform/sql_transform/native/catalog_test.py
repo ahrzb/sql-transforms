@@ -8,6 +8,8 @@ registered class to estimator factories covering its configurations, and
 
 from __future__ import annotations
 
+import functools
+import math
 import os
 import random
 import warnings
@@ -37,6 +39,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import (
     Binarizer,
+    FunctionTransformer,
     KBinsDiscretizer,
     MaxAbsScaler,
     MinMaxScaler,
@@ -70,6 +73,7 @@ pytestmark = pytest.mark.filterwarnings(
     "ignore:Found unknown categories:UserWarning",
     "ignore:overflow encountered:RuntimeWarning",
     "ignore:invalid value encountered:RuntimeWarning",
+    "ignore:divide by zero encountered:RuntimeWarning",
     "ignore:Feature .* is constant:UserWarning",
     "ignore:Bins whose width are too small:UserWarning",
 )
@@ -224,6 +228,35 @@ FIXTURES[QuantileTransformer] = [
     lambda: QuantileTransformer(n_quantiles=4, subsample=5, random_state=0),
 ]
 
+
+# FunctionTransformer: the identity validated and not, and each function
+# served, unvalidated (the twin then answers NaN and infinity) and, for a
+# few, validated.
+FUNCTIONS = [
+    np.abs,
+    np.fabs,
+    np.negative,
+    np.positive,
+    np.conjugate,
+    np.square,
+    np.sqrt,
+    np.reciprocal,
+    np.floor,
+    np.ceil,
+    np.trunc,
+    np.rint,
+    np.sign,
+    np.sin,
+    np.cos,
+]
+FIXTURES[FunctionTransformer] = [
+    FunctionTransformer,
+    lambda: FunctionTransformer(validate=True),
+    *((lambda f=f: FunctionTransformer(f)) for f in FUNCTIONS),
+    lambda: FunctionTransformer(np.sqrt, validate=True),
+    lambda: FunctionTransformer(np.rint, validate=True),
+    lambda: FunctionTransformer(np.reciprocal, validate=True),
+]
 
 # Pipeline: compositions across families, a passthrough and a None step, and
 # a nested pipeline. The generator reads the tags of the step that first
@@ -748,3 +781,104 @@ def test_a_power_transform_without_a_small_bound_stays_python(make, reason):
     step = _step(positive(lambda: make()), 0)
     with pytest.raises(NotNative, match=reason):
         to_native(step, strict=True)
+
+
+# --------------------------------------------------------- FunctionTransformer
+
+# Doubles where an elementwise function's spelling can part from numpy's:
+# signed zeros, subnormals, halves (rint), the largest non-integer doubles,
+# infinities, NaN (and NULL, read as NaN), near pi.
+SPECIALS = [
+    0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308, -1e-310, 0.5, -0.5,
+    1.5, -1.5, 2.5, -2.5, 0.49999999999999994, -0.49999999999999994, 1.0, -1.0,
+    4503599627370495.5, -4503599627370495.5, 4503599627370497.0, 1e300, -1e300,
+    math.inf, -math.inf, math.nan, None, 3.141592653589793, -7.25, 1e-300,
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("func", FUNCTIONS, ids=lambda f: f.__name__)
+def test_a_function_matches_numpy_on_special_values(func):
+    est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(SPECIALS), pa.int64()),
+            "x0": pa.array(SPECIALS, pa.float64()),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == len(SPECIALS)
+
+
+def test_the_identity_passes_a_boolean_as_its_double():
+    est = FunctionTransformer(validate=True).fit(np.zeros((2, 2)))
+    takes = pa.schema([("x0", pa.bool_()), ("x1", pa.float64())])
+    step = PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), 2))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0, 0, 0], pa.int64()),
+            "x0": pa.array([True, False, True]),
+            "x1": pa.array([1.5, -0.0, 2.0]),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == 3
+
+
+def _sum_rows(X):
+    return np.asarray(X, dtype=float) + 1.0
+
+
+@pytest.mark.parametrize(
+    "est, types, reason",
+    [
+        (FunctionTransformer(np.exp), None, r"func=np\.exp\): .*1 ulp"),
+        (FunctionTransformer(np.log), None, r"func=np\.log\): .*1 ulp"),
+        (FunctionTransformer(np.log2), None, r"func=np\.log2\): .*1 ulp"),
+        (FunctionTransformer(np.tan), None, r"func=np\.tan\): .*1 ulp"),
+        (FunctionTransformer(np.log10), None, r"func=np\.log10\): .*2 ulp"),
+        (FunctionTransformer(np.cbrt), None, r"func=np\.cbrt\): .*3 ulp"),
+        (FunctionTransformer(np.log1p), None, "DuckDB has no log1p"),
+        (FunctionTransformer(np.expm1), None, "DuckDB has no expm1"),
+        (FunctionTransformer(np.arctan), None, r"func=np\.arctan\): not a function"),
+        (FunctionTransformer(lambda X: X), None, r"func=<lambda>\): not a function"),
+        (FunctionTransformer(_sum_rows), None, r"func=_sum_rows\): not a function"),
+        (
+            FunctionTransformer(functools.partial(np.round, decimals=0)),
+            None,
+            r"func=functools\.partial.*not a function",
+        ),
+        (FunctionTransformer(np.round), None, r"func=np\.round\): not a function"),
+        (
+            FunctionTransformer(np.abs, kw_args={"dtype": np.float32}),
+            None,
+            "kw_args",
+        ),
+        (FunctionTransformer(), [pa.string()], "string feature"),
+        (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
+        (FunctionTransformer(np.sin), [pa.float64()] * 9, "over 9 features"),
+    ],
+    ids=lambda v: None,
+)
+def test_a_function_transformer_refuses(est, types, reason):
+    types = types or [pa.float64()]
+    est.fit(np.zeros((2, len(types))))
+    takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
+    step = PythonTransform("tf", {0: est}, takes)
+    with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+
+
+def test_a_failing_kernel_probe_leaves_sin_python(monkeypatch):
+    from sql_transform.native import function
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("no engine")
+
+    monkeypatch.setattr(function, "DuckDBInferFn", refuse)
+    function.kernel_is_confits.cache_clear()
+    try:
+        est = FunctionTransformer(np.sin).fit(np.zeros((2, 1)))
+        step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+        with pytest.raises(NotNative, match="kernel is not confit's"):
+            to_native(step, strict=True)
+    finally:
+        function.kernel_is_confits.cache_clear()

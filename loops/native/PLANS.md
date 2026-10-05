@@ -8,9 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `SplineTransformer`, `FunctionTransformer` for
-   numpy ufuncs with a SQL twin (native T2, in progress), and
-   `AdditiveChi2Sampler`.
+1. **Non-linear maps:** `SplineTransformer`, `AdditiveChi2Sampler`.
 2. **Compositions:** `ColumnTransformer` and `FeatureUnion`, composing
    entries as `compose.py` composes a `Pipeline`'s.
 3. **Show served compositions in coverage.md:** sklearn's transformer
@@ -26,6 +24,14 @@ Easiest first; each is one family, one PR.
    and builds linearly (Needs from confit, "Two CASE trees"): the default
    1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
    and the caps could rise.
+5. **A bound per configuration.** An entry's ulp bound is its class's
+   (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
+   identity and the exact functions, refuses `np.exp`, `np.log`,
+   `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
+   `np.log10` (2) and `np.cbrt` (3), measured over 1,600,000 draws
+   (`function.py`, 2026-10-05). A translator that declares its own bound
+   per estimator would serve them within those, once each is measured over
+   200 seeds of fixtures.
 
 ## Waiting on the owner
 
@@ -67,6 +73,17 @@ Easiest first; each is one family, one PR.
   4,000 quantiles over the features and 4,000,000 in their squares
   meanwhile (about 7 s at most); Next, item 4, is the entry-side
   alternative.
+- **`sin` and `cos` under a guard.** DuckDB's `sin` and `cos` raise on an
+  infinity, so `can_trap` counts them as trapping even under
+  `CASE WHEN abs(x) = inf THEN NaN ELSE sin(x) END` (or
+  `x = inf OR x = -inf`), and a struct field read evaluates every lane's
+  call: `FunctionTransformer(np.sin)`, three instances, 1,024-row batches,
+  release build, against the Python step, 13.7 vs 20.8 us per row at 8
+  features, 26.8 vs 25.8 at 10, 36.6 vs 29.1 at 12, 178 vs 49 at 24
+  (supervisor's measurement on 851cf08, master with #362, 2026-10-05). A
+  guard rule for them, as #362 gave `ln` and `sqrt`, would make it linear;
+  the entry caps `sin` and `cos` at 8 features meanwhile. Every other
+  `FunctionTransformer` spelling serves 128 features.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363): a constant CASE
@@ -135,6 +152,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `PowerTransformer(method="yeo-johnson")` and `standardize=True`
   (waiting on the owner, above). Where the twin rejects
   x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
+- `FunctionTransformer` with a `func` other than the identity and numpy's
+  `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
+  `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
+  (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
+  a string feature, or a boolean one except for the identity (numpy keeps
+  a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
+  on a bound per configuration (Next, item 5); `log1p` and `expm1` have no
+  DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
+  numpy's kernel bit-equal to confit's, and over at most 8 features
+  (Needs from confit, `sin` and `cos` under a guard).
 - A `Pipeline` with a step that is not a catalog entry, or one
   registered with a bound (a later step does not keep it bounded:
   `x - mean_` near `mean_`); with `transform_input` (which only transforms

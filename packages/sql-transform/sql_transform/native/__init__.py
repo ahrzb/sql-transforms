@@ -13,8 +13,9 @@ translation exists, `to_native` hands back the step unchanged, which is
 always correct to serve, only slower.
 
 The catalog is one module per family (`scalers.py`, `impute.py`,
-`select.py`, `polynomial.py`, `encode.py`, `quantile.py`, ...), each entry registered
-with `@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`).
+`select.py`, `function.py`, `polynomial.py`, `encode.py`, `quantile.py`,
+...), each entry registered with `@translates(EstimatorClass)`; `compose.py`
+composes them (a `Pipeline`).
 This package imports confit and sklearn and nothing else of sql_transform
 but the step class, so the rest of the package can change around it.
 """
@@ -24,6 +25,7 @@ from __future__ import annotations
 from sql_transform.native import compose as _compose  # noqa: F401  (registers)
 from sql_transform.native import discretize as _discretize  # noqa: F401  (registers)
 from sql_transform.native import encode as _encode  # noqa: F401  (registers)
+from sql_transform.native import function as _function  # noqa: F401  (registers)
 from sql_transform.native import impute as _impute  # noqa: F401  (registers)
 from sql_transform.native import polynomial as _polynomial  # noqa: F401  (registers)
 from sql_transform.native import power as _power  # noqa: F401  (registers)
