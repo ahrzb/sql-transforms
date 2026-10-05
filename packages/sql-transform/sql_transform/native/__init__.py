@@ -22,6 +22,7 @@ but the step class, so the rest of the package can change around it.
 
 from __future__ import annotations
 
+from sql_transform.native import agglomerate as _agglomerate  # noqa: F401  (registers)
 from sql_transform.native import compose as _compose  # noqa: F401  (registers)
 from sql_transform.native import discretize as _discretize  # noqa: F401  (registers)
 from sql_transform.native import encode as _encode  # noqa: F401  (registers)

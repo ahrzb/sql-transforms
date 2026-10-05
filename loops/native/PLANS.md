@@ -164,6 +164,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
   raises (`out_of_bounds="raise"` outside the range, NaN, infinity), the
   entry answers NaN, or the constant of a one-threshold fit (goal.md,
   "Tolerated differences").
+- `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
+  `np.max` and `np.min` included: on a tie of signed zeros numpy's SIMD
+  reduction answers the zero its lane order reaches, neither the first
+  nor the last tied operand, so `greatest`/`least` (the first) part from
+  it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
+  `row_sumsq_is_numpys` has) would serve them.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
