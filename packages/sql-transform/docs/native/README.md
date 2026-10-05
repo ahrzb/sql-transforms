@@ -8,6 +8,7 @@ in-scope transformer in [coverage.md](coverage.md) is native.
 - [PLANS.md](PLANS.md): the working list, highest value first.
 - [decisions/](decisions/): questions for the owner, and rulings in force.
 - [coverage.md](coverage.md): the scoreboard (generated).
+- [subagents.md](subagents.md): running the loop with worker sessions.
 
 ## Running it
 
@@ -18,6 +19,11 @@ Start a session on this repository and run:
 
 Each iteration is one cycle below. The loop stops when PLANS has nothing it
 can do without the owner.
+
+The loop runs inline (one session, one family per cycle) or, when the owner
+asks for parallelism, subagent-driven: a supervisor gives one family per
+worker session and reviews and merges their PRs. See
+[subagents.md](subagents.md).
 
 ## One cycle
 
