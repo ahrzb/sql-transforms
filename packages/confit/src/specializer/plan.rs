@@ -457,6 +457,7 @@ pub struct SExpr {
     pub nullable: bool,
 }
 
+
 #[derive(Clone, PartialEq)]
 pub enum SKind {
     /// Input column, by index into the dynamic table's schema.
@@ -479,6 +480,14 @@ pub enum SKind {
     /// `error('msg')` as a CASE result: typed like a NULL there (DuckDB's
     /// SQLNULL), and trapping with the full message whenever evaluated.
     Raise(String),
+    /// greatest/least over arguments of one I64, F64 or VARCHAR lane: the
+    /// first argument that is not NULL and that no later one beats (NULL
+    /// only when every argument is), DuckDB's order (NaN above +inf).
+    /// Lowered as a running extreme, each argument evaluated once in order.
+    Extreme {
+        greatest: bool,
+        args: Vec<SExpr>,
+    },
     /// Evaluate every item in order, for its traps, and answer item `pick`:
     /// a field read over `struct_pack`, which builds every field on DuckDB
     /// (so a sibling's trap fires) and answers one. Items that cannot trap
@@ -758,6 +767,7 @@ impl SExpr {
             | SKind::JoinHit(_)
             | SKind::Shared(_) => Vec::new(),
             SKind::Seq { items, .. } => items.iter_mut().collect(),
+            SKind::Extreme { args, .. } => args.iter_mut().collect(),
             SKind::Arith { a, b, .. }
             | SKind::Cmp { a, b, .. }
             | SKind::And { a, b }
@@ -860,6 +870,7 @@ pub fn may_trap(e: &SExpr) -> bool {
             arms.iter().any(|(c, r)| may_trap(c) || may_trap(r))
                 || default.as_deref().is_some_and(may_trap)
         }
+        SKind::Extreme { args, .. } => args.iter().any(may_trap),
         // Arith overflows, CAST fails, ABS traps on i64::MIN, tree_predict
         // rejects an unknown model id — and anything not named above is
         // simply unclassified. All of it counts as trapping. Total ops land
@@ -939,6 +950,7 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
             any(&[inner], facts)
         }
         SKind::Seq { items, .. } => items.iter().any(|x| can_trap_under(x, facts)),
+        SKind::Extreme { args, .. } => args.iter().any(|x| can_trap_under(x, facts)),
         _ => can_trap_here(e),
     }
 }
@@ -1033,6 +1045,7 @@ fn can_trap_here(e: &SExpr) -> bool {
                 || default.as_deref().is_some_and(can_trap)
         }
         SKind::Seq { items, .. } => items.iter().any(can_trap),
+        SKind::Extreme { args, .. } => args.iter().any(can_trap),
         // A closed constant that folds to a value (`CAST('0.0' AS DOUBLE)`,
         // how a typed constant is spelled) cannot trap: fold leaves a
         // failing cast in place, to trap at run time.
@@ -1162,6 +1175,7 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         // `error()` is never folded at bind: it raises when a row reaches it.
         SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
         SKind::Seq { items, .. } => items.iter().all(bind_foldable),
+        SKind::Extreme { args, .. } => args.iter().all(bind_foldable),
         SKind::Lit(_) | SKind::NullOf => true,
         SKind::Arith { a, b, .. }
         | SKind::Cmp { a, b, .. }

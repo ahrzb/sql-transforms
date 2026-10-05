@@ -84,6 +84,12 @@ fn fold_here(e: SExpr) -> SExpr {
             }
             e(SKind::Seq { items: kept, pick: at })
         }
+        // Folded as a whole when closed (`bind_foldable` evaluates it); here
+        // only its arguments.
+        SKind::Extreme { greatest, args } => e(SKind::Extreme {
+            greatest,
+            args: args.into_iter().map(fold).collect(),
+        }),
         // Opaque call: fold the args, never the call itself.
         SKind::ExternCall {
             site,
