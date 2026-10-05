@@ -53,9 +53,11 @@ Easiest first; each is one family, one PR.
   (`packages/confit/tests/test_struct_field_reads.py`). Adopt it: a struct
   step passes `null_when=lambda iid, *_: iid.isnull()`, and goal.md's
   NULL-struct difference goes.
-- **Dispatch on many instances.** Each lane selects its instance with a CASE
-  ladder, linear in the number of fitted groups. A step with hundreds of
-  groups needs a constant lookup (an indexed list, or a params static).
+- **Dispatch on many instances**: served now. A CASE whose leading arms are
+  `id = <integer>` (8 or more) lowers to a binary search, and trap-free
+  struct siblings no longer cost a lane per read: 1000 instances serve at
+  about 0.11 us per row instead of 6.9 us. Build time still grows with
+  field reads x instances (confit PLANS, "Per-read expansion").
 
 ## Later
 

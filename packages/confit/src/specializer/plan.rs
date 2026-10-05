@@ -865,6 +865,35 @@ pub fn may_trap(e: &SExpr) -> bool {
     }
 }
 
+/// Whether evaluating `e` can raise, as precisely as the kinds named here
+/// allow: [`may_trap`] stays deliberately coarse for the JOIN ON residual
+/// policy, while this one decides which struct fields and list elements a
+/// read must still evaluate (`SKind::Seq`), where every item kept costs a
+/// lane per read. Double arithmetic never traps (a zero divisor answers
+/// inf/NaN, or a NULL flag); an integer or DECIMAL one can overflow. Any
+/// kind not named counts as trapping.
+pub fn can_trap(e: &SExpr) -> bool {
+    match &e.kind {
+        SKind::Col(_)
+        | SKind::Slot(_)
+        | SKind::StaticCol { .. }
+        | SKind::JoinHit(_)
+        | SKind::Lit(_)
+        | SKind::NullOf => false,
+        SKind::Arith { a, b, .. } if e.ty.lane() == Ty::F64 => can_trap(a) || can_trap(b),
+        SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
+            can_trap(a) || can_trap(b)
+        }
+        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => can_trap(a),
+        SKind::Case { arms, default } => {
+            arms.iter().any(|(c, r)| can_trap(c) || can_trap(r))
+                || default.as_deref().is_some_and(can_trap)
+        }
+        SKind::Seq { items, .. } => items.iter().any(can_trap),
+        _ => true,
+    }
+}
+
 /// Could DuckDB's BINDER constant-fold this expression? True iff the
 /// subtree references no input (`Col`/`StaticCol`/`JoinHit`) and runs no
 /// user code (`ExternCall`/`TreePredict`; a PURE extern over constant args

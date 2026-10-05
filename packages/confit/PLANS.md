@@ -40,8 +40,13 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-1. **Dispatch on many instances**: a constant lookup in place of the CASE
-   ladder over fitted groups.
+1. **Per-read expansion of a struct SQL function.** Each field read
+   `f(x).p` expands the whole body, so build cost grows with
+   reads x body size: 8 field reads over 100 instances build in about 0.4 s,
+   and a body with many lanes and instances can reach the 4M-token
+   expansion cap. Expanding one call once per distinct argument list (or
+   projecting the read field at expansion when no sibling can trap) would
+   make it linear.
 
 ## Query classes (in the ruled order: docs/decisions/closed/next-query-classes.md)
 

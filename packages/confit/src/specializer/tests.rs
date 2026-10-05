@@ -8,7 +8,7 @@ use super::exec::testutil::{
     batch, c_f64, c_i64, c_str, rows, run_snapshot, NEG_NAN, POS_NAN,
 };
 use super::exec::{KeyBits, ScalarVal, StaticData};
-use super::ir::{parse::parse, print::print, Col, ColTy, Lit, NumOp1, Ty};
+use super::ir::{parse::parse, print::print, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Ty};
 use super::plan::StaticTable;
 use super::{prepare, PrepareError};
 
@@ -342,6 +342,46 @@ fn prepared_programs_are_canonical_ir() {
         p,
         "prepared program is not canonical:\n{text}"
     );
+}
+
+/// Equality compares in a program: how many tests a CASE lowers to.
+fn eq_compares(p: &super::ir::Program) -> usize {
+    p.blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter(|i| matches!(i, Inst::Cmp { pred: CmpPred::Eq, .. }))
+        .count()
+}
+
+#[test]
+fn an_instance_case_lowers_to_a_search() {
+    // 64 arms on `g = k`: a binary search tests a handful of constants for
+    // equality on any path, where arm by arm tests all 64. The trailing
+    // non-equality arm still runs, after the search misses.
+    let schema = cols(&[("g", Ty::I64, true), ("x", Ty::F64, true)]);
+    let arms: String = (0..64).map(|k| format!(" WHEN g = {k} THEN x * {k}")).collect();
+    let sql = format!("SELECT CASE{arms} WHEN g IS NULL THEN -1.0 END AS o FROM __THIS__");
+    let p = prep(&sql, &schema).unwrap();
+    assert_eq!(eq_compares(&p), 64, "each constant is tested once, in its leaf");
+    let ladder = (0..64)
+        .map(|k| format!(" WHEN x = {k} THEN x * {k}"))
+        .collect::<String>();
+    let q = prep(
+        &format!("SELECT CASE{ladder} END AS o FROM __THIS__"),
+        &schema,
+    )
+    .unwrap();
+    assert_eq!(eq_compares(&q), 64, "a double scrutinee keeps the ladder");
+    let lt = |p: &super::ir::Program| {
+        p.blocks
+            .iter()
+            .flat_map(|b| &b.insts)
+            .filter(|i| matches!(i, Inst::Cmp { pred: CmpPred::Lt, .. }))
+            .count()
+    };
+    // 64 constants in leaves of at most 4: 15 halving compares.
+    assert_eq!(lt(&p), 15);
+    assert_eq!(lt(&q), 0);
 }
 
 #[test]
