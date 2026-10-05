@@ -74,10 +74,11 @@ Easiest first; each is one family, one PR.
   `CASE WHEN abs(x) = inf THEN NaN ELSE sin(x) END` (or
   `x = inf OR x = -inf`), and a struct field read evaluates every lane's
   call: `FunctionTransformer(np.sin)`, three instances, 1,024-row batches,
-  44 vs 92 us per row against the Python step at 12 features, 281 vs 125
-  at 32 (build 1.7 s), master 49acad5 with #362, 2026-10-05. A guard rule
-  for them, as #362 gave `ln` and `sqrt`, would make it linear; the
-  entry caps `sin` and `cos` at 12 features meanwhile. Every other
+  release build, against the Python step, 13.7 vs 20.8 us per row at 8
+  features, 26.8 vs 25.8 at 10, 36.6 vs 29.1 at 12, 178 vs 49 at 24
+  (supervisor's measurement on 851cf08, master with #362, 2026-10-05). A
+  guard rule for them, as #362 gave `ln` and `sqrt`, would make it linear;
+  the entry caps `sin` and `cos` at 8 features meanwhile. Every other
   `FunctionTransformer` spelling serves 128 features.
 - **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
   far slower than `-1.0 * x`, which is the same double: a 32-feature
@@ -149,8 +150,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   a string feature, or a boolean one except for the identity (numpy keeps
   a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
   on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
-  DuckDB function; `sin` and `cos` only where `kernel_is_duckdbs` finds
-  numpy's kernel bit-equal to DuckDB's, and over at most 12 features
+  DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
+  numpy's kernel bit-equal to confit's, and over at most 8 features
   (Needs from confit, `sin` and `cos` under a guard).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.

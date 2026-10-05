@@ -803,7 +803,7 @@ def _sum_rows(X):
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
         (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
-        (FunctionTransformer(np.sin), [pa.float64()] * 13, "over 13 features"),
+        (FunctionTransformer(np.sin), [pa.float64()] * 9, "over 9 features"),
     ],
     ids=lambda v: None,
 )
@@ -814,3 +814,20 @@ def test_a_function_transformer_refuses(est, types, reason):
     step = PythonTransform("tf", {0: est}, takes)
     with pytest.raises(NotNative, match=reason):
         to_native(step, strict=True)
+
+
+def test_a_failing_kernel_probe_leaves_sin_python(monkeypatch):
+    from sql_transform.native import function
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("no engine")
+
+    monkeypatch.setattr(function, "DuckDBInferFn", refuse)
+    function.kernel_is_confits.cache_clear()
+    try:
+        est = FunctionTransformer(np.sin).fit(np.zeros((2, 1)))
+        step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+        with pytest.raises(NotNative, match="kernel is not confit's"):
+            to_native(step, strict=True)
+    finally:
+        function.kernel_is_confits.cache_clear()

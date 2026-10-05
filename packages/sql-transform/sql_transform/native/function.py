@@ -8,14 +8,14 @@ the identity. The step hands it a row of doubles (NULL as NaN), so `func`
 runs on float64 and the entry spells its value per feature.
 
 Served, each checked against numpy on signed zeros, NaN, infinities and
-subnormals: `abs`/`fabs`, `negative` (as `-1.0 * x`, the same double; confit
-serves a product faster than a negation, PLANS), `positive` and
+subnormals: `abs`/`fabs`, `negative` (as `-1.0 * x`, the same double as
+`-x`), `positive` and
 `conjugate` (the identity on reals), `square` (`x * x`), `sqrt` (IEEE,
 correctly rounded on both sides; DuckDB raises on a negative, so it is
 guarded), `reciprocal` (`1.0 / x`), `floor`, `ceil`, `trunc`, `rint` (half
 to even, spelled from `trunc`: confit has no `round_even`),
-`sign`, and `sin`/`cos` where this platform's numpy answers as DuckDB does
-(`kernel_is_duckdbs` probes it), up to `_MAX_TRIG_WIDTH` features.
+`sign`, and `sin`/`cos` where this platform's numpy answers as confit
+does (`kernel_is_confits` probes it), up to `_MAX_TRIG_WIDTH` features.
 
 Refused: every other transcendental. numpy's float64 `exp`, `log`, `log2`,
 `log10`, `tan` and `cbrt` are its own SIMD kernels on x86-64 with AVX-512,
@@ -33,6 +33,7 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa
+from confit import DuckDBInferFn
 from confit import sql as S
 from sklearn.preprocessing import FunctionTransformer
 
@@ -41,23 +42,22 @@ from sql_transform.native._registry import NotNative, translates
 
 _NAN = f64(math.nan)
 _ZERO = f64(0.0)
-# The widest step served by `sin` or `cos`. confit counts a call that may
-# trap (DuckDB's `sin` raises on an infinity) as one a struct field read
-# must evaluate in every other lane too, so serving grows as the square of
-# the width: per row, three instances, 1,024-row batches, against the
-# Python step, `sin` 44 vs 92 us at 12 features and 281 vs 125 at 32
-# (master 49acad5, 2026-10-05), until confit knows `sin` and `cos` under a
-# guard that excludes the infinities (PLANS, "Needs from confit"). The other
-# spellings are trap-free (`floor`, `ceil`, `trunc` are total, `sqrt` is
-# under its guard, since confit #362) and serve 128 features: `sqrt` 30 vs
-# 439 us, `floor` 25 vs 378 us.
-_MAX_TRIG_WIDTH = 12
+# The widest step served by `sin` or `cos`. They raise on an infinity in
+# DuckDB, and confit counts them as able to trap even under the guard that
+# rules it out, so a struct field read also evaluates every other lane's
+# call and serving grows as the square of the width: per row, three
+# instances, 1,024-row batches, against the Python step, 13.7 vs 20.8 us
+# at 8 features, 26.8 vs 25.8 at 10, 36.6 vs 29.1 at 12, 178 vs 49 at 24
+# (release build, master with confit #362, 2026-10-05), until confit knows
+# a guarded `sin` and `cos` (PLANS, "Needs from confit"). The other
+# spellings are trap-free and serve 128 features.
+_MAX_TRIG_WIDTH = 8
 
 
 def _abs(x: S.Expr) -> S.Expr:
-    # `abs` without a call (above): `0.0 - x` at or below zero, which takes
-    # -0.0 to 0.0 as `abs` does (`-1.0 * x` would take 0.0 to -0.0). NaN
-    # is above every number in DuckDB, so it keeps itself.
+    # numpy's `abs`: `0.0 - x` at or below zero, which takes -0.0 to 0.0
+    # (`-1.0 * x` would take 0.0 to -0.0). NaN is above every number in
+    # DuckDB, so it keeps itself. The same double as DuckDB's `abs`.
     return S.case(x <= _ZERO, _ZERO - x).otherwise(x)
 
 
@@ -162,12 +162,12 @@ def _name(func: Any) -> str:
 
 
 @functools.cache
-def kernel_is_duckdbs(name: str) -> bool:
-    """Whether numpy's float64 `name` answers as DuckDB's `name` on probe
-    values: 40,000 draws over the magnitudes a double spans (huge arguments
-    exercise the range reduction), and the signed zeros and subnormals."""
-    from confit.oracle import Oracle
-
+def kernel_is_confits(name: str) -> bool:
+    """Whether numpy's float64 `name` answers as confit's `name`, the engine
+    that serves the entry, on probe values: 40,000 draws over the
+    magnitudes a double spans (huge arguments exercise the range
+    reduction), and the signed zeros and subnormals. A probe that fails to
+    run answers no."""
     rng = np.random.default_rng(20261005)
     n = 10_000
     x = np.concatenate(
@@ -179,10 +179,15 @@ def kernel_is_duckdbs(name: str) -> bool:
             [0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308, math.pi],
         ]
     )
-    with Oracle() as o:
-        o.load("p", pa.table({"x": x}))
-        sql = f"SELECT {name}(x) AS y FROM p"  # noqa: S608 — a fixed name
-        got = o.answer(sql).column("y").to_numpy()
+    rows = pa.table({"x": x})
+    sql = f"SELECT {name}(x) AS y FROM __THIS__"  # noqa: S608 — a fixed name
+    try:
+        probe = DuckDBInferFn(
+            sql, row_tables={"__THIS__": rows.schema}, static_tables={}, udfs=[]
+        )
+        got = probe.infer_arrow(rows).column("y").to_numpy()
+    except Exception:  # noqa: BLE001 — any failure leaves the entry out
+        return False
     want = getattr(np, name)(x)
     return bool(np.array_equal(want.view(np.int64), got.view(np.int64)))
 
@@ -222,6 +227,6 @@ def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             f" at each field read, past {_MAX_TRIG_WIDTH} (PLANS, 'sin and"
             " cos under a guard')"
         )
-    if func in _PROBED and not kernel_is_duckdbs(_PROBED[func]):
-        raise NotNative(f"{what}: this platform's numpy kernel is not DuckDB's")
+    if func in _PROBED and not kernel_is_confits(_PROBED[func]):
+        raise NotNative(f"{what}: this platform's numpy kernel is not confit's")
     return [spell(xi) for xi in x]
