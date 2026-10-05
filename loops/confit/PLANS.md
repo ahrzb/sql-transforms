@@ -53,14 +53,6 @@ Open, low priority (the catalog caps it meanwhile):
   where the remaining superlinear term is (the per-leaf `c` is shared now)
   before the catalog lifts its 4,000-quantile cap.
 
-Follow-ups from the early size refusal (#358):
-
-- The early refusal verifies the program before it refuses, so a lowering
-  bug in an oversized program stays `Internal`; verify is now the largest
-  part of a refusal (2.1 s of l2×32, 4.0 s of the 520-lane program).
-  Verifying only under debug assertions on that path keeps the coverage
-  (the nightly runs debug-assertion builds) and saves those seconds.
-
 Follow-ups from the shared-subexpression work:
 
 - `greatest`/`least` over n shared arguments keeps all n live across its n²
@@ -84,6 +76,11 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- The early size refusal (#358) verifies the oversized program only under
+  debug assertions, as the tests and the nightly build it; a release build
+  refuses the 520-lane test program in 2.5 s (6.0 s with the verify). With
+  #363, Normalizer l2 at 32 features is no longer refused: it builds in
+  0.5 s.
 - A subexpression repeated across a stage's projection that cannot trap
   (`can_trap`, now with DOUBLE `abs` on its allowlist) and has at least six
   nodes is computed once per row, before the first item, and read where it
