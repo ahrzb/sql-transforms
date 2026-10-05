@@ -80,6 +80,7 @@ dependencies = [
  "pyo3",
  "regex",
  "sqlparser",
+ "stacker",
  "target-lexicon",
  "unicode-segmentation",
 ]

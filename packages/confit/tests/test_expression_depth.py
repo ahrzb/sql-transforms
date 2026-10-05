@@ -31,9 +31,21 @@ def test_a_deep_expression_refuses_on_both_engines(sql):
     assert "expression depth" in v.detail
 
 
-def test_a_long_and_chain_still_serves():
-    sql = "SELECT " + " AND ".join(["x > 0"] * 1500) + " AS o FROM __THIS__"
+@pytest.mark.parametrize("op", ["AND", "OR"])
+def test_a_long_and_or_chain_serves(op):
+    # Past 64 terms the chain binds as a balanced tree (depth log n): a
+    # 6000-term chain overflowed the stack before.
+    terms = [f"x > {i % 7 - 3}" for i in range(6000)]
+    sql = f"SELECT {f' {op} '.join(terms)} AS o FROM __THIS__"
     assert_parity(sql, ROWS)
+
+
+def test_a_long_chain_keeps_its_traps():
+    terms = ["x > 0"] * 100 + ["k + 9223372036854775807 > 0"] + ["x < 9"] * 100
+    sql = f"SELECT {' AND '.join(terms)} AS o FROM __THIS__"
+    # Optimizer-off DuckDB traps on the overflow too; its optimizer prunes
+    # the conjunct (the ungated DIVERGE_OPT class).
+    assert_parity(sql, ROWS, expect="DIVERGE_OPT")
 
 
 def test_a_very_deep_expression_refuses_without_walking_it():

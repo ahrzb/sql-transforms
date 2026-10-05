@@ -726,6 +726,15 @@ impl<'a> FB<'a> {
     /// later is checked by default and only what provably cannot leave the
     /// range is exempt.
     fn emit(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
+        // Recursive per level: grow the stack rather than overflow it.
+        stacker::maybe_grow(
+            super::frontend::RED_ZONE,
+            super::frontend::STACK_SEGMENT,
+            || self.emit_here(e, live),
+        )
+    }
+
+    fn emit_here(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
         let lane = self.emit_kind(e, live)?;
         match e.ty.int_range() {
             Some((lo, hi)) if narrow_result_can_escape(&e.kind) => {

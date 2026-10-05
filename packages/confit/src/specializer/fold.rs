@@ -52,6 +52,15 @@ fn null(ty: Ty) -> SExpr {
 
 /// Fold every all-constant subtree of `e`, bottom-up.
 pub fn fold(e: SExpr) -> SExpr {
+    // Recursive per level: grow the stack rather than overflow it.
+    stacker::maybe_grow(
+        super::frontend::RED_ZONE,
+        super::frontend::STACK_SEGMENT,
+        || fold_here(e),
+    )
+}
+
+fn fold_here(e: SExpr) -> SExpr {
     let SExpr { kind, ty, nullable } = e;
     let e = |kind| SExpr { kind, ty, nullable };
     match kind {

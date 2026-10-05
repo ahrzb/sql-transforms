@@ -51,6 +51,40 @@ def test_a_sibling_field_still_traps(expr):
     assert_parity(q(expr), SAFE)
 
 
+def _lane(value: str, msg: str = "bad id", cond: str = "a = 0") -> str:
+    return f"CASE WHEN {cond} THEN {value} ELSE error('{msg}') END"
+
+
+@pytest.mark.parametrize(
+    "expr, trap",
+    [
+        # Siblings kept only for their traps, reduced to their conditions:
+        # equal ones are kept once, different messages keep field order.
+        (
+            f"(struct_pack(p := x, q := {_lane('x')}, r := {_lane('x * 2')})).p",
+            "bad id",
+        ),
+        (
+            f"(struct_pack(p := x, q := {_lane('x', 'm1')}, "
+            f"r := {_lane('x', 'm2')})).p",
+            "m1",
+        ),
+        (
+            f"(struct_pack(q := {_lane('x', 'm2')}, p := x, "
+            f"r := {_lane('x', 'm1')})).p",
+            "m2",
+        ),
+        # A condition that traps still traps, before its error() arm.
+        (f"(struct_pack(p := x, q := {_lane('x', cond=f'{BIG} > 0')})).p", "Overflow"),
+        # A trapping value in a taken arm is kept as it is.
+        (f"(struct_pack(p := x, q := CASE WHEN a > 0 THEN {BIG} END)).p", "Overflow"),
+    ],
+)
+def test_a_sibling_kept_for_its_traps(expr, trap):
+    assert_parity(q(expr), ROWS, trap=trap)
+    assert_parity(q(expr), ROWS.filter(pa.compute.equal(ROWS["a"], 0)))
+
+
 @pytest.mark.parametrize(
     "expr",
     [

@@ -36,7 +36,7 @@ use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimS
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
     ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Plan, SExpr, SKind, Stage,
-    StaticTable, StructCol, StructField, StructNode, bind_foldable, can_trap, may_trap,
+    StaticTable, StructCol, StructField, StructNode, bind_foldable, can_trap, may_trap, trap_skeleton,
 };
 
 mod refusal;
@@ -56,6 +56,11 @@ mod lists;
 mod naming;
 
 use self::refusal::*;
+
+/// Stack left before a recursive step moves to a fresh segment, and that
+/// segment's size (`stacker::maybe_grow`).
+pub(crate) const RED_ZONE: usize = 256 * 1024;
+pub(crate) const STACK_SEGMENT: usize = 8 * 1024 * 1024;
 use self::from::*;
 use self::joins::*;
 use self::star::*;

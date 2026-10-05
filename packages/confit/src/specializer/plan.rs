@@ -450,14 +450,14 @@ pub struct JoinSpec {
 /// with lowering: an expression lowers to a flag lane IFF `nullable` — the
 /// out-column nullability, the CASE join shape, and the store form all key
 /// off it.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct SExpr {
     pub kind: SKind,
     pub ty: Ty,
     pub nullable: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum SKind {
     /// Input column, by index into the dynamic table's schema.
     Col(u32),
@@ -898,6 +898,43 @@ pub fn can_trap(e: &SExpr) -> bool {
             SKind::Lit(_) | SKind::NullOf
         ),
         _ => true,
+    }
+}
+
+/// What a sibling kept only for its traps must still evaluate: `None` when
+/// it cannot trap. A CASE keeps its conditions (they decide which arm runs,
+/// and may trap) and the results that can trap; the rest answer NULL. The
+/// value is never read, so this traps exactly when `e` does, with the same
+/// message, first trap first. Siblings that differ only in their trap-free
+/// values (a fitted lane per field, every one with the same
+/// `ELSE error(..)`) come out equal, and a read keeps one of them.
+pub fn trap_skeleton(e: &SExpr) -> Option<SExpr> {
+    if !can_trap(e) {
+        return None;
+    }
+    match &e.kind {
+        SKind::Case { arms, default } => {
+            let null = || SExpr {
+                kind: SKind::NullOf,
+                ty: e.ty,
+                nullable: true,
+            };
+            Some(SExpr {
+                kind: SKind::Case {
+                    arms: arms
+                        .iter()
+                        .map(|(c, r)| (c.clone(), trap_skeleton(r).unwrap_or_else(null)))
+                        .collect(),
+                    default: default
+                        .as_deref()
+                        .and_then(trap_skeleton)
+                        .map(Box::new),
+                },
+                ty: e.ty,
+                nullable: true,
+            })
+        }
+        _ => Some(e.clone()),
     }
 }
 
