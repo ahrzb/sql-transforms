@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**6 of 68** in-scope transformers are native (84 listed by sklearn).
+**8 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -47,7 +47,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `MiniBatchKMeans` | not yet |  |
 | `MiniBatchNMF` | not yet |  |
 | `MiniBatchSparsePCA` | not yet |  |
-| `MissingIndicator` | not yet |  |
+| `MissingIndicator` | native | bit-exact |
 | `MultiLabelBinarizer` | out of scope | encodes a target, not features |
 | `NMF` | not yet |  |
 | `NeighborhoodComponentsAnalysis` | not yet |  |
@@ -77,7 +77,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `SelectKBest` | not yet |  |
 | `SelectPercentile` | not yet |  |
 | `SequentialFeatureSelector` | not yet |  |
-| `SimpleImputer` | not yet |  |
+| `SimpleImputer` | native | bit-exact |
 | `SkewedChi2Sampler` | not yet |  |
 | `SparseCoder` | not yet |  |
 | `SparsePCA` | not yet |  |

@@ -7,70 +7,47 @@ first. Remove an item when it lands.
 
 Easiest first; each is one family, one PR.
 
-1. **`SimpleImputer`** for numbers: `mean`, `median`, `most_frequent`,
-   `constant`; `add_indicator` adds lanes. `MissingIndicator`.
-2. **Selectors:** `VarianceThreshold`, `SelectKBest`, `SelectPercentile`,
+1. **Selectors:** `VarianceThreshold`, `SelectKBest`, `SelectPercentile`,
    `SelectFpr`/`Fdr`/`Fwe`, `GenericUnivariateSelect`, `SelectFromModel`,
    `RFE`, `RFECV`, `SequentialFeatureSelector`: `transform` keeps a fitted
    column subset.
-3. **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
+2. **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
    `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
    `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
    (x scores), `LinearDiscriminantAnalysis`: a matvec, so a measured bound
    (`_helpers.dot`).
-4. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
-5. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
+3. **`PolynomialFeatures`** (`degree`, `interaction_only`, `include_bias`).
+4. **Encoders over strings:** `OrdinalEncoder`, `OneHotEncoder`
    (`handle_unknown`, `drop`, infrequent categories), `TargetEncoder`
    (transform of new rows only). Needs string features in the fixtures.
-6. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 5).
-7. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
+5. **`KBinsDiscretizer`** (`encode="ordinal"`; `onehot-dense` after 4).
+6. **Non-linear maps:** `PowerTransformer` (Yeo-Johnson, Box-Cox,
    `standardize`), `QuantileTransformer` (interpolation over quantiles),
    `SplineTransformer`, `FunctionTransformer` for numpy ufuncs with a SQL
    twin, `AdditiveChi2Sampler`, `SkewedChi2Sampler`, `RBFSampler`,
    `PolynomialCountSketch`.
-8. **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
+7. **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
    `BisectingKMeans`, `Birch` (`transform` = distances).
-9. **Compositions:** a step whose instances are `Pipeline`s of catalog
+8. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations), then `ColumnTransformer` and
    `FeatureUnion`.
 
 ## Needs from confit
 
-- **A constant CASE result that counts as trap-free.** A field read keeps
-  each sibling `can_trap` (#328) cannot clear, and a typed constant
-  standing as a CASE result (`CASE WHEN x IS NULL THEN CAST('0.0' AS
-  DOUBLE) ELSE x END`, as `confit.sql` renders every float and as
-  `coalesce(x, NaN)` binds) is not cleared, though the same constant inside
-  arithmetic or a comparison is. Measured 2026-10-05, 32 lanes of
-  `CASE WHEN id = 0 THEN f(x) END` per 64-row call: 216 µs when `f` is
-  arithmetic over the parameter, 241 µs for `CASE WHEN x IS NULL THEN x
-  ELSE x + 0.0 END`, 5,220 µs for `CASE WHEN x IS NULL THEN 0.0 ELSE x
-  END`. Every entry has such arms (the NULL-as-NaN feature read, clip
-  bounds, the norm guard, Binarizer's 1/0, an imputed statistic), so a
-  read of a native step evaluates all its lanes: `StandardScaler` over 32
-  features serves a 64-row call in 5,081 µs, against 256 µs for the same
-  lanes written inline (the twin: about 500 µs a row). Every wide entry
-  waits on this. (Lane 0 alone carries the unknown-id `error()`, so a read
-  would then keep two lanes.)
-- **Per-read expansion** (confit PLANS' first item for this catalog). Build
-  time grows with field reads × body: `to_native` (which builds the
-  all-lanes query once) takes, with one / three fitted groups,
-  `StandardScaler` 0.3 / 1.0 s at 32 features, 1.4 / 5.0 s at 64 and
-  8 s / past the 4M-token cap at 128; `MinMaxScaler(clip=True)` 6.3 / 25 s
-  at 64; `Normalizer` l1 1.8 s and l2 4.2 s at 16, l2 at 32 past
-  Cranelift's function-size limit, and max (quadratic per lane) 2 s at 8,
-  15 s at 12. `Normalizer(norm="max")` is served to 8 features meanwhile.
-- **`greatest`/`least` in linear size.** They are composed as a CASE fold
-  that clones the accumulator four times per argument
-  (`src/specializer/frontend/functions.rs`): 6 arguments take 5.6 s to
-  build and 8 fail Cranelift's function-size limit after 62 s.
-  `_helpers.row_max` spells a row maximum as a tournament of two-way CASEs
-  instead (quadratic).
-- **Dispatch on many instances**: served now. A CASE whose leading arms are
-  `id = <integer>` (8 or more) lowers to a binary search, and trap-free
-  struct siblings no longer cost a lane per read: 1000 instances serve at
-  about 0.11 us per row instead of 6.9 us. Build time still grows with
-  field reads x instances (confit PLANS, "Per-read expansion").
+- **Per-read expansion** (confit PLANS' first item for this catalog). A
+  field read expands the function's whole body, so build time grows with
+  reads × body. Through `to_native` (which builds the all-lanes query
+  once), with one / three fitted groups, on master 6306c8f:
+  `StandardScaler` 0.09 / 0.27 s at 32 features, 0.35 / 1.0 s at 64,
+  1.6 s / past the 4M-token cap at 128; `MinMaxScaler(clip=True)`
+  0.27 / 0.86 s at 32, 1.2 / 4.2 s at 64; `Normalizer` (every lane repeats
+  the row norm) l1 1.6 s and l2 3.3 s at 16, and at 32 refused past the
+  compiled-size limit, but only after 10 s (l1) and 26 s (l2) of building;
+  max 1.8 s at 8, where it is capped meanwhile. Served since #336–#338: a
+  constant CASE result counts as trap-free (a 32-lane step serves a
+  64-row call in 331 µs, against 297 µs inline and 5,081 µs before), a
+  named refusal past Cranelift's size limit, `greatest`/`least` without
+  the exponential fold, and binary-search dispatch over many instances.
 
 ## Left Python
 
@@ -82,6 +59,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `npyv_muladd_f64` is a fused `vfmaq_f64`, which SQL cannot spell
   (inferred from numpy's source; no aarch64 run yet).
 - `MinMaxScaler(clip=True)` with a NaN `feature_range` bound.
+- `SimpleImputer` fitted on object data (strings), whose output is not a
+  float the step can return; a `missing_values` that is neither NaN nor a
+  number (`None`, `pd.NA`, a string); `MissingIndicator(sparse=True)`.
 - `Normalizer(norm="max")` over more than 8 features, until per-read
   expansion (above).
 - Any step confit does not build (past its expansion cap or Cranelift's

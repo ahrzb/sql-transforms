@@ -9,6 +9,7 @@ registered class to estimator factories covering its configurations, and
 from __future__ import annotations
 
 import random
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -16,6 +17,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.decomposition import PCA
+from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.preprocessing import (
     Binarizer,
     MaxAbsScaler,
@@ -32,6 +34,12 @@ from sql_transform.native import (
     check,
     explain_native,
     to_native,
+)
+
+# An imputer whose fit saw a column only missing warns at every transform
+# that it drops it; the fixtures make such columns on purpose.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Skipping features without any observed values:UserWarning"
 )
 
 FIXTURES: dict[type, list[Callable[[], Any]]] = {
@@ -65,6 +73,29 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
         lambda: Binarizer(threshold=2.5),
         lambda: Binarizer(threshold=-40.0),
     ],
+    SimpleImputer: [
+        SimpleImputer,
+        lambda: SimpleImputer(strategy="median"),
+        lambda: SimpleImputer(strategy="most_frequent"),
+        lambda: SimpleImputer(strategy="constant", fill_value=-7.5),
+        lambda: SimpleImputer(add_indicator=True),
+        lambda: SimpleImputer(strategy="median", keep_empty_features=True),
+        lambda: SimpleImputer(
+            missing_values=-1.0, strategy="most_frequent", add_indicator=True
+        ),
+        lambda: SimpleImputer(
+            missing_values=0.0,
+            strategy="constant",
+            fill_value=2.5,
+            keep_empty_features=True,
+            add_indicator=True,
+        ),
+    ],
+    MissingIndicator: [
+        MissingIndicator,
+        lambda: MissingIndicator(features="all"),
+        lambda: MissingIndicator(missing_values=-1.0, error_on_new=False),
+    ],
 }
 
 # Serving values beyond the fit's range: signed zeros, extremes.
@@ -73,19 +104,41 @@ EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324]
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 
 
-def _fit_matrix(rng: np.random.Generator, n_features: int) -> np.ndarray:
+def _fit_matrix(
+    rng: np.random.Generator,
+    types: list[pa.DataType],
+    holes: list[str | None],
+    marker: float,
+) -> np.ndarray:
+    """One instance's fit data, a column per feature type (an integer one
+    rounded). `holes[j]` says where column j is missing, the same for every
+    instance of a step (so fitted widths agree): None nowhere (and never
+    holding the marker), "some" in about a fifth of its rows and at least
+    one, "all" everywhere. `marker` spells missing."""
     n = int(rng.integers(5, 60))
     cols = []
-    for _ in range(n_features):
-        kind = rng.integers(4)
+    for t, hole in zip(types, holes, strict=True):
+        kind = rng.integers(5)
         if kind == 0:
-            cols.append(rng.normal(rng.uniform(-100, 100), rng.uniform(0.01, 50), n))
+            c = rng.normal(rng.uniform(-100, 100), rng.uniform(0.01, 50), n)
         elif kind == 1:
-            cols.append(rng.integers(-1000, 1000, n).astype(float))
+            c = rng.integers(-1000, 1000, n).astype(float)
         elif kind == 2:
-            cols.append(np.full(n, rng.uniform(-5, 5)))  # zero variance
+            c = np.full(n, rng.uniform(-5, 5))  # zero variance
+        elif kind == 3:
+            c = rng.exponential(rng.uniform(0.1, 1e6), n)
         else:
-            cols.append(rng.exponential(rng.uniform(0.1, 1e6), n))
+            c = rng.integers(-3, 4, n).astype(float)  # few distinct values
+        if t == pa.int64():
+            c = np.round(c)
+        if not np.isnan(marker):
+            c[c == marker] = marker + 1.0
+        if hole == "all":
+            c[:] = marker
+        elif hole == "some":
+            c[rng.random(n) < 0.2] = marker
+            c[rng.integers(n)] = marker
+        cols.append(c)
     return np.column_stack(cols)
 
 
@@ -98,14 +151,28 @@ def _step(cls_factory, seed: int) -> PythonTransform:
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
     takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
+    # Missing values in the fit data, for an estimator that takes them: an
+    # imputer's own `missing_values`, or NaN where sklearn says it allows it.
+    proto = cls_factory()
+    marker = float(getattr(proto, "missing_values", np.nan))
+    holes: list[str | None] = [None] * n_features
+    if (
+        hasattr(proto, "missing_values")
+        or proto.__sklearn_tags__().input_tags.allow_nan
+    ):
+        holes = [
+            ("some", "all", None)[int(np.searchsorted([0.4, 0.48], rng.random()))]
+            for _ in range(n_features)
+        ]
+        if hasattr(proto, "missing_values") and "some" not in holes:
+            holes[int(rng.integers(n_features))] = "some"
     instances = {}
-    for k in range(int(rng.integers(1, 4))):
-        X = _fit_matrix(rng, n_features)
-        for j, t in enumerate(types):
-            if t == pa.int64():
-                X[:, j] = np.round(X[:, j])
-        instances[k] = cls_factory().fit(X)
-    width = np.asarray(instances[0].transform(X[:1])).reshape(1, -1).shape[1]
+    with warnings.catch_warnings():  # all-missing columns, by design
+        warnings.simplefilter("ignore")
+        for k in range(int(rng.integers(1, 4))):
+            X = _fit_matrix(rng, types, holes, marker)
+            instances[k] = cls_factory().fit(X)
+        width = np.asarray(instances[0].transform(X[:1])).reshape(1, -1).shape[1]
     if width == 1:
         returns = pa.float64()
     elif rng.random() < 0.3:  # unnamed lanes
@@ -123,6 +190,8 @@ def _value(rng: random.Random, regime: str) -> float | None:
         return rng.choice(EDGES)
     if regime == "small":
         return rng.choice(SMALL)
+    if regime == "ints":
+        return float(rng.randint(-3, 3))
     return rng.uniform(-1e3, 1e3)
 
 
@@ -131,8 +200,11 @@ def _rows(step: PythonTransform, seed: int) -> pa.Table:
     n = 40
     ids = [rng.choice([None, *step.instances]) for _ in range(n)]
     # A row's regime: plain values; some edges; some NULLs (where most
-    # twins answer and a validating one raises); or all small.
-    regimes = rng.choices(["plain", "edges", "nulls", "small"], [55, 15, 15, 15], k=n)
+    # twins answer and a validating one raises); all small; or few distinct
+    # integers (a category, or an imputer's numeric missing marker).
+    regimes = rng.choices(
+        ["plain", "edges", "nulls", "small", "ints"], [45, 15, 15, 10, 15], k=n
+    )
     cols: dict[str, pa.Array] = {"__iid": pa.array(ids, pa.int64())}
     for f in step.takes:
         vals = [_value(rng, g) for g in regimes]
