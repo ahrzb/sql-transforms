@@ -12,11 +12,18 @@ the assert is `ours == DuckDB's`, so a wrong row here is impossible.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle, Trap
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity  # noqa: E402
 
 IN_SCHEMA = pa.schema(
     [
@@ -135,16 +142,15 @@ def _duck(sql: str) -> pa.Table:
     return o.answer(sql)
 
 
-def _ours(sql: str) -> pa.Table:
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
-    return fn.infer_arrow(pa.Table.from_pylist(ROWS))
+def _parity(sql: str, *udfs) -> None:
+    """The campaign verdict (`fuzz.parity`) must be AGREE over ROWS."""
+    rows = pa.Table.from_pylist(ROWS, schema=IN_SCHEMA)
+    assert_parity(sql, rows, udfs=list(udfs), expect="AGREE")
 
 
 @pytest.mark.parametrize("sql", CATALOGUE)
 def test_output_width_matches_duckdb(sql):
-    got, want = _ours(sql), _duck(sql)
-    compare.assert_schema(got.schema, want.schema, ctx=sql)
-    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
+    _parity(sql)
 
 
 def test_try_cast_to_integer_nulls_out_of_range():
@@ -280,10 +286,9 @@ def _duck_udf(sql, *udfs):
 def test_pure_udf_bind_fold_matches_duckdb_schema():
     """Whole-call None under field access is SQLNULL/int32 — both engines."""
     sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
-    ours, duck = _ours_udf(sql, _StructUdf()), _duck_udf(sql, _StructUdf())
+    duck = _duck_udf(sql, _StructUdf())
     assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
-    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
+    _parity(sql, _StructUdf())
 
 
 def test_pure_udf_fold_uses_the_real_result():
@@ -291,25 +296,22 @@ def test_pure_udf_fold_uses_the_real_result():
     NULL args folds to 99/BIGINT — executed once at build, never assumed."""
     u = _StructUdf(on_null=(99,))
     sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
-    ours = _ours_udf(sql, u)
+    _ours_udf(sql, u)
     assert u.calls == 1, "the bind fold runs the callable exactly once"
     duck = _duck_udf(sql, _StructUdf(on_null=(99,)))
     assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
     duck_rows = compare.rows(duck)
     assert duck_rows == [{"o": 99}] * len(ROWS), "oracle moved — remeasure"
-    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
-    compare.assert_rows(compare.rows(ours), duck_rows, ordered=True, ctx=sql)
+    _parity(sql, _StructUdf(on_null=(99,)))
 
 
 def test_pure_udf_fold_keeps_declared_type_for_null_fields():
     """A valid call whose FIELD is None keeps the declared BIGINT (measured:
     the SQLNULL collapse is whole-call-None only)."""
     sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
-    ours = _ours_udf(sql, _StructUdf(on_null=(None,)))
     duck = _duck_udf(sql, _StructUdf(on_null=(None,)))
     assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
-    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
+    _parity(sql, _StructUdf(on_null=(None,)))
 
 
 def test_side_effects_udf_is_never_executed_at_build():
@@ -372,10 +374,9 @@ ADOPTION_BATTERY = [
 
 @pytest.mark.parametrize("sql", ADOPTION_BATTERY)
 def test_sqlnull_fold_results_adopt_like_bare_null(sql):
-    ours, duck = _ours_udf(sql, _StructUdf()), _duck_udf(sql, _StructUdf())
+    duck = _duck_udf(sql, _StructUdf())
     assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
-    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
+    _parity(sql, _StructUdf())
 
 
 class _ScalarStrUdf:
@@ -398,11 +399,9 @@ def test_pure_scalar_udf_null_under_concat_collapses():
     """A pure scalar udf operand folding to None makes || SQLNULL/int32 —
     the concat collapse reads through the bind-time udf fold."""
     sql = "SELECT us9(1, 2) || s AS o FROM __THIS__"
-    ours = _ours_udf(sql, _ScalarStrUdf(result=None))
     duck = _duck_udf(sql, _ScalarStrUdf(result=None))
     assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
-    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
+    _parity(sql, _ScalarStrUdf(result=None))
 
 
 def test_raising_pure_udf_under_concat_stays_runtime():
@@ -427,13 +426,12 @@ def test_pure_scalar_udf_value_under_concat_bakes_once():
         sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={}, udfs=[u]
     )
     assert u.calls == 1
-    ours = fn.infer_arrow(pa.Table.from_pylist(ROWS))
+    fn.infer_arrow(pa.Table.from_pylist(ROWS))
     assert u.calls == 1, "the baked literal never re-executes the udf"
     duck = _duck_udf(sql, _ScalarStrUdf(result=("x",)))
     duck_rows = compare.rows(duck)
     assert duck_rows == [{"o": "x" + r["s"]} for r in ROWS], "oracle moved — remeasure"
-    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
-    compare.assert_rows(compare.rows(ours), duck_rows, ordered=True, ctx=sql)
+    _parity(sql, _ScalarStrUdf(result=("x",)))
 
 
 # Measured: the bind-fold finishes what DuckDB's does
@@ -448,10 +446,9 @@ def test_pure_scalar_udf_value_under_concat_bakes_once():
     ],
 )
 def test_bind_fold_composition_gaps(sql):
-    ours = _ours_udf(sql, _StructUdf(), _ScalarStrUdf(result=None))
     duck = _duck_udf(sql, _StructUdf(), _ScalarStrUdf(result=None))
     assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    assert ours.schema == duck.schema, f"{sql}: {ours.schema} != {duck.schema}"
+    _parity(sql, _StructUdf(), _ScalarStrUdf(result=None))
 
 
 # || with an operand that FOLDS to NULL is an SQLNULL
@@ -471,20 +468,18 @@ CONCAT_NULL_BATTERY = [
 
 @pytest.mark.parametrize("sql", CONCAT_NULL_BATTERY)
 def test_concat_with_foldable_null_operand_is_sqlnull(sql):
-    got, want = _ours(sql), _duck(sql)
+    want = _duck(sql)
     assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    compare.assert_schema(got.schema, want.schema, ctx=sql)
-    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
+    _parity(sql)
 
 
 def test_concat_with_unfoldable_null_operand_stays_varchar():
     """The foldability boundary: a column inside the CASE blocks the fold,
     so DuckDB keeps the bound VARCHAR type — and so must we."""
     sql = "SELECT (CASE WHEN 1 = 0 THEN s END) || 'a' AS o FROM __THIS__"
-    got, want = _ours(sql), _duck(sql)
+    want = _duck(sql)
     assert want.schema.field("o").type == pa.string(), "oracle moved — remeasure"
-    compare.assert_schema(got.schema, want.schema, ctx=sql)
-    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
+    _parity(sql)
 
 
 @pytest.mark.parametrize(
@@ -495,9 +490,9 @@ def test_concat_with_unfoldable_null_operand_stays_varchar():
     ],
 )
 def test_decimal_arith_over_foldable_null_collapses(sql):
-    got, want = _ours(sql), _duck(sql)
+    want = _duck(sql)
     assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+    _parity(sql)
 
 
 # The round/trunc DIGITS slot accepts INTEGER-or-narrower on DuckDB; a

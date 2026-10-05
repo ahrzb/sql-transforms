@@ -16,11 +16,17 @@ failure rather than a silent rebaseline. `confit.oracle.Oracle` puts
 from __future__ import annotations
 
 import datetime
+import sys
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 from confit.oracle import Oracle
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz import parity  # noqa: E402
 
 _S1 = pa.struct([("mean", pa.float64())])
 _S2 = pa.struct([("inner", pa.struct([("val", pa.float64())]))])
@@ -78,9 +84,13 @@ def ours(sql, row_table, static, **kw):
 
 
 def check(sql, row_table, static, want):
+    """The oracle's answer is pinned, so an oracle move fails loudly; then
+    the campaign verdict (`fuzz.parity`) must be AGREE: both backends, both
+    boundaries, names and types."""
     got_oracle = _oracle(sql, row_table, static)
     assert got_oracle == want, f"oracle moved: {got_oracle} != {want}"
-    assert ours(sql, row_table, static) == want
+    v = parity.verdict(sql, row_table, statics={"s": static})
+    assert v.kind == "AGREE", f"{v.kind} ({v.klass}): {v.detail[:400]}\n  sql: {sql}"
 
 
 def _static_w(wtype, wval, sid=5):

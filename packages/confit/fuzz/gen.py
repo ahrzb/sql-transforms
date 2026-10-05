@@ -508,6 +508,9 @@ class Case:
     # A case revived from stored SQL and inputs (`oracle.case_from_inputs`)
     # has no AST: its SQL is carried as text and `query` is None.
     sql: str | None = None
+    # UDF protocol objects a hand-written case brings (`fuzz.parity`), handed
+    # to both engines as they are, after the ones `udfs` specifies.
+    udf_objs: list = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ values

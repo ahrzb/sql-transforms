@@ -52,8 +52,15 @@ jobs:
           enable-cache: true
 
       # No Spark group: the campaign never touches the dialect gate.
+      # An optimized build with `debug_assert!` on: the lowering invariants
+      # the release wheel compiles out run across every seed, and a broken
+      # one is a PANIC verdict instead of a silently wrong store (campaign
+      # seed 5001244). The refresh keeps a cached plain build from being
+      # reused for it.
       - name: Build extension + install deps
-        run: uv sync --locked
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+        run: uv sync --locked --refresh-package confit --reinstall-package confit
 
       - name: Campaign shard
         working-directory: packages/confit

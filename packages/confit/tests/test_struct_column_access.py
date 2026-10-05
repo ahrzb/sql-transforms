@@ -1,16 +1,22 @@
 """Field access over a struct COLUMN in every spelling DuckDB serves:
 `s['f']`, `struct_extract(s, 'f')`, `(s).f`, chains mixing them with the
 dot form, and `v.*` over a joined static struct. Each reads exactly what
-`s.f` reads. Every expectation is the live oracle, names included (DuckDB
-names `s['n'].x` as `(s['n']).x`).
+`s.f` reads. Every expectation is the campaign verdict (`fuzz.parity`),
+names included (DuckDB names `s['n'].x` as `(s['n']).x`).
 """
 
 from __future__ import annotations
 
+import re
+import sys
+from pathlib import Path
+
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn, compare
-from confit.oracle import Oracle
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity  # noqa: E402
 
 _S = pa.struct(
     [("a", pa.int64()), ("B", pa.string()), ("n", pa.struct([("x", pa.float64())]))]
@@ -43,15 +49,7 @@ D = pa.table(
 )
 
 
-def _duck(sql):
-    with Oracle() as o:
-        o.load("__THIS__", pa.Table.from_pylist(ROWS, schema=ROW))
-        o.load("d", D)
-        return o.try_answer(sql)
-
-
-def _build(sql):
-    return DuckDBInferFn(sql, row_tables={"__THIS__": ROW}, static_tables={"d": D})
+T = pa.Table.from_pylist(ROWS, schema=ROW)
 
 
 @pytest.mark.parametrize(
@@ -84,15 +82,7 @@ def _build(sql):
     ],
 )
 def test_struct_column_access_matches_duckdb(sql):
-    want = _duck(sql)
-    assert isinstance(want, pa.Table), f"oracle moved: {want}"
-    fn = _build(sql)
-    got = fn.infer_arrow(pa.Table.from_pylist(ROWS, schema=ROW))
-    compare.assert_schema(got.schema, want.schema, ctx=sql)
-    # DuckDB's join output order is a hash-join accident: compare as a
-    # multiset (the pinned join parity contract).
-    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=False, ctx=sql)
-    assert fn.infer_rows(ROWS) == got.to_pylist()
+    assert_parity(sql, T, statics={"d": D}, expect="AGREE")
 
 
 @pytest.mark.parametrize(
@@ -110,9 +100,9 @@ def test_struct_column_access_matches_duckdb(sql):
     ],
 )
 def test_struct_column_access_refuses_where_duckdb_does(sql, needle):
-    assert not isinstance(_duck(sql), pa.Table), "oracle moved: DuckDB serves"
-    with pytest.raises(ValueError, match=needle):
-        _build(sql)
+    v = assert_parity(sql, T, statics={"d": D}, expect="REFUSED")
+    assert v.oracle == "rejects", f"oracle moved: {v.oracle}"
+    assert re.search(re.escape(needle), v.detail), v.detail
 
 
 @pytest.mark.parametrize(
@@ -127,6 +117,6 @@ def test_struct_column_access_refuses_where_duckdb_does(sql, needle):
     ],
 )
 def test_struct_column_access_refusals_duckdb_serves(sql):
-    assert isinstance(_duck(sql), pa.Table), "oracle moved: DuckDB refuses"
-    with pytest.raises(ValueError, match="unsupported"):
-        _build(sql)
+    v = assert_parity(sql, T, statics={"d": D}, expect="REFUSED")
+    assert v.oracle == "serves", f"oracle moved: {v.oracle}"
+    assert "unsupported" in v.detail

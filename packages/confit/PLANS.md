@@ -26,19 +26,12 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    Still waiting from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
    TIMEOUT class where confit traps first while DuckDB builds a 2 GiB string
    (seed 1102717, EXCLUDED ratification).
-2. **Parity migration.** On the campaign verdict: `duck_check` (about 550
-   calls across the `test_duckdb_*` files, the shrinker's pin template),
-   `test_null_operands`, `test_arm_widening`, `test_derived_tables`,
-   `test_metamorphic`. Still on their own helpers: `test_integer_widths`,
-   `test_join_keys`, `test_infer_arrow`, `test_struct_column_access`,
-   `test_params_joins`, `test_udfs`, `duck_check_ulp` (ulp tolerance) and the
-   UDF helpers (`fuzz.parity` has no UDF input yet).
-3. **Subquery design, PR 4** (static-only subqueries computed at
+2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
-4. **Unaliased expression names** (`tests/test_open_divergences.py`):
+3. **Unaliased expression names** (`tests/test_open_divergences.py`):
    DuckDB names `a + 1` as `(a + 1)`, printing the bound expression; confit
    echoes the SQL text. Needs DuckDB's expression printer for the output
    name, at the top level and at every subquery boundary.
@@ -116,8 +109,9 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Evidence and gates
 
-- **No debug-build pytest pass.** Lowering invariants are `debug_assert!`s the
-  release extension compiles out.
+- **No debug-assertion pytest pass.** Lowering invariants are `debug_assert!`s
+  the release extension compiles out. The nightly campaign builds with them on
+  (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`); the PR gate does not.
 - **IR generator coverage.** `ir::gen::gen_program` never emits `Dtof`, `Itod`,
   the decimal-expression opcodes (`Dop`, `Dcast`, `DcastOk`, `Dunary`, `Dtos`),
   `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`, `ExternCall`,
