@@ -57,6 +57,12 @@ Delivered:
   scope. 128 lanes read 128 times build in 0.4 s (13.6 s before both), 128
   lanes over 3 groups (past the 4M-token cap before) in 0.7 s, 256 lanes in
   1.4 s. An unaliased read is named as DuckDB names it, `(f(x)).p`.
+- A sibling that cannot raise is not evaluated by a field read: DOUBLE
+  negation, `exp`, `abs`, `round`, `cbrt`, `floor`/`ceil`/`trunc` are total,
+  and `ln`/`log2`/`log10`/`sqrt` under a CASE guard that excludes their
+  domain error (`WHEN x <= 0 THEN .. ELSE ln(x)`, `WHEN x > 0 THEN ln(x)`)
+  cannot raise. 32 lanes of a `-x` quantile shape serve a 64-row call in
+  0.61 ms (9.43 ms before); 64 guarded-`ln` lanes in 0.62 ms (22.6 ms).
 - A dropped function returns its JIT memory (`OwnedJit`): every build kept
   2 mappings before, so a process stalled at `vm.max_map_count` after about
   32k builds. 3,000 build/call/drop cycles now hold 479 mappings and 121 MB
