@@ -71,19 +71,25 @@ instance, 10,000-row batches: `constant`, `linear`, `error` build in
 21-23 s and serve 108-111 us per row; `continue` 45 s and 111 us;
 `periodic` 37 s and 59 us; the twin serves the `continue` step in 1,212
 us per row. At degree 1, 32 features: 4.2 s and 67 us; at degree 5, 8
-features of `continue`: 5.6 s and 24 us, and 32 pass confit's
-4,000,000-token cap and stay Python. One feature at degree 3, 5 knots:
-0.08 s and 0.67 us, against the twin's 205 us (2026-10-05).
+features of `continue`: 5.6 s and 24 us. One feature at degree 3, 5
+knots: 0.08 s and 0.67 us, against the twin's 205 us (2026-10-05). The
+entry refuses a step whose estimated build passes MAX_BUILD_S
+(`_build_estimate`), as quantile.py and isotonic.py cap theirs: of the
+widths above, the 32-feature ones at degree 3 and beyond stay Python, and
+16 features of degree 3, 8 knots, are served.
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 15
 fixture configurations, 3,000 steps, with none apart (2026-10-05). The
 x86-64 build of scipy does not contract `h += w*(xb - x)` into a fused
-multiply-add; a build that does (aarch64) would part from it.
+multiply-add; a build that does (aarch64) would part from it, and
+`bspline_is_scipys` probes for that on first use, the entry refusing where
+it finds one.
 """
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import Any
 
@@ -94,6 +100,36 @@ from sklearn.preprocessing import SplineTransformer
 
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, translates
+
+# The longest build the entry takes on (seconds, warm, release), as
+# quantile.py's and isotonic.py's caps (about 7 s and 6 s).
+MAX_BUILD_S = 7.0
+
+
+def _build_estimate(lanes: list[S.Expr], params: int) -> float:
+    """The seconds confit takes to build these lanes (warm, release build).
+    confit substitutes a body as text, so its work grows with the tree the
+    lanes spell (`tree`, every shared node counted where it is read) times
+    the parameters, plus the distinct nodes times the lanes. Fitted on 78
+    warm builds of one instance, 1 to 32 features, degrees 1 to 5, 5 to 8
+    knots, the five extrapolations, 0.5 to 43 s: each within a factor of 2
+    (0.50 to 1.93 times the estimate; master 8a67154, 2026-10-05). Of
+    them, the cap took on none slower than 9.8 s and refused none faster
+    than 7.0 s. It puts 16 features of degree 3, 8 knots, `continue` at
+    5.2 s, where the supervisor measured 5.3-6.1 s. The estimate is one
+    estimator's: a step's instances compound it (1, 2, 3 instances of a
+    25-feature fit built in 7.8, 16.7, 33.1 s, cold)."""
+    memo: dict[int, int] = {}
+
+    def size(e: S.Expr) -> int:
+        k = id(e)
+        if k not in memo:
+            memo[k] = 1 + sum(size(c) for c in e.children)
+        return memo[k]
+
+    tree = sum(size(e) for e in lanes)
+    return 2.40e-6 * tree * params + 1.27e-6 * len(memo) * len(lanes)
+
 
 # A knot gap under this, but not zero, could overflow `1 / gap` in the
 # recurrence, so the intervals are no longer known to give finite basis
@@ -166,6 +202,64 @@ def _lane_sum(h: list[Val], col: list[float], bounded: bool) -> S.Expr:
         else:
             acc = _add(acc, _mul(cv, ha))
     return _lift(acc)
+
+
+def _spline_py(t: list[float], k: int, c: np.ndarray, x: float) -> list[float]:
+    """`_evaluate_spline` at one `x`, on Python floats (the same IEEE
+    doubles, unfused): `_find_interval`, `_de_boor`, then every lane's
+    whole sum in order."""
+    n = len(t) - k - 1
+    ell = k
+    while ell < n - 1 and t[ell + 1] <= x:
+        ell += 1
+    h = _de_boor(t, k, ell, x)  # type: ignore[arg-type]
+    out = []
+    for j in range(c.shape[1]):
+        acc = 0.0
+        for a in range(k + 1):
+            acc = acc + float(c[ell + a - k, j]) * float(h[a])
+        out.append(acc)
+    return out
+
+
+@functools.cache
+def bspline_is_scipys() -> bool:
+    """Whether this platform's scipy `BSpline` answers as the recurrence
+    the entry spells, bit for bit: degrees 0 to 5, uneven knots with runs of
+    equal ones, points on and beside every knot, between them and past
+    them. A scipy build that contracts `h += w*(xb - x)` into a fused
+    multiply-add (aarch64) parts from it."""
+    from scipy.interpolate import BSpline
+
+    rng = np.random.default_rng(20261005)
+    for k in range(6):
+        for _ in range(6):
+            m = int(rng.integers(2, 9))
+            base = np.sort(rng.normal(size=m) * 10.0 ** rng.integers(-3, 4))
+            base[rng.random(m) < 0.2] = base[0]
+            base = np.sort(base)
+            gap = float(base[-1] - base[0]) or 1.0
+            lo = np.sort(base[0] - gap * rng.random(k))
+            hi = np.sort(base[-1] + gap * rng.random(k))
+            t = np.concatenate([lo, base, hi])
+            if len(t) - k - 1 <= k:
+                continue
+            c = np.eye(len(t) - k - 1)
+            spl = BSpline.construct_fast(t, c, k, extrapolate=True)
+            xs = [
+                w
+                for v in t
+                for w in (np.nextafter(v, -np.inf), v, np.nextafter(v, np.inf))
+            ]
+            xs += list(rng.uniform(t[0] - gap, t[-1] + gap, size=40))
+            xs = [float(v) for v in xs]
+            tl = [float(v) for v in t]
+            got = spl(np.array(xs))
+            for i, v in enumerate(xs):
+                want = _spline_py(tl, k, c, v)
+                if [repr(float(g)) for g in got[i]] != [repr(w) for w in want]:
+                    return False
+    return True
 
 
 def _remainder(d: S.Expr, p: float) -> S.Expr:
@@ -372,6 +466,12 @@ def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
             "SplineTransformer(sparse_output=True): the output is sparse"
             " (decisions/open/sparse-outputs.md)"
         )
+    if not bspline_is_scipys():
+        raise NotNative(
+            "SplineTransformer: this platform's scipy BSpline does not round as"
+            " de Boor's recurrence unfused, which the entry follows"
+            " (spline.bspline_is_scipys)"
+        )
     out: list[S.Expr] = []
     # The twin's `linear` branch raises its local `degree` by one when it
     # is at most 1, inside the loop over features and never back; the
@@ -383,6 +483,13 @@ def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         if est.extrapolation == "linear" and degree <= 1:
             degree += 1
         out += lanes if est.include_bias else lanes[:-1]
+    estimate = _build_estimate(out, len(x) + 1)
+    if estimate > MAX_BUILD_S:
+        raise NotNative(
+            f"SplineTransformer: an estimated {estimate:.0f} s build, past"
+            f" {MAX_BUILD_S:.0f} s; its expression doubles per degree until"
+            " confit binds a value once (PLANS, Needs from confit)"
+        )
     if len(out) != est.n_features_out_:
         raise NotNative(
             f"SplineTransformer: {len(out)} lanes where sklearn counts"

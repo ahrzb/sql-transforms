@@ -78,11 +78,12 @@ Easiest first; each is one family, one PR.
   polynomial arithmetic over one of its DOUBLE parameters, builds in 2.7 s
   over 4 parameters and 7.3 s over 32 (0.25, 0.63, 1.9, 7.3 s at 4, 8,
   16, 32 parameters of 10 lanes each; release build, master 8a67154,
-  2026-10-05); the reproduction is in #384's description. The
-  spline entry serves whatever confit builds: 32 features of degree 3,
-  8 knots, build in about 22 s (`error`) and 44 s (`continue`). A
-  binding (a `let`, or a nested function whose arguments are evaluated
-  once) would make the recurrence linear in the degree.
+  2026-10-05); the reproduction is in #384's description. 32 features
+  of degree 3, 8 knots, build in about 22 s (`error`) and 44 s
+  (`continue`); the spline entry refuses past an estimated 7 s build
+  meanwhile (spline.py, `_build_estimate`). A binding (a `let`, or a
+  nested function whose arguments are evaluated once) would make the
+  recurrence linear in the degree.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377): a constant CASE
@@ -181,9 +182,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `degree` (spline.py) continues two lanes of one from the second feature
   on, and writes a row above the knots into the previous feature's lane.
   Knots that are not sorted, partly NaN, or span past a double, and a
-  spline whose `c` is not sklearn's shape (no fit makes these). Wide,
-  high-degree steps past confit's expansion cap (Needs from confit, "A
-  value bound once"). Where the twin raises the entry answers: NaN past
+  spline whose `c` is not sklearn's shape (no fit makes these). A step
+  past an estimated 7 s build, per estimator (32 features of degree 3,
+  8 knots, and wider; Needs from confit, "A value bound once"), and any
+  step where scipy's `BSpline` does not round as the unfused recurrence
+  (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the entry answers: NaN past
   the knots under `extrapolation="error"`, 0.0 for NaN under
   `handle_missing="error"`, and 0.0 above the knots under
   `extrapolation="constant"` at `degree=0`.

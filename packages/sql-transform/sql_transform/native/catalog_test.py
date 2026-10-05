@@ -266,9 +266,10 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 # where few-valued columns do too, and a zero period under "periodic"); a
 # column only missing makes NaN knots under "quantile". Rows at and beside
 # the knots are in test_spline_at_the_knots. From degree 2 the steps take
-# at most SPLINE_FEATURES features: the expression doubles per degree and
-# confit's build grows with features times expression, so 32 features of
-# degree 4 build in minutes (spline.py has the measurements).
+# at most SPLINE_FEATURES features: the entry refuses past an estimated 7 s
+# build per estimator, but a step's instances compound it (1, 2, 3
+# instances of one 25-feature fit: 7.8, 16.7, 33.1 s), and the family's
+# gate share is about 120 s on 4 workers without the limit, 50 s with it.
 SPLINE_FEATURES = 8
 FIXTURES[SplineTransformer] = [
     SplineTransformer,
@@ -1091,6 +1092,39 @@ def test_spline_refuses(params, reason):
         "tf", {0: est}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
     )
     with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+
+
+def test_spline_refuses_a_build_past_the_cap():
+    # 24 features of degree 3, 8 knots, "continue": built in 21 s; the
+    # estimate puts it past MAX_BUILD_S before confit is asked.
+    X = np.random.default_rng(0).normal(size=(50, 24)) * 10
+    est = SplineTransformer(n_knots=8, extrapolation="continue").fit(X)
+    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(24)])
+    returns = pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)])
+    step = PythonTransform("tf", {0: est}, takes, returns)
+    with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
+        to_native(step, strict=True)
+
+
+def test_this_platform_evaluates_splines_as_the_entry():
+    from sql_transform.native.spline import bspline_is_scipys
+
+    assert bspline_is_scipys()
+
+
+def test_a_failing_spline_probe_leaves_the_step_python(monkeypatch):
+    from sql_transform.native import spline
+
+    monkeypatch.setattr(spline, "bspline_is_scipys", lambda: False)
+    est = SplineTransformer().fit(np.arange(10.0)[:, None])
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)]),
+    )
+    with pytest.raises(NotNative, match="bspline_is_scipys"):
         to_native(step, strict=True)
 
 
