@@ -13,7 +13,8 @@ translation exists, `to_native` hands back the step unchanged, which is
 always correct to serve, only slower.
 
 The catalog is one module per family (`scalers.py`, `impute.py`,
-`select.py`, `polynomial.py`, ...), each entry registered with `@translates(EstimatorClass)`.
+`select.py`, `polynomial.py`, ...), each entry registered with
+`@translates(EstimatorClass)`.
 This package imports confit and sklearn and nothing else of sql_transform
 but the step class, so the rest of the package can change around it.
 """

@@ -34,31 +34,27 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **A cast that cannot fail, cleared as trap-free.** An integer feature
-  reads as `coalesce(CAST(x AS DOUBLE), NaN)`; that CAST cannot trap, yet a
-  lane reading one appears to be kept as a sibling by every field read: a
-  `PolynomialFeatures(degree=3)` step over 8 features (165 lanes) builds in
-  1.2 s when they are DOUBLE, 11 s when all are BIGINT and 17 s when two
-  are (master c21a302). The catalog's wide polynomial fixtures take 20-50 s
-  each for it. Sent to the confit loop 2026-10-05.
 - **A subexpression shared within one call.** A `Normalizer` lane is
   `x_j / g(norm(x))`, and every lane repeats the row norm verbatim, so the
-  body is O(n²) in the features. Measured on master b851298 through
-  `to_native`: l1 1.5 s and l2 3.4 s at 16 features; at 32 confit refuses
-  past its compiled-size limit after 8 s (l1) and 19 s (l2), and at 48 l1
-  after 36 s while l2 fails to parse (`Expected: ), found: WHEN`) a
-  definition DuckDB serves (554k characters, parenthesis depth 32).
-  Evaluating identical pure subexpressions of a call once (or a local
-  binding in a SQL function body) makes it O(n). The max norm is capped at
-  8 features meanwhile. Sent to the confit loop 2026-10-05.
+  body is O(n²) in the features. Measured on master 477ca2f through
+  `to_native`: l1 1.6 s and l2 3.5 s at 16 features; at 32 confit refuses
+  past its compiled-size limit after 9 s (l1) and 20 s (l2); at 48 l1
+  refuses after 30 s, and l2 fails after 85 s with an internal Cranelift
+  verifier error where a named refusal is due (the step stays Python
+  either way). Evaluating identical pure subexpressions of a call once (or
+  a local binding in a SQL function body) makes it O(n). The max norm is
+  capped at 8 features meanwhile. Sent to the confit loop 2026-10-05, the
+  verifier error with a repro.
 
-Served since this catalog began (#336–#339): a constant CASE result counts
-as trap-free (a 32-lane step serves a 64-row call in 331 µs, against
+Served since this catalog began (#336–#339, #341): a constant CASE result
+counts as trap-free (a 32-lane step serves a 64-row call in 331 µs, against
 297 µs inline and 5,081 µs before); a named refusal past Cranelift's size
 limit; `greatest`/`least` without the exponential fold; binary-search
-dispatch over many instances; and a field read expands its call once
+dispatch over many instances; a field read expands its call once
 (`StandardScaler` at 128 features and three groups builds in 1.2 s, where
-it passed the token cap).
+it passed the token cap); a cast that cannot fail is trap-free (wide
+`PolynomialFeatures` over BIGINT features built in 20-50 s, now 1-3 s);
+and DuckDB's parse depth.
 
 ## Left Python
 
