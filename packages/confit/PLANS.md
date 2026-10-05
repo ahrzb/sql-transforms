@@ -136,11 +136,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 - **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
 
-## Code health
-
-- `DuckDBInferFn::new` carries the shape three ways (`many`, `shape_kind`,
-  `strict_map`); one `Shape` enum, easier once the static-only fold is gone.
-
 ## Authoring boundary (`sql_transform`)
 
 - Admission-ladder headroom: step semantics for order-keyed windows off the

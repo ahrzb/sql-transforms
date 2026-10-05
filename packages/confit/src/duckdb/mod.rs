@@ -1473,12 +1473,43 @@ enum Engine {
     },
 }
 
+/// The declared row-shape contract. `Filter` (the default) is 0..1 rows
+/// out per row in; `Map` statically PROVES exactly one (out[i] <-> in[i])
+/// or refuses at build; `Many` is for join multiplicity and is the only
+/// shape under which those constructs build.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Filter,
+    Map,
+    Many,
+}
+
+impl Shape {
+    fn parse(shape: Option<&str>) -> PyResult<Self> {
+        match shape {
+            None | Some("filter") => Ok(Shape::Filter),
+            Some("map") => Ok(Shape::Map),
+            Some("many") => Ok(Shape::Many),
+            Some(other) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "shape must be 'map', 'filter', or 'many', got '{other}'"
+            ))),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Shape::Filter => "filter",
+            Shape::Map => "map",
+            Shape::Many => "many",
+        }
+    }
+}
+
 #[pyclass(unsendable)]
 pub struct DuckDBInferFn {
     engine: Engine,
     row_table: String,
-    /// 0 = filter, 1 = map, 2 = many (the declared row-shape contract).
-    shape_kind: u8,
+    shape: Shape,
 }
 
 #[pymethods]
@@ -1494,28 +1525,7 @@ impl DuckDBInferFn {
         shape: Option<String>,
     ) -> PyResult<Self> {
         let (udf_decls, tree_decls) = parse_udfs(py, udfs.unwrap_or_default())?;
-        // The row-shape contract: "filter" (default) is 0..1 rows out per
-        // row in; "map" statically PROVES exactly-one
-        // (out[i] <-> in[i]) or refuses at build; "many" is for join
-        // multiplicity and is the only shape under which those constructs
-        // build.
-        let many = shape.as_deref() == Some("many");
-        let shape_kind: u8 = match shape.as_deref() {
-            None | Some("filter") => 0,
-            Some("map") => 1,
-            Some("many") => 2,
-            Some(_) => 0, // rejected below
-        };
-        let strict_map = match shape.as_deref() {
-            None | Some("filter") => false,
-            Some("map") => true,
-            Some("many") => false, // multiplicity: `many` below
-            Some(other) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "shape must be 'map', 'filter', or 'many', got '{other}'"
-                )))
-            }
-        };
+        let shape_c = Shape::parse(shape.as_deref())?;
         let (row_table, row_schema) = match row_tables.len() {
             1 => row_tables.into_iter().next().unwrap(),
             n => {
@@ -1693,7 +1703,7 @@ impl DuckDBInferFn {
             &opaque,
             &structs,
             &catalog,
-            many,
+            shape_c == Shape::Many,
             &extern_specs,
             &model_catalog,
             &bind_impls,
@@ -1701,7 +1711,7 @@ impl DuckDBInferFn {
             Ok(p) => p,
             Err(e) => return Err(build_err(e.to_string())),
         };
-        if strict_map {
+        if shape_c == Shape::Map {
             if let Some(blocker) = &prepared.one_row_blocker {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unsupported: shape='map': {blocker}"
@@ -1774,18 +1784,14 @@ impl DuckDBInferFn {
                 marsh,
             },
             row_table,
-            shape_kind,
+            shape: shape_c,
         })
     }
 
     /// The declared row-shape contract: "map", "filter", or "many".
     #[getter]
     fn shape(&self) -> &'static str {
-        match self.shape_kind {
-            1 => "map",
-            2 => "many",
-            _ => "filter",
-        }
+        self.shape.name()
     }
 
     /// The output contract as a `pa.Schema`: field names, arrow types and
