@@ -14,10 +14,14 @@ Easiest first; each is one family, one PR.
 2. **Compositions:** a step whose instances are `Pipeline`s of catalog
    entries (compose the translations; native T1, in progress), then
    `ColumnTransformer` and `FeatureUnion`.
-3. **Re-measure the caps set before #350:** the fixtures' `MAX_LANES`
-   (300) and `quantile.py`'s `MAX_QUANTILES` (2,000) were set while builds
-   grew about as lanes^2.5; since #350 they grow about as lanes^1.4
-   (2,556 lanes: 3.2 s, master 5513891).
+3. **`QuantileTransformer` as one search tree per feature:** its two
+   `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
+   with the other endpoint of each interval closed), so one tree whose
+   leaves compute both lines, with `x` at a breakpoint dispatched to the
+   neighbour piece the mirrored search picks, keeps the twin's arithmetic
+   and builds linearly (Needs from confit, "Two CASE trees"): the default
+   1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
+   and the caps could rise.
 
 ## Waiting on the owner
 
@@ -51,27 +55,21 @@ Easiest first; each is one family, one PR.
 - **An early size refusal** (the confit loop's ticket T2, in progress):
   the refusals above arrive after Cranelift has spent its time (up to
   47 s), which `to_native` pays before falling back to Python.
-- **A call confit knows cannot trap.** `can_trap` counts every call as
-  one that may trap (`ln`, `exp`, even unary minus), so a struct field
-  read keeps the other lanes' calls and serving grows as the square of the
-  width. Box-Cox (`native/power.py`), one instance, per row against the
-  Python step: 0.3 vs 118 us at 1 feature, 39 vs 183 at 8, 90 vs 192 at
-  12, 179 vs 209 at 16, 393 vs 267 at 24; build 0.15 s at 8, 2.1 s at 24,
-  13 s at 32 with three instances, and at 64 (three instances) confit
-  refuses past Cranelift's size limit after 26 s (master b926e88,
-  2026-10-05). Classifying total calls (`exp`, `pow`, `fneg`) as
-  trap-free, and `ln` under a CASE arm whose condition excludes `x <= 0`,
-  would make it linear. `PowerTransformer` is capped at 12 features
-  meanwhile. Sent to the confit loop 2026-10-05.
-- **A negation as cheap as a product.** A DOUBLE `-x` builds and serves
-  far slower than `-1.0 * x`, which is the same double: a 32-feature
-  `QuantileTransformer` (3 quantiles) built in 2.8 s and served 64 rows in
-  32 ms with `-x`, against 0.35 s and 1.1 ms with the product (master
-  b926e88). The entry spells the product meanwhile. Sent to the confit
-  loop 2026-10-05.
+- **Two CASE trees in one expression that build in linear time.** One
+  balanced CASE tree of q linear pieces over a DOUBLE builds linearly
+  (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
+  tree(-x))` over `x = coalesce(p, NaN)`, the shape of
+  `QuantileTransformer`'s entry (`np.interp` both ways), builds in 0.46,
+  1.37, 4.48 s, and the entry at 4,000 quantiles in 16.2 s (release
+  build, master 49acad5). One tree whose leaves hold both lines builds in
+  0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
+  the message sent to the confit loop (2026-10-05). The entry is capped at
+  4,000 quantiles over the features and 4,000,000 in their squares
+  meanwhile (about 7 s at most); Next, item 3, is the entry-side
+  alternative.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
-#353): a constant CASE
+#353, #362): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -85,7 +83,12 @@ that build about linearly in the lanes read (`PolynomialFeatures` at 2,556
 lanes: refused, then 287 s after #348, now 3.2 s after #350, master
 5513891); and a dropped function's JIT memory freed (each build leaked two
 memory mappings, so a process stalled at `vm.max_map_count` after about
-32,000 builds; 6,000 builds now hold 477 mappings).
+32,000 builds; 6,000 builds now hold 477 mappings); and total calls (`exp`,
+a negation) and `ln` under a CASE guard that excludes x <= 0 as trap-free,
+so a field read leaves the other lanes unevaluated (Box-Cox at 64
+features, one instance: 3,448 us per row and a 15.6 s build before, 52 us
+and 0.18 s with a guard arm the entry adds; a negation builds and serves
+as `-1.0 * x` does, and the entries spell `-x` again).
 
 ## Left Python
 
@@ -117,14 +120,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
   Bin edges that are not sorted numbers (searchsorted's answer is then
   its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
-  `norm.ppf` has no SQL twin. Past 2,000 quantiles per estimator (summed
-  over its features), a cap set before #350 (Next, item 3). Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
+  `norm.ppf` has no SQL twin. Past 4,000 quantiles over an estimator's
+  features or 4,000,000 in their squares, where builds pass about 7 s
+  (Needs from confit, "A CASE tree that builds in linear time").
+  Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
   (`quantile.interp_is_numpys` probes it).
 - `PowerTransformer(method="yeo-johnson")` and `standardize=True`
-  (waiting on the owner, above); Box-Cox over more than 12 features, until
-  confit knows a call that cannot trap (above). Where the twin rejects
+  (waiting on the owner, above). Where the twin rejects
   x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.

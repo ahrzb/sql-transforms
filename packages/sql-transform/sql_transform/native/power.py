@@ -26,13 +26,6 @@ _ONE = f64(1.0)
 # `lambda * log(x)` (past it, an `exp` that does not overflow).
 _LOG_LAMBDA = 1e-19
 _EXPM1_BELOW = 709.78
-# The widest step served. confit counts every call (`ln`, `exp`) as one
-# that may trap, so a struct field read also evaluates the other lanes'
-# calls and serving grows as the square of the width: per row, against the
-# Python step, 39 us vs 183 at 8 features, 90 vs 192 at 12, 179 vs 209 at
-# 16, 393 vs 267 at 24 (one instance, 1,024-row batches; 2026-10-05),
-# until confit knows a total call (PLANS, "Needs from confit").
-_MAX_WIDTH = 12
 
 
 def expm1(w: S.Expr) -> S.Expr:
@@ -43,9 +36,13 @@ def expm1(w: S.Expr) -> S.Expr:
     glibc's `expm1` over 600,000 draws of `w` in [-40, 709] and of
     |w| in [1e-18, 3] (2026-10-05)."""
     u = S.fn("exp", w)
+    # `u <= 0` is never taken (`u - 1 = -1` answers every such `u`): it is
+    # the guard confit reads to know `ln(u)` cannot raise, so a struct field
+    # read leaves the other lanes unevaluated (confit #362).
     return (
         S.case(u == _ONE, w)
         .when(u - _ONE == f64(-1.0), f64(-1.0))
+        .when(u <= f64(0.0), f64(-1.0))
         .otherwise((u - _ONE) * (w / S.fn("ln", u)))
     )
 
@@ -77,8 +74,9 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     2,400,000 draws of (lambda, x) against scipy's `boxcox` (lambda in
     [-5, 5] or |lambda| log-uniform in [1e-19, 10]; x log-uniform in
     [1e-300, 1e300], uniform in (0, 1e3) or within 1e-6 of 1), and 2 ulps
-    on the catalog's fixtures, seeds 0-199 of both configurations
-    (2026-10-05, x86-64 with AVX-512, glibc 2.39). `log` and `exp` are
+    on the catalog's fixtures, seeds 0-199 of both configurations, steps
+    of up to 32 features included since the width cap went (2026-10-05,
+    x86-64 with AVX-512, glibc 2.39). `log` and `exp` are
     glibc's on both sides; `expm1` is within 2 ulps of glibc's, and the
     division by lambda rounds both."""
     if est.method != "box-cox":
@@ -93,11 +91,5 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
             "PowerTransformer(standardize=True): `x - mean_` cancels the"
             " rounding expm1 is apart by into any number of ulps"
             " (decisions/open/power-parity-bound.md)"
-        )
-    if len(x) > _MAX_WIDTH:
-        raise NotNative(
-            f"PowerTransformer over {len(x)} features: every field read"
-            f" evaluates every lane's calls, slower than Python past"
-            f" {_MAX_WIDTH} (PLANS, 'A call confit knows cannot trap')"
         )
     return [_box_cox(xi, float(lam)) for xi, lam in zip(x, est.lambdas_, strict=True)]
