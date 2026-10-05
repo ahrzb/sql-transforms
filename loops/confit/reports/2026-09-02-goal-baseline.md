@@ -1,7 +1,7 @@
 # Goal yardsticks, baseline reading (2026-09-02)
 
-> Current specification locations: [serving contract](../specs/serving-contract.md)
-> and [success measures](../specs/success-measures.md). Historical goal-section
+> Current specification locations: [serving contract](../../../packages/confit/docs/specs/serving-contract.md)
+> and [success measures](../../../packages/confit/docs/specs/success-measures.md). Historical goal-section
 > names below are mapped in the [citation map](https://github.com/ahrzb/sql-transforms/blob/24aafe8/packages/confit/docs/oracle/13-old-ids.md#former-goal-sections).
 > The dated measurements and findings below are unchanged.
 

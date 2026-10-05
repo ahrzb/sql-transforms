@@ -1,13 +1,13 @@
 # Loop reporting policy
 
 Applies to both loops: the confit loop
-([`packages/confit/docs/loop/`](../packages/confit/docs/loop/README.md)) and the
+([`confit/`](confit/README.md)) and the
 native-transform loop ([`native/`](native/README.md)).
 It says when a loop reports, which KPIs every report carries, and how a report
 reaches the owner. The shape of a full report stays each loop's own: the native
 loop's [`report-format.md`](native/report-format.md), and the
 confit loop's goal readings (for example
-[`2026-09-26-goal-reading-n3.md`](../packages/confit/docs/reports/2026-09-26-goal-reading-n3.md)).
+[`2026-09-26-goal-reading-n3.md`](confit/reports/2026-09-26-goal-reading-n3.md)).
 
 The owner reads the loops through a tracker that refreshes every 3 hours from
 master, the PRs and these reports. It reads the KPI block below, so keep its

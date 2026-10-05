@@ -110,7 +110,7 @@ def _static_decimal_lit_case() -> gen.Case:
 
 def test_a_static_tables_only_case_refuses_at_build():
     """A query that reads no request table is outside the model
-    (docs/decisions/closed/static-only-queries.md): it refuses at build,
+    (loops/confit/decisions/closed/static-only-queries.md): it refuses at build,
     naming the driving relation, and the refusal keeps DuckDB's outcome."""
     v = oracle.run_case(_static_decimal_lit_case())
     assert v.kind == "REFUSED", v

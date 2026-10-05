@@ -1,9 +1,9 @@
 # Serving contract
 
-The [goal](../goal.md) defines the target. This document supplies the API and
+The [goal](../../../../loops/confit/goal.md) defines the target. This document supplies the API and
 scope details; the [oracle](../oracle/README.md) defines SQL compatibility. The
 rationale for the scope classification and output-nullability rule is in the
-[oracle policy](../decisions/closed/oracle-policy.md).
+[oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md).
 
 ## API and output shape
 
@@ -55,7 +55,7 @@ not change a request row's answer. Grouping, aggregation, sorting, distinctness,
 limits, and windows that depend on sibling request rows are outside the model.
 Aggregating frozen rows matched by one request row is inside it, as is reducing
 a list stored in that row. Queries reading no request table are outside it.
-The rationale is in the [scope decision](../decisions/closed/static-only-queries.md).
+The rationale is in the [scope decision](../../../../loops/confit/decisions/closed/static-only-queries.md).
 
 Syntax is not the scope test. The frontend also refuses CTEs, subqueries, set
 operations, `HAVING`, `QUALIFY`, named windows, `OFFSET`/`FETCH`/`TOP`, multiple
