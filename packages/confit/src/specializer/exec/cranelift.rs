@@ -140,6 +140,25 @@ extern "C" fn h_load_f64(p: *mut Cx, col: i64) -> f64 {
     }
 }
 
+/// A DECIMAL input cell as its i128 halves: the low half returned, the high
+/// half written through `hi_out` (cranelift's I128 is not a C-ABI value).
+/// Under `opt` a NULL cell reads as 0, the type default `LoadOpt` promises.
+extern "C" fn h_load_dec(p: *mut Cx, col: i64, opt: u8, hi_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let v = match &c.input().cols[col as usize] {
+        ColData::Dec { data, valid, .. } => {
+            if opt != 0 && !valid.get(c.row).copied().unwrap_or(true) {
+                0
+            } else {
+                data[c.row]
+            }
+        }
+        _ => unreachable!("load type checked by the verifier"),
+    };
+    unsafe { *hi_out = ((v as u128) >> 64) as i64 };
+    v as u128 as u64 as i64
+}
+
 extern "C" fn h_load_str(p: *mut Cx, col: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     // SAFETY: input and arena are disjoint allocations behind separate raw
@@ -2164,7 +2183,13 @@ fn translate_inst(
                     V::S(call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap())
                 }
                 Ty::F64 => V::S(call_h(b, module, "h_load_f64", &[cxp, cv]).unwrap()),
-                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
+                Ty::Dec(..) => {
+                    let zero = b.ins().iconst(types::I8, 0);
+                    let hp = b.ins().stack_addr(types::I64, slot_out, 0);
+                    let lo = call_h(b, module, "h_load_dec", &[cxp, cv, zero, hp]).unwrap();
+                    let hi = b.ins().stack_load(types::I64, slot_out, 0);
+                    V::S(b.ins().iconcat(lo, hi))
+                }
                 Ty::Str => {
                     let lp = b.ins().stack_addr(types::I64, slot_out, 0);
                     let off = call_h(b, module, "h_load_str", &[cxp, cv, lp]).unwrap();
@@ -2197,7 +2222,13 @@ fn translate_inst(
                     let zero = b.ins().f64const(0.0);
                     V::S(b.ins().select(f, raw, zero))
                 }
-                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
+                Ty::Dec(..) => {
+                    let one = b.ins().iconst(types::I8, 1);
+                    let hp = b.ins().stack_addr(types::I64, slot_out, 0);
+                    let lo = call_h(b, module, "h_load_dec", &[cxp, cv, one, hp]).unwrap();
+                    let hi = b.ins().stack_load(types::I64, slot_out, 0);
+                    V::S(b.ins().iconcat(lo, hi))
+                }
                 Ty::Str => {
                     let lp = b.ins().stack_addr(types::I64, slot_out, 0);
                     let off = call_h(b, module, "h_load_str", &[cxp, cv, lp]).unwrap();
@@ -2434,6 +2465,7 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_load_i64", h_load_i64 as *const u8),
     ("h_load_f64", h_load_f64 as *const u8),
     ("h_load_str", h_load_str as *const u8),
+    ("h_load_dec", h_load_dec as *const u8),
     ("h_load_valid", h_load_valid as *const u8),
     ("h_const_str", h_const_str as *const u8),
     ("h_iadd", h_iadd as *const u8),
@@ -2514,6 +2546,7 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_load_i64" => (&[ptr, I64], Some(I64)),
         "h_load_f64" => (&[ptr, I64], Some(F64)),
         "h_load_str" => (&[ptr, I64, I64], Some(I64)),
+        "h_load_dec" => (&[ptr, I64, I8, I64], Some(I64)),
         "h_const_str" => (&[ptr, I64, I64], Some(I64)),
         "h_iadd" | "h_isub" | "h_imul" | "h_idiv" | "h_irem" => (&[ptr, I64, I64], Some(I64)),
         "h_frem" => (&[F64, F64], Some(F64)),

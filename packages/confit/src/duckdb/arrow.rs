@@ -256,7 +256,21 @@ pub fn ingest<'py>(
             LaneKind::Value(ct) => ct,
         };
         let dtype: String = arr.getattr("type")?.str()?.extract()?;
-        let ok = matches!(
+        // A DECIMAL lane takes any of the tiers DuckDB itself exports, at
+        // exactly the declared (p, s).
+        let dec_width = match ct.ty {
+            Ty::Dec(p, s) if crate::schema::decimal_ps(&dtype) == Some((p, s)) => {
+                match dtype.split('(').next() {
+                    Some("decimal32") => Some(4),
+                    Some("decimal64") => Some(8),
+                    Some("decimal128" | "decimal") => Some(16),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let ok = dec_width.is_some()
+            || matches!(
             (ct.ty, dtype.as_str()),
             (Ty::I8, "int8")
                 | (Ty::I16, "int16")
@@ -364,9 +378,27 @@ pub fn ingest<'py>(
                 }
                 col
             }
-            // A decimal ROW column is opaque (schema.rs, Policy::Row), so
-            // the arrow INPUT path needs no decimal arm at all.
-            Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
+            Ty::Dec(p, s) => {
+                let mut valid = Vec::with_capacity(rows);
+                let mut data = Vec::with_capacity(rows);
+                for i in 0..rows {
+                    let v = valid_at(i);
+                    null_seen |= !v;
+                    valid.push(v);
+                    data.push(if !v {
+                        0
+                    } else {
+                        // Little-endian two's complement, as Arrow lays it
+                        // out at every width.
+                        match dec_width {
+                            Some(4) => unsafe { raw.data::<i32>(1).get(i) as i128 },
+                            Some(8) => unsafe { raw.data::<i64>(1).get(i) as i128 },
+                            _ => unsafe { raw.data::<i128>(1).get(i) },
+                        }
+                    });
+                }
+                ColData::Dec { p, s, valid, data }
+            }
         };
         if null_seen && !ct.nullable {
             return Err(err(format!(

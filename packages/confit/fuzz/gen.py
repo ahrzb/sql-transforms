@@ -48,7 +48,7 @@ OPAQUE = ("float32", "timestamp")
 # only on the static side -- one spelling per DuckDB storage tier
 # (int16 / int32 / int64 / int128 by precision), plus the (38,0) that an
 # ordinary fit-time sum(BIGINT) actually produces.
-STATIC_ONLY = ("decimal(4,2)", "decimal(9,4)", "decimal(18,6)", "decimal(38,0)")
+DECIMALS = ("decimal(4,2)", "decimal(9,4)", "decimal(18,6)", "decimal(38,0)")
 
 SEMANTIC = {
     "bool": "bool",
@@ -988,12 +988,12 @@ def _colspec(rng: random.Random, depth: int = 0, static: bool = False):
     full ordered path, so depth is part of the surface, not decoration) and
     opaque columns appear at low weight — they must never block a build.
 
-    `static` widens the vocabulary by the STATIC-ONLY types (the decimals):
-    a decimal row column is opaque, so generating one there would only ever
-    exercise the opaque path."""
+    `static` widens the vocabulary by the decimals. A row table gets its
+    decimal column in `gen` instead, from a generator of its own, so adding
+    it moved no existing seed's draws."""
     r = rng.random()
     if static and depth == 0 and 0.20 <= r < 0.32:
-        return rng.choice(STATIC_ONLY) + ("?" if rng.random() < 0.5 else "")
+        return rng.choice(DECIMALS) + ("?" if rng.random() < 0.5 else "")
     if depth < 2 and r < (0.16 if depth == 0 else 0.25):
         k = rng.randrange(1, 4)
         return Struct(
@@ -1026,7 +1026,7 @@ def _cell(rng: random.Random, spec) -> object:
         return {n: _cell(rng, s) for n, s in spec.fields}
     storage = spec.rstrip("?")
     if storage.startswith("decimal("):
-        # A STATIC-ONLY type. Deliberately NOT in SEMANTIC, so the expression
+        # A DECIMAL. Deliberately NOT in SEMANTIC, so the expression
         # grammar never binds one -- every operator over a decimal except a
         # comparison, a join and CAST-to-DOUBLE refuses by name, and a
         # grammar full of them would bury the signal in
@@ -1102,6 +1102,17 @@ def gen(seed: int) -> Case:
     hostile_ids = rng.random() < 0.08
     row_schema = _schema(rng, rng.randrange(1, 5))
     rows = _rows(rng, row_schema, rng.choice([0, 1, 2, 3, 4, 6, 8]))
+    # Every seed 3 (mod 7) carries a DECIMAL row column too, drawn from a
+    # generator of its own so no draw of any other seed moves. Decimals are
+    # not SEMANTIC (the expression grammar does not bind them), so star
+    # expansion and the row boundary are where this one is observable.
+    if seed % 7 == 3:
+        drng = random.Random(seed * 7919 + 1)  # noqa: S311
+        spec = drng.choice(DECIMALS) + ("?" if drng.random() < 0.5 else "")
+        dname = f"c{len(row_schema)}"
+        row_schema[dname] = spec
+        for r in rows:
+            r[dname] = _cell(drng, spec)
 
     statics: dict[str, tuple[dict[str, str], list[dict]]] = {}
     for i in range(rng.choice([0, 0, 1, 1, 2])):

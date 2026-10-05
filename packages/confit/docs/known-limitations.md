@@ -131,7 +131,7 @@ bool. Measured consequences:
   exceptions that are served are measured equivalent, not convenient:
   `large_string`/`utf8` (DuckDB normalises them to VARCHAR) and the
   decimal tiers (below).
-- **DECIMAL static columns serve EXACTLY**: the payload is
+- **DECIMAL columns, row and static, serve EXACTLY**: the payload is
   the scaled integer in an i128 lane from ingest through the join, emitted
   as `decimal128(p,s)`. `2^53+1` comes back as itself, and so does
   `2^63+1` — an ordinary fit-time `sum(BIGINT)` produces that, which is
@@ -144,8 +144,11 @@ bool. Measured consequences:
   refuses, by name: a DECIMAL join key EXPRESSION against anything but a
   DOUBLE build key, casts between a DECIMAL and a DOUBLE/VARCHAR/BOOLEAN
   in the INTO direction, and `IN`/`BETWEEN` families capped at 38 digits.
-  `decimal256` statics refuse (DuckDB itself refuses them at arrow
-  register, at any precision), and decimal ROW columns are opaque.
+  `decimal256` columns refuse (DuckDB itself refuses them at arrow
+  register, at any precision). A Python row value for a DECIMAL column is a
+  `decimal.Decimal` or an `int`, exactly representable at the column's
+  (p, s) — a float, or a value with more than `s` decimal places, refuses
+  rather than rounding (`tests/test_decimal_rows.py`).
 - **Structs of scalars SERVE**: struct row and static columns are
   flattened to scalar lanes at build time — field access in every spelling
   (`a.i`, deep `t.t.t.t` paths, `a['i']`, `(a).i`, `struct_extract(a, 'i')`
