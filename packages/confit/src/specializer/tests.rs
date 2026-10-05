@@ -4479,6 +4479,10 @@ fn a_sibling_that_cannot_raise_is_not_evaluated() {
         ("CASE WHEN x > 0 THEN ln(x) END", NumOp1::Ln),
         ("CASE WHEN x < 0 OR x IS NULL THEN 0.0 ELSE sqrt(x) END", NumOp1::Fsqrt),
         ("CASE WHEN 0 >= x THEN NULL ELSE exp(0.5 * ln(x)) END", NumOp1::Ln),
+        ("CASE WHEN abs(x) = CAST('inf' AS DOUBLE) THEN NULL ELSE sin(x) END", NumOp1::Fsin),
+        ("CASE WHEN abs(x) < CAST('inf' AS DOUBLE) THEN cos(x) END", NumOp1::Fcos),
+        ("CASE WHEN abs(x) <= 1e300 THEN tan(x) END", NumOp1::Ftan),
+        ("round(x) * 2.0", NumOp1::Fround),
     ] {
         assert_eq!(num1_count(&read(p), op), 0, "{p}");
     }
@@ -4491,6 +4495,10 @@ fn a_sibling_that_cannot_raise_is_not_evaluated() {
         ("CASE WHEN x <= 0 AND x > 1 THEN NULL ELSE ln(x) END", NumOp1::Ln),
         ("CASE WHEN x < -1 THEN NULL ELSE sqrt(x) END", NumOp1::Fsqrt),
         ("CASE WHEN x <= 0 THEN NULL ELSE ln(x + 1.0) END", NumOp1::Ln),
+        ("sin(x)", NumOp1::Fsin),
+        ("CASE WHEN x = CAST('inf' AS DOUBLE) THEN NULL ELSE sin(x) END", NumOp1::Fsin),
+        ("CASE WHEN abs(x) > 1.0 THEN cos(x) END", NumOp1::Fcos),
+        ("CASE WHEN abs(x) <= CAST('inf' AS DOUBLE) THEN tan(x) END", NumOp1::Ftan),
     ] {
         assert_eq!(num1_count(&read(p), op), 1, "{p}");
     }
