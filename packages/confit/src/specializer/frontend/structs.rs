@@ -365,9 +365,26 @@ impl Binder<'_> {
         while let SqlExpr::Nested(i) = packed_inner {
             packed_inner = i;
         }
+        // A list literal: unnamed lanes, the boundary an extern's list
+        // return crosses.
+        let list = list_literal(packed_inner);
+        if let Some(elems) = &list {
+            if elems.len() < 2 {
+                return Err(unsup(
+                    "a one-element list as an output column (a width-1 lane is a scalar \
+                     at the boundary)",
+                ));
+            }
+        }
         let SqlExpr::Function(f) = packed_inner else {
-            return Ok(None);
+            if list.is_none() {
+                return Ok(None);
+            }
+            return self.wide_lanes(guard, Vec::new(), &list.expect("checked"), base);
         };
+        if let Some(elems) = list {
+            return self.wide_lanes(guard, Vec::new(), &elems, base);
+        }
         if !f.name.to_string().eq_ignore_ascii_case("struct_pack") {
             return Ok(None);
         }
@@ -411,7 +428,19 @@ impl Binder<'_> {
                 )));
             }
         }
-        // Whole-struct validity: the guard's IS NOT NULL, else always-true.
+        self.wide_lanes(guard, names, &values, base)
+    }
+
+    /// The lanes of a struct (named) or list (unnamed) projection item: the
+    /// whole-value validity, then one lane per field or element.
+    fn wide_lanes(
+        &self,
+        guard: Option<&SqlExpr>,
+        names: Vec<String>,
+        values: &[&SqlExpr],
+        base: &str,
+    ) -> Result<Option<(Vec<(String, SExpr)>, Vec<String>)>, PrepareError> {
+        // Whole-value validity: the guard's IS NOT NULL, else always-true.
         let valid = match guard {
             None => SExpr {
                 kind: SKind::Lit(Lit::I1(true)),
@@ -449,14 +478,23 @@ impl Binder<'_> {
         };
         let mut lanes = Vec::with_capacity(1 + values.len());
         lanes.push((format!("{base}\u{1}valid"), valid));
-        for (j, v) in values.iter().enumerate() {
-            // struct_pack(a := NULL) is STRUCT(a INTEGER) on DuckDB —
-            // SQLNULL's int32 home.
-            let bound = match self.expr_or_null(v)? {
-                None => null_of(Ty::I32),
-                Some(x) => fold(x),
-            };
-            lanes.push((format!("{base}\u{1}{j}"), bound));
+        let bound: Vec<SExpr> = if names.is_empty() {
+            self.list_elements(values)?.into_iter().map(fold).collect()
+        } else {
+            values
+                .iter()
+                .map(|v| {
+                    // struct_pack(a := NULL) is STRUCT(a INTEGER) on DuckDB —
+                    // SQLNULL's int32 home.
+                    Ok(match self.expr_or_null(v)? {
+                        None => null_of(Ty::I32),
+                        Some(x) => fold(x),
+                    })
+                })
+                .collect::<Result<_, PrepareError>>()?
+        };
+        for (j, b) in bound.into_iter().enumerate() {
+            lanes.push((format!("{base}\u{1}{j}"), b));
         }
         Ok(Some((lanes, names)))
     }
@@ -513,7 +551,7 @@ fn field_read(
 /// a NULL arm (or no ELSE) is a NULL struct, whose field is NULL; each arm's
 /// read then binds by the ordinary rules (over struct_pack: every field
 /// built, see [`SEQ_MARKER`]).
-fn case_field(case: &SqlExpr, chain: &[AccessExpr]) -> SqlExpr {
+pub(super) fn case_field(case: &SqlExpr, chain: &[AccessExpr]) -> SqlExpr {
     let read = |r: &SqlExpr| -> SqlExpr {
         if matches!(r, SqlExpr::Value(v) if matches!(v.value, SqlValue::Null)) {
             return r.clone();
