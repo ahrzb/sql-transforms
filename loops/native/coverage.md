@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**29 of 68** in-scope transformers are native (84 listed by sklearn).
+**30 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -83,7 +83,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `SparseCoder` | not yet |  |
 | `SparsePCA` | not yet |  |
 | `SparseRandomProjection` | not yet |  |
-| `SplineTransformer` | not yet |  |
+| `SplineTransformer` | native | bit-exact |
 | `StackingClassifier` | composition | a final estimator over parts' predictions |
 | `StackingRegressor` | composition | a final estimator over parts' predictions |
 | `StandardScaler` | native | bit-exact |

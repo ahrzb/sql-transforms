@@ -13,8 +13,8 @@ translation exists, `to_native` hands back the step unchanged, which is
 always correct to serve, only slower.
 
 The catalog is one module per family (`scalers.py`, `impute.py`,
-`select.py`, `function.py`, `polynomial.py`, `encode.py`, `quantile.py`,
-`isotonic.py`, ...), each entry registered with
+`select.py`, `function.py`, `polynomial.py`, `spline.py`, `encode.py`,
+`quantile.py`, `isotonic.py`, ...), each entry registered with
 `@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`,
 a `ColumnTransformer`, a `FeatureUnion`).
 This package imports confit and sklearn and nothing else of sql_transform
@@ -35,6 +35,7 @@ from sql_transform.native import power as _power  # noqa: F401  (registers)
 from sql_transform.native import quantile as _quantile  # noqa: F401  (registers)
 from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
 from sql_transform.native import select as _select  # noqa: F401  (registers)
+from sql_transform.native import spline as _spline  # noqa: F401  (registers)
 from sql_transform.native._check import ParityError, check
 from sql_transform.native._registry import (
     Entry,
