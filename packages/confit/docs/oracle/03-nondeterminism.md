@@ -97,14 +97,14 @@ NUL-truncates. The same row can therefore change value because of a sibling row.
 uses NUL-transparent row-local behavior. The corpus exclusion is one source file
 covering two statements.
 
-*Evidence:* `packages/confit/tests/test_corpus_replay.py` (`_KNOWN_DIVERGENT_SOURCES`),
+*Evidence:* `packages/confit/fuzz/exclusions.py` (`SOURCE_EXCLUSIONS`, read by `tests/test_corpus_replay.py`),
 `packages/confit/docs/specs/pins-wave1/pins_like.json`, and
 `packages/confit/docs/known-limitations.md` §5.
 
 **claim: corpus-exclusion-sets.** The corpus gate has three exclusion mechanisms, with
 different reasons:
 
-1. `_KNOWN_DIVERGENT_SOURCES`: the one statistics-dependent source above, covering two
+1. `SOURCE_EXCLUSIONS` (`fuzz/exclusions.py`): the one statistics-dependent source above, covering two
    statements;
 2. a blanket input-`FLOAT` rule, because widening f32 to f64 preserves a value but
    changes the grid observed by `nextafter`, shortest-round-trip text, and rounding

@@ -30,7 +30,7 @@ trouble.
   It traps for a projection directly under the join, and not when the key is
   computed in the join or the projection sits under a FILTER. confit always
   evaluates the row side. This is execution-order detail, so the disposition
-  is an owner ruling: `docs/decisions/open/empty-static-join-trap-timing.md`,
+  is an owner ruling: `docs/decisions/closed/empty-static-join-trap-timing.md`,
   which proposes a named exclusion.
 - **`nullif(NULL, x)`** (2 cases). DuckDB evaluates `x` and can trap on it.
   confit types the call as an adoptable NULL and drops `x`.

@@ -12,9 +12,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    issue. Triage each filed class to a fix, a named exclusion, or an
    open-divergence pin. The first six sharded nights are triaged
    (`docs/reports/2026-10-05-sharded-nightly-triage.md`); still open from them:
-   - an INNER/CROSS join on an empty static table: whether DuckDB evaluates
-     the row side depends on its pipeline shape
-     (`docs/decisions/open/empty-static-join-trap-timing.md`, owner ruling);
    - `nullif(NULL, x)` drops `x`, which DuckDB evaluates and can trap on
      (seeds 3058298, 3722953). The adoptable-NULL channel has no node that
      evaluates an operand for its trap only;
@@ -39,8 +36,7 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Waiting on the owner
 
 - `docs/decisions/open/`: the order of the query classes after derived tables
-  and CTEs, native-transform parity bounds, trap timing of a join on an empty
-  static table.
+  and CTEs, native-transform parity bounds.
 
 ## Query classes (large; order is the owner's call)
 
@@ -99,7 +95,7 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   (DuckDB converts at execution; a bind-time conversion is over-eager).
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
 - **Wrapped-query refusals** the metamorphic suite allowlists
-  (`fuzz/metamorphic.py` `KNOWN`): a struct- or list-valued column inside a
+  (rewrite tolerances in `fuzz/exclusions.py`): a struct- or list-valued column inside a
   derived table (about 13% of generated queries when wrapped) and a subquery
   under a `shape='many'` join. Serving struct slots removes the first.
 

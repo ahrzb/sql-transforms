@@ -81,6 +81,7 @@ from confit.compare import (
 from confit.oracle import Oracle
 
 from . import coverage, trees
+from . import exclusions as X
 from . import gen as G
 
 KINDS = (
@@ -101,22 +102,14 @@ KINDS = (
     # to compare — see the unshipped-feature note below
     "UNSHIPPED",
     # confit hit a resource ceiling the serving contract excludes from parity
-    # (exclusion: resource-ceilings): nothing to compare, see RESOURCE_CEILINGS
+    # (exclusion: resource-ceilings), or a rule of fuzz/exclusions.py excused
+    # the difference; `raw` keeps the verdict it would have had
     "EXCLUDED",
     "SKIP",
 )
 
-# The runtime traps of the serving contract's resource-ceilings exclusion
-# (docs/specs/serving-contract.md), verbatim. A case whose run hits one on BOTH
-# backends is EXCLUDED and DuckDB is not run: the exclusion is defined by the
-# ceiling, not by DuckDB's answer, and past it DuckDB builds the gigabyte
-# value the ceiling exists to refuse -- minutes per case, and not
-# interruptible inside one vector (nightly seed 1003321, `lpad` to 2^31
-# characters). Anything else, a ceiling on one backend included, compares.
-RESOURCE_CEILINGS = (
-    "string builder result exceeds 1 GiB",
-    "string column exceeds 2 GiB in one",
-)
+# The resource ceilings live with every other exclusion (fuzz/exclusions.py).
+RESOURCE_CEILINGS = X.RESOURCE_CEILINGS
 
 _ARROW = {
     # semantic names, for UDF signatures and tree features
@@ -179,6 +172,9 @@ class Verdict:
     # AGREE_TRAP only: DuckDB's whole error (`klass` keeps its first words).
     # In memory for `fuzz.parity`; not part of the campaign's JSON.
     oracle_detail: str = ""
+    # EXCLUDED only: the verdict the case would have had without the
+    # exclusion ("KIND klass"), so a report can be recomputed without it.
+    raw: str = ""
 
     def to_json(self):
         out = {
@@ -189,6 +185,8 @@ class Verdict:
         }
         if self.oracle:
             out["oracle"] = self.oracle
+        if self.raw:
+            out["raw"] = self.raw
         return out
 
 
@@ -665,13 +663,17 @@ def run_case(case: G.Case, *, report: bool = True) -> Verdict:
     got_cl, sch_cl, trap_cl = run_fn(fn_cl)
     got_in, sch_in, trap_in = run_fn(fn_in)
 
-    if (
-        trap_cl is not None
-        and trap_in is not None
-        and any(c in trap_cl for c in RESOURCE_CEILINGS)
-        and any(c in trap_in for c in RESOURCE_CEILINGS)
-    ):
-        return Verdict("EXCLUDED", "resource-ceiling", trap_cl, tags)
+    ev = X.Evidence(
+        sql=sql,
+        facts=fn_cl.plan_facts,
+        trap_cl=trap_cl,
+        trap_in=trap_in,
+        case=case,
+        udf_objs=udf_objs,
+    )
+    hit = X.pre_oracle(ev)
+    if hit is not None:
+        return Verdict("EXCLUDED", hit[0], hit[1], tags)
 
     if (trap_cl is None) != (trap_in is None):
         return Verdict(
@@ -789,6 +791,10 @@ def run_case(case: G.Case, *, report: bool = True) -> Verdict:
     # self-inconsistency and a real DIVERGE_VALUE there outranks the class.
     # OPT_EMULATED does not: it is a mismatch, and like every other mismatch
     # it is the primary finding, which no later leg may replace.
+    ev.duck_off = duck_off
+    hit = X.post_verdict(ev, v)
+    if hit is not None:
+        return Verdict("EXCLUDED", hit[0], hit[1], v.tags, raw=f"{v.kind} {v.klass}")
     if v.kind not in ("AGREE", "UNSHIPPED"):
         return v
     if trap_cl is not None:

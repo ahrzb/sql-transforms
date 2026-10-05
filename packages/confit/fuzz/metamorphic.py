@@ -9,8 +9,8 @@ explicit qualification, the four ways to read a struct field, `<>` as
 
 For each pair, the outcome must match: both refuse, both trap, or both serve
 the same rows with the same types. The refusal messages themselves may
-differ. A mismatch is a finding, unless `KNOWN` lists it by rewrite and
-refusal text with a reason.
+differ. A mismatch is a finding, unless a rewrite tolerance in
+`fuzz/exclusions.py` names it by rewrite and refusal text.
 
     uv run python -m fuzz.metamorphic --n 2000 --workers 4
 """
@@ -26,7 +26,7 @@ import sys
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 
-from fuzz import coverage, gen, oracle
+from fuzz import coverage, exclusions, gen, oracle
 
 # ------------------------------------------------------------------ outcomes
 
@@ -174,33 +174,14 @@ REWRITES: dict[str, Callable[[gen.Case], str | None]] = {
     "wrap-cte": _wrap("WITH w AS ({q}) SELECT * FROM w"),
 }
 
-# Mismatches that are understood: (rewrite, substring of the side that
-# refused) -> why. Each entry is a named, deliberate refusal that only one
-# spelling reaches, not an engine inconsistency.
-KNOWN: dict[tuple[str, str], str] = {
-    ("wrap-derived", "struct- or list-valued column in a derived table"): (
-        "derived tables carry scalar slots only (row-local subqueries design, "
-        "phase 1); the unwrapped query serves the struct output directly"
-    ),
-    ("wrap-cte", "struct- or list-valued column in a derived table"): (
-        "same refusal: a CTE read once binds as a derived table"
-    ),
-    ("wrap-derived", "a subquery under a shape='many' join"): (
-        "shape='many' stays one join per query, not per level (design review "
-        "condition); the unwrapped query's join is the only one"
-    ),
-    ("wrap-cte", "a subquery under a shape='many' join"): (
-        "same refusal, reached through the CTE's derived-table binding"
-    ),
-}
-
 
 def _known(rw: str, a: tuple, b: tuple) -> str | None:
+    """The rewrite tolerance (fuzz/exclusions.py) that excuses this pair."""
     for side in (a, b):
         if side[0] == "refuse":
-            for (k_rw, text), why in KNOWN.items():
-                if k_rw == rw and text in side[1]:
-                    return why
+            t = exclusions.rewrite_tolerance(rw, side[1])
+            if t is not None:
+                return t.claim
     return None
 
 

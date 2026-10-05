@@ -78,6 +78,8 @@ where readers expect it.
 | **divergence: trap-elision** | optimizer-on contract gap / 1 | kept | unruled |
 | **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../decisions/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
+| **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../decisions/closed/empty-static-join-trap-timing.md) |
+| **divergence: wrapped-query-refusals** | metamorphic rewrite tolerance / n/a | kept | **ruled** by [the row-local subqueries design](../specs/2026-09-26-row-local-subqueries-design.md) |
 | **divergence: decimal-literal-typing** | closed | shipped: literals are DECIMAL | n/a |
 | **divergence: decimal-cast-rounding** | closed | shipped: DECIMAL casts round half away from zero | n/a |
 | **divergence: bind-time-constant-refusals** | conservative refusal / 4 | kept | unruled |
@@ -99,7 +101,7 @@ Slugs are stable when multiple entries describe one mechanism.
   `known-limitations.md` §5; `test_corpus_replay.py`; claim: error-texts.
 - **divergence: ilike-nul.** `ILIKE` with embedded NUL varies with DuckDB column
   statistics; confit is NUL-transparent, so the source is excluded by name. Evidence:
-  `test_corpus_replay.py` (`_KNOWN_DIVERGENT_SOURCES`); `pins-wave1/pins_like.json`;
+  `fuzz/exclusions.py` (`SOURCE_EXCLUSIONS`); `pins-wave1/pins_like.json`;
   claim: statistics-dependent-exclusion.
 - **divergence: trap-elision.** Optimizer-on DuckDB removes a trapping subexpression;
   optimizer-off DuckDB and confit evaluate it. Confit agrees with the oracle, while the
@@ -118,6 +120,16 @@ Slugs are stable when multiple entries describe one mechanism.
   `tests/test_known_limitations.py::test_a_relation_schema_qualifier_resolves_by_bare_name`,
   `::test_a_column_qualified_through_a_schema_qualified_relation_refuses`, and
   `::test_a_schema_like_struct_path_takes_the_longer_parse_and_refuses`.
+- **divergence: empty-static-trap-timing.** An INNER or CROSS join on an empty static
+  answers no rows on both engines, but whether DuckDB evaluates the row side first (and
+  traps there) depends on its pipeline shape; confit always does. Excused only when
+  DuckDB, with one plain row added to the static, traps as confit did. Evidence:
+  `docs/decisions/closed/empty-static-join-trap-timing.md`; nightly seeds 1994509,
+  2286807, 4001288, 4100483.
+- **divergence: wrapped-query-refusals.** Wrapping a query in a derived table or CTE
+  reaches two named refusals the unwrapped query does not (a struct slot in a derived
+  table; a subquery under a `shape='many'` join). Evidence: the rewrite tolerances in
+  `fuzz/exclusions.py`; `tests/test_metamorphic.py`.
 - **divergence: bind-time-constant-refusals.** Confit refuses some trapping integer
   constants (for example `2147483647 + 1`) at construction. DuckDB defers them to
   execution: `PREPARE` succeeds, and `WHERE FALSE` or an empty input serves `[]`. This
@@ -143,6 +155,34 @@ Slugs are stable when multiple entries describe one mechanism.
   for `CAST(-2.5 AS BIGINT)`, `-2` instead of DuckDB DECIMAL's `-3`. Closed by decimal
   expressions (`docs/specs/decimal-expressions.md`); the `_type_delta` arm is deleted.
   Evidence: `tests/test_decimal_expressions.py`.
+
+## Exclusions in force
+
+**claim: one-exclusion-registry.** Every exclusion from parity is a record in
+`packages/confit/fuzz/exclusions.py`, and nothing else excuses a case: the campaign's
+verdict rules (`fuzz.oracle.run_case`), the metamorphic rewrite tolerances, and the
+DuckDB test-corpus source exclusions all read it. A record narrows the comparison for
+one mechanism: a scope read off the bound plan's facts (`DuckDBInferFn.plan_facts`),
+the outcome it accepts, and a witness that the difference is that mechanism. An
+excused campaign case is EXCLUDED with the rule's id as its class and keeps its raw
+verdict.
+
+*Enforced-by:* `packages/confit/tests/test_exclusions.py`: every record is measured on
+the current oracle and cites a ledger entry and a ruling (or is listed as kept); every
+canary is still excused; a planted fault inside a rule's scope is not; and the table
+below is the registry's own output (`python -m fuzz.exclusions --ledger`).
+
+<!-- exclusions:begin -->
+| id | kind | ledger entry | status | ruling | measured on | canaries |
+|---|---|---|---|---|---|---|
+| `resource-ceiling` | verdict | exclusion: resource-ceilings | ruled | `specs/serving-contract.md` | DuckDB 1.5.5 | 1 |
+| `empty-static-trap-timing` | verdict | divergence: empty-static-trap-timing | ruled | `decisions/closed/empty-static-join-trap-timing.md` | DuckDB 1.5.5 | 4 |
+| `wrap-derived: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
+| `wrap-cte: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
+| `wrap-derived: many join` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
+| `wrap-cte: many join` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
+| `ilike-nul` | source | divergence: ilike-nul | kept | - | DuckDB 1.5.5 | - |
+<!-- exclusions:end -->
 
 ## Executable-twin coverage
 

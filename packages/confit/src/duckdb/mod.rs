@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
+use pyo3::types::{PyDict, PyList, PyString};
 
 use crate::error::InterpError;
 use crate::schema;
@@ -1510,6 +1510,9 @@ pub struct DuckDBInferFn {
     engine: Engine,
     row_table: String,
     shape: Shape,
+    /// The plan's joins with their static's RAW row count (before NULL-key
+    /// rows drop out of the build), for `plan_facts`.
+    join_facts: Vec<(crate::specializer::JoinFact, Option<usize>)>,
 }
 
 #[pymethods]
@@ -1719,6 +1722,19 @@ impl DuckDBInferFn {
             }
         }
 
+        let join_facts = prepared
+            .join_facts
+            .iter()
+            .map(|f| {
+                let rows = f.static_name.as_ref().and_then(|n| {
+                    static_tables
+                        .get(n)
+                        .and_then(|t| t.bind(py).getattr("num_rows").ok())
+                        .and_then(|r| r.extract::<usize>().ok())
+                });
+                (f.clone(), rows)
+            })
+            .collect();
         let data = materialize_statics(py, &prepared, &static_tables, &tree_decls)?;
 
         // SPECIALIZER_FORCE_INTERP pins the interpreter — the bench control
@@ -1785,7 +1801,30 @@ impl DuckDBInferFn {
             },
             row_table,
             shape: shape_c,
+            join_facts,
         })
+    }
+
+    /// Facts of the bound plan, for the exclusion rules
+    /// (`fuzz/exclusions.py`): `{"joins": [{"kind", "static", "keys",
+    /// "residual", "rows"}, ...]}`. `kind` is "inner" or "left" (a CROSS
+    /// JOIN is inner with zero keys); `static` is None for a self-join;
+    /// `rows` is the static table's raw row count.
+    #[getter]
+    fn plan_facts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let joins = PyList::empty(py);
+        for (f, rows) in &self.join_facts {
+            let d = PyDict::new(py);
+            d.set_item("kind", f.kind)?;
+            d.set_item("static", f.static_name.clone())?;
+            d.set_item("keys", f.keys)?;
+            d.set_item("residual", f.residual)?;
+            d.set_item("rows", *rows)?;
+            joins.append(d)?;
+        }
+        let out = PyDict::new(py);
+        out.set_item("joins", joins)?;
+        Ok(out.into_any().unbind())
     }
 
     /// The declared row-shape contract: "map", "filter", or "many".

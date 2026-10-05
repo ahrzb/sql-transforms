@@ -226,7 +226,7 @@ These are served, but with a consciously chosen surface — know them:
   corpus only ever compares successful results, so texts never affect
   parity.
 - **One known oracle-divergent source, two statements** (excluded from the corpus by name in
-  `packages/confit/tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`): DuckDB
+  `packages/confit/fuzz/exclusions.py::SOURCE_EXCLUSIONS`): DuckDB
   behaviors that depend on column STATISTICS (e.g. ILIKE's NUL handling
   selects a different kernel depending on *sibling rows*). A row-at-a-time
   engine cannot reproduce statistics-dependent semantics even in
