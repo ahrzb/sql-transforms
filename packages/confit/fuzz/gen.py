@@ -22,6 +22,7 @@ from drifting apart.
 
 from __future__ import annotations
 
+import dataclasses
 import decimal
 import random
 from dataclasses import dataclass, field
@@ -56,6 +57,10 @@ SEMANTIC = {
     "int16": "int",
     "int32": "int",
     "int64": "int",
+    # Not in SCALARS: an unsigned column comes from the seed gate in `gen`.
+    "uint8": "int",
+    "uint16": "int",
+    "uint32": "int",
     "double": "float",
     "string": "str",
 }
@@ -67,6 +72,9 @@ INT_RANGE = {
     "int16": (-(2**15), 2**15 - 1),
     "int32": (-(2**31), 2**31 - 1),
     "int64": (-(2**63), 2**63 - 1),
+    "uint8": (0, 2**8 - 1),
+    "uint16": (0, 2**16 - 1),
+    "uint32": (0, 2**32 - 1),
 }
 
 
@@ -636,6 +644,9 @@ CAST_SPELLINGS = {
     "int32": ("INTEGER", "INT", "INT4", "SIGNED"),
     "int16": ("SMALLINT", "INT2", "SHORT"),
     "int8": ("TINYINT", "INT1"),
+    "uint8": ("UTINYINT", "UINT8"),
+    "uint16": ("USMALLINT", "UINT16"),
+    "uint32": ("UINTEGER", "UINT32"),
     "float": ("DOUBLE", "FLOAT8", "DOUBLE PRECISION"),
     "str": ("VARCHAR", "TEXT", "STRING"),
     "bool": ("BOOLEAN", "BOOL", "LOGICAL"),
@@ -1093,6 +1104,54 @@ def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
     return on
 
 
+_UNSIGNED = {"int8": "uint8", "int16": "uint16", "int32": "uint32"}
+
+
+def _unsigned(urng, query, row_schema, rows, statics, tags) -> None:
+    """Make some narrow integer columns, and some narrow CAST targets,
+    unsigned (UTINYINT / USMALLINT / UINTEGER), from a generator of its own
+    so no other seed's draws move. A column's values wrap into its range.
+    Unsigned storage is not in SCALARS: this gate is its only source."""
+
+    def flip(schema: dict, table_rows: list[dict]) -> bool:
+        hit = False
+        for c, spec in list(schema.items()):
+            if not isinstance(spec, str):
+                continue
+            base = spec.rstrip("?")
+            if base in _UNSIGNED and urng.random() < 0.6:
+                schema[c] = _UNSIGNED[base] + spec[len(base) :]
+                bits = int(base[3:])
+                for r in table_rows:
+                    if r.get(c) is not None:
+                        r[c] = r[c] % (1 << bits)
+                hit = True
+        return hit
+
+    hit = flip(row_schema, rows)
+    for sch, srows in statics.values():
+        hit |= flip(sch, srows)
+    for n in _all_nodes(query):
+        if isinstance(n, Cast) and n.to in _UNSIGNED and urng.random() < 0.4:
+            n.to = _UNSIGNED[n.to]
+            n.spell = urng.randrange(len(CAST_SPELLINGS[n.to]))
+            hit = True
+    if hit:
+        tags.append("unsigned")
+
+
+def _all_nodes(obj):
+    """Every AST node reachable from `obj`, through any dataclass field."""
+    if isinstance(obj, Node):
+        yield obj
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        for f in dataclasses.fields(obj):
+            yield from _all_nodes(getattr(obj, f.name))
+    elif isinstance(obj, (list, tuple)):
+        for x in obj:
+            yield from _all_nodes(x)
+
+
 def _decimal_join_key(drng, query, row_schema, rows, dname, statics, tags) -> None:
     """Key the first ON join of the outer query on the row DECIMAL too.
 
@@ -1210,6 +1269,9 @@ def gen(seed: int) -> Case:
     query = _query(rng, env, statics, tags, hostile_ids)
     if seed % 7 == 3:
         _decimal_join_key(drng, query, row_schema, rows, dname, statics, tags)
+    if seed % 11 == 6:
+        urng = random.Random(seed * 7919 + 2)  # noqa: S311
+        _unsigned(urng, query, row_schema, rows, statics, tags)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
     output = rng.choice([None] * 4 + ["dict", "model"])

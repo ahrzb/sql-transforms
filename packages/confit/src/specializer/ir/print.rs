@@ -130,7 +130,7 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             // the text form has to say which one this is or the round-trip
             // could not rebuild the operand type.
             let prefix = match ty {
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => "icmp".to_string(),
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => "icmp".to_string(),
                 Ty::F64 => "fcmp".to_string(),
                 Ty::Str => "scmp".to_string(),
                 Ty::Dec(dp, ds) => format!("dcmp({dp},{ds})"),

@@ -197,6 +197,9 @@ fn int_phys_name(t: Ty) -> &'static str {
         Ty::I8 => "INT8",
         Ty::I16 => "INT16",
         Ty::I32 => "INT32",
+        Ty::U8 => "UINT8",
+        Ty::U16 => "UINT16",
+        Ty::U32 => "UINT32",
         _ => "INT64",
     }
 }
@@ -294,7 +297,7 @@ pub(super) fn call_extern(
 ) -> Result<(bool, Vec<(bool, ScalarVal)>), Trap> {
     let default = |ty: Ty| match ty {
         Ty::I1 => ScalarVal::I1(false),
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ScalarVal::I64(0),
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
         // A UDF taking or returning a DECIMAL refuses at bind, so no Dec

@@ -420,6 +420,22 @@ fn a_sibling_is_kept_for_its_traps_only() {
 }
 
 #[test]
+fn a_cast_that_cannot_fail_is_not_a_sibling_trap() {
+    // BIGINT -> DOUBLE is total: the unread field is dropped. A narrowing
+    // cast can fail, so its field is still evaluated.
+    let schema = cols(&[("x", Ty::F64, true), ("k", Ty::I64, true)]);
+    let read = |to: &str| {
+        let sql = format!(
+            "SELECT (struct_pack(p := x, q := CAST(k AS {to}))).p AS o FROM __THIS__"
+        );
+        print(&prep(&sql, &schema).unwrap())
+    };
+    assert!(!read("DOUBLE").contains(" in.k"), "{}", read("DOUBLE"));
+    assert!(!read("VARCHAR").contains(" in.k"), "{}", read("VARCHAR"));
+    assert!(read("TINYINT").contains(" in.k"), "{}", read("TINYINT"));
+}
+
+#[test]
 fn column_cache_loads_once_per_block() {
     let schema = cols(&[("a", Ty::I64, false)]);
     let p = prep("SELECT a + a AS d FROM __THIS__", &schema).unwrap();

@@ -860,6 +860,9 @@ fn ty_code(t: Ty) -> i64 {
         Ty::I8 => 8,
         Ty::I16 => 16,
         Ty::I32 => 32,
+        Ty::U8 => 108,
+        Ty::U16 => 116,
+        Ty::U32 => 132,
         Ty::Dec(p, s) => 1000 + 100 * p as i64 + s as i64,
         _ => 64,
     }
@@ -871,6 +874,9 @@ fn ty_of_code(c: i64) -> Ty {
         16 => Ty::I16,
         32 => Ty::I32,
         64 => Ty::I64,
+        108 => Ty::U8,
+        116 => Ty::U16,
+        132 => Ty::U32,
         c => Ty::Dec(((c - 1000) / 100) as u8, ((c - 1000) % 100) as u8),
     }
 }
@@ -956,7 +962,7 @@ extern "C" fn h_sload(p: *mut Cx, sid: i64, valid_out: *mut u8, cell_out: *mut C
     } else {
         match val.ty() {
             Ty::I1 => ScalarVal::I1(false),
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ScalarVal::I64(0),
             Ty::F64 => ScalarVal::F64(0.0),
             Ty::Str => ScalarVal::Str(String::new()),
             Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
@@ -1039,7 +1045,7 @@ extern "C" fn h_probe(
         None => {
             for (i, ty) in desc.val_tys.iter().enumerate() {
                 let cell: Cell = match ty {
-                    Ty::I1 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Dec(..) => [0, 0],
+                    Ty::I1 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Dec(..) => [0, 0],
                     Ty::F64 => [0f64.to_bits(), 0],
                     Ty::Str => {
                         let r = arena.push_str("");
@@ -1099,7 +1105,7 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
             a.push(if valid {
                 Some(match ty {
                     Ty::I1 => ScalarVal::I1(cell[0] != 0),
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(cell[0] as i64),
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ScalarVal::I64(cell[0] as i64),
                     Ty::F64 => ScalarVal::F64(f64::from_bits(cell[0])),
                     Ty::Str => ScalarVal::Str(
                         arena.get(span(cell[0] as i64, cell[1] as i64)).to_string(),
@@ -1179,7 +1185,7 @@ impl V {
 fn clif_ty(ty: Ty) -> types::Type {
     match ty {
         Ty::I1 => types::I8,
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => types::I64,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => types::I64,
         Ty::F64 => types::F64,
         // One cranelift value, like every other scalar lane: `V::S` carries
         // it as-is, so the `V::Str(CVal, CVal)` split is not needed here.
@@ -1675,7 +1681,7 @@ fn translate_inst(
                         } else {
                             match spec.params[i / 2] {
                                 Ty::I1 => b.ins().uextend(types::I64, v),
-                                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
+                                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => v,
                                 Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
                                 Ty::Dec(..) => unreachable!("a udf parameter is never a decimal"),
                                 Ty::Str => unreachable!("str payload is a two-i64 V::Str"),
@@ -1715,7 +1721,7 @@ fn translate_inst(
                             let x = b.ins().stack_load(types::I64, slot_vals, base);
                             V::S(b.ins().ireduce(types::I8, x))
                         }
-                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                             V::S(b.ins().stack_load(types::I64, slot_vals, base))
                         }
                         Ty::F64 => {
@@ -1814,7 +1820,7 @@ fn translate_inst(
             let v = match ty {
                 // The scaled i128s compare as plain signed integers: one
                 // scale on both sides, guaranteed by the verifier.
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Dec(..) => {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Dec(..) => {
                     let cc = match pred {
                         CmpPred::Eq => IntCC::Equal,
                         CmpPred::Ne => IntCC::NotEqual,
@@ -2180,7 +2186,7 @@ fn translate_inst(
             let cv = icon(b, *col as i64);
             let v = match ty {
                 Ty::I1 => V::S(call_h(b, module, "h_load_i1", &[cxp, cv]).unwrap()),
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                     V::S(call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap())
                 }
                 Ty::F64 => V::S(call_h(b, module, "h_load_f64", &[cxp, cv]).unwrap()),
@@ -2213,7 +2219,7 @@ fn translate_inst(
                     let zero = b.ins().iconst(types::I8, 0);
                     V::S(b.ins().select(f, raw, zero))
                 }
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                     let raw = call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap();
                     let zero = icon(b, 0);
                     V::S(b.ins().select(f, raw, zero))
@@ -2271,7 +2277,7 @@ fn translate_inst(
                         let ty = key_tys[i];
                         let as64 = match ty {
                             Ty::I1 => b.ins().uextend(types::I64, v),
-                            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
+                            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => v,
                             Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
                             // The whole 16-byte cell: the i128 as the
                             // helper reads it back (lo, hi).
@@ -2308,7 +2314,7 @@ fn translate_inst(
                     // The cell is 16 bytes wide, so the scaled i128 loads
                     // straight out of it.
                     Ty::Dec(..) => V::S(b.ins().stack_load(types::I128, slot_vals, base)),
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                         V::S(b.ins().stack_load(types::I64, slot_vals, base))
                     }
                     Ty::F64 => {
@@ -2390,7 +2396,7 @@ fn store(
             let v = vals[&val.0].s();
             call_h(b, module, "h_store_i1", &[cxp, cv, valid, v]);
         }
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
             let v = vals[&val.0].s();
             call_h(b, module, "h_store_i64", &[cxp, cv, valid, v]);
         }
@@ -2440,7 +2446,7 @@ fn sload(
             let x = b.ins().stack_load(types::I64, slot_vals, 0);
             V::S(b.ins().ireduce(types::I8, x))
         }
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, 0)),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => V::S(b.ins().stack_load(types::I64, slot_vals, 0)),
         Ty::Dec(..) => V::S(b.ins().stack_load(types::I128, slot_vals, 0)),
         Ty::F64 => {
             let x = b.ins().stack_load(types::I64, slot_vals, 0);

@@ -18,6 +18,9 @@ pub(super) fn int_dec_width(t: Ty) -> u8 {
         Ty::I8 => 3,
         Ty::I16 => 5,
         Ty::I32 => 10,
+        Ty::U8 => 3,
+        Ty::U16 => 5,
+        Ty::U32 => 10,
         _ => 19,
     }
 }
@@ -414,6 +417,9 @@ pub(super) fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareEr
         "SMALLINT" | "INT2" | "SHORT" => Ty::I16,
         "INTEGER" | "INT" | "INT4" | "SIGNED" => Ty::I32,
         "BIGINT" | "INT8" | "LONG" => Ty::I64,
+        "UTINYINT" | "UINT8" => Ty::U8,
+        "USMALLINT" | "UINT16" => Ty::U16,
+        "UINTEGER" | "UINT32" => Ty::U32,
         "DOUBLE" | "DOUBLE PRECISION" | "FLOAT8" => Ty::F64,
         "VARCHAR" | "TEXT" | "STRING" | "CHAR" | "CHARACTER" | "CHARACTER VARYING" | "BPCHAR" => {
             Ty::Str
@@ -576,39 +582,84 @@ pub(super) fn numeric_promote(
 
 pub(super) fn width_rank(t: Ty) -> u8 {
     match t {
-        Ty::I8 => 0,
-        Ty::I16 => 1,
-        Ty::I32 => 2,
+        Ty::I8 | Ty::U8 => 0,
+        Ty::I16 | Ty::U16 => 1,
+        Ty::I32 | Ty::U32 => 2,
         _ => 3,
     }
 }
 
-/// One width-combine step of DuckDB's integer-width promotion
-/// (measured): equal widths keep; a WIDER
-/// side that is a syntactic literal narrows to a narrower NON-literal side
-/// when its VALUE fits; otherwise the wider side wins. So `c8 + 127` is
-/// TINYINT and `c8 + 128` is INTEGER, skipping SMALLINT;
-/// `unicode(s) % -2147483648` is INTEGER, `2147483647 % -2147483648` is
-/// BIGINT.
-///
-/// Family constructs (CASE/COALESCE/greatest) apply the wider-side rule
-/// only; their literal-vs-narrower corner is reachable only through
-/// explicit ::TINYINT/::SMALLINT casts mixed into multi-arm unification.
+/// The literal half of DuckDB's integer promotion (measured): a syntactic
+/// literal whose VALUE fits a non-literal side takes that side's type, so
+/// `c8 + 127` is TINYINT and `u8 + 1` UTINYINT, while `c8 + 128` and
+/// `u8 + (-1)` keep the literal's INTEGER. `None` when it does not apply.
+fn literal_fit(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Option<Ty> {
+    match (a_lit, b_lit) {
+        (Some(v), None) if fits_width(b_ty, v) && width_rank(a_ty) >= width_rank(b_ty) => {
+            Some(b_ty)
+        }
+        (None, Some(v)) if fits_width(a_ty, v) && width_rank(b_ty) >= width_rank(a_ty) => {
+            Some(a_ty)
+        }
+        _ => None,
+    }
+}
+
+/// One width-combine step of DuckDB's integer promotion for an OPERATOR
+/// (`+ - * // %` and the bitwise family), measured on 1.5.5: equal types
+/// keep; a literal that fits the other side narrows to it
+/// ([`literal_fit`]); signed with signed, the wider; unsigned with
+/// unsigned, the wider; signed with unsigned, the signed side when it is
+/// strictly wider, else BIGINT (`u8 + i8` and `u16 + i16` are BIGINT,
+/// `u8 + i16` SMALLINT).
 pub(super) fn int_width_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Ty {
     if a_ty == b_ty {
         return a_ty;
     }
-    let (wide, narrow, wide_lit, narrow_lit) = if width_rank(a_ty) >= width_rank(b_ty) {
-        (a_ty, b_ty, a_lit, b_lit)
-    } else {
-        (b_ty, a_ty, b_lit, a_lit)
-    };
-    if let (Some(v), None, Some((lo, hi))) = (wide_lit, narrow_lit, narrow.int_range()) {
-        if (lo..=hi).contains(&v) {
-            return narrow;
+    if let Some(t) = literal_fit(a_ty, a_lit, b_ty, b_lit) {
+        return t;
+    }
+    match (a_ty.is_unsigned(), b_ty.is_unsigned()) {
+        (false, false) | (true, true) => {
+            if width_rank(a_ty) >= width_rank(b_ty) {
+                a_ty
+            } else {
+                b_ty
+            }
+        }
+        (s_u, _) => {
+            let (signed, unsigned) = if s_u { (b_ty, a_ty) } else { (a_ty, b_ty) };
+            if width_rank(signed) > width_rank(unsigned) {
+                signed
+            } else {
+                Ty::I64
+            }
         }
     }
-    wide
+}
+
+/// The same step for a FAMILY (CASE / COALESCE / greatest / least):
+/// identical but for signed with unsigned, which takes the smallest signed
+/// type holding both (`coalesce(u8, i8)` is SMALLINT, `coalesce(u16, i8)`
+/// INTEGER, `coalesce(u32, i8)` BIGINT; measured).
+pub(super) fn int_family_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Ty {
+    if a_ty == b_ty || a_ty.is_unsigned() == b_ty.is_unsigned() {
+        return int_width_promote(a_ty, a_lit, b_ty, b_lit);
+    }
+    if let Some(t) = literal_fit(a_ty, a_lit, b_ty, b_lit) {
+        return t;
+    }
+    let (signed, unsigned) = if a_ty.is_unsigned() { (b_ty, a_ty) } else { (a_ty, b_ty) };
+    let bits = signed
+        .int_bits()
+        .unwrap_or(64)
+        .max(2 * unsigned.int_bits().unwrap_or(64));
+    match bits {
+        8 => Ty::I8,
+        16 => Ty::I16,
+        32 => Ty::I32,
+        _ => Ty::I64,
+    }
 }
 
 /// Whether the SPELLING is a DECIMAL literal (a dot, no exponent —
@@ -703,6 +754,9 @@ pub(super) fn duck_int_name(t: Ty) -> &'static str {
         Ty::I8 => "TINYINT",
         Ty::I16 => "SMALLINT",
         Ty::I32 => "INTEGER",
+        Ty::U8 => "UTINYINT",
+        Ty::U16 => "USMALLINT",
+        Ty::U32 => "UINTEGER",
         Ty::F64 => "DOUBLE",
         _ => "BIGINT",
     }
@@ -845,7 +899,7 @@ impl Binder<'_> {
                 }
                 match b.ty {
                     Ty::F64 => (any_f64, any_num) = (true, true),
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => any_num = true,
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => any_num = true,
                     Ty::Dec(..) => any_dec = Some(b.clone()),
                     Ty::Str | Ty::I1 => {}
                 }

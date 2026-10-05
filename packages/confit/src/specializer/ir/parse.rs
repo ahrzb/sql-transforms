@@ -835,6 +835,9 @@ impl Parser {
             // Narrow widths appear in column HEADERS only (SSA stays lane).
             "i8" => Ok(Ty::I8),
             "i16" => Ok(Ty::I16),
+            "u8" => Ok(Ty::U8),
+            "u16" => Ok(Ty::U16),
+            "u32" => Ok(Ty::U32),
             "i32" => Ok(Ty::I32),
             "i64" => Ok(Ty::I64),
             "f64" => Ok(Ty::F64),

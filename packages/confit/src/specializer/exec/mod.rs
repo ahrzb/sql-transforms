@@ -83,7 +83,7 @@ impl ColData {
                 valid: Vec::new(),
                 data: Vec::new(),
             },
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ColData::I64 {
                 valid: Vec::new(),
                 data: Vec::new(),
             },
@@ -357,7 +357,7 @@ pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits> {
         KeyBits::I1(false),
         match ty {
             Ty::I1 => KeyBits::I1(false),
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(0),
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => KeyBits::I64(0),
             Ty::F64 => KeyBits::F64(0f64.to_bits()),
             Ty::Str => KeyBits::Str(String::new()),
             Ty::Dec(p, s) => KeyBits::Dec(0, p, s),
@@ -372,7 +372,7 @@ pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits> {
 pub(crate) fn null_val_payload(ty: Ty) -> ScalarVal {
     match ty {
         Ty::I1 => ScalarVal::I1(false),
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ScalarVal::I64(0),
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
         Ty::Dec(p, s) => ScalarVal::Dec(0, p, s),

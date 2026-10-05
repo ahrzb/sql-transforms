@@ -219,6 +219,11 @@ pub enum Ty {
     I16,
     I32,
     I64,
+    /// UTINYINT / USMALLINT / UINTEGER: narrow widths of the i64 lane, like
+    /// I8..I32, with a non-negative range.
+    U8,
+    U16,
+    U32,
     F64,
     Str,
     /// DECIMAL(p, s): `p` in 1..=38, `s` <= `p`.
@@ -236,6 +241,9 @@ impl Ty {
             Ty::I16 => Cow::Borrowed("i16"),
             Ty::I32 => Cow::Borrowed("i32"),
             Ty::I64 => Cow::Borrowed("i64"),
+            Ty::U8 => Cow::Borrowed("u8"),
+            Ty::U16 => Cow::Borrowed("u16"),
+            Ty::U32 => Cow::Borrowed("u32"),
             Ty::F64 => Cow::Borrowed("f64"),
             Ty::Str => Cow::Borrowed("str"),
             Ty::Dec(p, s) => Cow::Owned(format!("dec({p},{s})")),
@@ -245,7 +253,7 @@ impl Ty {
     /// The machine lane values of this type compute and store in.
     pub fn lane(self) -> Ty {
         match self {
-            Ty::I8 | Ty::I16 | Ty::I32 => Ty::I64,
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16 | Ty::U32 => Ty::I64,
             t => t,
         }
     }
@@ -256,12 +264,30 @@ impl Ty {
             Ty::I8 => Some((i8::MIN as i64, i8::MAX as i64)),
             Ty::I16 => Some((i16::MIN as i64, i16::MAX as i64)),
             Ty::I32 => Some((i32::MIN as i64, i32::MAX as i64)),
+            Ty::U8 => Some((0, u8::MAX as i64)),
+            Ty::U16 => Some((0, u16::MAX as i64)),
+            Ty::U32 => Some((0, u32::MAX as i64)),
             _ => None,
         }
     }
 
     pub fn is_int(self) -> bool {
-        matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
+        matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32)
+    }
+
+    pub fn is_unsigned(self) -> bool {
+        matches!(self, Ty::U8 | Ty::U16 | Ty::U32)
+    }
+
+    /// Bits of an integer width (the lane's 64 for I64).
+    pub fn int_bits(self) -> Option<u32> {
+        match self {
+            Ty::I8 | Ty::U8 => Some(8),
+            Ty::I16 | Ty::U16 => Some(16),
+            Ty::I32 | Ty::U32 => Some(32),
+            Ty::I64 => Some(64),
+            _ => None,
+        }
     }
 
     /// `(p, s)` when this is a DECIMAL.

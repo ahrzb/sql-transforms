@@ -424,7 +424,10 @@ impl Binder<'_> {
                         return Ok(null_of(Ty::I64));
                     };
                     match inner.ty {
-                        // Measured: integer round is identity, WIDTH preserved.
+                        // Measured: integer round is identity, WIDTH preserved;
+                        // round has no unsigned overload, so an unsigned
+                        // subject is BIGINT (round(200::UTINYINT) is BIGINT).
+                        t if t.is_unsigned() => Ok(widen_int(inner, Ty::I64)),
                         t if t.is_int() => Ok(inner),
                         Ty::F64 => {
                             let nullable = inner.nullable;
@@ -570,7 +573,7 @@ impl Binder<'_> {
                             unified = Some(match (u, e.ty) {
                                 (u, t) if u == t => u,
                                 (u, t) if u.is_int() && t.is_int() => {
-                                    int_width_promote(u, acc_lit, t, new_lit)
+                                    int_family_promote(u, acc_lit, t, new_lit)
                                 }
                                 (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                                 (Ty::F64, t) if t.is_int() => Ty::F64,
@@ -680,7 +683,7 @@ impl Binder<'_> {
                     unified = match (unified, e.ty) {
                         (u, t) if u == t => u,
                         (u, t) if u.is_int() && t.is_int() => {
-                            int_width_promote(u, acc_lit, t, *new_lit)
+                            int_family_promote(u, acc_lit, t, *new_lit)
                         }
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
@@ -963,15 +966,18 @@ impl Binder<'_> {
                 // BIGINT refuses. The NULL short-circuit below must not skip
                 // this check; a bare-NULL count itself is fine: DuckDB types
                 // it INTEGER.
-                let count_is_int32 =
-                    |e: &SExpr| e.ty.is_int() && e.ty != Ty::I64;
+                // UTINYINT/USMALLINT widen into INTEGER; UINTEGER does not.
+                let count_is_int32 = |e: &SExpr| {
+                    e.ty.is_int() && !matches!(e.ty, Ty::I64 | Ty::U32)
+                };
                 let bad_count = format!(
-                    "no function matches {name}(VARCHAR, BIGINT, VARCHAR) — \
-                     DuckDB's {name} count is INTEGER and a BIGINT does not \
+                    "no function matches {name}(VARCHAR, {}, VARCHAR) — \
+                     DuckDB's {name} count is INTEGER and a {0} does not \
                      implicitly narrow; spell a constant count as a plain \
-                     literal or CAST(.. AS INTEGER)"
+                     literal or CAST(.. AS INTEGER)",
+                    bl.as_ref().map_or("BIGINT", |e| duck_int_name(e.ty))
                 );
-                if bl.as_ref().is_some_and(|e| e.ty == Ty::I64)
+                if bl.as_ref().is_some_and(|e| matches!(e.ty, Ty::I64 | Ty::U32))
                     && (bs.is_none() || bp.is_none())
                 {
                     return Err(PrepareError::Bind(bad_count));
@@ -1580,11 +1586,17 @@ impl Binder<'_> {
                 subject.ty.name()
             )));
         }
+        // trunc keeps an unsigned width; round has no unsigned overload.
+        let subject = if !trunc && subject.ty.is_unsigned() {
+            widen_int(subject, Ty::I64)
+        } else {
+            subject
+        };
         let ty = subject.ty;
         let Some(digits) = self.expr_or_null(n)? else {
             return Ok(null_of(ty));
         };
-        if !matches!(digits.ty, Ty::I8 | Ty::I16 | Ty::I32) {
+        if !matches!(digits.ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16) {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}({}, {})",
                 ty.name(),

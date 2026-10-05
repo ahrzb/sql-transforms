@@ -98,6 +98,19 @@ impl std::fmt::Display for PrepareError {
 /// FROM order, the derived output schema, and the width-k UDF output
 /// fields.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+/// sqlparser's own nesting limit, raised from its default 50 to DuckDB's
+/// `max_expression_depth`: a SQL function body nested 32 parentheses deep
+/// (a Normalizer over 48 features) parses on DuckDB and must here.
+const PARSE_DEPTH: usize = 1000;
+
+/// Run a parse with [`PARSE_DEPTH`] on a stack big enough for it: the
+/// parser recurses per level without growing its own stack.
+fn parse_deep<T>(
+    parse: impl FnOnce() -> Result<T, sqlparser::parser::ParserError>,
+) -> Result<T, sqlparser::parser::ParserError> {
+    stacker::grow(256 * 1024 * 1024, parse)
+}
+
 pub fn frontend(
     sql: &str,
     this_name: &str,
@@ -165,9 +178,8 @@ pub fn frontend(
     let calls = calls
         .into_iter()
         .map(|c| {
-            let body = Parser::new(&dialect)
-                .with_tokens(rewrite(c.tokens))
-                .parse_expr()
+            let tokens = rewrite(c.tokens);
+            let body = parse_deep(|| Parser::new(&dialect).with_recursion_limit(PARSE_DEPTH).with_tokens(tokens).parse_expr())
                 .map_err(|e| {
                     PrepareError::Bind(format!("sql function '{}': its body: {e}", c.name))
                 })?;
@@ -175,9 +187,7 @@ pub fn frontend(
         })
         .collect::<Result<Vec<_>, PrepareError>>()?;
     let _calls = calls::Installed::new(calls);
-    let statements = Parser::new(&dialect)
-        .with_tokens(tokens)
-        .parse_statements()
+    let statements = parse_deep(|| Parser::new(&dialect).with_recursion_limit(PARSE_DEPTH).with_tokens(tokens).parse_statements())
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     let [statement] = statements.as_slice() else {
         return Err(unsup("multiple SQL statements"));
