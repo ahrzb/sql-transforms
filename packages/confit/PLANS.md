@@ -76,7 +76,14 @@ Delivered:
   expansion cap reached.
 - `greatest`/`least` build as one flat CASE (n² in the argument count, was
   4^n).
-- A Cranelift size limit refuses by name (`unsupported:`).
+- A Cranelift size limit refuses by name (`unsupported:`), and as soon as
+  the program is lowered and verified when a floor on the virtual registers
+  Cranelift needs passes its 2^21 (`exec/size.rs`; checked against Cranelift
+  on every debug-assertion compile): l2 Normalizer at 32 features in 4.0 s
+  (23.8 s before), a 520-lane struct read in one sum in 6.3 s (88.7 s;
+  2026-10-05). Near the cap the floor (about half of Cranelift's count
+  there) does not reach it: l1 at 32 features (9.5 s) and l2 at 30 (18 s)
+  still refuse from Cranelift, until T1's shared subexpressions shrink them.
 - An expression past DuckDB's depth limit (1000) refuses by name; an
   AND/OR chain past 64 terms binds as a balanced tree, and bind, fold and
   lower grow their stack on demand, so a 20000-term chain serves (about
@@ -195,6 +202,12 @@ The first five are ruled, in this order; the rest follow.
   (`docs/reports/2026-09-28-decimal-expressions.md`). Inlining the checks
   is the next step if decimals show up in serving profiles.
 - **Vectorized `apply_batch`** for `infer_arrow` (UDFs are called per row).
+- **Builds near Cranelift's register cap are slow.** A Normalizer (l1) at
+  30 features builds in 22-24 s; at 24 features Cranelift's register
+  allocation is 4.3 s, its IR verifier 0.8 s (1.7 s at 32), its egraph 0.8 s
+  (2026-10-05). A 100x100 checked-integer matvec took 443 s in Cranelift (not
+  investigated). Candidates: the verifier off in release builds, one
+  function per group of output columns.
 - **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
 
