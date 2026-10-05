@@ -98,10 +98,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 - `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
   (DuckDB converts at execution; a bind-time conversion is over-eager).
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
-- **Relation read as a struct** (`d['k']`, `(d).k`, `__THIS__['a']`): DuckDB
-  serves the relation's row struct; confit refuses in every spelling, but as
-  a bind error ("column 'd' does not exist"), which claims DuckDB rejects it.
-  Either serve it (it is `d.k`) or refuse it as unsupported by name.
 - **Wrapped-query refusals** the metamorphic suite allowlists
   (`fuzz/metamorphic.py` `KNOWN`): a struct- or list-valued column inside a
   derived table (about 13% of generated queries when wrapped) and a subquery
@@ -136,8 +132,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   query costs ~110 ns/row where its DOUBLE spelling costs ~55
   (`docs/reports/2026-09-28-decimal-expressions.md`). Inlining the checks
   is the next step if decimals show up in serving profiles.
-- **`scripts/bench_specializer.py` is stale**: it passes a pydantic model
-  where `DuckDBInferFn` now takes an Arrow schema, so it errors at build.
 - **Vectorized `apply_batch`** for `infer_arrow` (UDFs are called per row).
 - **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.

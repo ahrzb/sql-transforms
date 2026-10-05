@@ -56,11 +56,22 @@ def bench_fn(f, n):
     return quantiles(out)
 
 
-def build_specializer(sql, model, dim):
+# The row table's Arrow declaration; the rows themselves stay pydantic
+# objects, so the boundary reads attributes, as a serving caller's would.
+ROW_SCHEMA = pa.schema(
+    [
+        pa.field("a", pa.int64(), nullable=False),
+        pa.field("b", pa.float64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
+
+
+def build_specializer(sql, dim):
     from confit import DuckDBInferFn
 
     return DuckDBInferFn(
-        sql, row_tables={"__THIS__": model}, static_tables={"dim": dim}
+        sql, row_tables={"__THIS__": ROW_SCHEMA}, static_tables={"dim": dim}
     )
 
 
@@ -77,7 +88,7 @@ def main():
     results = {}
     for case, sql in CASES.items():
         try:
-            fn = builders[engine](sql, model, dim)
+            fn = builders[engine](sql, dim)
         except Exception as e:  # noqa: BLE001 -- engines differ in coverage
             results[case] = {"error": str(e)[:120]}
             continue
@@ -89,7 +100,7 @@ def main():
         per_n = {}
         for n in NS:
             objs = [model(**r) for r in rows_of(n)]
-            p50, p99 = bench_fn(lambda f=fn, o=objs: f.infer({"__THIS__": o}), n)
+            p50, p99 = bench_fn(lambda f=fn, o=objs: f.infer_rows(o), n)
             per_n[n] = {"p50_ns": p50, "p99_ns": p99}
         results[case] = per_n
     print(json.dumps({engine: results}))

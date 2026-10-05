@@ -138,9 +138,10 @@ impl Binder<'_> {
     /// field name; an integer key on a named struct is DuckDB's binder
     /// error and stays on the refusing path.
     ///
-    /// The ROOT's dotted run resolves by the ordinary rules, but a key after
-    /// it is always a FIELD, never a column of a relation: `v['x']` with
-    /// `v` a relation in scope is not `v.x`. Such a root is left alone.
+    /// The ROOT's dotted run resolves by the ordinary rules, and a key after
+    /// it is a FIELD. A bare root binds as a column first, as on DuckDB; only
+    /// a relation name no column shares is that relation's row struct, so
+    /// `t['a']` reads `t.a` (see [`Self::struct_access_base`]).
     pub(super) fn struct_access_path(&self, e: &SqlExpr) -> Option<Vec<Ident>> {
         self.struct_access_path_beside(e, None)
     }
@@ -220,6 +221,14 @@ impl Binder<'_> {
         let is_rel = last.value.eq_ignore_ascii_case(&self.this_name)
             || self.joins.iter().any(|sj| last.value.eq_ignore_ascii_case(&sj.name))
             || rel.is_some_and(|r| last.value.eq_ignore_ascii_case(r));
+        // A bare relation name no column shares is that relation's row
+        // struct on DuckDB, so `t['a']` and `(t).a` read `t.a` (measured,
+        // LEFT misses included). A column of the same name wins there, and
+        // that spelling keeps refusing: the path below would resolve the
+        // relation first.
+        if is_rel && path.len() == 1 && !self.binds_as_column(&last.value) {
+            return Some(path);
+        }
         (!is_rel).then_some(path)
     }
 
