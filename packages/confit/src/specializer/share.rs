@@ -42,24 +42,52 @@ pub fn share(items: &[SExpr]) -> Option<Shared> {
     let roots: Vec<u32> = items.iter().map(|e| dag.intern(e.clone())).collect();
     let n = dag.nodes.len();
 
-    // How many times each node would be evaluated: once per occurrence
-    // under parents that are themselves evaluated, and once in all when the
-    // node is shared. Parents are interned after their children, so a
-    // descending sweep sees every parent of a node before the node.
-    let mut occ = vec![0u64; n];
+    // Where each node is evaluated. An occurrence is GATED by the CASE
+    // positions on its path: a CASE evaluates its first condition on every
+    // row, and a later condition, an arm or the default only when the
+    // conditions before it went one way (`Dag::gate`). Conditions are
+    // hash-consed, so CASEs on the same conditions gate alike: every field
+    // read of a `null_when` function sits behind its own `CASE WHEN c THEN
+    // NULL ELSE ..`, all on one `c`. Per node, `occ` counts evaluations
+    // under each gate (the empty gate is unconditional), once per
+    // occurrence under parents that are themselves evaluated.
+    //
+    // A node is shared when computing it up front costs no row anything
+    // and saves one: evaluated unconditionally and more than once, or
+    // twice behind one gate (a row that opens the gate evaluates it twice;
+    // one that does not pays for it once). A subtree held only by
+    // different CASE arms stays lazy: hoisting it ran every instance arm
+    // of a catalog step on every row. Parents are interned after their
+    // children, so a descending sweep sees every parent of a node first.
+    let mut occ: Vec<HashMap<Vec<u64>, u64>> = vec![HashMap::new(); n];
     for &r in &roots {
-        occ[r as usize] += 1;
+        *occ[r as usize].entry(Vec::new()).or_default() += 1;
     }
     let mut shared = vec![false; n];
     for id in (0..n).rev() {
         let node = &dag.nodes[id];
-        shared[id] = occ[id] >= 2 && node.free && dag.worth_sharing(node);
-        let runs = if shared[id] { 1 } else { occ[id] };
-        if runs == 0 {
-            continue;
-        }
-        for &c in &node.children {
-            occ[c as usize] = occ[c as usize].saturating_add(runs);
+        let here = std::mem::take(&mut occ[id]);
+        let total: u64 = here.values().fold(0, |a, &b| a.saturating_add(b));
+        let must = here.get(&Vec::new()).copied().unwrap_or(0);
+        let gated_twice = here.iter().any(|(g, &k)| !g.is_empty() && k >= 2);
+        shared[id] = ((must >= 1 && total >= 2) || gated_twice)
+            && node.free
+            && dag.worth_sharing(node);
+        let here: Vec<(Vec<u64>, u64)> = if shared[id] {
+            vec![(Vec::new(), 1)]
+        } else {
+            here.into_iter().collect()
+        };
+        for (i, &c) in node.children.iter().enumerate() {
+            let step = dag.gate(node, i);
+            for (g, k) in &here {
+                let mut g = g.clone();
+                if let Some(step) = step {
+                    g.push(step);
+                }
+                let slot = occ[c as usize].entry(g).or_default();
+                *slot = slot.saturating_add(*k);
+            }
         }
     }
     if !shared.iter().any(|s| *s) {
@@ -129,6 +157,37 @@ struct Dag {
 }
 
 impl Dag {
+    /// The gate step child `i` of `node` adds (see `share`), or `None`
+    /// when every evaluation of the node evaluates it. A CASE's children run
+    /// condition 0, result 0, condition 1, ..., the default: condition `k`
+    /// runs when conditions `0..k` were not TRUE, result `k` when condition
+    /// `k` was, the default when none was. The step names those conditions
+    /// (by node id) and which of the three it is.
+    fn gate(&self, node: &Node, i: usize) -> Option<u64> {
+        let SKind::Case { arms, .. } = &node.shallow.kind else {
+            return None;
+        };
+        if i == 0 {
+            return None;
+        }
+        let n_arms = arms.len();
+        let (upto, role) = if i >= 2 * n_arms {
+            (n_arms, 2u8)
+        } else if i % 2 == 1 {
+            (i / 2 + 1, 1u8)
+        } else {
+            (i / 2, 0u8)
+        };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        role.hash(&mut h);
+        node.children
+            .iter()
+            .step_by(2)
+            .take(upto)
+            .for_each(|c| c.hash(&mut h));
+        Some(h.finish())
+    }
+
     /// A small subexpression is cheaper to evaluate again than to carry:
     /// a shared value rides every block transition until its last read, and
     /// a Normalizer lane's own CASE splits blocks, so sharing each lane's
