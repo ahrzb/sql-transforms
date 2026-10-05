@@ -7,9 +7,9 @@ when its PR merges, and move what it learned into `PLANS.md`.
 
 | id | ticket | branch | depends on | overlaps | worker session | PR | state |
 |---|---|---|---|---|---|---|---|
-| T1 | compute a repeated pure subexpression once (Normalizer) | `claude/cse-call-body` | #341 | `plan.rs` (can_trap), `lower.rs` | | | ready |
-| T2 | refuse an oversized program before the expensive compile | `claude/early-size-refusal` | — | `exec/cranelift.rs`, `duckdb/mod.rs` | | | ready |
-| T3 | UBIGINT and HUGEINT on a 128-bit lane | `claude/i128-hugeint` | #341 | `frontend/typing.rs`, `ir`, both backends | | | ready |
+| T1 | compute a repeated pure subexpression once (Normalizer) | `claude/cse-call-body` | #341 (merged) | `plan.rs` (can_trap), `lower.rs` | `session_01JK5MtjJLsMnux72iy7DDbx` | | in progress |
+| T2 | refuse an oversized program before the expensive compile | `claude/early-size-refusal` | — | `exec/cranelift.rs`, `duckdb/mod.rs` | `session_013HN9Ji5nZGqLBkB5BVRwdo` | | in progress |
+| T3 | UBIGINT and HUGEINT on a 128-bit lane | `claude/i128-hugeint` | #341 (merged) | `frontend/typing.rs`, `ir`, both backends | `session_019i3NwfPmY8eVbohDs186QZ` | | in progress |
 
 Next up, once a slot frees: struct-valued outputs (ruled class 3), then
 superlinear build time of long AND/OR chains (20,000 terms: about 23 s).
