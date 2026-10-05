@@ -8,7 +8,7 @@
 
 `step` is a `PythonTransform`: fitted instances keyed by id, called as
 `name(id, features...)`. A translation is a drop-in replacement: same name,
-same call, same result (docs/native/goal.md says what "same" means). Where no
+same call, same result (loops/native/goal.md says what "same" means). Where no
 translation exists, `to_native` hands back the step unchanged, which is
 always correct to serve, only slower.
 
