@@ -76,7 +76,7 @@ fn rand_lit(rng: &mut Rng, ty: Ty) -> Lit {
         Ty::Dec(p, s) => Lit::Dec((rng.next() % 1_000_000) as i128, p, s),
         // TYS never generates narrow widths (they are header-only); a narrow
         // request still gets an i64-lane literal.
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Lit::I64(match rng.below(6) {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => Lit::I64(match rng.below(6) {
             0 => 0,
             1 => -1,
             2 => i64::MAX,

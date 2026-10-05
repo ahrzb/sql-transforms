@@ -43,6 +43,9 @@ pub(super) fn arrow_ty_name(t: Ty) -> std::borrow::Cow<'static, str> {
         Ty::I16 => Cow::Borrowed("int16"),
         Ty::I32 => Cow::Borrowed("int32"),
         Ty::I64 => Cow::Borrowed("int64"),
+        Ty::U8 => Cow::Borrowed("uint8"),
+        Ty::U16 => Cow::Borrowed("uint16"),
+        Ty::U32 => Cow::Borrowed("uint32"),
         Ty::F64 => Cow::Borrowed("double"),
         Ty::Str => Cow::Borrowed("string"),
         // pyarrow's own `str()` spelling, space and all, so a refusal
@@ -284,7 +287,7 @@ pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
             valid: Vec::with_capacity(cap),
             data: Vec::with_capacity(cap),
         },
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ColData::I64 {
             valid: Vec::with_capacity(cap),
             data: Vec::with_capacity(cap),
         },
@@ -916,7 +919,7 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                             };
                             vals.push(Some(match ty {
                                 Ty::I1 => ScalarVal::I1(item.extract().map_err(bad)?),
-                                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                                     ScalarVal::I64(item.extract().map_err(bad)?)
                                 }
                                 Ty::F64 => ScalarVal::F64(item.extract().map_err(bad)?),
@@ -1039,6 +1042,9 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                                 Ty::I8 => "TINYINT",
                                 Ty::I16 => "SMALLINT",
                                 Ty::I32 => "INTEGER",
+                                Ty::U8 => "UTINYINT",
+                                Ty::U16 => "USMALLINT",
+                                Ty::U32 => "UINTEGER",
                                 _ => "BIGINT",
                             }
                         ))),
@@ -1051,7 +1057,7 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                     // (ImplicitCastBigint, cast_rules.cpp:96-107), so
                     // equality is decidable here — integral and in range,
                     // or the row cannot match.
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 if is_dec(v)? => {
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 if is_dec(v)? => {
                         let (m, s) = decimal_parts(
                             v,
                             &format!("static table '{}' key column '{name}'", spec.table),
@@ -1061,7 +1067,7 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                             None => return Ok(None),
                         }
                     }
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => KeyBits::I64(v.extract().map_err(|_| {
                         build_err(format!(
                             "unsupported: static table '{}' key column '{name}' value \
                              outside int64 range (uint64/decimal128 payloads)",
@@ -1144,7 +1150,7 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<ScalarVal> {
                 Ok(match ty {
                     Ty::I1 => ScalarVal::I1(v.extract()?),
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(v.extract().map_err(
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => ScalarVal::I64(v.extract().map_err(
                         |_| {
                         build_err(format!(
                             "unsupported: static table '{}' value column '{name}' value \

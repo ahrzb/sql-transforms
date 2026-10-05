@@ -885,6 +885,13 @@ pub fn can_trap(e: &SExpr) -> bool {
             can_trap(a) || can_trap(b)
         }
         SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => can_trap(a),
+        // A cast that cannot fail: TRY_CAST (a failure is NULL), and the
+        // conversions that are total -- an integer or a DOUBLE to DOUBLE,
+        // anything numeric or BOOLEAN to VARCHAR, an integer to a width
+        // that holds its whole range, BOOLEAN to an integer.
+        SKind::Cast { inner, trying } if *trying || cast_is_total(inner.ty, e.ty) => {
+            can_trap(inner)
+        }
         SKind::Case { arms, default } => {
             arms.iter().any(|(c, r)| can_trap(c) || can_trap(r))
                 || default.as_deref().is_some_and(can_trap)
@@ -898,6 +905,22 @@ pub fn can_trap(e: &SExpr) -> bool {
             SKind::Lit(_) | SKind::NullOf
         ),
         _ => true,
+    }
+}
+
+/// Whether every value of `from` converts to `to` (see `can_trap`).
+fn cast_is_total(from: Ty, to: Ty) -> bool {
+    match (from, to) {
+        (a, b) if a == b => true,
+        (a, Ty::F64) => a.is_int() || a == Ty::I1,
+        (a, Ty::Str) => a.is_int() || a == Ty::I1 || a == Ty::F64 || a.dec().is_some(),
+        (Ty::I1, b) => b.is_int(),
+        (a, b) if a.is_int() && b.is_int() => {
+            let range = |t: Ty| t.int_range().unwrap_or((i64::MIN, i64::MAX));
+            let ((alo, ahi), (blo, bhi)) = (range(a), range(b));
+            blo <= alo && ahi <= bhi
+        }
+        _ => false,
     }
 }
 

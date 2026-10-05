@@ -130,6 +130,10 @@ _ARROW = {
     "timestamp": pa.timestamp("us"),
     # DECIMAL, row or static: served exactly, emitted as decimal128(p,s)
     # whatever the internal storage tier.
+    # unsigned widths of the i64 lane
+    "uint8": pa.uint8(),
+    "uint16": pa.uint16(),
+    "uint32": pa.uint32(),
     "decimal(4,2)": pa.decimal128(4, 2),
     "decimal(9,4)": pa.decimal128(9, 4),
     "decimal(18,6)": pa.decimal128(18, 6),

@@ -137,6 +137,9 @@ fn arrow_field_to_row_field(
         "int16" => Ty::I16,
         "int32" => Ty::I32,
         "int64" => Ty::I64,
+        "uint8" => Ty::U8,
+        "uint16" => Ty::U16,
+        "uint32" => Ty::U32,
         "double" => Ty::F64,
         "string" => Ty::Str,
         // Two catalogue extras survive, because both are MEASURED

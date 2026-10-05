@@ -63,6 +63,9 @@ pub(super) fn narrow_bits(ty: Ty) -> Option<i64> {
         Ty::I8 => Some(8),
         Ty::I16 => Some(16),
         Ty::I32 => Some(32),
+        Ty::U8 => Some(8),
+        Ty::U16 => Some(16),
+        Ty::U32 => Some(32),
         _ => None,
     }
 }
@@ -73,6 +76,9 @@ fn duck_narrow_name(ty: Ty) -> &'static str {
         Ty::I8 => "TINYINT",
         Ty::I16 => "SMALLINT",
         Ty::I32 => "INTEGER",
+        Ty::U8 => "UTINYINT",
+        Ty::U16 => "USMALLINT",
+        Ty::U32 => "UINTEGER",
         _ => "BIGINT",
     }
 }
@@ -84,6 +90,9 @@ fn arrow_narrow_name(ty: Ty) -> &'static str {
         Ty::I8 => "int8",
         Ty::I16 => "int16",
         Ty::I32 => "int32",
+        Ty::U8 => "uint8",
+        Ty::U16 => "uint16",
+        Ty::U32 => "uint32",
         _ => "int64",
     }
 }
@@ -520,7 +529,7 @@ impl<'a> FB<'a> {
     fn default_of(&mut self, ty: Ty) -> Value {
         self.const_lit(match ty {
             Ty::I1 => Lit::I1(false),
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Lit::I64(0),
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => Lit::I64(0),
             Ty::F64 => Lit::F64(0.0),
             Ty::Str => Lit::Str(String::new()),
             // The LEFT-miss payload of a decimal lane: a zero at the
@@ -3040,6 +3049,9 @@ impl<'a> FB<'a> {
                                 Ty::I8 => "INT8",
                                 Ty::I16 => "INT16",
                                 Ty::I32 => "INT32",
+                                Ty::U8 => "UINT8",
+                                Ty::U16 => "UINT16",
+                                Ty::U32 => "UINT32",
                                 _ => "INT64",
                             }
                         )

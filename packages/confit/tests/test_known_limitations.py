@@ -264,9 +264,7 @@ def test_unqualified_exclude_of_a_using_key_serves():
 @pytest.mark.parametrize(
     "target",
     [
-        "UTINYINT",
-        "USMALLINT",
-        "UINTEGER",
+        # UTINYINT/USMALLINT/UINTEGER serve (tests/test_unsigned.py).
         "UBIGINT",
         "HUGEINT",
         "UHUGEINT",

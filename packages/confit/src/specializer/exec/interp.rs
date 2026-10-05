@@ -325,7 +325,7 @@ impl InterpFn {
                 .iter()
                 .map(|ty| match ty {
                     Ty::I1 => OutCol::I1(Vec::new()),
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => OutCol::I64(Vec::new()),
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => OutCol::I64(Vec::new()),
                     Ty::F64 => OutCol::F64(Vec::new()),
                     Ty::Str => OutCol::Str(Vec::new()),
                     Ty::Dec(..) => OutCol::Dec(Vec::new()),
@@ -735,7 +735,7 @@ fn scalar_to_reg(v: &ScalarVal, arena: &mut Arena) -> RegVal {
 fn default_reg(ty: Ty) -> RegVal {
     match ty {
         Ty::I1 => RegVal::I1(false),
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => RegVal::I64(0),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => RegVal::I64(0),
         Ty::F64 => RegVal::F64(0.0),
         Ty::Str => RegVal::Str(StrRef { off: 0, len: 0 }),
         Ty::Dec(..) => RegVal::Dec(0),
@@ -972,7 +972,7 @@ fn compile_inst(
             let (dst, a, b) = (sl(slots, dst), sl(slots, a), sl(slots, b));
             Box::new(move |ctx| {
                 let v = match ty {
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                         apply_ord(pred, as_i64(ctx.regs[a]).cmp(&as_i64(ctx.regs[b])))
                     }
                     Ty::F64 => {
@@ -1624,7 +1624,7 @@ fn compile_inst(
                     a.push(if valid {
                         Some(match ty {
                             Ty::I1 => ScalarVal::I1(as_i1(ctx.regs[args[2 * j + 1]])),
-                            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                                 ScalarVal::I64(as_i64(ctx.regs[args[2 * j + 1]]))
                             }
                             Ty::F64 => ScalarVal::F64(as_f64(ctx.regs[args[2 * j + 1]])),

@@ -465,6 +465,13 @@ impl Binder<'_> {
                 let Some(inner) = self.expr_or_null(expr)? else {
                     return Ok(null_of(Ty::I64));
                 };
+                if inner.ty.is_unsigned() {
+                    // DuckDB wraps it: -(200::UTINYINT) is 56.
+                    return Err(unsup(format!(
+                        "unary minus over an unsigned integer ({})",
+                        duck_int_name(inner.ty)
+                    )));
+                }
                 // Unary minus over a DECIMAL-spelled operand that folds to
                 // NULL is SQLNULL/INTEGER on DuckDB; a DOUBLE-spelled one
                 // stays DOUBLE.
@@ -1319,7 +1326,7 @@ impl Binder<'_> {
                 None => r.ty,
                 Some(u) if u == r.ty => u,
                 Some(u) if u.is_int() && r.ty.is_int() => {
-                    int_width_promote(u, acc_lit, r.ty, new_lit)
+                    int_family_promote(u, acc_lit, r.ty, new_lit)
                 }
                 Some(u) if u.is_int() && r.ty == Ty::F64 => Ty::F64,
                 Some(Ty::F64) if r.ty.is_int() => Ty::F64,
@@ -1430,6 +1437,15 @@ impl Binder<'_> {
                 });
             }
             return Ok(inner);
+        }
+        // DuckDB range-checks a DOUBLE against an unsigned target BEFORE
+        // rounding, and wraps the one value that rounds up past it
+        // (-0.4 errors, 255.5 becomes 0 as UTINYINT).
+        if to.is_unsigned() && inner.ty == Ty::F64 {
+            return Err(unsup(format!(
+                "CAST from DOUBLE to {} (DuckDB checks the range before rounding)",
+                duck_int_name(to)
+            )));
         }
         // A DECIMAL on either side: the checked conversions of
         // docs/specs/decimal-expressions.md §8.
@@ -1626,6 +1642,16 @@ impl Binder<'_> {
                         b.ty.name()
                     )));
                 }
+            }
+            if matches!(op, ArithOp::Shl | ArithOp::Shr)
+                && (a.ty.is_unsigned() || b.ty.is_unsigned())
+            {
+                return Err(unsup(format!(
+                    "a shift over an unsigned integer ({} {} {})",
+                    duck_int_name(a.ty),
+                    arith_sym(op),
+                    duck_int_name(b.ty)
+                )));
             }
             let ty = int_width_promote(a.ty, lits.0, b.ty, lits.1);
             if null_operand {

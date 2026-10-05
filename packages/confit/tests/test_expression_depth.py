@@ -63,3 +63,13 @@ def test_int_literal_overflow_still_refuses():
             row_tables={"__THIS__": ROWS.schema},
             static_tables={},
         )
+
+
+@pytest.mark.parametrize("depth", [32, 100])
+def test_a_deeply_nested_expression_parses(depth):
+    # sqlparser's default nesting limit (50) refused a CASE nested 32 deep,
+    # which DuckDB serves (a Normalizer body over 48 features).
+    e = "x"
+    for i in range(depth):
+        e = f"(CASE WHEN x > {i} THEN ({e}) * 0.5e0 ELSE 1.0e0 END)"
+    assert_parity(f"SELECT {e} AS o FROM __THIS__", ROWS)

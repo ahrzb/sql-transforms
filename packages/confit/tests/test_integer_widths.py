@@ -847,9 +847,7 @@ def _static_fn(arrow_ty, val, expr="s.v"):
     ("arrow_ty", "val"),
     [
         (pa.float32(), 0.1),
-        (pa.uint8(), 7),
-        (pa.uint16(), 7),
-        (pa.uint32(), 7),
+        # uint8/16/32 serve (tests/test_unsigned.py); uint64 needs i128.
         (pa.uint64(), 7),
     ],
 )

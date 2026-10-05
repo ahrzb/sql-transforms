@@ -276,6 +276,9 @@ pub fn ingest<'py>(
                 | (Ty::I16, "int16")
                 | (Ty::I32, "int32")
                 | (Ty::I64, "int64")
+                | (Ty::U8, "uint8")
+                | (Ty::U16, "uint16")
+                | (Ty::U32, "uint32")
                 | (Ty::F64, "double")
                 | (Ty::I1, "bool")
                 | (Ty::Str, "string")
@@ -309,7 +312,7 @@ pub fn ingest<'py>(
         let col_data = match ct.ty {
             // Narrow widths widen into the engine's i64 lane; the declared
             // arrow type already proved every value fits.
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => {
                 let mut valid = Vec::with_capacity(rows);
                 let mut data = Vec::with_capacity(rows);
                 for i in 0..rows {
@@ -321,6 +324,9 @@ pub fn ingest<'py>(
                             Ty::I8 => unsafe { raw.data::<i8>(1).get(i) as i64 },
                             Ty::I16 => unsafe { raw.data::<i16>(1).get(i) as i64 },
                             Ty::I32 => unsafe { raw.data::<i32>(1).get(i) as i64 },
+                            Ty::U8 => unsafe { raw.data::<u8>(1).get(i) as i64 },
+                            Ty::U16 => unsafe { raw.data::<u16>(1).get(i) as i64 },
+                            Ty::U32 => unsafe { raw.data::<u32>(1).get(i) as i64 },
                             _ => unsafe { raw.data::<i64>(1).get(i) },
                         }
                     } else {
@@ -612,6 +618,9 @@ fn pa_ty<'py>(pa: &Bound<'py, PyModule>, t: Ty) -> PyResult<Bound<'py, PyAny>> {
         Ty::I16 => pa.call_method0("int16"),
         Ty::I32 => pa.call_method0("int32"),
         Ty::I64 => pa.call_method0("int64"),
+        Ty::U8 => pa.call_method0("uint8"),
+        Ty::U16 => pa.call_method0("uint16"),
+        Ty::U32 => pa.call_method0("uint32"),
         Ty::F64 => pa.call_method0("float64"),
         Ty::Str => pa.call_method0("string"),
         // decimal128 at EVERY tier, because that is what DuckDB exports:
@@ -705,6 +714,9 @@ pub fn emit(
                     crate::specializer::ir::Ty::I16 => pa.call_method0("int16"),
                     crate::specializer::ir::Ty::I32 => pa.call_method0("int32"),
                     crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
+                    crate::specializer::ir::Ty::U8 => pa.call_method0("uint8"),
+                    crate::specializer::ir::Ty::U16 => pa.call_method0("uint16"),
+                    crate::specializer::ir::Ty::U32 => pa.call_method0("uint32"),
                     crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
                     // `string`, not `large_string` — see the scalar lane
                     // below for why.
@@ -803,6 +815,39 @@ pub fn emit(
                                 });
                             }
                             (pa.call_method0("int8")?, cast_bytes(&data, 1))
+                        }
+                        Ty::U32 => {
+                            let mut data: Vec<u32> = Vec::with_capacity(v.len());
+                            for (ok, x) in v.iter() {
+                                data.push(if *ok {
+                                    u32::try_from(*x).map_err(|_| narrow_err(*x))?
+                                } else {
+                                    0
+                                });
+                            }
+                            (pa.call_method0("uint32")?, cast_bytes(&data, 4))
+                        }
+                        Ty::U16 => {
+                            let mut data: Vec<u16> = Vec::with_capacity(v.len());
+                            for (ok, x) in v.iter() {
+                                data.push(if *ok {
+                                    u16::try_from(*x).map_err(|_| narrow_err(*x))?
+                                } else {
+                                    0
+                                });
+                            }
+                            (pa.call_method0("uint16")?, cast_bytes(&data, 2))
+                        }
+                        Ty::U8 => {
+                            let mut data: Vec<u8> = Vec::with_capacity(v.len());
+                            for (ok, x) in v.iter() {
+                                data.push(if *ok {
+                                    u8::try_from(*x).map_err(|_| narrow_err(*x))?
+                                } else {
+                                    0
+                                });
+                            }
+                            (pa.call_method0("uint8")?, cast_bytes(&data, 1))
                         }
                         _ => {
                             let data: Vec<i64> = v.iter().map(|(_, x)| *x).collect();
