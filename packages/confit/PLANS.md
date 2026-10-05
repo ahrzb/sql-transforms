@@ -109,8 +109,9 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Evidence and gates
 
-- **No debug-build pytest pass.** Lowering invariants are `debug_assert!`s the
-  release extension compiles out.
+- **No debug-assertion pytest pass.** Lowering invariants are `debug_assert!`s
+  the release extension compiles out. The nightly campaign builds with them on
+  (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`); the PR gate does not.
 - **IR generator coverage.** `ir::gen::gen_program` never emits `Dtof`, `Itod`,
   the decimal-expression opcodes (`Dop`, `Dcast`, `DcastOk`, `Dunary`, `Dtos`),
   `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`, `ExternCall`,
