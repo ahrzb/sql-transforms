@@ -85,11 +85,34 @@ pub(super) type ScopeKey = (usize, usize, usize, u32, bool, usize);
 pub(super) type Siblings = Rc<Vec<(usize, SExpr)>>;
 
 impl Binder<'_> {
-    fn scope_key(&self, id: usize) -> ScopeKey {
+    fn scope_key(&self, id: usize, body: &SqlExpr) -> ScopeKey {
+        // A lateral alias bound since the last read changes what the call
+        // binds to only when the call names it; counting every alias would
+        // miss the cache on each projection item (n reads, n^2 binds).
+        let words = self
+            .call_words
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| {
+                Rc::new(
+                    body.to_string()
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .filter(|w| !w.is_empty())
+                        .map(str::to_ascii_lowercase)
+                        .collect(),
+                )
+            })
+            .clone();
+        let aliases = self
+            .bound_aliases
+            .borrow()
+            .iter()
+            .filter(|(a, _)| words.contains(&a.to_ascii_lowercase()))
+            .count();
         (
             id,
             self.joins.len(),
-            self.bound_aliases.borrow().len(),
+            aliases,
             self.in_guarded.get(),
             self.classify_keys.get(),
             self.beside.borrow().len(),
@@ -146,7 +169,7 @@ impl Binder<'_> {
         if values.len() == 1 {
             return self.expr_or_null(&picked).map(Some);
         }
-        let key = self.scope_key(id);
+        let key = self.scope_key(id, &calls[id].1);
         let cached = self.call_siblings.borrow().get(&key).cloned();
         let siblings: Siblings = match cached {
             Some(s) => s,
