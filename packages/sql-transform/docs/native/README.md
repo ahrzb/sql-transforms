@@ -21,7 +21,8 @@ can do without the owner.
 
 ## One cycle
 
-1. **Sync.** Fetch `master` and start the working branch from it.
+1. **Sync.** Fetch `master` and start the working branch from it. Use a
+   branch of this loop's own; another loop works confit on its own branch.
 2. **Pick.** The top item of PLANS "Next". When "Next" is empty, the
    easiest "not yet" row of coverage.md; record it in PLANS first.
 3. **Read the twin.** Find the transformer's `transform` in the installed
@@ -53,16 +54,12 @@ can do without the owner.
 
 ## When confit is missing something
 
-The catalog is sql_transform's; the machinery is confit's. A translation
-that needs a capability confit lacks (a builtin, a return shape, a faster
-dispatch) either:
-- lands it in confit first, as its own PR, under confit's rules
-  (`packages/confit/PLANS.md`, `docs/goal.md`): parity with the DuckDB
-  oracle, tests beside the feature; or
-- records it under PLANS "Needs from confit" and moves to the next item.
-
-Prefer the first when the capability is small and the next several entries
-need it.
+The catalog is sql_transform's; the machinery is confit's, and confit has
+its own loop (`packages/confit/PLANS.md`), which builds what this one needs
+first. So this loop does not change confit: it records the need under PLANS
+"Needs from confit" (what, and which entries wait on it) and moves to the
+next item. An entry that waits on confit stays `NotNative` with a reason
+naming the capability.
 
 ## Rules
 
