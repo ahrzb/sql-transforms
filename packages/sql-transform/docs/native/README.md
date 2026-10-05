@@ -9,6 +9,7 @@ in-scope transformer in [coverage.md](coverage.md) is native.
 - [decisions/](decisions/): questions for the owner, and rulings in force.
 - [coverage.md](coverage.md): the scoreboard (generated).
 - [subagents.md](subagents.md): running the loop with worker sessions.
+- [reports.md](reports.md): the report written after each milestone.
 
 ## Running it
 
@@ -57,6 +58,9 @@ worker session and reviews and merges their PRs. See
    Open a PR, wait for CI, squash-merge with the expected head SHA.
 8. **Update PLANS.** Remove the item; add what the cycle found (a gap in
    confit, a configuration left as `NotNative`, a follow-up).
+9. **Milestone?** When this cycle completes a milestone (a batch of
+   families, a scoreboard mark, a confit capability landing, or the loop
+   stopping), write the report described in [reports.md](reports.md).
 
 ## When confit is missing something
 
