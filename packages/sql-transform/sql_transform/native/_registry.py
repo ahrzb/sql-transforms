@@ -15,10 +15,11 @@ The framework does the rest, the same way for every entry: one
 `SqlFunction` named like the step, taking the instance id then the
 features, whose every lane selects the instance's expression by id
 (`CASE WHEN id = 0 THEN ... WHEN id IN (1, 2) THEN ... END`, instances
-whose lane is the same SQL sharing an arm; a NULL id matches no arm and is
-NULL, as the step's own NULL id is). Before it is returned, confit builds
-it into the query reading every lane (`query`): a translation confit
-refuses leaves the step Python.
+whose lane is the same SQL sharing an arm). As in the step, a NULL id
+answers NULL (a NULL struct or list, for a struct or list return) and an
+id the step does not know raises. Before it is returned, confit builds it into the query
+reading every lane (`query`): a translation confit refuses leaves the step
+Python.
 """
 
 from __future__ import annotations
@@ -51,6 +52,13 @@ _CATALOG: dict[type, Entry] = {}
 # The instance-id parameter. Double underscores keep it apart from any
 # feature name a step can declare (features come from user columns).
 _ID = "__iid"
+
+# What an id the step does not know raises with (`error()` takes a constant
+# message, so the id itself is not in it).
+_UNKNOWN = (
+    "{}: an instance id not in the fitted instances (params table and"
+    " instances are from different fits)"
+)
 
 
 class NotNative(Exception):  # noqa: N818 — a reason, raised and caught
@@ -89,14 +97,13 @@ def _feature(param: S.Expr, t: pa.DataType) -> S.Expr:
 
 
 def _lanes(step: PythonTransform) -> list[tuple[str | None, pa.DataType]]:
+    """The output lanes, each `(field name, type)`; unnamed in a scalar
+    or a fixed-size list return."""
     r = step.returns
     if pa.types.is_struct(r):
         return [(r.field(i).name, r.field(i).type) for i in range(r.num_fields)]
     if pa.types.is_fixed_size_list(r):
-        raise NotNative(
-            "an unnamed width-k output (a list return) waits on confit serving"
-            " list-valued SQL functions"
-        )
+        return [(None, r.value_type)] * r.list_size
     return [(None, r)]
 
 
@@ -139,13 +146,33 @@ def _translate(step: Any) -> SqlFunction:
             e = S.case(hit(ks0), v0)
             for ks, v in rest:
                 e = e.when(hit(ks), v)
+            if j == 0:
+                # An unknown id raises, from the first lane only: DuckDB
+                # builds every field of a struct, so a read of any lane
+                # fires it, and the other lanes carry no trap that every
+                # field read would have to keep.
+                e = e.when(iid.isnull(), S.lit(None, lanes[0][1])).otherwise(
+                    S.fn("error", S.lit(_UNKNOWN.format(step.name)))
+                )
             return e
 
-        if lanes[0][0] is None:
-            return select(0)
-        return {name: select(j) for j, (name, _) in enumerate(lanes)}
+        if pa.types.is_struct(step.returns):
+            return {name: select(j) for j, (name, _) in enumerate(lanes)}
+        if pa.types.is_fixed_size_list(step.returns):
+            return [select(j) for j in range(len(lanes))]
+        return select(0)
 
-    fn = SqlFunction(step.name, takes, step.returns, body)
+    whole = pa.types.is_struct(step.returns) or pa.types.is_fixed_size_list(
+        step.returns
+    )
+    fn = SqlFunction(
+        step.name,
+        takes,
+        step.returns,
+        body,
+        # A NULL id is a NULL struct or list, not one of NULL lanes.
+        null_when=(lambda iid, *_: iid.isnull()) if whole else None,
+    )
     _builds(step, fn)
     return fn
 

@@ -40,6 +40,10 @@ def ulp_distance(a: float, b: float) -> int:
 def _same(a: Any, b: Any, ulps: int) -> bool:
     if a is None or b is None:
         return a is None and b is None
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(
+            _same(x, y, ulps) for x, y in zip(a, b, strict=True)
+        )
     if isinstance(a, float) and isinstance(b, float):
         if ulps == 0:
             return repr(a) == repr(b)  # bit-exact: -0.0 is not 0.0

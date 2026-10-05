@@ -36,19 +36,6 @@ Easiest first; each is one family, one PR.
 
 ## Needs from confit
 
-- **List-valued SQL functions**: served now. `SqlFunction` takes a
-  `pa.list_(t, k)` return (a body of k expressions; `null_when` too), read
-  whole or by constant index (`packages/confit/tests/test_list_literals.py`).
-  Adopt it: `_lanes` stops refusing an unnamed width-k step.
-- **`error()`**: served now, as a CASE result with a constant message
-  (`packages/confit/tests/test_error_function.py`). Adopt it: each lane's
-  dispatch gains `WHEN id IS NULL THEN NULL ELSE error('...')`, and goal.md's
-  unknown-id difference goes.
-- **A NULL struct**: served now. `SqlFunction(..., null_when=...)` makes
-  the whole struct NULL under a condition, and field reads over it serve
-  (`packages/confit/tests/test_struct_field_reads.py`). Adopt it: a struct
-  step passes `null_when=lambda iid, *_: iid.isnull()`, and goal.md's
-  NULL-struct difference goes.
 - **A constant CASE result that counts as trap-free.** A field read keeps
   each sibling `can_trap` (#328) cannot clear, and a typed constant
   standing as a CASE result (`CASE WHEN x IS NULL THEN CAST('0.0' AS
@@ -63,7 +50,8 @@ Easiest first; each is one family, one PR.
   read of a native step evaluates all its lanes: `StandardScaler` over 32
   features serves a 64-row call in 5,081 µs, against 256 µs for the same
   lanes written inline (the twin: about 500 µs a row). Every wide entry
-  waits on this.
+  waits on this. (Lane 0 alone carries the unknown-id `error()`, so a read
+  would then keep two lanes.)
 - **Per-read expansion** (confit PLANS' first item for this catalog). Build
   time grows with field reads × body: `to_native` (which builds the
   all-lanes query once) takes, with one / three fitted groups,
