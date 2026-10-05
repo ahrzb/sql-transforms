@@ -9,7 +9,8 @@ when its PR merges, and move what it learned into `PLANS.md`.
 |---|---|---|---|---|---|---|---|
 | T1 | compute a repeated pure subexpression once (Normalizer) | `claude/cse-call-body` | #341 (merged) | `plan.rs` (can_trap), `lower.rs` | `session_01JK5MtjJLsMnux72iy7DDbx` | | in progress |
 | T2 | refuse an oversized program before the expensive compile | `claude/early-size-refusal` | — | `exec/cranelift.rs`, `duckdb/mod.rs` | `session_013HN9Ji5nZGqLBkB5BVRwdo` | | in progress |
-| T3 | UBIGINT and HUGEINT on a 128-bit lane | `claude/i128-hugeint` | #341 (merged) | `frontend/typing.rs`, `ir`, both backends | `session_019i3NwfPmY8eVbohDs186QZ` | #349 | changes requested (2 blocking parity defects, 16:19) |
+
+Done: T3 (UBIGINT/HUGEINT) merged as #349.
 
 Next up, once a slot frees: struct-valued outputs (ruled class 3), then
 superlinear build time of long AND/OR chains (20,000 terms: about 23 s).
@@ -42,15 +43,3 @@ Pointers:
 - Prefer refusing on a bound you can justify; if no bound is safe, an alternative is a budget on the interpreter-first compile, or compiling in a way that fails fast — measure before choosing.
 
 Acceptance: a program that previously refused after >5 s refuses in <1 s with the same named message; a test pins it (with a generous time bound); no program that compiled before is refused now (run the gate and a 10k+ campaign; report max program size seen); numbers in the PR.
-
-## Your ticket: T3 — UBIGINT and HUGEINT on a 128-bit lane (branch `claude/i128-hugeint`)
-
-The ruled query class "HUGEINT / unsigned (i128 lane)" (packages/confit/PLANS.md, docs/decisions/closed/next-query-classes.md). Slice 1 (PR #341, merged before you start) served UTINYINT/USMALLINT/UINTEGER as narrow widths of the i64 lane: read it first (`Ty::U8/U16/U32`, `int_width_promote` / `int_family_promote` in `frontend/typing.rs`, `tests/test_unsigned.py`, the probes it cites). Your slice: UBIGINT (u64) and HUGEINT (i128), which do not fit the i64 lane. UHUGEINT may stay refused by name if it costs much more; say so.
-
-What exists: DECIMAL already has an i128 representation end to end (`Ty::Dec`, `ColData::Dec`, `KeyBits::Dec`, i128 lanes in both backends — interp and Cranelift `h_load_dec`/iconcat, kernels in `exec/kernels.rs`); reuse that machinery rather than inventing a second one. DuckDB exports HUGEINT to Arrow as decimal128(38,0) — measure what it does for UBIGINT (uint64) and for values beyond 38 digits, and what pyarrow/infer_arrow must emit.
-
-Measure first (Oracle, optimizer off) and model exactly: result types of every operator and of CASE/COALESCE/greatest between HUGEINT/UBIGINT and every other integer width (extend the tables slice 1 measured), overflow traps at the type's bounds, literals (9223372036854775808 is HUGEINT; `-9223372036854775808` is BIGINT; today the bare one refuses by name in `frontend/expr.rs`), casts to/from every type (including VARCHAR parsing and DOUBLE rounding), comparisons, division/modulo by zero, `abs`/`round`/`sign`-style functions, join keys, Arrow in/out and the Python row boundary. What DuckDB computes in a way you cannot reproduce exactly refuses by name.
-
-Generator: extend slice 1's seed gate (`_unsigned` in fuzz/gen.py, seeds 6 mod 11) or add a separate gate, so the campaign reaches these widths; add the storage names to `fuzz/oracle.py::_ARROW` if needed.
-
-Acceptance: parity tests (new file, e.g. tests/test_hugeint.py), named refusals pinned, old refusal pins updated, generator reach with a gated-seed run reported (counts by verdict), gate green, 10k+ campaign clean, PLANS.md and known-limitations.md updated.
