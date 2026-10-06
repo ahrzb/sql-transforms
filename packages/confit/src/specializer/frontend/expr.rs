@@ -572,6 +572,14 @@ impl Binder<'_> {
                 op: UnaryOperator::Not,
                 expr,
             } => {
+                // DuckDB's transformer makes NOT over a comparison the
+                // negated comparison before anything binds: `NOT (a = b)` is
+                // `a <> b`, and in a JOIN ON a join condition, each side
+                // evaluated over its whole table (measured, 1.5.5 optimizer
+                // off; nightly seed 4873273).
+                if let Some((l, op, r)) = naming::as_cmp(e) {
+                    return self.binary(&op, l, r);
+                }
                 let inner = bool_context(self.expr(expr)?, "NOT operand")?;
                 if inner.ty != Ty::I1 {
                     return Err(PrepareError::Bind(format!(

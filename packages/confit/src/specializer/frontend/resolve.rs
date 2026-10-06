@@ -451,7 +451,7 @@ impl Binder<'_> {
                         f.value, c.name
                     ))));
                 }
-                return Some(Ok(Resolved::Lane(SExpr {
+                return Some(self.null_col(Resolved::Lane(SExpr {
                     kind: SKind::Col(i as u32),
                     ty: c.ty.ty,
                     nullable: c.ty.nullable,
@@ -728,7 +728,7 @@ impl Binder<'_> {
         match hits.len() {
             // The REAL column wins over a same-named select alias (measured
             // in both SELECT and WHERE — pins-wave5/).
-            1 => Ok(hits.pop().expect("len checked")),
+            1 => self.null_col(hits.pop().expect("len checked")),
             0 if name.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
             0 => {
                 // Lateral aliases: an already-bound alias resolves to its
@@ -755,7 +755,7 @@ impl Binder<'_> {
                         .rev()
                         .find(|(a, _)| a.eq_ignore_ascii_case(name))
                     {
-                        return Ok(Resolved::Lane(e.clone()));
+                        return self.null_col(Resolved::Lane(e.clone()));
                     }
                 }
                 if self
@@ -789,6 +789,21 @@ impl Binder<'_> {
     pub(super) fn is_relation(&self, name: &str) -> bool {
         name.eq_ignore_ascii_case(&self.this_name)
             || self.joins.iter().any(|sj| name.eq_ignore_ascii_case(&sj.name))
+    }
+
+    /// `r`, unless it reads a bare NULL column of the level below anywhere
+    /// but as a whole projection item (see `BoundQuery::null_cols`).
+    pub(super) fn null_col(&self, r: Resolved) -> Result<Resolved, PrepareError> {
+        if let Resolved::Lane(SExpr {
+            kind: SKind::Col(i),
+            ..
+        }) = &r
+        {
+            if self.null_cols.get(*i as usize) == Some(&true) && !self.whole_item.get() {
+                return Err(null_col_refusal());
+            }
+        }
+        Ok(r)
     }
 
     /// Whether a bare `name` binds as a column (DuckDB's first choice,
@@ -832,7 +847,7 @@ impl Binder<'_> {
             let (i, c) = hit.ok_or_else(|| {
                 PrepareError::Bind(format!("column '{name}' does not exist in '{table}'"))
             })?;
-            return Ok(Resolved::Lane(SExpr {
+            return self.null_col(Resolved::Lane(SExpr {
                 kind: SKind::Col(i as u32),
                 ty: c.ty.ty,
                 nullable: c.ty.nullable,

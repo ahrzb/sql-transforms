@@ -2655,7 +2655,12 @@ impl<'a> FB<'a> {
             arg_vals.push(v);
         }
         live.truncate(start);
-        let nrets = self.udfs[ext as usize].rets.len();
+        // A fold lowers with no extern table (`eval_closed`): a call there
+        // is a lowering that fails, not an index out of bounds.
+        let Some(spec) = self.udfs.get(ext as usize) else {
+            return Err(PrepareError::Internal(format!("extern {ext} is not declared")));
+        };
+        let nrets = spec.rets.len();
         let dsts: Vec<Value> = (0..1 + 2 * nrets).map(|_| self.fresh()).collect();
         self.inst(Inst::ExternCall {
             ext,

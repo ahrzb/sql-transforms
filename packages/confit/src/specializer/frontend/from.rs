@@ -290,7 +290,7 @@ pub(super) fn bind_from<'a>(
         // A derived table is always named (its alias, else
         // `unnamed_subquery`); its column-alias list was applied by the
         // caller, so `in_cols` already carries the names in scope.
-        (Driving::Derived { name }, _) => (name.clone(), None),
+        (Driving::Derived { name, .. }, _) => (name.clone(), None),
         (Driving::Request, Some((n, alias))) => {
             // The engine's registry is SCHEMA-LESS: a single schema
             // qualifier is accepted when the table part matches the
@@ -400,6 +400,11 @@ pub(super) fn bind_from<'a>(
         let_vals: std::cell::RefCell::new(std::collections::HashMap::new()),
         let_reads: std::cell::Cell::new(false),
         let_inlined: std::cell::RefCell::new(lets::Inlined::default()),
+        null_cols: match &driving {
+            Driving::Derived { null_cols, .. } => null_cols.clone(),
+            Driving::Request => Vec::new(),
+        },
+        whole_item: std::cell::Cell::new(false),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -560,6 +565,12 @@ pub(super) fn bind_from<'a>(
             JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
         };
         let val_cols = val_cols_for(st, &key_cols, &keys);
+        // A LEFT JOIN over a static table with no rows: DuckDB answers every
+        // row unmatched and never evaluates the ON clause (measured, 1.5.5
+        // optimizer off: keys, residuals and non-equi conditions alike;
+        // nightly seed 4712724). So its keys probe as NULLs, which miss, and
+        // its residual goes; the ON clause still binds, for its errors.
+        let unread_on = kind == JoinKind::Left && st.rows == Some(0);
 
         binder.joins.push(ScopeJoin {
             name: rel.scope_name,
@@ -578,6 +589,10 @@ pub(super) fn bind_from<'a>(
         // Residual conjuncts bind with THIS join in scope.
         let j = (binder.joins.len() - 1) as u32;
         let residual = bind_residual(&binder, j, &residual_raw)?;
+        let (keys, residual) = match unread_on {
+            true => (keys.iter().map(|k| null_of(k.ty)).collect(), None),
+            false => (keys, residual),
+        };
         specs.push(JoinSpec {
             table: table_idx,
             batch: false,

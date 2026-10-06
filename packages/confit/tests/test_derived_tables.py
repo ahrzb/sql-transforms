@@ -71,6 +71,11 @@ SERVES = {
         "SELECT x FROM (SELECT NULL AS x FROM __THIS__)",
         [(1, "x")],
     ),
+    "bare NULL column as a whole item, every spelling": (
+        "SELECT (x) AS p, t.x AS q, x AS r, r AS u, * "
+        "FROM (SELECT NULL AS x, a FROM __THIS__) AS t",
+        [(1, "x")],
+    ),
     "unaliased subquery": (
         "SELECT unnamed_subquery.x FROM (SELECT a AS x FROM __THIS__)",
         [(1, "x")],
@@ -191,6 +196,29 @@ def test_what_stays_refused_is_refused_by_name(sql, named):
     d = pa.table({"id": [1], "v": ["x"]})
     with pytest.raises(ValueError, match=named):
         _build(sql, False, statics={"d": d})
+
+
+# DuckDB types a bare NULL SQLNULL through a query level, and an expression
+# over the column binds against that type, which confit does not model. Each
+# of these read it as INTEGER: a wrong type where a constant condition folded
+# the column away after it typed the CASE (nightly seed 4824388), a bind
+# error where DuckDB serves.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT CASE WHEN TRUE THEN -87.375 ELSE x END AS o FROM {sub}",
+        "SELECT coalesce(-87.375, x) AS o FROM {sub}",
+        "SELECT CASE WHEN TRUE THEN CAST(a AS SMALLINT) ELSE x END AS o FROM {sub}",
+        "SELECT x AS y, CASE WHEN TRUE THEN 1.5 ELSE y END AS o FROM {sub}",
+        "SELECT CASE WHEN a > 0 THEN TRUE ELSE x END AS o FROM {sub}",
+        "SELECT a FROM {sub} WHERE CASE WHEN TRUE THEN a > 0 ELSE x END",
+    ],
+)
+def test_an_expression_over_a_bare_null_column_refuses(sql):
+    sub = "(SELECT NULL AS x, a FROM __THIS__)"
+    rows = _table([(1, "x"), (-2, None)])
+    v = assert_parity(sql.format(sub=sub), rows, expect="REFUSED")
+    assert "bare NULL subquery column" in v.detail
 
 
 def test_joins_inside_the_subquery_serve():

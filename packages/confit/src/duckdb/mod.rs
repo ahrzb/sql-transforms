@@ -1999,6 +1999,11 @@ impl DuckDBInferFn {
                 }
             }
             let presence = presence_lanes(&mut cols, &structs);
+            let rows = table
+                .bind(py)
+                .getattr("num_rows")
+                .ok()
+                .and_then(|r| r.extract::<usize>().ok());
             catalog.push(StaticTable {
                 name: name.clone(),
                 cols,
@@ -2006,6 +2011,7 @@ impl DuckDBInferFn {
                 star,
                 structs,
                 presence,
+                rows,
             });
         }
 

@@ -248,7 +248,7 @@ fn negate_cmp(op: &B) -> Option<&'static str> {
 
 /// `e` as the comparison DuckDB's transformer makes of it: a comparison,
 /// or NOT over one (bottom-up: `NOT (NOT (a = b))` is `a = b` again).
-fn as_cmp(e: &SqlExpr) -> Option<(&SqlExpr, B, &SqlExpr)> {
+pub(super) fn as_cmp(e: &SqlExpr) -> Option<(&SqlExpr, B, &SqlExpr)> {
     match unwrap(e) {
         SqlExpr::BinaryOp { left, op, right } if cmp_op(op).is_some() => {
             Some((left, op.clone(), right))

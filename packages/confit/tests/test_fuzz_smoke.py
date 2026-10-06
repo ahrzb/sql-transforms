@@ -560,7 +560,7 @@ def test_the_second_nightly_findings_stay_fixed(seed, kind):
 # rule on its own).
 NIGHTLY_305_SHARDED = {
     # a UDF field over a closed constant argument confit's fold left unfinished
-    **dict.fromkeys([1801793, 2254035, 2618315, 3015628, 3407126, 3811339], "AGREE"),
+    **dict.fromkeys([1801793, 2254035, 2618315, 3407126, 3811339], "AGREE"),
     # a narrow-width constant overflow the i64 fold hid
     **dict.fromkeys([2729519, 3829756, 2171165], "AGREE_TRAP"),
     # a static-only trapping ON conjunct, read through the key column
@@ -582,6 +582,22 @@ NIGHTLY_305_SHARDED = {
     # feature runs, so a trapping sibling traps.
     4234049: "AGREE",
     4316677: "AGREE_TRAP",
+    # 2026-10-06 nightly (seeds 4600000..4999999): an expression over a bare
+    # NULL subquery column refuses where the column binds, before a fold
+    # erases it (a constant CASE condition, `(-37 - NULL) + i0`); a LEFT JOIN
+    # over a static table with no rows never evaluates its ON clause.
+    4824388: "REFUSED",
+    4946335: "REFUSED",
+    # Agreed before: its bare NULL column stands in a CASE arm whose INTEGER
+    # type happens to match (loops/confit/PLANS.md: bind such a column as an
+    # adoptable NULL, to serve it again).
+    3015628: "REFUSED",
+    4712724: "AGREE",
+    # The same window on the generator of 2026-10-06 12:00: a pure UDF in the
+    # condition of a SQL function's struct folds at bind (it panicked the
+    # fold), and a field read stays a call where DuckDB's binder keeps one.
+    4704064: "AGREE",
+    4848122: "AGREE",
 }
 
 
@@ -591,8 +607,10 @@ def test_the_sharded_nightly_findings_stay_fixed(seed, kind):
 
 
 # 4211849: a bare name shared with a static struct column is ambiguous
-# (DuckDB's refusal), so qualifying it is a different query.
-@pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879, 4211849])
+# (DuckDB's refusal), so qualifying it is a different query. 4873273: NOT over
+# a comparison is the negated comparison, so `NOT (a = b)` in a JOIN ON
+# refuses as `a <> b` does.
+@pytest.mark.parametrize("seed", [1002698, 1002746, 1002993, 1004879, 4211849, 4873273])
 def test_the_first_nightly_spellings_stay_consistent(seed):
     from fuzz import metamorphic
 

@@ -31,6 +31,40 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    [decisions/open/](decisions/): the empty-static witness against a
    multi-trap row side (seed 4313391), and the oracle TIMEOUT where confit
    traps first (seeds 4226438, 946454).
+
+   The 2026-10-06 night (seeds 4600000..4999999, replayed on master
+   f72214b with the generator that declares SQL functions) is triaged, its
+   fixed classes pinned in `test_fuzz_smoke.py`: an expression over a bare
+   NULL subquery column refuses where the column binds, before a fold erases
+   it (4824388, 4946335); NOT over a comparison binds as the negated
+   comparison, as DuckDB's transformer reads it, so in a JOIN ON it is a join
+   condition (metamorphic 4873273); a LEFT JOIN over a static table with no
+   rows never evaluates its ON clause (4712724); a pure UDF in the condition
+   of a struct's CASE folds at bind instead of panicking the fold (4704064);
+   a field read over a struct stays a call unless DuckDB's binder makes each
+   NULL a constant (`outputs::DuckNulls`; 4848122). Its TIMEOUT cases are the
+   open oracle-TIMEOUT record's mechanism, added to it as evidence with a
+   witness that covers a trap inside the long string's own expression; its
+   OPT_EMULATED case (4889739), an INNER join whose static keys are all NULL,
+   asks the owner to extend the empty-static ruling
+   ([decisions/open/all-null-key-static.md](decisions/open/all-null-key-static.md)).
+   Still open from it:
+   - A bare NULL subquery column read anywhere but as a whole item now
+     refuses, also where its INTEGER typing happened to agree (seed 3015628,
+     `CASE WHEN NOT NULL THEN '  pad  ' ELSE i1 END`): 18 cases of seeds
+     4600000..4699999 that agreed on master refuse. DuckDB types every
+     expression over such a column as over a NULL literal (measured over 30
+     spellings), except that the column is not foldable. Binding it as an
+     adoptable NULL that does not fold would serve them all.
+   - TIMEOUT 4667128 is no trap: the request table has no rows and both
+     readings agree, but the optimizer-on reading folds a constant
+     `repeat('0', 2147483647)` inside a SQL function at plan time (about
+     0.5 s per 10^8 characters). The bracket reading could run under its own
+     time limit, so that a slow bracket costs only the DIVERGE_OPT label.
+   - DuckDB's hash join also skips the ON clause of a LEFT JOIN whose static
+     keys are all NULL, while confit still evaluates it (not yet seen in a
+     campaign; an AnyJoin reads such a static row by row, so the plan shape
+     decides).
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
@@ -50,6 +84,15 @@ loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
 Open, low priority (the catalog caps it meanwhile):
+
+- **A trap in one field of a SQL function's struct costs each field read**
+  (asked by the native loop 2026-10-06; repro
+  `/mnt/project-files/transforms-loop/confit-trap-field-reads.py`). At 800
+  fields, reading every field builds in 0.21 s without a trap and 0.53 s
+  with the catalog's id trap and a trap on the parameters (the whole struct:
+  0.05 s either way; release build, f72214b plus this triage). Message the
+  Transforms Loop thread when it changes, so it can measure the catalog
+  again.
 
 - **Closed 2026-10-05: two CASE trees in one expression.** The catalog now
   spells each QuantileTransformer feature as one search tree (native #391;
