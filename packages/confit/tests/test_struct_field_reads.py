@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import SqlFunction
+from confit import ExternFunction, SqlFunction
 from confit import sql as S
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -106,6 +106,78 @@ def test_a_sibling_kept_for_its_traps(expr, trap):
 )
 def test_a_field_read_agrees_with_the_oracle(expr):
     assert_parity(q(expr), ROWS)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # DuckDB evaluates a struct that names no column when it binds the
+        # read. A NULL one makes the read a bare NULL: INTEGER alone, of
+        # the type beside it in a context that unifies.
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x') END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x') END).p || 'y'",
+        "(CASE WHEN 1 = 1 THEN NULL ELSE struct_pack(p := 2.5) END).p + 1",
+        "coalesce((CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 1.5) END).p, 2.5)",
+        "struct_extract(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x') END, 'p')",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(q := struct_pack(r := 'x')) END)"
+        ".q.r",
+        "(CASE WHEN NULL THEN struct_pack(p := 'x') END).p",
+        "(CASE WHEN 'ab' LIKE 'a_' THEN NULL ELSE struct_pack(p := 'x') END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := x + NULL) END).p",
+        # The arm not taken does not run, so it does not trap.
+        "(CASE WHEN TRUE THEN NULL"
+        " ELSE struct_pack(p := 9223372036854775807 + 1) END).p",
+        # Not evaluated: a column anywhere in the struct, also one that
+        # cannot change its value, or a struct that is there.
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x', q := x) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := coalesce(2.0, x)) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := TRUE OR x > 0) END).p",
+        "(CASE WHEN 1 = 1 THEN NULL WHEN a > 0 THEN struct_pack(p := 'x') END).p",
+        "(CASE WHEN FALSE THEN NULL ELSE struct_pack(p := 'x') END).p",
+    ],
+)
+def test_a_read_of_a_struct_that_folds_to_null(expr):
+    assert_parity(q(expr), ROWS)
+
+
+def test_a_lateral_alias_over_constants_folds_with_the_struct():
+    sql = (
+        "SELECT 1.5 AS z, (CASE WHEN TRUE THEN NULL ELSE struct_pack(p := z) END).p"
+        " AS o FROM __THIS__"
+    )
+    assert_parity(sql, ROWS)
+
+
+def test_a_pure_extern_over_constants_folds_with_the_struct():
+    # DuckDB evaluates a call of a function without side effects at bind
+    # time when its arguments are constants.
+    one = ExternFunction(
+        "one",
+        pa.schema([("v", pa.float64())]),
+        pa.float64(),
+        lambda v: None if v is None else (v,),
+    )
+    for p in ("one(1.5)", "one(x)"):
+        sql = q(f"(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := {p}) END).p")
+        assert_parity(sql, ROWS, udfs=[one])
+
+
+def test_a_null_struct_from_a_sql_function_over_constants():
+    f = SqlFunction(
+        "g",
+        pa.schema([("iid", pa.int64()), ("v", pa.float64())]),
+        pa.struct([("p", pa.float64()), ("q", pa.float64())]),
+        lambda iid, v: {"p": v, "q": v * S.lit(2.0)},
+        null_when=lambda iid, v: iid.isnull(),
+    )
+    for sql in (
+        "SELECT g(NULL, 1.5).p AS o FROM __THIS__",
+        "SELECT g(NULL, 1.5).q + 1 AS o FROM __THIS__",
+        "SELECT g(NULL, a + NULL).p AS o FROM __THIS__",
+        "SELECT g(1, 1.5).p AS o FROM __THIS__",
+        "SELECT g(NULL, x).p AS o FROM __THIS__",
+    ):
+        assert_parity(sql, ROWS, udfs=[f])
 
 
 def test_a_struct_sql_function_keeps_its_sibling_traps():

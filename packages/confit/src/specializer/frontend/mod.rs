@@ -170,6 +170,10 @@ pub fn frontend(
     let tokens = sqlparser::tokenizer::Tokenizer::new(&dialect, sql)
         .tokenize()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
+    // DuckDB names an unaliased item after its text as written, before the
+    // SQL function calls in it expand (`sc(x)`, not the body): with SQL
+    // functions declared, the query as written is parsed too, for the names.
+    let as_written = (!macros.is_empty()).then(|| tokens.clone());
     // SQL functions first, so their bodies pass through the same rewrites
     // as the query text they land in.
     let macros::Expanded {
@@ -211,14 +215,29 @@ pub fn frontend(
         })
         .collect::<Result<Vec<_>, PrepareError>>()?;
     let _lets = lets::Installed::new(lets::table(lets));
-    let statements = parse_deep(|| Parser::new(&dialect).with_recursion_limit(PARSE_DEPTH).with_tokens(tokens).parse_statements())
-        .map_err(|e| PrepareError::Parse(e.to_string()))?;
+    let parse = |tokens| {
+        parse_deep(|| Parser::new(&dialect).with_recursion_limit(PARSE_DEPTH).with_tokens(tokens).parse_statements())
+            .map_err(|e| PrepareError::Parse(e.to_string()))
+    };
+    let statements = parse(tokens)?;
     let [statement] = statements.as_slice() else {
         return Err(unsup("multiple SQL statements"));
     };
     let query = match statement {
         Statement::Query(q) => q,
         other => return Err(unsup(format!("statement kind: {other}"))),
+    };
+    // Expansion puts one parenthesized expression where each call stood, so
+    // the query as written has the same levels and items as the one bound.
+    let as_written = as_written.map(|t| parse(rewrite(t))).transpose()?;
+    let as_written = match as_written.as_deref() {
+        None => None,
+        Some([Statement::Query(q)]) => Some(q.as_ref()),
+        Some(_) => {
+            return Err(PrepareError::Internal(
+                "the query as written is not the one query it expands to".into(),
+            ))
+        }
     };
     let env = Env {
         this_name,
@@ -231,7 +250,7 @@ pub fn frontend(
         models,
         bind_eval,
     };
-    let q = bind_query(query, &env, &[]).map_err(lets::spell_out_error)?;
+    let q = bind_query(query, as_written, &env, &[]).map_err(lets::spell_out_error)?;
     Ok((
         Plan { stages: q.stages },
         q.joins,
@@ -289,9 +308,12 @@ struct BoundQuery {
 /// the subquery's output columns, whose references become slots: the
 /// outer level sees only those columns (the inner scope is closed), and
 /// each is computed once per row reaching the inner stage, read or not
-/// (docs/specs/2026-09-26-row-local-subqueries-design.md).
+/// (docs/specs/2026-09-26-row-local-subqueries-design.md). `as_written` is
+/// the same query before its SQL function calls expanded, which names the
+/// unaliased items (see [`frontend`]).
 fn bind_query<'q>(
     query: &'q sqlparser::ast::Query,
+    as_written: Option<&'q sqlparser::ast::Query>,
     env: &Env<'_>,
     ctes: &[CteDef<'q>],
 ) -> Result<BoundQuery, PrepareError> {
@@ -304,13 +326,17 @@ fn bind_query<'q>(
         if with.recursive {
             return Err(unsup("WITH RECURSIVE"));
         }
-        for cte in &with.cte_tables {
+        let written = as_written.and_then(|w| w.with.as_ref());
+        for (i, cte) in with.cte_tables.iter().enumerate() {
             if cte.materialized.is_some() || cte.from.is_some() {
                 return Err(unsup("a MATERIALIZED hint on a CTE"));
             }
             let def = CteDef {
                 alias: &cte.alias,
                 query: &cte.query,
+                as_written: written
+                    .and_then(|w| w.cte_tables.get(i))
+                    .map(|c| c.query.as_ref()),
                 scope: scope.clone(),
                 reads: std::rc::Rc::new(std::cell::Cell::new(0)),
             };
@@ -328,6 +354,8 @@ fn bind_query<'q>(
     };
     let select = level_select(query)?;
     let from = cross_joins_as_commas(&select.from);
+    let written_select = as_written.map(level_select).transpose()?;
+    let written_from = written_select.map(|s| cross_joins_as_commas(&s.from));
     // A CTE anywhere but the driving position would join a relation the
     // engine computes per request against the row: not served yet.
     for (i, rel) in from.iter().enumerate() {
@@ -344,7 +372,7 @@ fn bind_query<'q>(
     // The driving relation as a subquery: a derived table, or a CTE read
     // here (its body, the scope it binds in, and the alias lists that name
     // its columns, applied in order).
-    let (subquery, sub_scope, name, renames): (_, &[CteDef<'q>], String, Vec<&TableAlias>) =
+    let (subquery, written, sub_scope, name, renames): (_, _, &[CteDef<'q>], String, Vec<&TableAlias>) =
         match driving {
             Some(TableFactor::Derived {
                 lateral,
@@ -361,7 +389,14 @@ fn bind_query<'q>(
                 let name = alias
                     .as_ref()
                     .map_or("unnamed_subquery".to_string(), |a| a.name.value.clone());
-                (subquery.as_ref(), &scope, name, alias.iter().collect())
+                let written = written_from
+                    .as_ref()
+                    .and_then(|f| f.first())
+                    .and_then(|t| match &t.relation {
+                        TableFactor::Derived { subquery, .. } => Some(subquery.as_ref()),
+                        _ => None,
+                    });
+                (subquery.as_ref(), written, &scope, name, alias.iter().collect())
             }
             Some(factor) => match plain_table(factor)? {
                 Some((rel_name, alias)) if find(&rel_name).is_some() => {
@@ -372,13 +407,13 @@ fn bind_query<'q>(
                     }
                     let name = alias.map_or(def.alias.name.value.clone(), |a| a.name.value.clone());
                     let renames = std::iter::once(def.alias).chain(alias).collect();
-                    (def.query, def.scope.as_slice(), name, renames)
+                    (def.query, def.as_written, def.scope.as_slice(), name, renames)
                 }
-                _ => return bind_request_level(select, env),
+                _ => return bind_request_level(select, written_select, env),
             },
-            None => return bind_request_level(select, env),
+            None => return bind_request_level(select, written_select, env),
         };
-    let inner = bind_query(subquery, env, sub_scope)?;
+    let inner = bind_query(subquery, written, env, sub_scope)?;
     if !inner.wide_outs.is_empty() {
         return Err(unsup("a struct- or list-valued column in a derived table"));
     }
@@ -399,6 +434,7 @@ fn bind_query<'q>(
     }
     let mut b = bind_select(
         select,
+        written_select,
         env,
         &cols,
         &[],
@@ -463,10 +499,12 @@ fn bind_query<'q>(
 /// A level whose FROM starts with the request table.
 fn bind_request_level(
     select: &sqlparser::ast::Select,
+    as_written: Option<&sqlparser::ast::Select>,
     env: &Env<'_>,
 ) -> Result<BoundQuery, PrepareError> {
     let b = bind_select(
         select,
+        as_written,
         env,
         env.in_cols,
         env.opaque,
@@ -490,12 +528,14 @@ fn bind_request_level(
     })
 }
 
-/// A CTE in scope: its name and column list, its body, the CTEs that body
-/// may read (those declared before it), and how often the query has read it.
+/// A CTE in scope: its name and column list, its body (and the body as
+/// written, see [`bind_query`]), the CTEs that body may read (those declared
+/// before it), and how often the query has read it.
 #[derive(Clone)]
 struct CteDef<'q> {
     alias: &'q TableAlias,
     query: &'q sqlparser::ast::Query,
+    as_written: Option<&'q sqlparser::ast::Query>,
     scope: Vec<CteDef<'q>>,
     reads: std::rc::Rc<std::cell::Cell<u32>>,
 }
@@ -564,6 +604,7 @@ fn level_select(query: &sqlparser::ast::Query) -> Result<&sqlparser::ast::Select
 #[allow(clippy::too_many_arguments)]
 fn bind_select(
     select: &sqlparser::ast::Select,
+    as_written: Option<&sqlparser::ast::Select>,
     env: &Env<'_>,
     in_cols: &[Col],
     opaque: &[(usize, String)],
@@ -649,22 +690,34 @@ fn bind_select(
             }
         }
     };
+    // Each item as written, which names it (see `frontend`); without SQL
+    // functions, the item itself.
+    let written = as_written.map_or(&select.projection, |w| &w.projection);
+    if written.len() != select.projection.len() {
+        return Err(PrepareError::Bind(
+            "a sql function body that is not one expression".into(),
+        ));
+    }
+    // DuckDB qualifies every item's columns before any item binds, the
+    // arguments a body never reads included.
+    if as_written.is_some() {
+        for w in written {
+            if let SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } = w {
+                binder.qualify_written(e)?;
+            }
+        }
+    }
     // A projection `share.rs` lowers reads lets as `SKind::Let`.
     binder.let_reads.set(!env.many);
-    for item in &select.projection {
-        // An unaliased item is named once, after its text with the lets in
-        // it spelled out: what that spells out counts toward the query's
-        // budget (`lets::spend_name`).
-        let mut named: Option<String> = None;
-        let mut name_of = |e: &SqlExpr| -> Result<String, PrepareError> {
-            if let Some(n) = &named {
-                return Ok(n.clone());
-            }
-            lets::spend_name(e)?;
-            let n = default_name(e);
-            named = Some(n.clone());
-            Ok(n)
+    for (item, written) in select.projection.iter().zip(written) {
+        // An unaliased item is named after its text as written, once.
+        let written = match written {
+            SelectItem::UnnamedExpr(w) => Some(w),
+            _ => None,
         };
+        let mut named: Option<String> = None;
+        let mut name_of =
+            |e: &SqlExpr| named.get_or_insert_with(|| default_name(written.unwrap_or(e))).clone();
         // unnest(udf(...)) expands IN PLACE, before any other item
         // handling, and an alias on it is ignored — the oracle's own
         // expansion (measured).
@@ -684,7 +737,7 @@ fn bind_select(
             // struct_pack, a struct literal or a named extern's output.
             let base = match item {
                 SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
-                _ => name_of(e)?,
+                _ => name_of(e),
             };
             if let Some((lanes, shape)) = binder.wide_item(e, &base)? {
                 push_wide(&mut out_cols, &mut exprs, &mut wide_outs, base, lanes, shape)?;
@@ -693,13 +746,13 @@ fn bind_select(
         }
         match item {
             SelectItem::UnnamedExpr(e) => {
-                if let Some((lanes, names)) = binder.wide_extern_lanes(e, &name_of(e)?)? {
+                if let Some((lanes, names)) = binder.wide_extern_lanes(e, &name_of(e))? {
                     let shape = extern_shape(&lanes, names);
                     push_wide(
                         &mut out_cols,
                         &mut exprs,
                         &mut wide_outs,
-                        name_of(e)?,
+                        name_of(e),
                         lanes,
                         shape,
                     )?;
@@ -712,7 +765,7 @@ fn bind_select(
                         push_val(&mut out_cols, &mut exprs, &mut wide_outs, name, v)?;
                     }
                 } else {
-                    push_item(&mut out_cols, &mut exprs, name_of(e)?, fold(binder.expr(e)?))?
+                    push_item(&mut out_cols, &mut exprs, name_of(e), fold(binder.expr(e)?))?
                 }
             }
             SelectItem::ExprWithAlias { expr, alias } => {
@@ -777,20 +830,6 @@ fn bind_select(
         };
     }
     binder.let_reads.set(false);
-    // An unaliased item is named after its text, which reads a let as the
-    // let's own text.
-    for name in out_cols
-        .iter_mut()
-        .map(|c| &mut c.name)
-        .chain(wide_outs.iter_mut().map(|w| &mut w.name))
-    {
-        if let Some(full) = lets::spell_out_text(name) {
-            *name = full;
-        }
-        if let Some(f) = lets::named_let(name) {
-            return Err(lets::unaliased_past_cap(&f));
-        }
-    }
     if exprs.is_empty() {
         // Pinned text: an EXCLUDE-all star that empties the projection.
         return Err(PrepareError::Bind(
@@ -974,6 +1013,9 @@ struct Binder<'a> {
     /// Per SQL function call read by field, and scope: its siblings' trap
     /// skeletons (see `calls`), bound once for every read.
     call_siblings: std::cell::RefCell<std::collections::HashMap<calls::ScopeKey, calls::Siblings>>,
+    /// Per SQL function call whose expansion is a CASE, and scope: whether
+    /// DuckDB folds it to NULL (`struct_folds_to_null`), for every read.
+    call_null: std::cell::RefCell<std::collections::HashMap<calls::ScopeKey, bool>>,
     /// Per call: the identifier words of its arguments, for the scope key.
     call_words: std::cell::RefCell<
         std::collections::HashMap<usize, std::rc::Rc<std::collections::HashSet<String>>>,

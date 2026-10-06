@@ -255,7 +255,8 @@ def _duck_with_padding(ev: Evidence, statics: list[str]) -> str | None:
     case = dataclasses.replace(case, statics=padded)
     con = O._take()
     try:
-        O._load(con, case, ev.udf_objs)
+        if O._load(con, case, ev.udf_objs) is not None:
+            return None  # DuckDB refuses a SQL function: a build refusal
         _, phase, err = O._exec(con, ev.sql)
         return err if phase == "run" else None
     finally:

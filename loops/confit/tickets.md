@@ -13,15 +13,14 @@ The first wave (the set of tickets that the supervisor started together) is merg
 
 T4 moved the loop files to `loops/confit/`. It merged inline as #370. T5 binds once a value that a SQL
 function body reads more than once. It merged inline as #412. T6 serves a whole struct as one output value
-(ruled class 3). It merged inline as #417. Nothing is in progress.
+(ruled class 3). It merged inline as #417. T7 names an unaliased call of a SQL function after the call, as
+DuckDB does, and lets the campaign generator declare SQL functions. It is in progress inline.
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
 Next up, when a worker slot frees and the account's usage warning clears:
 
-- An unaliased call of a SQL function gets the name of its expanded body, not of the call. Parity fails on
-  the name (found in T6; PLANS, Next 1).
 - More than one join under `shape='many'` (ruled class 4).
 - Linear-time Cranelift builds of deep CASE trees. IsotonicRegression with 20 000 thresholds takes 22 s now.
 - Build time that grows faster than linearly for long AND/OR chains. A chain of 20 000 terms takes about

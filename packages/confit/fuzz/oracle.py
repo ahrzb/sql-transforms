@@ -277,6 +277,8 @@ def make_udf(spec: G.UdfSpec):
         else [(None, spec.ret[1])] * spec.ret[2]
     )
     takes_tys = [t for _, t in spec.takes]
+    if spec.body is not None:
+        return _sql_function(spec)
 
     class U:
         name = spec.name
@@ -305,6 +307,27 @@ def make_udf(spec: G.UdfSpec):
             return tuple(_lane_val(acc + bias, t, i) for i, (_, t) in enumerate(lanes))
 
     return U()
+
+
+def _sql_function(spec: G.UdfSpec):
+    """The protocol object of a generated SQL function: DuckDB registers
+    `sql_body` as a macro (`_load`); confit reads the let form when there is
+    one (`sql_lets`, `sql_let_body`), else `sql_body`."""
+
+    class F:
+        name = spec.name
+        takes = pa.schema([(n, _ARROW[t]) for n, t in spec.takes])
+        returns = (
+            _ARROW[spec.ret[1]]
+            if spec.ret[0] == "scalar"
+            else pa.struct([(n, _ARROW[t]) for n, t in spec.ret[1]])
+        )
+        sql_body = spec.body
+        if spec.lets:
+            sql_lets = list(spec.lets)
+            sql_let_body = spec.let_body
+
+    return F()
 
 
 def _scalar_form(obj):
@@ -453,14 +476,19 @@ def _give_back(con: Oracle, tables: list[str], udfs: list[tuple[str, bool]]) -> 
         _discard()
 
 
-def _load(con: Oracle, case: G.Case, udf_objs) -> None:
+def _load(con: Oracle, case: G.Case, udf_objs) -> str | None:
     """The case's UDFs registered in `con` and its tables loaded as NATIVE
-    tables."""
-    for u in udf_objs:
+    tables. A SQL function is created after every other function: DuckDB
+    binds its body then, and the body may call them. When DuckDB refuses to
+    create one, it refuses the case, and that error comes back instead."""
+    for u in sorted(udf_objs, key=lambda u: hasattr(u, "sql_body")):
         if hasattr(u, "sql_body"):
             # A SQL function: a macro over its parameters, by the protocol.
             ps = ", ".join(f'"{n}"' for n in u.takes.names)
-            con.execute(f'CREATE MACRO "{u.name}"({ps}) AS {u.sql_body}')
+            try:
+                con.execute(f'CREATE MACRO "{u.name}"({ps}) AS {u.sql_body}')
+            except duckdb.Error as e:
+                return f"{type(e).__name__}: {e}"
             continue
         params = [_DUCK_T[t] for t in u.takes.types]
         if hasattr(u, "instances"):
@@ -471,6 +499,7 @@ def _load(con: Oracle, case: G.Case, udf_objs) -> None:
     for name, (sch, rows) in case.statics.items():
         con.load(name, _arrow_table(sch, rows))
     con.load("__THIS__", _arrow_table(case.row_schema, case.rows))
+    return None
 
 
 def _exec(con, sql):
@@ -507,7 +536,10 @@ def _duck_run(sql, case: G.Case, udf_objs, *, bracket: bool = True):
     """
     con = _take()
     try:
-        _load(con, case, udf_objs)
+        refused = _load(con, case, udf_objs)
+        if refused is not None:
+            off = (None, "build", refused)
+            return off, (off if bracket else None)
         off = _exec(con, sql)
         if not bracket:
             return off, None
@@ -1023,6 +1055,9 @@ def case_from_inputs(seed: int, sql: str, inputs: dict) -> G.Case:
             [tuple(t) for t in u["takes"]],
             tuple(u["ret"]),
             u["instances"],
+            u.get("body"),
+            u.get("let_body"),
+            u.get("lets", []),
         )
         for u in inputs["udfs"]
     ]

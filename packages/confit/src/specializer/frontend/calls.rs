@@ -111,7 +111,7 @@ pub(super) fn marker_call(e: &SqlExpr) -> Option<(usize, Rc<Vec<(String, SqlExpr
     (id < calls.len()).then_some((id, calls))
 }
 
-/// The marker's arguments as the call spelled them, for its name.
+/// The marker's arguments as the call spelled them.
 pub(super) fn marker_args(f: &sqlparser::ast::Function) -> Vec<SqlExpr> {
     use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
     let FunctionArguments::List(list) = &f.args else {
@@ -236,6 +236,17 @@ impl Binder<'_> {
             body = i;
         }
         if let SqlExpr::Case { .. } = body {
+            // A read of a struct DuckDB folds to NULL is a bare NULL.
+            let key = self.scope_key(id, base);
+            let cached = self.call_null.borrow().get(&key).copied();
+            let folds = cached.unwrap_or_else(|| {
+                let folds = self.struct_folds_to_null(body);
+                self.call_null.borrow_mut().insert(key, folds);
+                folds
+            });
+            if folds {
+                return Ok(Some(None));
+            }
             // Its struct_pack arms were split into calls of their own
             // (`split_case_arms`): each arm reads as that call, spelled with
             // this call's arguments, so it shares their scope key.

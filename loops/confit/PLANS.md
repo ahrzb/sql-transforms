@@ -8,17 +8,7 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
 
 ## Next
 
-1. **Unaliased SQL function calls are misnamed.** An unaliased call of a
-   `SqlFunction` is named after its expanded body, not after the call:
-   `SELECT sc(x)` is `sc(x)` on DuckDB and `CAST((CAST(x AS "DOUBLE") * ...`
-   here. The same holds for a struct-valued call (`pair(x)`), a field read
-   of a parenthesized call (`(pair(x)).lo`), and a call inside an expression
-   (`sc(x) + 1`). Values and types agree and the names differ, so parity
-   fails. The campaign cannot see it: every generated UDF is an
-   `ExternFunction`. Found 2026-10-06 in T6. Fix: name each item from the
-   query before `macros::expand` inlines its calls, then let the generator
-   declare SQL functions too.
-2. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
+1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
    runs `fuzz.nightly` (400k fresh seeds in four parallel shards, plus the
    metamorphic suite) and files red runs as a "Nightly campaign findings"
    issue. Triage each filed class to a fix, a named exclusion, or an
@@ -41,13 +31,13 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    [decisions/open/](decisions/): the empty-static witness against a
    multi-trap row side (seed 4313391), and the oracle TIMEOUT where confit
    traps first (seeds 4226438, 946454).
-3. **Subquery design, PR 4** (static-only subqueries computed at
+2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
 
-4. **Owner docs in simple English.** The docs the owner reviews or maintains
+3. **Owner docs in simple English.** The docs the owner reviews or maintains
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
@@ -83,14 +73,37 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- An unaliased item is named after its text in the query as written, as
+  DuckDB names it (`sc(x)`, `(pair(x)).lo`, `sc(x) + 1`), not after the
+  expanded body (`frontend/mod.rs` parses the query as written beside the
+  expanded one and pairs them level by level). A name never spells a let
+  out, so the name cap is gone. The campaign generator now declares SQL
+  functions (`gen._sql_functions`, seeds with `seed % 19 == 6`, tagged
+  `sql-function`): a scalar or struct body over cast parameters, with one
+  optional let, each called by its query. On its 13,361 seeds of
+  5,200,000..5,479,999 it found five classes, all fixed: a field read of a
+  struct that DuckDB folds to NULL is an untyped NULL there
+  (`outputs::struct_folds_to_null`; foldable means no column anywhere,
+  dead arms included, and a NULL argument of a strict call drops its
+  columns; it checks the conditions on the path taken first, walks each
+  let's text once, and is cached per call and scope, so 250 field reads of
+  a constant call over a 20-step recurrence build in 3.5 s, as on master);
+  DuckDB qualifies each SELECT item before it expands a macro, so
+  an ambiguous column in an unused argument refuses
+  (`resolve::qualify_written`); the oracle registers a macro after the
+  trees it reads, and a CREATE MACRO bind error is a build refusal; a let
+  read is its text for the checks of DuckDB's literal typing (`tinyint +
+  48` is TINYINT arithmetic, `lets::through`, memoized per let because a
+  recurrence reads its let twice); a let that folds to a string constant
+  reads as a VARCHAR, not a string literal (`lets::fold_kept`).
 - A value a SQL function body reads more than once binds once
   (`SqlFunction.sql_lets` / `sql_let_body`, `frontend/lets.rs`): each call
   expands it once, the binder binds it once per scope, and `share.rs`
   interns it where it is read, so it is computed once per row where it
   cannot trap (the same DAG as the text spelled out). A value that can trap
   binds again at each read, so each read traps where DuckDB's does; a read
-  in WHERE, JOIN ON or a `shape='many'` projection, and the name of an
-  unaliased read, take the value whole. What those spell out counts toward
+  in WHERE, JOIN ON or a `shape='many'` projection takes the value whole.
+  What those spell out counts toward
   one more 4M budget per query (`lets::spend`), so many reads under the cap
   each still refuse together (known-limitations §1). Release build, one container: SplineTransformer
   at degree 5, 7 knots, 32 features builds in 2.2 s (refused at the token

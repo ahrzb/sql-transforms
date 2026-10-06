@@ -6,6 +6,10 @@
 //! value, CASE as `CASE  WHEN (c) THEN (r) ELSE e END`, keyword-named
 //! functions and identifiers quoted, and so on. `None` is a form not
 //! modeled here; the caller keeps the SQL text for it.
+//!
+//! The expression printed is the item as written, before any SQL function
+//! call in it expands: DuckDB names an item before it binds the macros in
+//! it, so `sc(x) + 1` is named `(sc(x) + 1)`, not after `sc`'s body.
 
 use super::*;
 use sqlparser::ast::{
@@ -351,25 +355,6 @@ fn function(f: &sqlparser::ast::Function) -> Option<String> {
     }
     let name = f.name.to_string();
     let lower = name.trim_matches('"').to_ascii_lowercase();
-    // A SQL function call read by field prints as the call, as DuckDB names
-    // a macro call (`(pair(a)).lo`).
-    if lower == super::macros::CALL_MARKER {
-        let (id, calls) = super::calls::marker_call(&SqlExpr::Function(f.clone()))?;
-        let args = super::calls::marker_args(f)
-            .iter()
-            .map(print)
-            .collect::<Option<Vec<_>>>()?;
-        return Some(format!(
-            "{}({})",
-            ident(&calls[id].0.to_ascii_lowercase()),
-            args.join(", ")
-        ));
-    }
-    // A let read prints as its text, which is what DuckDB reads there.
-    if lower == super::macros::LET_MARKER {
-        let (id, lets) = super::lets::marker_let(&SqlExpr::Function(f.clone()))?;
-        return lets[id].printed(print).map(|s| s.to_string());
-    }
     let args = args_of(f)?;
     Some(match lower.as_str() {
         "coalesce" | "ifnull" => format!("COALESCE({args})"),
