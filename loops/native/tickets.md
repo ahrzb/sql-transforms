@@ -9,31 +9,36 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
-| T18 | Periodic `SplineTransformer` with `handle_missing="zeros"` answers ±inf as its twin (NaN) | `claude/native-spline-inf` | — | `spline.py`, `catalog_test.py` | inline (previous supervisor) | #406 | in review |
+| T19 | `to_native(step, allow_bound=False)`: a bound above 0 serves only on request | `claude/project-thread-2pg6vk` | reading 4 | `_registry.py`, `__init__.py`, `function.py`, `power.py`, coverage | inline | | next |
 
-T16 (#403) and T17 (#402) merged on 2026-10-06, and coverage is 31 of 68.
-The loop is moving from session `session_01RPafXSAhursBFF5evqW3JD` to
-the "Transforms Loop" project thread. The previous supervisor finishes
-T18, which it found while it reviewed #404, and then hands over.
+T16 (#403), T17 (#402) and T18 (#406) merged on 2026-10-06, and coverage
+is 31 of 68. The loop runs from the "Transforms Loop" project thread.
+Reading 4 covers waves 4 to 6 and merges before T19, because its
+measurements predate T19.
 
-The next ticket is ±inf in the fixture generator's edge values. The row
-generator draws no ±inf, which is why the gate missed T18; #404
-recommends the change. It changes every class's draws, so it runs alone,
-after T18. Every other "not yet" row waits on the owner (the five records
-in `decisions/open/`; draft #404 holds research and a recommendation for
-each) or needs a design first (PLANS "Later"). Later tickets come from
-the partly native classes' "Left Python" lines. Inline: reading 4 after
-T18, covering waves 4 to 6.
+After T19 comes ±inf in the row generator (PLANS "Next", item 1). It
+changes every class's draws, so it runs alone. Then the parity bound in
+`native.check` and the families on it (PLANS "Ruled 2026-10-06, to
+build"). `decisions/open/bounded-steps-in-compositions.md` waits on the
+owner; `compose.py` keeps refusing bounded steps meanwhile.
 
-## T18: periodic `SplineTransformer` at ±inf
+## T19: `to_native(step, allow_bound=False)`
 
-**Why.** With `extrapolation="periodic"` and `handle_missing="zeros"`,
-the twin answers NaN for a feature at ±inf (`np.remainder` of ±inf is
-NaN), and the entry answered 0.0. Over the 398 served spline
-configurations, 22 parted from the twin, all periodic with "zeros":
-degree 0 at any knot count, and from `n_knots = degree + 3` up.
+**Why.** The owner's amendment in
+`decisions/closed/matvec-parity-bound.md`: bit-exact is the default, and a
+configuration with a bound above 0 serves only when the caller asks. Today
+`to_native` serves Box-Cox (4 ulps) and `FunctionTransformer`'s `exp`,
+`log`, `log2`, `log10`, `tan` and `cbrt` by default.
 
-**Do.** In `spline.py`, send `abs(x) = inf` to NaN when the period is
-positive. Add a test that fails without the fix, and a periodic
-`handle_missing="zeros"` fixture. Re-run the grid and the spline
-fixtures at 200 seeds. The PR (#406) holds the evidence.
+**Do.**
+- Add `allow_bound: bool = False` to `to_native`. Where the step's bound is
+  above 0 and `allow_bound` is false, decline: return the step, or raise
+  `NotNative` under `strict`, with a message that names the bound and the
+  argument.
+- A bounded function whose `kernel_distance` reads 0 on this platform is
+  bit-exact here, so it serves by default.
+- Say why in the docs and on the coverage page: the HistGradientBoosting
+  labels that flipped under the Box-Cox entry (the amendment's evidence).
+- Test the refusal by default, the serve with `allow_bound=True`, and the
+  0-distance case. Keep the parity tests on the bounded configurations
+  (they pass `allow_bound=True`).
