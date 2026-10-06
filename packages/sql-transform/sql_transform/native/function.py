@@ -17,16 +17,16 @@ to even, spelled from `trunc`: confit has no `round_even`),
 `sign`, and `sin`/`cos` where this platform's numpy answers as confit
 does: all bit-exact. And within a bound of their own (`_BOUNDS`, the
 entry's bound per estimator): `exp`, `log` (DuckDB's `ln`), `log2`,
-`log10` and `tan`, each DuckDB's function of that name, guarded where
-DuckDB raises and numpy answers IEEE's value. numpy's float64 kernels for
-these are its own SIMD code on x86-64 with AVX-512, 1 to 2 ulps from
-glibc's, which DuckDB and confit call; numpy picks its kernels by CPU, so
-each is served only where `kernel_distance` finds this platform's numpy
-within the function's bound of confit, as `sin` and `cos` within 0.
+`log10`, `tan` and `cbrt`, each DuckDB's function of that name, guarded
+where DuckDB raises and numpy answers IEEE's value. numpy's float64
+kernels for these are its own SIMD code on x86-64 with AVX-512, 1 to 3
+ulps from glibc's, which DuckDB and confit call; numpy picks its kernels
+by CPU, so each is served only where `kernel_distance` finds this
+platform's numpy within the function's bound of confit, as `sin` and
+`cos` within 0.
 
-Refused: `cbrt`, 3 ulps from numpy's, until confit's `cbrt` answers
-DuckDB's (`_WAITS`); `log1p` and `expm1` (DuckDB has neither), and every
-other function (confit has no inverse or hyperbolic trigonometry).
+Refused: `log1p` and `expm1` (DuckDB has neither), and every other
+function (confit has no inverse or hyperbolic trigonometry).
 """
 
 from __future__ import annotations
@@ -139,8 +139,9 @@ _SERVED: dict[Any, Callable[[S.Expr], S.Expr]] = {
     np.sin: _trig("sin"),
     np.cos: _trig("cos"),
     # Total in DuckDB: exp overflows to inf and underflows to 0.0, as
-    # numpy's does.
+    # numpy's does; cbrt keeps signed zeros, infinities and NaN.
     np.exp: lambda x: S.fn("exp", x),
+    np.cbrt: lambda x: S.fn("cbrt", x),
     np.log: _log("ln"),
     np.log2: _log("log2"),
     np.log10: _log("log10"),
@@ -149,26 +150,21 @@ _SERVED: dict[Any, Callable[[S.Expr], S.Expr]] = {
 
 # The functions served within a bound above 0: numpy's kernel is not
 # glibc's, which DuckDB and confit call. Each bound is the largest distance
-# measured, numpy 2.5.1 against DuckDB 1.5.5 on x86-64 with AVX-512
-# (2026-10-05): over 1,600,000 draws (uniform in +-1e3 and +-50, normal,
-# and +-exp(uniform(-700, 700))) exp, log, log2 and tan reach 1 and log10
-# 2; over NATIVE_SEEDS=200 of the catalog's fixtures (each function
-# validated and not, 235,105 rows with the other functions') each reaches
-# 1. The class's ceiling is the largest of them.
+# measured, numpy 2.5.1 against DuckDB 1.5.5 and confit on x86-64 with
+# AVX-512: over 1,600,000 draws (uniform in +-1e3 and +-50, normal, and
+# +-exp(uniform(-700, 700))) exp, log, log2 and tan reach 1, log10 2 and
+# cbrt 3; over NATIVE_SEEDS=200 of the catalog's fixtures (each function
+# validated and not, 250,551 rows with the other functions') cbrt reaches
+# 3 and the others 1 (2026-10-05; cbrt against confit after #390). The
+# class's ceiling is the largest of them.
 _BOUNDS = {
     np.exp: 1,
     np.log: 1,
     np.log2: 1,
     np.tan: 1,
     np.log10: 2,
+    np.cbrt: 3,
 }
-
-# Spelled by DuckDB, but confit does not answer DuckDB's value, so the
-# entry would not equal its own definition. numpy's `cbrt` is within 3
-# ulps of DuckDB's over the same 1,600,000 draws; confit's parts from
-# DuckDB's on half of them, by up to 3 ulps (loops/native/PLANS.md, Needs
-# from confit).
-_WAITS = {np.cbrt: "confit's cbrt is not DuckDB's (glibc's)"}
 
 # Served only where this platform's numpy kernel is within its bound of
 # confit's (`kernel_distance`): sin and cos at 0, and the bounded ones.
@@ -269,8 +265,6 @@ def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
     if spell is None:
         if isinstance(func, np.ufunc) and func in _NO_SQL:
             raise NotNative(f"{what}: {_NO_SQL[func]}")
-        if isinstance(func, np.ufunc) and func in _WAITS:
-            raise NotNative(f"{what}: {_WAITS[func]}")
         raise NotNative(f"{what}: not a function the entry serves")
     if func in _PROBED:
         d, b = kernel_distance(func), _bound(est)
