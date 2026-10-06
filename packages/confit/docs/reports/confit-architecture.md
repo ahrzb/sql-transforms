@@ -23,21 +23,17 @@ The correctness side of the contract is enforced by three standing mechanisms: t
 
 ## 2. The pipeline
 
+```mermaid
+flowchart TD
+    A["SQL text"] -->|"tokenize (sqlparser 0.62, GenericDialect)"| B["Token pre-rewrites<br/><code>src/specializer/rewrite.rs</code>"]
+    B -->|parse| C["Frontend / binder<br/><code>src/specializer/frontend.rs</code>"]
+    C -->|"bound relational tree + join specs (plan.rs);<br/>statics become frozen maps"| D["Lowering (produce/consume)<br/><code>src/specializer/lower.rs</code>"]
+    D -->|imperative IR| E["Verifier: the airtight boundary<br/><code>src/specializer/ir/verify.rs</code>"]
+    E --> F["Interpreter<br/><code>src/specializer/exec/interp.rs</code>"]
+    E --> G["Cranelift JIT<br/><code>src/specializer/exec/cranelift.rs</code>"]
 ```
-sql text
-  │  tokenize (sqlparser 0.62, GenericDialect)
-  ▼
-token pre-rewrites ............ packages/confit/src/specializer/rewrite.rs
-  ▼  parse
-frontend / binder ............. packages/confit/src/specializer/frontend.rs
-  ▼  bound relational tree + join specs (plan.rs); statics -> frozen maps
-lowering (produce/consume) .... packages/confit/src/specializer/lower.rs
-  ▼  imperative IR
-VERIFIER ...................... packages/confit/src/specializer/ir/verify.rs   <- the airtight boundary
-  ▼
-backends:  interpreter (oracle) ... packages/confit/src/specializer/exec/interp.rs
-           cranelift JIT .......... packages/confit/src/specializer/exec/cranelift.rs
-```
+
+All paths are under `packages/confit/`.
 
 ### Token pre-rewrites
 
