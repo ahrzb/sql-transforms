@@ -224,6 +224,28 @@ FIXTURES[KBinsDiscretizer] = [
     ),
 ]
 
+# KBinsDiscretizer(dtype=np.float32): the twin bins float32(x), so every
+# edge moves to its cutpoint; each strategy, each dense encoding.
+# discretize_test.py serves the rows at and beside the cutpoints.
+FIXTURES[KBinsDiscretizer] += [
+    lambda: KBinsDiscretizer(encode="ordinal", strategy="uniform", dtype=np.float32),
+    lambda: KBinsDiscretizer(
+        n_bins=3, encode="onehot-dense", strategy="uniform", dtype=np.float32
+    ),
+    lambda: KBinsDiscretizer(
+        n_bins=6, encode="ordinal", strategy="quantile", dtype=np.float32
+    ),
+    lambda: KBinsDiscretizer(
+        n_bins=4, encode="onehot-dense", strategy="quantile", dtype=np.float32
+    ),
+    lambda: KBinsDiscretizer(
+        n_bins=4, encode="ordinal", strategy="kmeans", dtype=np.float32
+    ),
+    lambda: KBinsDiscretizer(
+        n_bins=3, encode="onehot-dense", strategy="kmeans", dtype=np.float32
+    ),
+]
+
 # QuantileTransformer: the fits have 5 to 60 rows, so n_quantiles_ is the
 # row count past it; few distinct values (kind 4) make runs of equal
 # quantiles. quantile_test.py serves the default 1,000 quantiles.
@@ -1242,9 +1264,8 @@ def test_kbins_counts_equal_edges_as_numpy_does(encode):
     "make, why",
     [
         (lambda: KBinsDiscretizer(encode="onehot"), "sparse"),
-        (lambda: KBinsDiscretizer(encode="ordinal", dtype=np.float32), "float32"),
     ],
-    ids=["onehot", "float32"],
+    ids=["onehot"],
 )
 def test_kbins_refuses(make, why):
     X = np.random.default_rng(0).normal(size=(20, 2))
