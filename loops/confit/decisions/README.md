@@ -3,7 +3,8 @@
 One record per question. Each states the question, the ruling or the options, and
 the ground.
 
-- `open/`: waiting on a ruling (none at the moment; a new record starts here).
+- [open/](open): waiting on a ruling. [Empty-static witness: trap order](open/empty-static-witness-trap-order.md),
+  [the oracle times out where confit traps first](open/oracle-timeout-before-a-trap.md).
 - [closed/](closed): rulings in force. [Oracle policy](closed/oracle-policy.md),
   [static-only queries](closed/static-only-queries.md),
   [C1 depth](closed/c1-depth.md),
