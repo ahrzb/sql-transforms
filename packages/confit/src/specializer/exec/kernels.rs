@@ -581,8 +581,50 @@ pub(super) fn duck_sqrt(x: f64) -> Result<f64, Trap> {
     Ok(x.sqrt()) // sqrt(-0.0) = -0.0 (not negative, not a trap); NaN passes
 }
 
+/// TOTAL; cbrt(-8) = -2.0 exactly (NOT pow(x, 1/3)). DuckDB calls the C
+/// runtime's `cbrt` (glibc on Linux, measured equal on 100,001 draws), and
+/// glibc's is not correctly rounded: Rust's `f64::cbrt`, and the `cbrt` an
+/// `extern "C"` declaration links (the toolchain's own, inside this
+/// library), differed from it on about half of those draws, by up to 3 ulps
+/// (`cbrt(23.64324940051347)`: ...395 against glibc's ...4). So on Linux the
+/// function is looked up in `libm.so.6` itself, once.
 pub(super) fn duck_cbrt(x: f64) -> Result<f64, Trap> {
-    Ok(x.cbrt()) // TOTAL; cbrt(-8) = -2.0 exactly (NOT pow(x, 1/3))
+    Ok(match libm_cbrt() {
+        // SAFETY: glibc's `double cbrt(double)`, a pure function.
+        Some(f) => unsafe { f(x) },
+        None => x.cbrt(),
+    })
+}
+
+type CbrtFn = unsafe extern "C" fn(f64) -> f64;
+
+#[cfg(target_os = "linux")]
+fn libm_cbrt() -> Option<CbrtFn> {
+    use std::ffi::{c_char, c_int, c_void};
+    use std::sync::OnceLock;
+    static F: OnceLock<Option<CbrtFn>> = OnceLock::new();
+    *F.get_or_init(|| {
+        extern "C" {
+            fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void;
+            fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+        }
+        const RTLD_NOW: c_int = 2;
+        // SAFETY: dlopen/dlsym with NUL-terminated names; a handle lookup
+        // searches that library only, and `cbrt` there has CbrtFn's type.
+        unsafe {
+            let h = dlopen(c"libm.so.6".as_ptr(), RTLD_NOW);
+            if h.is_null() {
+                return None;
+            }
+            let p = dlsym(h, c"cbrt".as_ptr());
+            (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, CbrtFn>(p))
+        }
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn libm_cbrt() -> Option<CbrtFn> {
+    None
 }
 
 fn trig_guard(x: f64) -> Result<(), Trap> {

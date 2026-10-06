@@ -42,10 +42,33 @@ Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
 class Entry:
     """A catalog entry: the translator and its declared parity bound, in
     doubles per lane (0 = bit-exact), fixed by the measurement its module
-    cites."""
+    cites.
+
+    `ulps` is the class's ceiling. An entry whose bound depends on the
+    configuration also has `per_estimator`, which answers one fitted
+    estimator's own bound, from 0 to the ceiling; without it, every
+    estimator's bound is the ceiling."""
 
     translate: Translator
     ulps: int
+    per_estimator: Callable[[Any], int] | None = None
+
+    @property
+    def varies(self) -> bool:
+        """The bound is the estimator's, not one for the whole class."""
+        return self.per_estimator is not None
+
+    def bound(self, est: Any) -> int:
+        """`est`'s own parity bound: what its translation is checked to."""
+        if self.per_estimator is None:
+            return self.ulps
+        b = self.per_estimator(est)
+        if not 0 <= b <= self.ulps:
+            raise ValueError(
+                f"{type(est).__name__}: a bound of {b} ulps, past the class's"
+                f" ceiling of {self.ulps}"
+            )
+        return b
 
 
 _CATALOG: dict[type, Entry] = {}
@@ -66,16 +89,23 @@ class NotNative(Exception):  # noqa: N818 — a reason, raised and caught
     """This step has no native translation; the message says why."""
 
 
-def translates(*classes: type, ulps: int = 0) -> Callable[[Translator], Translator]:
+def translates(
+    *classes: type, ulps: int = 0, bound: Callable[[Any], int] | None = None
+) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
-    unless `ulps` says otherwise. A subclass is not covered: it may override
-    what `transform` computes."""
+    unless `ulps` says otherwise. With `bound`, `ulps` is the ceiling and
+    `bound(est)` each fitted estimator's own bound (a class whose
+    configurations differ: `FunctionTransformer` is bit-exact for the
+    identity and within 2 ulps for `np.log10`). A subclass is not covered:
+    it may override what `transform` computes."""
+    if bound is not None and ulps == 0:
+        raise ValueError("a per-estimator bound needs a ceiling above 0")
 
     def deco(fn: Translator) -> Translator:
         for c in classes:
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
-            _CATALOG[c] = Entry(fn, ulps)
+            _CATALOG[c] = Entry(fn, ulps, bound)
         return fn
 
     return deco
@@ -212,10 +242,15 @@ def _builds(step: PythonTransform, fn: SqlFunction) -> None:
         raise NotNative(f"confit does not build it: {e}") from None
 
 
+def bound_of(est: Any) -> int:
+    """One fitted estimator's parity bound, by its class's entry."""
+    return _CATALOG[type(est)].bound(est)
+
+
 def bound(step: Any) -> int:
     """The parity bound of a step's translation: the loosest of its
-    instances' entries."""
-    return max(_CATALOG[type(e)].ulps for e in step.instances.values())
+    instances' own bounds."""
+    return max(bound_of(e) for e in step.instances.values())
 
 
 def to_native(step: Any, *, strict: bool = False) -> Function | Any:
