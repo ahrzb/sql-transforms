@@ -9,96 +9,85 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
-| T15 | Boolean features in the fixture generator | `claude/native-bool-features` | — | `catalog_test.py` (every class's draws), `encode.py`, `compose.py`, `function.py`, PLANS | `session_01Ra1e4qVNTBjoUhom83gGE7` | | in progress |
+| T16 | `RandomTreesEmbedding(sparse_output=False)` | `claude/native-random-trees` | — | a new module, `__init__.py`, `catalog_test.py`, PLANS; reuses `_trees._f32_grid_threshold` | `session_017biqGYBE4kdVHVe2HSMVzg` | | in progress |
+| T17 | `KBinsDiscretizer(dtype=np.float32)` | `claude/native-kbins-f32` | — | `discretize.py`, `catalog_test.py`, PLANS; builds on `_trees._f32_grid_threshold` | `session_01KQRoacPtnLuhre7a2WZR4K` | | in progress |
 
-T15 runs alone: it changes every class's draws. After it, PLANS "Next" is
-empty. Every "not yet" row either waits on the owner (the matvec and
+Neither ticket changes `_f32_grid_threshold`, which both build on and
+`TreeBasedTransform` depends on. After them, PLANS "Next" has nothing
+unticketed. Every other "not yet" row waits on the owner (the matvec and
 `AdditiveChi2Sampler` records in `decisions/open/`) or needs a design
-first (PLANS "Later"). The supervisor will propose the next tickets from
-two places:
-- the partly native classes' "Left Python" lines, where the float32
-  configurations would all be served by one proof that confit's
-  `CAST(x AS FLOAT)` rounds as numpy does;
-- `RandomTreesEmbedding(sparse_output=False)`, whose trees compare
-  float32 values and need no matvec.
+first (PLANS "Later"). The next tickets come from the partly native
+classes' "Left Python" lines. Inline: reading 4 at the end of this wave,
+covering waves 4 to 6.
 
-## T15: boolean features in the fixture generator
+## T16: `RandomTreesEmbedding(sparse_output=False)`
 
-**Why.** A step can declare a feature boolean (`pa.bool_()`, the step's
-`"i1"`). `_as_feature` hands it to `transform` as a Python `bool`, and a
-NULL as NaN. The entries read it as DOUBLE 0/1, with NULL as NaN
-(`_registry._feature`). No fixture draws a boolean feature, so no entry is
-tested on one:
-- the encoders refuse every boolean feature ("which the catalog's
-  fixtures do not make yet", `encode.py`);
-- `compose.py` refuses a `Pipeline` over boolean features only, and an
-  integer weight beside a boolean feature;
-- `FunctionTransformer` refuses any `func` but the identity over a
-  boolean feature;
-- every other entry serves boolean features untested.
+**Why.** `sklearn.ensemble.RandomTreesEmbedding` is a "not yet" row. PLANS
+files it under "Later" with the transformers that read their fit samples,
+but it reads only its fitted trees. Its `transform` is
+`one_hot_encoder_.transform(self.apply(X))`: each tree's leaf, one-hot over
+the leaf node ids. Checked against sklearn 1.9 on 2026-10-06:
+- The internal encoder's `categories_[t]` are tree t's leaf node ids,
+  sorted. Every leaf is there, since each leaf holds a training sample.
+- The forest narrows X to float32 (`_validate_X_predict`, `dtype=DTYPE`)
+  and keeps thresholds in float64. So a split is
+  `float32(x) <= threshold`.
+- The trees take missing values (the `allow_nan` tag is True). A NaN goes
+  left or right by `tree_.missing_go_to_left`.
+- A value past float32's range, or ±inf, makes the twin raise ("Input X
+  contains infinity or a value too large for dtype('float32')").
+- `sparse_output=False` returns a dense float64 array. The default,
+  `sparse_output=True`, is sparse.
 
-What the twin sees depends on the row (sklearn 1.9, numpy 2.5.1, checked
-2026-10-06):
-- Every feature a non-NULL boolean: the row is a `bool` array. Most
-  entries' validation casts it to float64. `Binarizer` and the selectors
-  hand it back as booleans, which the step reads as 0/1.
-  `SimpleImputer(strategy="most_frequent")` raises ("does not support
-  data with dtype bool"). `strategy="mean"` answers.
-- Any number or NULL in the row: a float64 array.
-- A string in the row: an object array holding Python `bool`s.
-
-The fit data follows the same rules. An `OrdinalEncoder` fitted on a
-boolean column has `categories_` of dtype `bool` (`[False, True]`) when
-the matrix is all boolean. Beside numbers they are float64
-(`[0.0, 1.0]`), and beside strings they are objects (`[False, True]`).
+No FLOAT cast is needed. Rounding to float32 is monotone, so
+`float32(x) <= t` is `x <= t'` for one double cutpoint `t'`.
+`sql_transform._trees._f32_grid_threshold` already computes that cutpoint
+for the tree predictors (`TreeBasedTransform`), with its proof in the
+docstring.
 
 **Do.**
-- `catalog_test.py`, `_draw` and `_fit_matrix`: draw boolean features.
-  - Give `types` a third choice, `pa.bool_()`, at a share that keeps the
-    gate's time (about 15%).
-  - For a categorical estimator, let a boolean join the strings and the
-    few-valued numbers.
-  - The fit column is booleans. Holes, where the estimator takes missing
-    values, are NaN, which makes the column float, as a NULL boolean
-    reaches `transform` as NaN.
-  - Make sure some steps are all boolean, so the `bool`-array row is
-    drawn, not only rows mixed with numbers.
-- `_rows`: a boolean feature draws `True` or `False`, and NULL in the
-  "nulls" regime.
-- Run every class at `NATIVE_SEEDS=200` with the new draws. Wherever an
-  entry parts from its twin, either fix it, exactly and locally, or refuse
-  the configuration with a named reason and a test, as for any other
-  configuration. Look at these in particular:
-  - The encoders' blanket refusal. Serve booleans where the translation
-    is exact, for each of the three `categories_` dtypes above, or refuse
-    narrower than today and say why.
-  - All-boolean rows: `SimpleImputer` (the twin's validation rejects the
-    dtype, so the entry may answer: goal.md, "Tolerated differences"), and
-    `Binarizer`, the selectors and `FeatureAgglomeration` (bool in, bool
-    out or a mean of bools).
-  - The `Pipeline` and weight refusals in `compose.py`: keep, narrow or
-    lift them, with evidence either way.
-  - `FunctionTransformer` over a boolean feature: keep the refusal unless
-    the sweep shows a function the twin answers in float64.
-- Gate time: report the catalog test's wall time before and after (8
-  seeds, 4 workers). If it grows past 10%, lower the boolean share.
-- PLANS: remove "Boolean features in the fixture generator" from "Next".
-  In "Left Python", update "An encoder over a boolean feature", plus each
-  refusal you add, narrow or lift.
-- Regenerate coverage if any row changes.
+- A new module, `@translates(RandomTreesEmbedding)`.
+  - Read the twin in the installed sklearn: `RandomTreesEmbedding.transform`,
+    `BaseForest.apply` and `_validate_X_predict`, and the tree's dense
+    apply. State its operation order in the PR.
+  - Reuse `_f32_grid_threshold` rather than copying it, and do not change
+    it: `TreeBasedTransform` depends on it, and T17 builds on it beside
+    this ticket. If it must change, tell the supervisor first.
+- Each tree's leaf is one nested CASE over the rewritten cutpoints, with
+  NaN routed by `missing_go_to_left`. Each lane is `leaf_t = k` as 1.0 or
+  0.0, in `categories_` order.
+  - confit computes a repeated pure subexpression once per row (#363,
+    #377, #387), so each tree's CASE should be evaluated once. Measure it:
+    serve time against the number of trees.
+- `sparse_output=True` stays `NotNative`, named, as for `OneHotEncoder`
+  (`decisions/open/sparse-outputs.md`).
+- Fixtures:
+  - small forests: `n_estimators` 1 to 30, `max_depth` 1 to 5,
+    `min_samples_leaf` above 1, `max_leaf_nodes`;
+  - NaN in the fit data where allowed;
+  - `sparse_output=False`;
+  - within `MAX_LANES` (1,000).
+- A test at and beside each cutpoint, as `test_spline_at_the_knots` does
+  for knots: the threshold, the float32 values on both sides of it, the
+  doubles beside the cutpoint, ±0, the subnormals and NaN.
+- Where the twin raises (past float32's range, ±inf), the entry may
+  answer (goal.md, "Tolerated differences"). It must not raise where the
+  twin answers. For example, the largest double that still rounds to a
+  finite float32 must be answered.
+- Timings: build and serve at the widest fixture, and at the default
+  `n_estimators=100, max_depth=5` (up to 3,200 lanes) if it builds.
+- PLANS: take it out of "Later". Add "Left Python" lines for what stays
+  Python, and a "Needs from confit" entry if a width needs one.
 
 **Acceptance.**
 - Gate green.
-- `NATIVE_SEEDS=200` over every class with boolean features drawn: 0
-  breaches. Report how many steps had at least one boolean feature, and
-  how many were all boolean, per class.
-- Every refusal is named in its `NotNative` message and tested.
-- The PR gives a table: for each class, what it does over a boolean
-  feature. Either served bit-exact, refused (why), or the twin raises and
-  the entry answers.
+- `NATIVE_SEEDS=200` over its fixtures, bit-exact.
+- Coverage regenerated: 31 of 68 native.
 
-**Run alone.** Every class's draws change, so no other ticket that touches
-`catalog_test.py` or fixtures runs beside this one.
+**Beside this ticket:** T17 (`KBinsDiscretizer(dtype=np.float32)`,
+`claude/native-kbins-f32`) runs at the same time. Both append a `FIXTURES`
+block to `catalog_test.py` (keep both sides on a conflict) and edit their
+own PLANS lines.
 
 **Environment.** The container's uv 0.8.17 may offer only CPython
 3.14.0rc2, on which the locked pydantic fails to import (reading 3,
@@ -106,5 +95,64 @@ finding 50). If so, install a current uv into `~/.local/bin`
 (`curl -LsSf https://astral.sh/uv/install.sh | sh`), run
 `uv python install 3.14.8`, then run the brief's install command.
 
-**Branch:** `claude/native-bool-features` (create it from `origin/master`).
-This is native T15 on the board, `loops/native/tickets.md`.
+**Branch:** `claude/native-random-trees` (create it from `origin/master`).
+This is native T16 on the board, `loops/native/tickets.md`.
+
+## T17: `KBinsDiscretizer(dtype=np.float32)`
+
+**Why.** PLANS "Left Python" has `KBinsDiscretizer(dtype=np.float32)`: the
+twin narrows x to float32 before it bins it, "which the entry does not
+spell (a cast to FLOAT would have to round as numpy does, unproven)".
+That needs no FLOAT cast:
+- `transform` validates X with the estimator's `dtype`, then runs
+  `np.searchsorted(bin_edges[jj][1:-1], Xt[:, jj], side="right")`. The
+  edges stay float64 (checked, sklearn 1.9).
+- So each comparison is `edge <= float32(x)`. Rounding to float32 is
+  monotone, so that is one comparison of the double x against a moved
+  cutpoint.
+- `sql_transform._trees._f32_grid_threshold` computes such a cutpoint for
+  `float32(x) <= t`, with its proof. The ticket needs the other side,
+  `t <= float32(x)`.
+
+**Do.**
+- In `discretize.py`, serve `dtype=np.float32`: move each inner edge to its
+  double cutpoint at build, and keep the lanes as today. Codes and one-hot
+  0/1 in float32 are exact as doubles.
+  - Build on `_f32_grid_threshold` without changing it:
+    `TreeBasedTransform` depends on it, and T16 reuses it beside this
+    ticket. The other side follows from it. `t <= float32(x)` fails
+    exactly when `float32(x) <= g`, where g is the largest float32 below
+    t, and that is `x <= _f32_grid_threshold(g)`. Put the helper in
+    `discretize.py`, with a test against numpy's rounding.
+- The edge cases, each in a test:
+  - an edge at a float32 tie, where ties-to-even decides;
+  - edges equal to each other (searchsorted's count);
+  - ±0;
+  - the subnormals;
+  - x past float32's range. The twin raises ("Input X contains infinity
+    or a value too large for dtype('float32')"), so the entry may answer.
+    But the largest double that still rounds to a finite float32 must be
+    answered as the twin does.
+  - NaN (the twin raises).
+- Fixtures: `dtype=np.float32` for each strategy and each dense encoding.
+  Add a test at and beside every edge's cutpoint.
+- PLANS: update the `KBinsDiscretizer` line in "Left Python".
+
+**Acceptance.**
+- Gate green.
+- `NATIVE_SEEDS=200` over the `KBinsDiscretizer` fixtures, bit-exact.
+- Coverage regenerated (the row stays native; its note may change).
+
+**Beside this ticket:** T16 (`RandomTreesEmbedding`,
+`claude/native-random-trees`) runs at the same time. Both append a
+`FIXTURES` block to `catalog_test.py` (keep both sides on a conflict) and
+edit their own PLANS lines.
+
+**Environment.** The container's uv 0.8.17 may offer only CPython
+3.14.0rc2, on which the locked pydantic fails to import (reading 3,
+finding 50). If so, install a current uv into `~/.local/bin`
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`), run
+`uv python install 3.14.8`, then run the brief's install command.
+
+**Branch:** `claude/native-kbins-f32` (create it from `origin/master`).
+This is native T17 on the board, `loops/native/tickets.md`.
