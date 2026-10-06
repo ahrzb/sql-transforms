@@ -382,12 +382,21 @@ class LaneRead(Node):
 @dataclass
 class StructPack(Node):
     fields: list[tuple[str, Node]]
+    literal: bool = False  # spelled as DuckDB's dict literal `{'f': v}`
 
     def kids(self):
         return [e for _, e in self.fields]
 
     def swap(self, i, new):
         self.fields[i] = (self.fields[i][0], new)
+
+
+@dataclass
+class RelRow(Node):
+    """A relation named as a value: its row, as a struct (`SELECT t FROM t`).
+    Its own node rather than a `Col`, so no rewrite qualifies it as one."""
+
+    name: str
 
 
 @dataclass
@@ -919,8 +928,13 @@ def rexpr(e: Node) -> str:
     if isinstance(e, LaneRead):
         return f"({rexpr(e.call)}).{_ident(e.fld)}"
     if isinstance(e, StructPack):
+        if e.literal:
+            inner = ", ".join(f"{_rlit(n, 'str')}: {rexpr(v)}" for n, v in e.fields)
+            return "{" + inner + "}"
         inner = ", ".join(f"{_ident(n)} := {rexpr(v)}" for n, v in e.fields)
         return f"struct_pack({inner})"
+    if isinstance(e, RelRow):
+        return _ident(e.name)
     if isinstance(e, Between):
         n = "NOT " if e.neg else ""
         return f"({rexpr(e.e)} {n}BETWEEN {rexpr(e.lo)} AND {rexpr(e.hi)})"
@@ -1245,6 +1259,139 @@ def _carried(v: decimal.Decimal, storage: str, fallback):
     return q
 
 
+def _struct_values(srng, query, row_schema, statics, env, tags) -> None:
+    """Give the outer query one more item, a struct value or a NULL test of
+    one, from a generator of its own so no other seed's draws move: a whole
+    struct column or struct field, a relation's row, a struct-returning UDF
+    call, a struct_pack or dict literal over those and scalars, or a CASE
+    choosing among values of one struct type."""
+    b = query.body
+    if b.frm != "__THIS__" or b.sub is not None:
+        return
+    joined = [j.table for j in b.joins if j.table in statics]
+    env = Env(
+        env.cols + [(t, c, ty) for t in joined for c, ty, _ in leaves(statics[t][0])],
+        env.udfs,
+        env.tree,
+    )
+    reads = _struct_reads(srng, row_schema, statics, joined, env)
+    r = srng.random()
+    if reads and r < 0.3:
+        item = _read(srng, reads)[0]()
+    elif r < 0.5 or not reads:
+        item = _pack(srng, env, reads, 2)
+    elif r < 0.8:
+        item = _struct_case(srng, env, reads)
+    else:
+        item = IsNull(_read(srng, reads)[0](), neg=srng.random() < 0.4)
+    b.items.append((item, f"sv{len(b.items)}"))
+    tags.append("struct-value")
+
+
+def _skel(spec):
+    """A column's type without its nullability: two struct values share a
+    CASE without DuckDB unifying them exactly when these are equal."""
+    if isinstance(spec, Struct):
+        return tuple((n, _skel(s)) for n, s in spec.fields)
+    return spec.rstrip("?")
+
+
+def _read(srng, reads):
+    """One of `reads`, a column or field read seven times in ten when the
+    query has one: a relation's row is in scope far more often."""
+    cols = [r for r in reads if r[2]]
+    return srng.choice(cols if cols and srng.random() < 0.7 else reads)
+
+
+def _struct_reads(srng, row_schema, statics, joined, env) -> list:
+    """Every struct value in scope, as `(factory, type, column)`: each struct
+    column and struct field, each relation's row (unless an out-of-vocabulary
+    column would refuse it), and each struct-returning UDF."""
+    out: list = []
+    heads = {c.lower() for t in joined for c in statics[t][0]}
+
+    def walk(path, spec, table):
+        if isinstance(spec, Struct):
+            out.append((lambda: _col(srng, path, table, "struct"), _skel(spec), 1))
+            for n, s in spec.fields:
+                walk(f"{path}.{n}", s, table)
+
+    # A row column a joined table also has is ambiguous bare: qualify it.
+    for name, spec in row_schema.items():
+        walk(name, spec, "__THIS__" if name.lower() in heads else None)
+    rels = [("__THIS__", row_schema), *((t, statics[t][0]) for t in joined)]
+    for t in joined:
+        for name, spec in statics[t][0].items():
+            walk(name, spec, t)
+    for rel, sch in rels:
+        if all(
+            isinstance(s, Struct) or s.rstrip("?") not in OPAQUE for s in sch.values()
+        ):
+            skel = tuple((n, _skel(s)) for n, s in sch.items())
+            out.append((lambda rel=rel: RelRow(rel), skel, 0))
+    for u in env.udfs:
+        if u.ret[0] == "struct":
+            out.append((lambda u=u: Call(u.name, _udf_args(srng, env, u)), u.name, 0))
+    return out
+
+
+def _pack(srng, env, reads, depth) -> StructPack:
+    """A struct_pack, or its dict literal, of one to three fields: struct
+    values, a nested pack, or scalar expressions."""
+    fields = []
+    for i in range(srng.randrange(1, 4)):
+        x = srng.random()
+        if reads and x < 0.35:
+            v = _read(srng, reads)[0]()
+        elif depth > 1 and x < 0.5:
+            v = _pack(srng, env, reads, depth - 1)
+        else:
+            v = expr(srng, env, srng.choice(TYPES), 1)
+        fields.append((f"f{i}", v))
+    return StructPack(fields, literal=srng.random() < 0.3)
+
+
+def _struct_case(srng, env, reads) -> CaseW:
+    """A CASE whose results are NULL or struct values of one type."""
+    m = srng.random()
+    if m < 0.25:
+        # The NULL guard a SQL function's `null_when` expands to.
+        if reads and srng.random() < 0.3:
+            target = _read(srng, reads)[0]()
+        else:
+            target = expr(srng, env, srng.choice(TYPES), 0)
+        return CaseW([(IsNull(target), Lit(None, "int"))], _pack(srng, env, reads, 1))
+    if m < 0.45 or not reads:
+        # Packs of scalars, each leaf cast to one spelling of its type, so
+        # every arm has the same type without unification.
+        tys = [srng.choice(TYPES) for _ in range(srng.randrange(1, 3))]
+
+        def make():
+            return StructPack(
+                [(f"f{i}", Cast(expr(srng, env, t, 1), t)) for i, t in enumerate(tys)]
+            )
+
+    else:
+        _, skel, _ = _read(srng, reads)
+        same = [f for f, s, _ in reads if s == skel]
+
+        def make():
+            return srng.choice(same)()
+
+    arms = [
+        make() if srng.random() < 0.6 else None for _ in range(srng.randrange(2, 4))
+    ]
+    if all(a is None for a in arms):
+        arms[srng.randrange(len(arms))] = make()
+    # The last arm is the ELSE; a NULL one is spelled out or left off.
+    *whens, els = arms
+    if els is None and srng.random() < 0.5:
+        els = Lit(None, "int")
+    return CaseW(
+        [(expr(srng, env, "bool", 2), a or Lit(None, "int")) for a in whens], els
+    )
+
+
 def gen(seed: int) -> Case:
     """The whole case for `seed`: schemas, data, UDF/tree specs and the query
     AST. Seeded end to end, so the repro for any finding is its seed alone."""
@@ -1329,6 +1476,11 @@ def gen(seed: int) -> Case:
     if seed % 13 == 5:
         wrng = random.Random(seed * 7919 + 3)  # noqa: S311
         _wide(wrng, query, row_schema, rows, statics, tags)
+    # Last of the post-passes, so the casts it adds keep their types. 17 and
+    # 2 keep every seed a test replays out of this gate.
+    if seed % 17 == 2:
+        srng = random.Random(seed * 7919 + 4)  # noqa: S311
+        _struct_values(srng, query, row_schema, statics, env, tags)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
     output = rng.choice([None] * 4 + ["dict", "model"])

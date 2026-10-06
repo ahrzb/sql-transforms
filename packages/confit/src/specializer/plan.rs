@@ -52,6 +52,13 @@ pub struct StaticTable {
     /// interleaved in `cols` keep their dotted names for DISPLAY ONLY.
     /// `StructNode::Leaf` here indexes into `cols`.
     pub structs: Vec<StructCol>,
+    /// One lane per struct NODE (each struct column and each struct field
+    /// below it): its SEGMENT path and its index into `cols`, which holds
+    /// it after every other lane. Its value is TRUE when the node is
+    /// non-NULL and NULL when it is NULL, so a projected struct can tell a
+    /// NULL struct from a struct of NULLs. Like a leaf, it is reachable
+    /// only through its path ([`StaticTable::is_leaf_lane`]).
+    pub presence: Vec<(Vec<String>, u32)>,
 }
 
 /// One declared column of a [`StaticTable`], as star expansion sees it.
@@ -77,12 +84,14 @@ impl StaticTable {
             opaque: Vec::new(),
             star,
             structs: Vec::new(),
+            presence: Vec::new(),
         }
     }
 
-    /// Whether lane `ci` is a struct LEAF: reachable only through its
-    /// path, never by name — a quoted identifier that happens to spell the
-    /// dotted display name is a different reference.
+    /// Whether lane `ci` belongs to a struct — a LEAF, or a node's
+    /// presence lane: reachable only through its path, never by name — a
+    /// quoted identifier that happens to spell the dotted display name is a
+    /// different reference.
     pub fn is_leaf_lane(&self, ci: u32) -> bool {
         fn walk(fs: &[StructField], ci: u32) -> bool {
             fs.iter().any(|f| match &f.node {
@@ -91,7 +100,14 @@ impl StaticTable {
                 StructNode::Nested(n) => walk(n, ci),
             })
         }
-        self.structs.iter().any(|sc| walk(&sc.fields, ci))
+        self.presence.iter().any(|(_, l)| *l == ci)
+            || self.structs.iter().any(|sc| walk(&sc.fields, ci))
+    }
+
+    /// The presence lane of the struct node at `path` (see
+    /// [`StaticTable::presence`]).
+    pub fn presence_lane(&self, path: &[String]) -> Option<u32> {
+        self.presence.iter().find(|(p, _)| p == path).map(|(_, l)| *l)
     }
 }
 

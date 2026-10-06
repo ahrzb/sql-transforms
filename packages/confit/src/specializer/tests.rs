@@ -1924,7 +1924,7 @@ fn wide_udf_bare_item_expands_to_output_lanes() {
     // whole-validity lane + 2 nullable component lanes.
     assert_eq!(p.wide_outputs.len(), 1);
     let w = &p.wide_outputs[0];
-    assert_eq!((w.name.as_str(), w.first, w.width), ("z", 0, 2));
+    assert_eq!((w.name.as_str(), w.first, w.width()), ("z", 0, 2));
     assert_eq!(p.program.out_cols.len(), 4);
     assert_eq!(p.program.out_cols[0].ty.ty, Ty::I1);
     assert!(p.program.out_cols[1].ty.nullable);
@@ -2102,8 +2102,8 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
     .unwrap();
     assert_eq!(p.wide_outputs.len(), 1);
     let w = &p.wide_outputs[0];
-    assert_eq!((w.name.as_str(), w.first, w.width), ("z", 0, 2));
-    assert_eq!(w.names, ["a", "b"]);
+    assert_eq!((w.name.as_str(), w.first, w.width()), ("z", 0, 2));
+    assert_eq!(w.names(), ["a", "b"]);
     assert_eq!(p.program.out_cols.len(), 4);
     assert_eq!(p.program.out_cols[0].ty.ty, Ty::I1);
     // One evaluation feeds every lane (same site sharing as the unnamed
@@ -2143,8 +2143,8 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
     .unwrap();
     assert_eq!(p1.wide_outputs.len(), 1);
     let w1 = &p1.wide_outputs[0];
-    assert_eq!((w1.name.as_str(), w1.first, w1.width), ("u", 0, 1));
-    assert_eq!(w1.names, ["a"]);
+    assert_eq!((w1.name.as_str(), w1.first, w1.width()), ("u", 0, 1));
+    assert_eq!(w1.names(), ["a"]);
 }
 
 #[test]
@@ -2162,8 +2162,8 @@ fn struct_pack_item_is_a_struct_output() {
     )
     .unwrap();
     assert_eq!(plain.wide_outputs.len(), 1);
-    assert_eq!(plain.wide_outputs[0].names, ["type", "id"]);
-    assert_eq!(plain.wide_outputs[0].width, 2);
+    assert_eq!(plain.wide_outputs[0].names(), ["type", "id"]);
+    assert_eq!(plain.wide_outputs[0].width(), 2);
 
     let guarded = prepare(
         "SELECT CASE WHEN (x IS NULL) THEN (NULL) ELSE \
@@ -2174,7 +2174,7 @@ fn struct_pack_item_is_a_struct_output() {
     )
     .unwrap();
     assert_eq!(guarded.wide_outputs.len(), 1);
-    assert_eq!(guarded.wide_outputs[0].names, ["type", "id"]);
+    assert_eq!(guarded.wide_outputs[0].names(), ["type", "id"]);
     // The validity lane IS the guard: `x IS NOT NULL` folds to the load's
     // own validity flag, so the handle is NULL exactly when x is.
     let text = print(&guarded.program);
@@ -2195,18 +2195,16 @@ fn struct_pack_item_is_a_struct_output() {
         let err = prepare(sql, "__THIS__", &schema, &[]).unwrap_err().to_string();
         assert!(err.to_lowercase().contains("duplicate"), "{sql}: {err}");
     }
-    // A _-leading field cannot cross the row-path model boundary (pydantic
-    // makes it a private attribute), so it refuses by name instead of
-    // vanishing from the served struct.
-    let err = prepare(
+    // A _-leading field serves: the boundary is a dict or an Arrow struct,
+    // and both carry the name as written (measured: DuckDB serves it too).
+    let under = prepare(
         "SELECT struct_pack(_a := x, b := x) AS th FROM __THIS__",
         "__THIS__",
         &schema,
         &[],
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("_a"), "{err}");
+    .unwrap();
+    assert_eq!(under.wide_outputs[0].names(), ["_a", "b"]);
 }
 
 #[test]
@@ -3845,12 +3843,22 @@ fn structs_flatten_to_lanes() {
     let p = prep_s("SELECT a.I FROM __THIS__").unwrap();
     assert_eq!(p.out_cols[0].name, "I");
 
-    // Whole-struct values, star expansion keeping the struct, and bad
-    // fields are named errors.
+    // A whole struct is a value: a validity lane, then its leaves, and
+    // `*` keeps it in place.
+    for (sql, first) in [
+        ("SELECT a FROM __THIS__", 0),
+        ("SELECT __THIS__.a FROM __THIS__", 0),
+        ("SELECT * FROM __THIS__", 1),
+    ] {
+        let p = super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[], &[], &[])
+            .unwrap();
+        assert_eq!(p.wide_outputs.len(), 1, "{sql}");
+        let w = &p.wide_outputs[0];
+        assert_eq!((w.name.as_str(), w.first, w.width()), ("a", first, 2), "{sql}");
+        assert_eq!(w.names(), ["i", "j"], "{sql}");
+    }
+    // Bad fields are named errors.
     for (sql, needle) in [
-        ("SELECT a FROM __THIS__", "whole value"),
-        ("SELECT __THIS__.a FROM __THIS__", "whole value"),
-        ("SELECT * FROM __THIS__", "non-scalar"),
         ("SELECT a.nope FROM __THIS__", "Could not find key"),
         ("SELECT a.i.j FROM __THIS__", "not a struct"),
         ("SELECT x.i FROM __THIS__", "not a struct"),
@@ -3905,16 +3913,22 @@ fn nested_struct_resolution_matches_pins() {
     let f = compile(&p, vec![]).unwrap();
     let got = run_snapshot(&f, &batch(1, vec![c_i64(&[Some(42)])])).unwrap();
     assert_eq!(got, rows(&[&["42"]]));
-    // Shorter prefixes hit the whole-column / partial-struct rejections;
-    // one part beyond is the pinned hard error.
-    for (sql, needle) in [
-        ("SELECT t.t.t FROM t.t", "whole value"),
-        ("SELECT t.t.t.t FROM t.t", "whole value"), // 1 field: still a struct
-        ("SELECT t.t.t.t.t.t.t.t.t FROM t.t", "not a struct"),
-    ] {
-        let e = prep_s(sql).unwrap_err().to_string();
-        assert!(e.contains(needle), "{sql}: {e}");
+    // Shorter prefixes are whole struct values: the column (5 struct
+    // levels) and its first field (4). One part beyond is the pinned hard
+    // error.
+    for (sql, levels) in [("SELECT t.t.t FROM t.t", 5), ("SELECT t.t.t.t FROM t.t", 4)] {
+        let p = super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false, &[], &[], &[])
+            .unwrap();
+        assert_eq!(p.wide_outputs[0].name, "t", "{sql}");
+        let (mut shape, mut got) = (&p.wide_outputs[0].shape, 0);
+        while let super::WideShape::Struct(fields) = shape {
+            assert_eq!(fields.len(), 1, "{sql}");
+            (shape, got) = (&fields[0].1, got + 1);
+        }
+        assert_eq!(got, levels, "{sql}");
     }
+    let e = prep_s("SELECT t.t.t.t.t.t.t.t.t FROM t.t").unwrap_err().to_string();
+    assert!(e.contains("not a struct"), "{e}");
     // Backtracking: under an alias the schema.table path is hidden and t
     // re-reads as the column (pins: aliasing changes the value) — here
     // t.t = column.field chain.

@@ -60,13 +60,25 @@ def test_struct_star_and_field_access():
     )
 
 
+def test_a_whole_struct_is_one_value():
+    # A NULL struct is None, a struct of NULLs is a dict of None.
+    _struct_check(
+        "SELECT a FROM __THIS__",
+        ["a"],
+        [({"i": 1, "j": 2},), (None,), ({"i": 3, "j": None},)],
+    )
+    _struct_check(
+        "SELECT * FROM __THIS__",
+        ["x", "a"],
+        [(9, {"i": 1, "j": 2}), (8, None), (7, {"i": 3, "j": None})],
+    )
+
+
 def test_struct_rejections_are_named():
     def rejects(sql, needle):
         with pytest.raises(ValueError, match=needle):
             DuckDBInferFn(sql, row_tables={"__THIS__": S}, static_tables={})
 
-    rejects("SELECT a FROM __THIS__", "whole value")
-    rejects("SELECT * FROM __THIS__", "non-scalar")
     rejects("SELECT a.nope FROM __THIS__", "Could not find key")
     rejects("SELECT a.i.j FROM __THIS__", "not a struct")
     # Excluding the struct serves the rest.

@@ -213,6 +213,8 @@ def _duck116(sql):
         "s.w.z.y.x.a",
         "s.w.mean + 1",  # a lane is an ordinary operand
         "main.s.w.mean",  # the schema-qualified spelling
+        "s.w",  # the whole struct value
+        "s.w.x",  # a nested struct field's value
     ],
 )
 def test_struct_static_column_serves_its_lanes(expr):
@@ -243,10 +245,6 @@ def test_a_static_struct_lane_is_null_on_a_left_miss():
         ("s.w.x.a", 'Could not find key "a"'),
         # a field asked of a scalar is the pre-struct error, unchanged
         ("s.v.bad", "not a struct"),
-        # a struct VALUE is still unserved (so is the row path's); the
-        # refusal names it as a struct rather than claiming it is missing
-        ("s.w", "is a struct"),
-        ("s.w.x", "is a struct"),
     ],
 )
 def test_a_static_struct_path_that_is_not_a_lane_refuses_by_name(expr, match):
@@ -514,17 +512,30 @@ def _duck125(sql: str, kind: str):
 
 
 @pytest.mark.parametrize("star", ["s.*", "*"])
-@pytest.mark.parametrize(("kind", "unservable"), [("struct", "w"), ("opaque", "ts")])
-def test_a_static_star_refuses_a_column_it_cannot_serve(star, kind, unservable):
+def test_a_static_star_refuses_a_column_it_cannot_serve(star):
     sql = f"SELECT {star} FROM __THIS__ JOIN s ON s.id = __THIS__.k"
-    names, _ = _duck125(sql, kind)  # oracle serves the column whole
-    assert unservable in names
+    names, _ = _duck125(sql, "opaque")  # oracle serves the column whole
+    assert "ts" in names
 
-    with pytest.raises(ValueError, match=unservable) as e:
+    with pytest.raises(ValueError, match="ts") as e:
         DuckDBInferFn(
-            sql, row_tables={"__THIS__": _ROW125}, static_tables={"s": _STAR125[kind]}
+            sql,
+            row_tables={"__THIS__": _ROW125},
+            static_tables={"s": _STAR125["opaque"]},
         )
     assert "does not exist" not in str(e.value), str(e.value)
+
+
+@pytest.mark.parametrize("star", ["s.*", "*"])
+def test_a_static_star_keeps_a_struct_column_whole(star):
+    sql = f"SELECT {star} FROM __THIS__ JOIN s ON s.id = __THIS__.k"
+    names, rows = _duck125(sql, "struct")
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW125}, static_tables={"s": _STAR125["struct"]}
+    )
+    got = fn.infer_rows([{"k": 1}])
+    assert list(got[0]) == names
+    assert [tuple(r.values()) for r in got] == rows
 
 
 @pytest.mark.parametrize(("kind", "unservable"), [("struct", "w"), ("opaque", "ts")])
@@ -619,9 +630,9 @@ def test_a_bare_scalar_vs_a_static_struct_is_ambiguous(oracle):
         DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
 
 
-def test_a_sole_static_struct_bare_name_refuses_as_a_struct_not_as_missing():
+def test_a_sole_static_struct_bare_name_reads_the_struct():
     # no collision: the bare name resolves to the static STRUCT alone, and
-    # the refusal must name the struct, never claim the column is missing
+    # reads its whole value (never "the column is missing")
     row = pa.schema([pa.field("k", pa.int64(), nullable=False)])
     static = pa.table(
         {
@@ -629,13 +640,12 @@ def test_a_sole_static_struct_bare_name_refuses_as_a_struct_not_as_missing():
             "w": pa.array([{"m": 1.5}], pa.struct([("m", pa.float64())])),
         }
     )
-    with pytest.raises(ValueError, match="is a struct") as e:
-        DuckDBInferFn(
-            "SELECT w AS o FROM __THIS__ JOIN s0 ON k = s0.id",
-            row_tables={"__THIS__": row},
-            static_tables={"s0": static},
-        )
-    assert "does not exist" not in str(e.value)
+    fn = DuckDBInferFn(
+        "SELECT w AS o FROM __THIS__ LEFT JOIN s0 ON k = s0.id",
+        row_tables={"__THIS__": row},
+        static_tables={"s0": static},
+    )
+    assert fn.infer_rows([{"k": 1}, {"k": 2}]) == [{"o": {"m": 1.5}}, {"o": None}]
 
 
 # ------------------------------------------------ the unqualified ladder --

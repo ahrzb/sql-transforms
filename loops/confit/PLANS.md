@@ -8,7 +8,17 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
 
 ## Next
 
-1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
+1. **Unaliased SQL function calls are misnamed.** An unaliased call of a
+   `SqlFunction` is named after its expanded body, not after the call:
+   `SELECT sc(x)` is `sc(x)` on DuckDB and `CAST((CAST(x AS "DOUBLE") * ...`
+   here. The same holds for a struct-valued call (`pair(x)`), a field read
+   of a parenthesized call (`(pair(x)).lo`), and a call inside an expression
+   (`sc(x) + 1`). Values and types agree and the names differ, so parity
+   fails. The campaign cannot see it: every generated UDF is an
+   `ExternFunction`. Found 2026-10-06 in T6. Fix: name each item from the
+   query before `macros::expand` inlines its calls, then let the generator
+   declare SQL functions too.
+2. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
    runs `fuzz.nightly` (400k fresh seeds in four parallel shards, plus the
    metamorphic suite) and files red runs as a "Nightly campaign findings"
    issue. Triage each filed class to a fix, a named exclusion, or an
@@ -31,13 +41,13 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    [decisions/open/](decisions/): the empty-static witness against a
    multi-trap row side (seed 4313391), and the oracle TIMEOUT where confit
    traps first (seeds 4226438, 946454).
-2. **Subquery design, PR 4** (static-only subqueries computed at
+3. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
 
-3. **Owner docs in simple English.** The docs the owner reviews or maintains
+4. **Owner docs in simple English.** The docs the owner reviews or maintains
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
@@ -211,12 +221,22 @@ The first five are ruled, in this order; the rest follow.
   at decimal128(38,0) belong to per-row aggregation, not to this lane; the
   i128 ops are one helper call each on the JIT (inline `iadd.i128` with an
   overflow check is the next step if HUGEINT shows up in serving profiles).
-- **Non-scalar values.** Whole structs, struct literals, bracket access, lists
-  and list-valued regex forms (served so far: a list literal read by a
-  constant index or projected whole, with elements of one type,
-  `tests/test_list_literals.py`; a field read over struct_pack or a CASE); `SELECT s.*` over struct-carrying statics.
-  Needs nested output at the Arrow boundary. `decimal256` statics are blocked
-  upstream (DuckDB refuses them at Arrow registration).
+- **Struct values (T6).** A whole struct is one output value: struct
+  columns and nested struct fields in every spelling, static struct columns
+  (NULL on a LEFT miss), a relation's row struct, struct-valued UDF and SQL
+  function calls, struct_pack and `{'k': v}` over them, and a CASE over
+  structs of one type (`tests/test_struct_outputs.py`; generator gate 2 mod
+  17, tag `struct-value`). Still refused by name: a struct in a derived table
+  or CTE (phase 1 carries scalar slots), CASE arms of different struct types
+  (DuckDB unifies them), `struct_pack(...) IS NULL` and IS NULL over a CASE
+  of structs (DuckDB builds the fields first, so a field can trap), a whole
+  struct as an operand (`s = s`, `coalesce(s, t)`), `row(...)` and an
+  unnamed struct_pack argument, opaque or list leaves, and the static side of
+  a merged struct USING key.
+- **Lists.** List columns, lists inside structs, and list-valued regex forms
+  (served so far: a list literal read by a constant index or projected whole,
+  with elements of one type, `tests/test_list_literals.py`). `decimal256`
+  statics are blocked upstream (DuckDB refuses them at Arrow registration).
 - **More than one join under `shape='many'`** (`src/specializer/lower.rs`);
   struct keys under `many` (plain equality only in the fan-out loop); struct
   keys whose field-name sets differ refuse where DuckDB serves a constant-empty
@@ -238,6 +258,12 @@ The first five are ruled, in this order; the rest follow.
 
 ## Refusals
 
+- **An internal error, not a refusal by name,** for a CROSS JOIN (or `JOIN
+  ... ON TRUE`) to a static table whose columns are all opaque (one `float32`
+  column): `internal specializer bug: lowered program failed verification:
+  @0: map static with neither keys nor values` (campaign seeds 5101642,
+  5101719; master has it too). The verifier (`ir/verify.rs`) says such a map
+  carries no information, but its row count does: 0 rows give no output.
 - **Echo fallback.** `expr_refusal` names the expression forms seen so far; an
   unlisted form still prints itself. Add names as `refusal_quality`'s echo
   list shows them.

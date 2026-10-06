@@ -1121,6 +1121,19 @@ impl Binder<'_> {
     }
 
     pub(super) fn is_null(&self, inner: &SqlExpr, negated: bool) -> Result<SExpr, PrepareError> {
+        // A struct is NULL where the struct itself is, never because its
+        // fields are.
+        if let Some(valid) = self.struct_valid(inner)? {
+            return Ok(if negated {
+                valid
+            } else {
+                SExpr {
+                    kind: SKind::Not(Box::new(valid)),
+                    ty: Ty::I1,
+                    nullable: false,
+                }
+            });
+        }
         // NULL IS NULL is legal and constant; type the literal as i64
         // arbitrarily (only its flag matters).
         let inner = match self.expr_or_null(inner)? {
@@ -1274,22 +1287,17 @@ impl Binder<'_> {
         }
     }
 
-    pub(super) fn case(
+    /// A CASE's WHEN conditions, bound: the searched form directly, the
+    /// simple form desugared to `operand = value` per arm (operand re-bound
+    /// per arm via clone — pure re-evaluation, same result).
+    pub(super) fn case_conditions(
         &self,
         operand: Option<&SqlExpr>,
         conditions: &[sqlparser::ast::CaseWhen],
-        else_result: Option<&SqlExpr>,
-    ) -> Result<SExpr, PrepareError> {
-        // CASE arms are guarded: plan-time trapping-constant refusals are
-        // suspended inside (see `in_guarded`).
-        self.in_guarded.set(self.in_guarded.get() + 1);
-        let _guard = GuardScope(&self.in_guarded);
+    ) -> Result<Vec<SExpr>, PrepareError> {
         if conditions.is_empty() {
             return Err(PrepareError::Bind("CASE with no WHEN arms".to_string()));
         }
-        // Bind conditions: searched form directly; simple form desugars to
-        // `operand = value` per arm (operand re-bound per arm via clone —
-        // pure re-evaluation, same result).
         let bound_operand = operand.map(|op| self.expr(op)).transpose()?;
         let mut conds = Vec::with_capacity(conditions.len());
         for when in conditions {
@@ -1308,6 +1316,20 @@ impl Binder<'_> {
             };
             conds.push(c);
         }
+        Ok(conds)
+    }
+
+    pub(super) fn case(
+        &self,
+        operand: Option<&SqlExpr>,
+        conditions: &[sqlparser::ast::CaseWhen],
+        else_result: Option<&SqlExpr>,
+    ) -> Result<SExpr, PrepareError> {
+        // CASE arms are guarded: plan-time trapping-constant refusals are
+        // suspended inside (see `in_guarded`).
+        self.in_guarded.set(self.in_guarded.get() + 1);
+        let _guard = GuardScope(&self.in_guarded);
+        let conds = self.case_conditions(operand, conditions)?;
 
         // Bind results (NULL allowed), then unify their types. An
         // `error('msg')` result is typed like a NULL arm (DuckDB's SQLNULL)
