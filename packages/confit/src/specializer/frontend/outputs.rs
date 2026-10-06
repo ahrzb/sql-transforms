@@ -862,13 +862,13 @@ impl Binder<'_> {
 /// is foldable. Each call's answer is kept for one
 /// [`Binder::struct_folds_to_null`], since a chain of calls asks about each
 /// link twice and would otherwise take time exponential in its length.
-struct DuckNulls<'b, 'a> {
+pub(super) struct DuckNulls<'b, 'a> {
     b: &'b Binder<'a>,
     memo: std::cell::RefCell<std::collections::HashMap<*const SqlExpr, bool>>,
 }
 
 impl<'b, 'a> DuckNulls<'b, 'a> {
-    fn new(b: &'b Binder<'a>) -> Self {
+    pub(super) fn new(b: &'b Binder<'a>) -> Self {
         DuckNulls {
             b,
             memo: Default::default(),
@@ -880,7 +880,7 @@ impl<'b, 'a> DuckNulls<'b, 'a> {
     /// that cannot matter (`coalesce(2.0, c)` binds as 2.0), and a lateral
     /// alias stands for its expression. Only a call that DuckDB's binder
     /// makes a NULL constant (`c + NULL`) drops its own.
-    fn closed(&self, e: &SqlExpr) -> Result<bool, PrepareError> {
+    pub(super) fn closed(&self, e: &SqlExpr) -> Result<bool, PrepareError> {
         use super::resolve::Walk;
         self.b.walk_expr(e, &mut |x| {
             Ok(match x {
@@ -935,11 +935,12 @@ impl<'b, 'a> DuckNulls<'b, 'a> {
         hit
     }
 
-    /// Whether DuckDB types `e` SQLNULL: a NULL literal, a CASE whose every
-    /// result is one, or a call that its binder makes a NULL constant.
+    /// Whether DuckDB types `e` SQLNULL: a NULL literal, a bare NULL column
+    /// of the level below, a CASE whose every result is one, or a call that
+    /// its binder makes a NULL constant.
     fn sqlnull(&self, e: &SqlExpr) -> bool {
         let e = unnest(e);
-        if is_null_literal(e) {
+        if is_null_literal(e) || self.b.null_col_ref(e).is_some() {
             return true;
         }
         if let Some((id, lets)) = lets::marker_let(e) {

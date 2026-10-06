@@ -210,6 +210,11 @@ class _FloatStructUdf:
         # A column-holding argument is not DuckDB-foldable: the call stays
         # at run time even though every row is NULL.
         ("CASE WHEN false THEN x END", pa.float64()),
+        # So is a NULL that reads a column, cast to the param as a node. A
+        # NULL literal folds, and the field is SQLNULL's INTEGER.
+        ("CASE WHEN x > 0 THEN NULL END", pa.float64()),
+        ("nullif(NULL, x)", pa.float64()),
+        ("NULL", pa.int32()),
     ],
 )
 def test_a_udf_over_a_cast_integer_constant_folds_at_bind(arg, want_ty, oracle):

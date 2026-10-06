@@ -54,6 +54,68 @@ def test_a_closed_value_operand_keeps_the_trap():
     )
 
 
+# A NULL that reads a column (here an all-NULL CASE over a column condition)
+# is DuckDB's SQLNULL, which a call such as `+` turns into a NULL constant.
+# Under a CAST, a comparison, CASE, COALESCE, least, greatest or a list it
+# stays a node of its own, which DuckDB's binder cannot fold: the operator
+# over that node runs, and so does its trapping sibling. Over a foldable NULL
+# it does not.
+_N = "CASE WHEN a > 0 THEN NULL END"
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        f"CAST({_N} AS BIGINT) + (m - 1)",
+        "CAST(CASE k WHEN 1 THEN NULL END AS BIGINT) + (m - 1)",
+        f"TRY_CAST({_N} AS BIGINT) + (m - 1)",
+        "CAST(CASE WHEN a > 0 THEN CASE WHEN TRUE THEN NULL END END AS BIGINT)"
+        " + (m - 1)",
+        f"abs(CAST({_N} AS BIGINT)) + (m - 1)",
+        f"CAST({_N} AS DOUBLE) + ln(CAST(k AS DOUBLE))",
+        f"CASE WHEN TRUE THEN {_N} ELSE 1 END + (m - 1)",
+        f"coalesce({_N}, CAST(NULL AS BIGINT)) + (m - 1)",
+        f"least(CAST(NULL AS BIGINT), {_N}) + (m - 1)",
+        f"CAST({_N} = 1 AS BIGINT) + (m - 1)",
+        f"[{_N}, 1][1] + (m - 1)",
+    ],
+)
+def test_a_null_that_reads_a_column_keeps_the_trap_under_a_node(expr):
+    assert_parity(_q(expr), ROWS, trap="Overflow|logarithm")
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # || collapses over a NULL constant only, and DECIMAL arithmetic
+        # binds SQLNULL over one: each keeps its type here.
+        "CAST(CASE WHEN a > 0 THEN NULL ELSE NULL END AS VARCHAR) || 'a'",
+        f"CAST({_N} AS DECIMAL(9,2)) + 1.5",
+        "CAST(CASE WHEN TRUE THEN NULL END AS BIGINT) + (m - 1)",
+        "coalesce(CASE WHEN TRUE THEN NULL END, CAST(NULL AS BIGINT)) + (m - 1)",
+    ],
+)
+def test_a_null_under_a_node_types_by_its_foldability(expr):
+    assert_parity(_q(expr), ROWS, expect="AGREE")
+
+
+def test_nullif_of_a_null_reads_its_second_operand():
+    # `nullif(NULL, a)` is `CASE WHEN NULL = a THEN NULL END` there, a node
+    # that reads `a`. Only DuckDB's optimizer folds `NULL = a`.
+    assert_parity(
+        _q("CAST(nullif(NULL, a) AS BIGINT) + (m - 1)"), ROWS, expect="DIVERGE_OPT"
+    )
+
+
+def test_another_null_that_reads_a_column_refuses_by_name():
+    v = assert_parity(
+        _q(f"CAST(struct_pack(f := {_N}).f AS BIGINT) + (m - 1)"),
+        ROWS,
+        expect="REFUSED",
+    )
+    assert "a NULL that reads a column" in v.detail
+
+
 # ------------------------------------------------- narrow-width constants
 # A constant CASE arm escapes into a TINYINT operator: the fold must not
 # compute it in i64 and hide DuckDB's overflow (nightly seeds 2729519,

@@ -61,10 +61,15 @@ impl Binder<'_> {
                 duck_ty_name(other.ty)
             )));
         }
-        Ok(bound
+        // A NULL element is a node of the list (see `typed_null`).
+        bound
             .into_iter()
-            .map(|x| x.unwrap_or_else(|| null_of(ty)))
-            .collect())
+            .zip(elems)
+            .map(|(x, e)| match x {
+                Some(x) => Ok(x),
+                None => self.typed_null(e, ty),
+            })
+            .collect()
     }
 
     /// `list[index]` over a list literal: the element the index names, with

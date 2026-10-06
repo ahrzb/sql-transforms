@@ -172,10 +172,6 @@ def test_the_inner_scope_is_closed_and_binder_errors_are_bind_errors(sql, oracle
     "sql, named",
     [
         (
-            "SELECT x || 'a' AS z FROM (SELECT NULL AS x FROM __THIS__)",
-            "bare NULL subquery column",
-        ),
-        (
             "SELECT o FROM (SELECT a AS o FROM __THIS__) AS s, __THIS__",
             "beside a derived table",
         ),
@@ -190,6 +186,17 @@ def test_the_inner_scope_is_closed_and_binder_errors_are_bind_errors(sql, oracle
         ("WITH RECURSIVE c AS (SELECT a FROM __THIS__) SELECT a FROM c", "RECURSIVE"),
         ("SELECT * FROM (SELECT a, a + 1 FROM __THIS__ ORDER BY a)", "ORDER BY"),
         ("SELECT * FROM (SELECT DISTINCT a FROM __THIS__)", "DISTINCT"),
+        # A bare NULL column is a column to DuckDB: a pattern it compiles per
+        # row, and a NULL under a struct field read that reads it.
+        (
+            "SELECT regexp_matches('ab', x) AS o FROM (SELECT NULL AS x FROM __THIS__)",
+            "non-constant regex pattern",
+        ),
+        (
+            "SELECT CAST(struct_pack(f := x).f AS BIGINT) AS o "
+            "FROM (SELECT NULL AS x FROM __THIS__)",
+            "a NULL that reads a column",
+        ),
     ],
 )
 def test_what_stays_refused_is_refused_by_name(sql, named):
@@ -198,20 +205,21 @@ def test_what_stays_refused_is_refused_by_name(sql, named):
         _build(sql, False, statics={"d": d})
 
 
-# DuckDB types a bare NULL SQLNULL through a query level, and an expression
-# over the column binds against that type, which confit does not model. Each
-# of these read it as INTEGER: a wrong type where a constant condition folded
-# the column away after it typed the CASE (nightly seed 4824388), a bind
-# error where DuckDB serves. A whole item passes the column up a level, where
-# it is still SQLNULL.
-@pytest.mark.parametrize(
-    "sub",
-    [
-        "(SELECT NULL AS x, a FROM __THIS__)",
-        "(SELECT (t.x) AS x, a FROM (SELECT NULL AS x, a FROM __THIS__) AS t)",
-        "(SELECT x, a FROM (SELECT * FROM (SELECT NULL AS x, a FROM __THIS__)))",
-    ],
-)
+# DuckDB types a bare NULL SQLNULL through a query level, and types an
+# expression over the column as over a NULL literal, so confit binds it as
+# one. Typed INTEGER instead, a constant condition that folded the column
+# away left its type in the CASE (DECIMAL(13,3) where DuckDB answers
+# DECIMAL(5,3), nightly seed 4824388), and other spellings were bind errors
+# where DuckDB serves. A whole item passes the column up a level, where it
+# is still SQLNULL.
+SUBS = [
+    "(SELECT NULL AS x, a FROM __THIS__)",
+    "(SELECT (t.x) AS x, a FROM (SELECT NULL AS x, a FROM __THIS__) AS t)",
+    "(SELECT x, a FROM (SELECT * FROM (SELECT NULL AS x, a FROM __THIS__)))",
+]
+
+
+@pytest.mark.parametrize("sub", SUBS)
 @pytest.mark.parametrize(
     "sql",
     [
@@ -221,12 +229,74 @@ def test_what_stays_refused_is_refused_by_name(sql, named):
         "SELECT x AS y, CASE WHEN TRUE THEN 1.5 ELSE y END AS o FROM {sub}",
         "SELECT CASE WHEN a > 0 THEN TRUE ELSE x END AS o FROM {sub}",
         "SELECT a FROM {sub} WHERE CASE WHEN TRUE THEN a > 0 ELSE x END",
+        "SELECT x || 'a' AS o, x IS NULL AS n, -x AS m FROM {sub}",
+        # a NULL operand spares a trapping sibling, as a NULL literal does
+        "SELECT (a + 9223372036854775807) * (a - x) AS o FROM {sub}",
     ],
 )
-def test_an_expression_over_a_bare_null_column_refuses(sql, sub):
+def test_an_expression_over_a_bare_null_column_types_as_over_a_null_literal(sql, sub):
     rows = _table([(1, "x"), (-2, None)])
-    v = assert_parity(sql.format(sub=sub), rows, expect="REFUSED")
-    assert "bare NULL subquery column" in v.detail
+    assert_parity(sql.format(sub=sub), rows, expect="AGREE")
+
+
+# The one difference: a column is not foldable. Where DuckDB keeps the NULL a
+# node of its own (under a CAST, a comparison, NOT, CASE, COALESCE, least,
+# greatest, a list, or a call that handles a NULL itself), that node does not
+# fold either, so the operator over it still evaluates its other operand.
+# Over a NULL literal the same node folds, and the overflow never runs
+# (measured, DuckDB 1.5.5).
+@pytest.mark.parametrize("sub", SUBS)
+@pytest.mark.parametrize(
+    "node",
+    [
+        "CAST({x} AS BIGINT)",
+        "TRY_CAST({x} AS BIGINT)",
+        "{x}::BIGINT",
+        "CAST(CAST({x} AS INTEGER) AS BIGINT)",
+        "CASE WHEN TRUE THEN {x} ELSE 1 END",
+        "CASE WHEN {x} THEN 1 END",
+        "CASE 1 WHEN {x} THEN 1 END",
+        "coalesce({x}, CAST(NULL AS BIGINT))",
+        "greatest(CAST(NULL AS BIGINT), {x})",
+        "CAST({x} = 1 AS BIGINT)",
+        "CAST(1 IN ({x}, 2) AS BIGINT)",
+        "CAST((NOT {x}) AS BIGINT)",
+        "[{x}, 1][1]",
+        "length(concat_ws({x}, 'a'))",
+        "CAST(regexp_matches({x}, 'a') AS BIGINT)",
+        "CAST(({x} ~ 'a') AS BIGINT)",
+        "length(regexp_extract({x}, 'a'))",
+    ],
+)
+def test_a_node_over_a_bare_null_column_does_not_fold(node, sub):
+    rows = _table([(1, "x"), (-2, None)])
+    trap = "(a + 9223372036854775807)"
+    column = node.format(x="x")
+    assert_parity(f"SELECT {column} + {trap} AS o FROM {sub}", rows, trap="Overflow")
+    literal = node.format(x="NULL")
+    assert_parity(f"SELECT {literal} + {trap} AS o FROM {sub}", rows, expect="AGREE")
+
+
+class _PureUdf:
+    """A pure struct UDF: None when an argument is NULL."""
+
+    name = "u"
+    takes = pa.schema([("p", pa.float64()), ("q", pa.float64())])
+    returns = pa.struct([("f1", pa.float64())])
+
+    def __call__(self, p, q):
+        return None if p is None or q is None else (p + q,)
+
+
+# A pure UDF over constants runs once at bind, and DuckDB types its NULL
+# result SQLNULL, so the field reads INTEGER. Over the column it runs per row,
+# and the field keeps its declared DOUBLE (campaign seed 4669906).
+@pytest.mark.parametrize("sub", SUBS)
+@pytest.mark.parametrize("arg", ["x", "NULL"])
+def test_a_udf_over_a_bare_null_column_runs_per_row(arg, sub):
+    rows = _table([(1, "x"), (-2, None)])
+    sql = f"SELECT (u(1.5, {arg})).f1 AS o, -((u(1.5, {arg})).f1) AS m FROM {sub}"
+    assert_parity(sql, rows, udfs=[_PureUdf()], expect="AGREE")
 
 
 def test_joins_inside_the_subquery_serve():

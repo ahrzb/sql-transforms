@@ -345,8 +345,10 @@ impl Binder<'_> {
         }
         let mut out = Vec::with_capacity(raw.len());
         for (i, (arg, &pt)) in raw.iter().zip(&spec.params).enumerate() {
+            // A NULL argument is cast to the param: a node, which does not
+            // fold where it reads a column (see `typed_null`).
             let bound = match self.expr_or_null(arg)? {
-                None => null_of(pt),
+                None => self.typed_null(arg, pt)?,
                 Some(e) => bind_fold(e),
             };
             let bound = match (bound.ty, pt) {
@@ -554,7 +556,7 @@ impl Binder<'_> {
             // A bare NULL feature is legal and means "missing" — the model
             // has an answer for that. It types as f64 like any other.
             let e = match self.expr_or_null(fexpr)? {
-                None => null_of(Ty::F64),
+                None => self.typed_null(fexpr, Ty::F64)?,
                 // The DECLARED type decides, not the argument's: DuckDB casts
                 // the argument to the declaration before calling, so a BIGINT
                 // column in a declared-DOUBLE lane reaches the model as
@@ -608,8 +610,13 @@ impl Binder<'_> {
             // its siblings under). Over a column feature the call runs per
             // row and answers NULL, and a trapping sibling still traps
             // (nightly seed 4316677: `trees(NULL, c0, ..) * ln(c0)`).
-            None if bound.iter().all(bind_foldable) => return Ok(null_of(Ty::F64)),
-            None => null_of(Ty::I64),
+            None => {
+                let n = self.typed_null(id, Ty::I64)?;
+                if bind_foldable(&n) && bound.iter().all(bind_foldable) {
+                    return Ok(null_of(Ty::F64));
+                }
+                n
+            }
         };
         let bid = match bid.ty {
             t if t.is_int() => bid,
