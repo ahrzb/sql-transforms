@@ -313,6 +313,9 @@ FIXTURES[SplineTransformer] = [
             ),
             _spline_with_knots(degree=2, extrapolation="continue"),
             _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
+            lambda: SplineTransformer(
+                degree=3, n_knots=6, extrapolation="periodic", handle_missing="zeros"
+            ),
         ]
     ),
 ]
@@ -1570,6 +1573,38 @@ def test_spline_at_the_knots(params):
     )
     rows = _knot_rows(est, 3)
     assert check(step, to_native(step, strict=True), rows) > 0
+
+
+@pytest.mark.parametrize(
+    "degree, n_knots", [(0, 2), (0, 5), (1, 4), (2, 5), (3, 5), (3, 6), (5, 8)]
+)
+def test_a_periodic_spline_answers_infinity_as_its_twin(degree, n_knots):
+    # Under handle_missing="zeros" the twin validates with infinity allowed:
+    # the remainder of ±inf is NaN, and scipy answers NaN on every lane. A
+    # lane with no basis in the last interval read 0.0 there (from
+    # n_knots = degree + 3, and at degree 0), until the entry tested for it.
+    X = np.random.default_rng(0).normal(size=(40, 2)) * 3
+    est = SplineTransformer(
+        degree=degree,
+        n_knots=n_knots,
+        extrapolation="periodic",
+        handle_missing="zeros",
+    ).fit(X)
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64()), ("x1", pa.float64())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)]),
+    )
+    vals = [math.inf, -math.inf, math.nan, None, 1e308, -1e308, 0.0, -0.0, 1.5]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(vals) ** 2, pa.int64()),
+            "x0": pa.array([a for a in vals for _ in vals], pa.float64()),
+            "x1": pa.array([b for _ in vals for b in vals], pa.float64()),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == len(vals) ** 2
 
 
 @pytest.mark.parametrize(
