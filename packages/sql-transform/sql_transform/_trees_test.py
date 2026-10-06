@@ -770,14 +770,9 @@ def test_integer_feature_literal_is_narrowed_too():
     assert got == want, f"engine {got} vs sklearn {want} (literal feature)"
 
 
-# ADJUDICATED and CONFIRMED 2026-08-08. The sweep's verifiers had split on
-# it; reproduced by hand, and the divergence is not subtle — a forest
-# fitted on columns ['b', 'a'] and declared as ['a', 'b'] built without
-# complaint and scored -2.72 where sklearn said 0.84. FIXED: the schema's
-# field names must match the fitted order. Since the schema always carries
-# names, the check is no longer opt-in the way the old `take_names` was; it
-# stays conditional on `feature_names_in_`, which exists only for an estimator
-# fitted on something with column names.
+# A forest fitted on ['b', 'a'] but declared as ['a', 'b'] once scored -2.72
+# where sklearn scored 0.84. Schema names must match fitted order whenever
+# feature_names_in_ exists; unnamed fits have no names to cross-check.
 
 
 def _named(est, names):
@@ -801,7 +796,6 @@ def test_dataframe_fitted_model_refuses_mismatched_schema_names():
     # a name that was never fitted is caught by the same check
     with pytest.raises(TreePackError, match="fitted on columns"):
         _named(est, ["b", "zzz"])
-    # ... and the fitted order builds
     assert _named(est, ["b", "a"]).take_names == ("b", "a")
 
 

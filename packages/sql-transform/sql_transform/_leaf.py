@@ -17,7 +17,7 @@ nothing of the leaf's names survives, which is what makes the splice
 capture-free (D3): the refusals below fire at the host's construction and
 carry the projection's name.
 
-The leaf-eligible shape, v0: every fit step a plain aggregate SELECT over
+The keyless leaf shape: every fit step a plain aggregate SELECT over
 ``__FIT__``, and a residual whose spine cross-joins one-row params only.
 Keys inside the leaf would need θ to carry tables; refused by name.
 """
@@ -228,24 +228,25 @@ _OPS = {"COMPARE_EQUAL": "=", "COMPARE_NOT_DISTINCT_FROM": "IS NOT DISTINCT FROM
 
 @dataclass(frozen=True, slots=True)
 class _KeyedPlan:
-    """A one-grouped-step projection, reshaped for the flat keyed lowering
-    (spec M5): its params become plain columns beside the scope keys, and
-    the internal join predicate keeps the author's own operator."""
+    """A grouped projection whose params are flat columns beside scope keys.
+
+    Its internal join predicate retains the author's equality operator.
+    """
 
     key_items: tuple[tuple[str, Node], ...]  # (params column name, step expr)
     agg_items: tuple[tuple[str, Function], ...]  # (params column name, aggregate)
     fit_columns: tuple[str, ...]  # __FIT__ columns the step reads, folded
     on_pairs: tuple[tuple[str, str, str], ...]  # (this column, op, params column)
-    outputs: tuple[tuple[str, Node], ...]
-    this_columns: tuple[str, ...]
-    this_alias: str
-    params_alias: str
+    outputs: tuple[tuple[str, Node], ...]  # (output name, residual expression)
+    this_columns: tuple[str, ...]  # request columns read by outputs, folded
+    this_alias: str  # folded request-source qualifier
+    params_alias: str  # folded qualifier of the joined params relation
 
 
 def keyed_plan(stem: str, projection) -> _KeyedPlan:  # noqa: C901
     """The keyed plan, or the refusal naming what disqualifies the projection.
 
-    The admitted shape, v1: exactly one fit step — a grouped SELECT over
+    The admitted shape: exactly one fit step — a grouped SELECT over
     ``__FIT__`` whose non-aggregate items are its group keys — and a residual
     that LEFT JOINs ``__THIS__`` onto that one params table through an
     AND-tree of column equalities.

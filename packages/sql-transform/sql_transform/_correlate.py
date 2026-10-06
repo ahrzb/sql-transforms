@@ -93,10 +93,8 @@ _FAN_OUT = (
 )
 
 
-# Every refusal this module can raise. The set *is* the refusal list: short on
-# purpose, and each entry has a row in docs/decorrelation-unsupported.md saying
-# what lifting it would take. `test_every_refusal_reason_is_documented` holds
-# the two together.
+# Named refusal codes and explanations; docs/decorrelation-unsupported.md
+# describes the unsupported shapes and their explicit SQL alternatives.
 REASONS: dict[str, str] = {
     "not-a-scalar-subquery": (
         "it is not a scalar subquery — EXISTS, IN and the quantified "

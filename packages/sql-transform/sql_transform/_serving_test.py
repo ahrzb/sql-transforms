@@ -196,10 +196,8 @@ def test_dict_rows_and_object_rows_agree():
 
 
 def test_transform_preserves_input_row_order_with_unseen_groups():
-    """Review round (2026-08-05): DuckDB's params LEFT JOIN emits unmatched
-    probe rows after matched ones, so a frame with unseen-group rows came
-    back reordered — silently misaligning positional consumers. transform()
-    must restore input row order explicitly."""
+    """DuckDB's params LEFT JOIN can emit unmatched rows after matched ones.
+    Batch output must restore input order to preserve positional alignment."""
     p = serve_gate(
         SQLProjection.marginalize(
             "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
@@ -223,11 +221,8 @@ def test_transform_preserves_input_row_order_with_unseen_groups():
 
 
 def test_null_feature_serves_nan_on_both_paths():
-    """Review round (2026-08-05): DuckDB's native Python-UDF return
-    conversion mapped a returned NaN to NULL, so a NULL-fed transformer
-    call diverged between batch (NULL) and row (NaN) serving. Registration
-    is arrow-typed now — sklearn's NaN convention is the value on BOTH
-    paths, bit-equal."""
+    """Native Python-UDF return conversion can map NaN to NULL. Arrow-typed
+    registration must preserve sklearn's NaN convention in both serving paths."""
     p = serve_gate(
         SQLProjection.marginalize(
             "SELECT sc_transform(sc_fit(struct_pack(v := age)) OVER (),"

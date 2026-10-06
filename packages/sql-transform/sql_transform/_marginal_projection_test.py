@@ -229,7 +229,6 @@ def test_expression_aggregate_arguments():
         "sum(fare) OVER (PARTITION BY country ORDER BY age)",
         "avg(age) OVER (ORDER BY fare)",
         "count(*) OVER (PARTITION BY country ORDER BY age)",
-        # explicit RANGE / GROUPS frames with constant bounds
         "sum(age) OVER (PARTITION BY country ORDER BY fare"
         " RANGE BETWEEN 2 PRECEDING AND CURRENT ROW)",
         "sum(age) OVER (PARTITION BY country ORDER BY fare"
@@ -242,12 +241,10 @@ def test_expression_aggregate_arguments():
         "dense_rank() OVER (PARTITION BY country ORDER BY age DESC NULLS FIRST)",
         "percent_rank() OVER (ORDER BY age)",
         "cume_dist() OVER (PARTITION BY country ORDER BY age)",
-        # value functions
         "first_value(name) OVER (PARTITION BY country ORDER BY age)",
         "first_value(city IGNORE NULLS) OVER (PARTITION BY country ORDER BY age)",
         "last_value(name) OVER (PARTITION BY country ORDER BY age)",
         "nth_value(name, 2) OVER (PARTITION BY country ORDER BY age)",
-        # FILTER / DISTINCT / ordered-argument aggregates
         "avg(age) FILTER (WHERE fare > 8) OVER (PARTITION BY country)",
         "count(DISTINCT city) OVER (PARTITION BY country)",
         "string_agg(name, ',') OVER (PARTITION BY country)",
@@ -259,7 +256,6 @@ def test_expression_aggregate_arguments():
         "bool_and(age > 30) OVER (PARTITION BY country)",
         "corr(age, fare) OVER (PARTITION BY country)",
         "mode(city) OVER (PARTITION BY country)",
-        # expression keys
         "sum(fare) OVER (PARTITION BY substr(country, 1, 1))",
         "avg(age) OVER (PARTITION BY country ORDER BY fare % 3)",
         "avg(age) OVER (PARTITION BY country, city ORDER BY fare, name)",
@@ -525,8 +521,6 @@ def test_fuzz_differential():
                     f"{agg}({arg}) {ovp}",
                     f"{col} - {agg}({arg}) {ovp}",
                     f"{col} + 1",
-                    # widened surface: running, frames, rank/value fns,
-                    # FILTER/DISTINCT, order-sensitive aggregates
                     f"{agg}({arg}) {po}",
                     f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
                     " RANGE BETWEEN 2 PRECEDING AND CURRENT ROW)",
@@ -557,7 +551,6 @@ def test_fuzz_differential():
         if shape == 0:
             gate(inner, table, schema=schema)
         elif shape == 1:
-            # wrap in a CTE and project over it
             outer = ", ".join(f"e{j} AS f{j}" for j in range(len(exprs)))
             original = f"WITH c AS ({inner}) SELECT {outer} FROM c"
             explicit = (
@@ -566,7 +559,6 @@ def test_fuzz_differential():
             )
             gate(original, table, schema=schema, explicit=explicit)
         elif shape == 2:
-            # a second aggregation level over the first (numeric, type-safe)
             k_in = rng.choice(["PARTITION BY k1", "PARTITION BY k2", ""])
             k_out = rng.choice(["PARTITION BY k1", "PARTITION BY k2, k1", ""])
             agg2 = rng.choice(["avg", "sum", "median", "stddev_samp"])
@@ -579,7 +571,6 @@ def test_fuzz_differential():
                 migrated=True,
             )
         else:
-            # sprinkle a scalar subquery into a fresh projection
             gate(
                 f"SELECT x - (SELECT {rng.choice(['max', 'min', 'avg'])}(x)"
                 f" FROM __THIS__) AS s0, {exprs[0]} FROM __THIS__",

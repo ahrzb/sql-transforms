@@ -1,4 +1,4 @@
-"""Single-evaluation field access (DRAFT-24 loop 4).
+"""Single-evaluation field access.
 
 k addressed fields of one fitted transformer cost ONE ``transform()`` call
 per row on BOTH serving paths: the batch path (DuckDB — one struct-returning
@@ -122,8 +122,8 @@ def test_two_fields_cost_one_call_per_row_on_the_row_path():
 
 
 def test_whole_item_and_field_read_share_one_call_per_row():
-    # Review round: the whole-item site must share the field read's ecall
-    # (P16 single-eval) — the row path used to double-evaluate here.
+    # Whole-item and field-read sites must share the same call; otherwise the
+    # row path transforms twice even though DuckDB merges their expressions.
     p = SQLProjection.marginalize(
         "SELECT pca(struct_pack(a := a, b := b)) AS e,"
         " pca(struct_pack(a := a, b := b)).pca0 AS x, name FROM __THIS__",
@@ -140,8 +140,7 @@ def test_whole_item_and_field_read_share_one_call_per_row():
 
 
 def test_bare_wide_item_costs_one_call_per_row():
-    # Slice 5: the bare shape serves the whole struct through the same one
-    # call — still exactly one transform() per row on both paths.
+    # Whole-struct output retains single evaluation on both serving paths.
     p = SQLProjection.marginalize(
         "SELECT pca_transform(pca_fit(struct_pack(a := a, b := b))"
         " OVER (PARTITION BY grp), struct_pack(a := a, b := b)) AS e,"

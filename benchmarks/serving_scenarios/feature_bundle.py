@@ -1,4 +1,4 @@
-"""A fitted feature bundle arriving as ONE struct column (TASK-114).
+"""A fitted feature bundle arriving as ONE struct column.
 
 The other scenarios are wide at the TOP level: forty named scalar columns.
 Real fitted pipelines rarely serve that shape. A feature store, a Kaggle

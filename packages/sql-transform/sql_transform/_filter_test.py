@@ -45,7 +45,6 @@ def test_global_filtered_fit():
     got = _by_name(p.transform(TRAIN), "z")
     for i, n in enumerate(TRAIN.column("name").to_pylist()):
         np.testing.assert_allclose(got[n], ref[i], rtol=1e-12)
-    # row path serves the same artifact (C3)
     row = {"country": "US", "age": 40.0, "fare": 7.0, "name": "x"}
     np.testing.assert_allclose(
         p.compile().infer_rows([row])[0]["z"], ref[0], rtol=1e-12
@@ -131,8 +130,7 @@ def test_everything_filtered_refuses_at_fit_by_name():
 
 
 def test_author_udf_in_predicate_serves():
-    """Review round: the predicate skipped UDF resolution, so a registered
-    author UDF crashed raw at fit (CatalogException)."""
+    """Fit predicates must resolve captured UDFs before DuckDB binds them."""
     from sql_transform import PythonUDF
 
     gt6 = PythonUDF(
@@ -157,8 +155,8 @@ def test_author_udf_in_predicate_serves():
 
 
 def test_predicates_differing_in_named_args_are_distinct_steps():
-    """Review round: _stripped erases the named-arg aliases inside the
-    predicate, collapsing two different fits into one step."""
+    """Named struct fields in a predicate belong to fit identity; erasing their
+    aliases can collapse different predicates into one fit."""
     p = _fit(
         "SELECT sc_transform(sc_fit(age) FILTER (WHERE struct_extract("
         "struct_pack(a := fare, b := age), 'a') > 6) OVER (), age).age AS za,"
@@ -168,8 +166,8 @@ def test_predicates_differing_in_named_args_are_distinct_steps():
     )
     assert len(p.instances) == 2
     feats = np.array([TRAIN.column("age").to_pylist()], dtype=float).T
-    mask_a = [f > 6 for f in TRAIN.column("fare").to_pylist()]  # 'a' := fare
-    mask_b = [a > 6 for a in TRAIN.column("age").to_pylist()]  # 'a' := age
+    mask_a = [f > 6 for f in TRAIN.column("fare").to_pylist()]
+    mask_b = [a > 6 for a in TRAIN.column("age").to_pylist()]
     ref_a = _ref_filtered(StandardScaler(), feats, [()] * TRAIN.num_rows, mask_a)
     ref_b = _ref_filtered(StandardScaler(), feats, [()] * TRAIN.num_rows, mask_b)
     out = p.transform(TRAIN)
@@ -180,8 +178,8 @@ def test_predicates_differing_in_named_args_are_distinct_steps():
 
 
 def test_schema_free_forward_alias_in_predicate_refuses():
-    """Review round: schema-free, a predicate naming a LATER select alias
-    served text DuckDB refuses (binds backward in the level table)."""
+    """A fit predicate cannot depend on a later select alias; DuckDB rejects
+    that forward reference rather than binding it to an earlier expression."""
     with pytest.raises(TransformError, match="sibling.*alias"):
         SQLProjection.marginalize(
             "SELECT sc_transform(sc_fit(age) FILTER (WHERE m > 0) OVER (), age)"

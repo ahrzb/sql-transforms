@@ -25,6 +25,7 @@ MANIFEST = (
 
 
 def main() -> None:
+    """Overwrite the manifest with the installed oracle's corpus shapes."""
     manifest = {
         "duckdb": duckdb.__version__,
         "statements": len(PARSEABLE),

@@ -31,17 +31,11 @@ OUTPUTS = ("default", "arrow", "duckdb", "pandas", "numpy")
 def _as_output(
     table: pa.Table, output: str, source: Relation = None, aligned: bool = True
 ) -> Any:
-    """The result in the caller's currency.
+    """Convert eager Arrow output to the selected output mode.
 
-    ``pandas`` carries the caller's index when there is one to carry, which is
-    what every sklearn transformer does. Resetting it was silent: in a
-    ``FeatureUnion`` alongside an estimator that preserves the index, pandas
-    aligns on index rather than position and NaN-pads the difference — four
-    rows in, seven out, no error.
-
-    A SQL transform may change cardinality, which an sklearn one cannot. When
-    the row counts disagree there is no row correspondence to express, so no
-    index is attached rather than one invented.
+    Preserve a source pandas index only when ``aligned`` and the row counts
+    agree. Otherwise leave the result's default index: attaching unrelated
+    labels would silently misalign downstream index-based joins.
     """
     match output:
         case "default" | "arrow" | "duckdb":
@@ -56,21 +50,12 @@ def _as_output(
 def _keeps_row_order(node: Node) -> bool:
     """Whether output row *i* still stands for input row *i*.
 
-    An index is a claim about which input row each output row came from, and
-    positional correspondence is the only evidence available. Any ORDER BY or
-    LIMIT in the residual destroys it — measured, and silently: a three-row
-    frame indexed a/b/c through ``ORDER BY v`` came back with a's label on b's
-    value, no error.
+    An index claims positional correspondence. Top-level modifiers such as
+    ORDER BY and LIMIT invalidate that claim. Nested modifiers are irrelevant:
+    even ordinary expressions can contain empty ORDER_MODIFIER nodes.
 
-    The query's own ORDER BY / LIMIT lives in the top-level ``modifiers``,
-    which is what this reads. A deep scan is wrong: an ordinary projection
-    carries an empty nested ORDER_MODIFIER, so scanning everything never
-    carries an index at all.
-
-    Even so this is a good-faith reading rather than a proof — SQL guarantees
-    no row order without ORDER BY. Losing the index is loud (a FeatureUnion
-    misaligns visibly) while attaching a wrong one is not, so where the two
-    compete the doubt resolves toward dropping it.
+    This is a heuristic, not an ordering proof; SQL without an
+    ORDER BY does not guarantee row order.
     """
     return not node_field(node, "modifiers")
 
@@ -85,27 +70,22 @@ def _with_index(frame: Any, source: Relation, aligned: bool) -> Any:
 class SQLTransform:
     """``F -> Fitted``, and an sklearn estimator.
 
-    ``fit`` returns the ``Fitted`` artifact rather than ``self``. That is the
-    currying the model is built on — ``.params`` is a thing you can ship —
-    and it costs nothing with sklearn, which never reads what ``fit``
-    returned: ``Pipeline`` keeps the object it called and asks *it* to
-    ``transform`` later. So ``fit`` also remembers, and both spellings agree:
+    ``fit`` returns a ``Fitted`` artifact and also stores it for subsequent
+    estimator-style ``transform`` calls:
 
-        t.fit(D).transform(X)     # curried: the artifact transforms
-        t.fit(D); t.transform(X)  # stateful: the estimator transforms
+        t.fit(D).transform(X)
+        t.fit(D); t.transform(X)
 
-    ``bindings`` and ``foreign`` are constructor parameters as well as frame
-    lookups, because ``clone`` rebuilds an estimator inside sklearn's own
-    frame, where a member or a lookup table is not in scope. They ride along
-    in ``get_params`` so a clone resolves to the very same objects.
+    ``sql`` is authored two-parameter SQL. ``captured`` supplies explicit
+    Python bindings, overriding caller-frame names, and is adopted and completed
+    in place for replay. See ``Program.compile`` for mapping ownership.
 
-    Those two mappings are *adopted*, not copied, and completed in place with
-    whatever the frame supplied. ``clone`` demands that ``get_params`` hand
-    back the very object the constructor was given — a defensive copy fails
-    its identity check — and carrying the completed set is the whole point.
+    Output modes are Arrow (``default``/``arrow``), lazy ``duckdb``, ``pandas``,
+    and ``numpy``. Lazy chaining requires a shared caller-owned ``connection``;
+    keep the fitted artifact alive until its lazy outputs are consumed.
 
-    Construction parses, plans and refuses; nothing else does — all of it in
-    ``Program.compile``, which this class holds the result of.
+    Construction performs structural planning. Fit binds the data schema,
+    evaluates learned tables and preserves general SQL cardinality.
     """
 
     def __init__(
@@ -115,11 +95,8 @@ class SQLTransform:
         connection: Connection | None = None,
         captured: Captured | None = None,
     ) -> None:
-        # Resolution happens once, in `compile`, and captures by value:
-        # `scope` is a local that dies with this call, so no caller frame is
-        # retained and rebinding a member afterwards cannot change what was
-        # built. The frame is read *here*, not inside `compile` — one level
-        # deeper would capture from the wrong caller.
+        # See _program's module contract: the scope must come from this caller,
+        # and no frame is retained after resolution.
         frame = sys._getframe(1)
         scope = frame.f_globals | frame.f_locals
         del frame
@@ -127,30 +104,23 @@ class SQLTransform:
         if output not in OUTPUTS:
             raise TransformError(f"output must be one of {OUTPUTS}; got {output!r}")
         self.output = output
-        # Given rather than conjured. A transform that makes its own hidden
-        # connection cannot compose with anything: a DuckDBPyRelation belongs
-        # to the connection that built it, so lazy output only chains when
-        # both stages share one. Pass it and you own it.
         program = Program.compile(sql, scope, connection=connection, captured=captured)
         self._program = program
-        self.connection = program.connection
-        # Adopted, not copied: see the class docstring. Explicit entries win,
-        # and are how a clone keeps names the frame it was rebuilt in cannot
-        # see.
-        self.captured = program.captured
-        self.foreign = program.foreign
+        self.connection = program.connection  # borrowed; None uses owned connections
+        self.captured = program.captured  # adopted author mapping for source replay
+        self.foreign = program.foreign  # declared relation-batch callbacks
+        # Live captured relations, separate from params.
         self.bindings = program.bindings
-        self.node = program.node
-        self.depth = program.depth
+        self.node = program.node  # resolved SQL, before fit freezing
+        self.depth = program.depth  # member-call nesting
         self.source = program.source  # the exact object: clone's identity check
-        self.sql = program.sql
+        self.sql = program.sql  # resolved diagnostics, not replay input
         self._steps = program.steps
         self._residual = program.residual
         self._shadowable = program.shadowable
-        self.fitted_: Fitted | None = None
+        self.fitted_: Fitted | None = None  # most recent fit, or None before fit
+        # Learned on transform, not fit.
         self.feature_names_out_: list[str] | None = None
-
-    # -- the model's own surface ----------------------------------------------
 
     def __repr__(self) -> str:
         state = "fitted" if self.fitted_ is not None else "unfitted"
@@ -170,13 +140,13 @@ class SQLTransform:
 
     @property
     def params_(self) -> dict[str, pa.Table]:
+        """The stored learned-table mapping; raises ``NotFitted`` before fit."""
         return self._require_fit().params
 
     @property
     def instances_(self) -> dict[int, Any]:
+        """The stored opaque-ID instance mapping belonging to the current params."""
         return self._require_fit().instances
-
-    # -- the sklearn surface ---------------------------------------------------
 
     def _require_fit(self) -> Fitted:
         if self.fitted_ is None:
@@ -184,9 +154,14 @@ class SQLTransform:
         return self.fitted_
 
     def transform(self, data: Relation) -> Any:
+        """Apply the latest fit in the selected output mode; refuse before fit.
+
+        Lazy ``duckdb`` output retains registrations on the fitted artifact;
+        see ``Fitted.relation`` for its consumption and release lifetime.
+        """
         fitted = self._require_fit()
         if self.output == "duckdb":
-            lazy = fitted.relation(data)  # the whole point: never materialise
+            lazy = fitted.relation(data)
             self.feature_names_out_ = list(lazy.columns)
             return lazy
         out = fitted.transform(data)
@@ -200,6 +175,7 @@ class SQLTransform:
         return self.transform(data)
 
     def get_feature_names_out(self, input_features: Any = None) -> list[str]:
+        """Return names from the latest transform; ``input_features`` is ignored."""
         if self.feature_names_out_ is None:
             raise NotFitted(
                 "output column names are only known once something has been "
@@ -219,13 +195,10 @@ class SQLTransform:
         return self
 
     def __sklearn_clone__(self) -> Self:
-        """sklearn's own hook, because the default clones by deep-copying
-        every parameter and a live DuckDB connection cannot be deep-copied —
-        ``clone``, and so ``GridSearchCV``/``cross_val_score``/``Pipeline``,
-        died with a raw TypeError on any transform built with ``connection=``.
+        """Rebuild from authored source, sharing captures and the connection.
 
-        A connection is a resource, not a value: the clone shares it. Rebuilt
-        from ``source`` so the plan is derived rather than copied.
+        A DuckDB connection is a borrowed resource and cannot be deep-copied.
+        The clone has its own fit state and derives a fresh plan.
         """
         return type(self)(
             self.source,
@@ -235,6 +208,7 @@ class SQLTransform:
         )
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
+        """Return constructor arguments; keep captures shared and ignore ``deep``."""
         return {
             "sql": self.source,
             "output": self.output,
@@ -243,6 +217,10 @@ class SQLTransform:
         }
 
     def set_params(self, **params: Any) -> Self:
+        """Update constructor arguments.
+
+        Changes to SQL, captures or connection reset fit.
+        """
         unknown = set(params) - set(self.get_params())
         if unknown:
             raise TransformError(f"unknown parameters {sorted(unknown)}")

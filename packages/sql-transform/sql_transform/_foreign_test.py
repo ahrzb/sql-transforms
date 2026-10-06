@@ -1,4 +1,4 @@
-"""Slice 3 gates: foreign transforms — the Python pair, θ handles, instances.
+"""Foreign transforms: relation callbacks, θ handles, and fitted instances.
 
 An sklearn transformer is already the pair: ``x_fit`` is the UDAF half,
 ``x_transform`` the UDF half. θ is an opaque handle into a registry of fitted
@@ -28,20 +28,20 @@ UNSEEN = pa.table({"cat": ["a", "zz"], "price": [2.0, 99.0]})
 
 
 def fit_scaler(relation: pa.Table) -> StandardScaler:
+    """Fit an independent scaler on the complete SQL aggregate group's v field."""
     return StandardScaler().fit(
         relation["v"].to_numpy(zero_copy_only=False).reshape(-1, 1)
     )
 
 
 def transform_scaler(instance: StandardScaler, relation: pa.Table) -> pa.Table:
+    """Apply that scaler to one Arrow invocation's rows, preserving the v field."""
     out = instance.transform(
         relation["v"].to_numpy(zero_copy_only=False).reshape(-1, 1)
     )
     return pa.table({"v": out[:, 0]})
 
 
-# The pair supplied directly, as the spec writes it: fit sees a relation and
-# returns whatever it likes; transform sees that and a relation.
 sc = Transform(
     fit=lambda f: pa.table({"m": [pc.mean(f["v"]).as_py()]}),
     transform=lambda p, t: pa.table({"v": pc.divide(t["v"], p["m"][0])}),

@@ -531,7 +531,7 @@ def test_a_frozen_subquery_serves():
     assert rows == fitted.transform(X).to_pylist()
 
 
-# --- key composition (slice 4, RFC M5) --------------------------------------
+# --- keyed SQL leaf composition --------------------------------------------
 
 keyed = SQLProjection("""
     SELECT t.price / f.m AS r
@@ -773,7 +773,7 @@ def test_refusals_fire_pre_rewrite_in_the_authors_vocabulary(token, text):
         SQLProjection.marginalize(text)
 
 
-# --- projection scopes (slice 3) -------------------------------------------
+# --- projection scopes -----------------------------------------------------
 
 zscore = SQLProjection("""
     SELECT round((t.price - f.m) / f.s, 4) AS z

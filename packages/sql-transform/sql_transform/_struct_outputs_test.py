@@ -96,11 +96,8 @@ def test_unseen_group_serves_null_whole_struct_both_paths():
 
 
 def test_underscore_fitted_field_serves_whole_struct():
-    # MIGRATION-NOTE: the old pydantic reserved-name refusal ("row-path model
-    # boundary" — pydantic silently reclassified _-leading create_model
-    # kwargs as private attributes) died with the pydantic output model. A
-    # learned field named "_a" is an ordinary dict/struct key now, on both
-    # engines, so the fit that used to refuse here now succeeds and serves.
+    # Dict outputs and Arrow structs keep underscore-leading fields visible;
+    # the former pydantic output model treated them as private attributes.
     p = _fit('SELECT sc(struct_pack("_a" := age, f := fare)) AS s, name FROM __THIS__')
     ref = _ref_struct()
     got = p.transform(TRAIN).column("s").to_pylist()
@@ -116,8 +113,6 @@ def test_underscore_fitted_field_serves_whole_struct():
 
 
 def test_underscore_fitted_field_still_fits_for_field_reads():
-    # The refusal is scoped to whole-value serving: a field read never
-    # turns the learned name into a pydantic field, so it keeps working.
     p = _fit(
         'SELECT sc(struct_pack("_a" := age, f := fare)).f AS zf, name FROM __THIS__'
     )
@@ -125,11 +120,8 @@ def test_underscore_fitted_field_still_fits_for_field_reads():
 
 
 def test_previously_pydantic_reserved_fitted_field_serves():
-    # MIGRATION-NOTE: names pydantic used to reserve (config/protected
-    # namespaces, dunders) would raw-crash or silently vanish at first infer
-    # against the old output model, so the fit-time probe refused them by
-    # name. Dict-out and arrow structs don't reserve any name, so the fit
-    # now succeeds and serves correctly on both paths.
+    # These names were reserved by the former pydantic output model, not by
+    # dict outputs or Arrow structs; neither binding may drop or reject them.
     ref = _ref_struct()
     for member in ("model_config", "model_validate", "__init__"):
         p = _fit(
@@ -148,9 +140,8 @@ def test_previously_pydantic_reserved_fitted_field_serves():
 
 
 def test_distinct_on_the_call_refuses_at_construction():
-    # Measured: DuckDB refuses DISTINCT on any registered scalar function
-    # ("only applicable to aggregate functions") — the original text has
-    # no oracle reading, so every spelling refuses by name (review round).
+    # DuckDB binds DISTINCT only on aggregates, not registered scalar calls;
+    # refusing each spelling preserves that binding boundary.
     for sql in [
         "SELECT sc(DISTINCT age) AS s FROM __THIS__",
         "SELECT sc(DISTINCT age).age AS z FROM __THIS__",

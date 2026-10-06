@@ -6,7 +6,7 @@ and a SQL transform must not need one in order to refuse.
 
 
 class TransformError(Exception):
-    """Every refusal. Named, and raised at construction (P7)."""
+    """Base error for named construction, fit, and execution refusals."""
 
 
 class CorrelatedFit(TransformError):
@@ -17,9 +17,7 @@ class CorrelatedFit(TransformError):
     named shapes it is — the set of reasons is the refusal list, kept short on
     purpose and written down in ``docs/decorrelation-unsupported.md``.
 
-    ``reason`` has no default on purpose. It had one, and the default was the
-    only refusal in the system nobody had to name — reachable, undocumented,
-    and invisible to the gate that walks ``REASONS`` looking for gaps.
+    ``reason`` is required so every refusal identifies its unsupported shape.
     """
 
     def __init__(self, message: str, reason: str) -> None:
@@ -58,13 +56,10 @@ class NotRowWise(TransformError):
 class KeyNotUnique(TransformError):
     """A relation the spine joins can answer one serving row with many rows.
 
-    Nothing static proves a join matches at most one row — ``SELECT DISTINCT``
-    and ``QUALIFY row_number() = 1`` are correct de-dup spellings a syntax
-    rule would refuse — so this is measured at fit, where the params exist:
-    the join's equality keys must be unique in the joined relation, and a
-    relation beside ``__THIS__`` with no key at all must have exactly one row.
-    The one refusal that cannot be hoisted to construction (P7's carve-out:
-    uniqueness is a fact about data).
+    Cardinality is measured at fit, where params exist. Equality keys must be
+    unique; a keyless CROSS side must have exactly one row, while a
+    request-preserving outer side may have zero or one. Syntax alone cannot
+    establish this: DISTINCT and QUALIFY can both produce lawful unique keys.
     """
 
 

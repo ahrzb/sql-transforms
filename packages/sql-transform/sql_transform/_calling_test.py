@@ -1,4 +1,4 @@
-"""Slice 2 gates: calling — nesting, chaining, per group.
+"""Member calling: nesting, chaining, and per-group composition.
 
 Members splice. The oracle for a nested call is a *registered table function*,
 and since DuckDB's Python API cannot register one, its materialized output
@@ -126,7 +126,6 @@ def test_chaining_fits_on_transformed_data():
     chained = SQLTransform(
         "SELECT * FROM z(a(__FIT__, __FIT__), a(__FIT__, __THIS__)) s"
     )
-    # The spec's pinned numbers, training data served back to itself.
     right = approx(z_ref(a_ref(F, F), a_ref(F, F)), 4)
     wrong = approx(z_ref(F, a_ref(F, F)), 4)
     assert approx(chained.fit(F)(F), 4) == right
@@ -172,8 +171,7 @@ def test_per_group_is_faithful_under_run():
 
 
 def test_per_group_costs_one_row_per_group_not_one_per_training_row():
-    """This used to retain the whole training set, and it is the shape the
-    guide teaches — so it was the loudest argument for marginalising.
+    """Per-group composition must not retain the whole training set.
 
     The correlating predicate arrives a level below the aggregate, inside the
     derived table the splice built out of the argument. Flattened, it is an

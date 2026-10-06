@@ -52,7 +52,7 @@ def test_global_scaler_from_scope_is_scalar_valued():
     assert udf.returns == pa.struct([("age", pa.float64())])
     assert len(p.instances) == 1
     got = _by_name(p.transform(TRAIN), "z")
-    assert all(isinstance(v, float) for v in got.values())  # width 1 -> DOUBLE
+    assert all(isinstance(v, float) for v in got.values())
     feats = np.array([TRAIN.column("age").to_pylist()], dtype=float).T
     ref = _reference(sc, feats, [()] * TRAIN.num_rows)
     for i, n in enumerate(TRAIN.column("name").to_pylist()):

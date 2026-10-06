@@ -12,9 +12,10 @@ gate: every refusal here fires against the author's own spelling, before the
 rewrite, and a refusal escaping from the derived text is our bug.
 
 One numerical lowering serves every admitted window. The *carrier*, a CTE
-over ``__FIT__``, evaluates the author's own executable select items — top-level
-stars omitted, nothing else — then every window value in first-occurrence
-order, then every lookup key. Evaluating the windows beside the original items
+over ``__FIT__``, evaluates the author's executable SQL-only select items,
+excluding top-level stars, estimator/keyed-leaf items and their lateral
+dependents, then window values in first-occurrence order and lookup keys.
+Evaluating the windows beside the original items
 keeps the original query's window operator chain, and with it DuckDB's
 floating reduction order: measured, seed 20260729 case 206's ``avg(x) OVER
 ()`` differs in its last bits when evaluated alone instead of beside the
@@ -106,8 +107,8 @@ def _is_star(v: Any) -> bool:
 
 
 def _projection(name: str, scope: dict[str, Any]) -> Any | None:
-    """The projection ``name`` resolves to, or None. Late import:
-    ``_projection`` imports this module."""
+    """The projection ``name`` resolves to, or None."""
+    # Late import: _projection imports this module.
     from sql_transform._projection import SQLProjection  # noqa: PLC0415
 
     obj = scope.get(name)
@@ -128,9 +129,10 @@ def _pure(
     spine: frozenset[str],
     laterals: frozenset[str],
 ) -> None:
-    """A fit scope's arguments must move intact into the carrier over
-    ``__FIT__``: no nested scope (it has no carrier column of its own), no
-    name that only resolves in the spine's own SELECT."""
+    """Require fit arguments to survive rebinding from THIS to FIT intact.
+
+    Nested scopes and SELECT-local aliases have no independent fit binding.
+    """
     for c in parts:
         for d in (c, *descendants(c, deep=True)):
             if _is_window(d):
@@ -424,8 +426,11 @@ _CHAIN = (
 
 
 def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
-    """The explicit-``__FIT__`` text a ``__THIS__``-only text means, or the
-    refusal — always in the author's own spelling — that says why not."""
+    """Derive explicit FIT/THIS SQL for the bounded marginal grammar.
+
+    ``scope`` resolves captured projection and estimator names. Unsupported
+    shapes raise ``TransformError`` in the author's spelling.
+    """
     doc = _parse(sql)
     from sql_transform._program import _raw_names  # noqa: PLC0415
 
@@ -765,10 +770,9 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             ):
                 carry(_fit_window(v.function_name, list(v.children)), [])
 
-        # The carrier evaluates what the original evaluated: the item itself
-        # over __FIT__, its subqueries re-bound there too. An item the
-        # carrier cannot evaluate — a keyed θ, or a lateral read of one — is
-        # left out; its windows above are carried all the same.
+        # Preserve executable SQL items beside their windows for reduction
+        # fidelity (see the module contract). Raw/keyed-leaf items and their
+        # lateral dependents cannot run in this carrier, but their SQL windows can.
         item_alias = str(field(item, "alias") or "")
         if any(keyed_in(v) or raw_in(v) for v in walk) or any(
             isinstance(v, ColumnRef)
@@ -833,9 +837,10 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             window: Opaque | None,
             alias: str,
         ) -> Node:
-            """The flat keyed lowering (spec M5): effective key = scope keys
-            ⊕ internal keys, the scope half NULL-safe, the internal half in
-            the author's own operator — θ never carries a table."""
+            """Combine scope keys with leaf keys without table-valued theta.
+
+            Scope keys match NULL-safe; internal keys keep the authored operator.
+            """
             nonlocal swapped_any
             from sql_transform import _leaf  # noqa: PLC0415
 
@@ -1013,8 +1018,8 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
     if carried:
         carrier, local = f"{prefix}c", f"{prefix}a"
         fit_from = FIT + (f" AS {_quoted(alias)}" if alias else "")
-        # Not injectable: every fragment is either a constant, a gensym'd
-        # name, or an expression the oracle itself printed (P9).
+        # Fragments are constants, fresh identifiers or oracle-printed expressions,
+        # never interpolated raw user SQL.
         carried_items = ", ".join([*originals, *window_items, *key_items])
         ctes.append(
             f"{carrier} AS (SELECT {carried_items} FROM {fit_from})"  # noqa: S608
