@@ -45,16 +45,40 @@ pub(super) fn default_name(e: &SqlExpr) -> String {
 /// (id,ID -> id,ID_1; id,id,id_1 -> id,id_1,id_1_1). Identical to what
 /// DuckDB itself does at every subquery/CTE/CTAS boundary and in .df().
 pub(super) fn dedup_output_names(cols: &mut [Col]) {
+    dedup_names(cols.iter_mut().map(|c| &mut c.name));
+}
+
+/// [`dedup_output_names`] over the output FIELDS: a list or struct field
+/// counts once, under its own name, where its first lane stands.
+pub(super) fn dedup_field_names(cols: &mut [Col], wide: &mut [super::super::WideOut]) {
+    let mut names: Vec<&mut String> = Vec::new();
+    let mut w = wide.iter_mut().peekable();
+    let mut cols = cols.iter_mut().enumerate();
+    while let Some((i, c)) = cols.next() {
+        if w.peek().is_some_and(|wo| wo.first as usize == i) {
+            let wo = w.next().expect("peeked");
+            for _ in 1..wo.shape.lanes() {
+                cols.next();
+            }
+            names.push(&mut wo.name);
+            continue;
+        }
+        names.push(&mut c.name);
+    }
+    dedup_names(names.into_iter());
+}
+
+fn dedup_names<'n>(names: impl Iterator<Item = &'n mut String>) {
     let mut seen = std::collections::HashSet::new();
-    for c in cols {
-        if seen.insert(c.name.to_lowercase()) {
+    for name in names {
+        if seen.insert(name.to_lowercase()) {
             continue;
         }
         let mut n = 1;
         loop {
-            let cand = format!("{}_{}", c.name, n);
+            let cand = format!("{name}_{n}");
             if seen.insert(cand.to_lowercase()) {
-                c.name = cand;
+                *name = cand;
                 break;
             }
             n += 1;
@@ -62,12 +86,17 @@ pub(super) fn dedup_output_names(cols: &mut [Col]) {
     }
 }
 
-/// A star-expansion lane: a real scalar lane, or an opaque row-model
-/// column (kept under its ORIGINAL name so EXCLUDE / REPLACE / name
-/// filters can still remove it). One surviving to the output is the
-/// named unsupported error — deferred so COLUMNS('re') can filter first.
+/// A star-expansion lane: a real scalar lane, a struct column (its node,
+/// turned into lanes only if it survives EXCLUDE and the name filters, so
+/// an excluded struct mints no presence lane), a REPLACE value, or an
+/// opaque column (kept under its ORIGINAL name so EXCLUDE / REPLACE / name
+/// filters can still remove it). An opaque one surviving to the output is
+/// the named unsupported error — deferred so COLUMNS('re') can filter
+/// first.
 pub(super) enum StarLane {
     Real(SExpr),
+    Struct(NodeRef),
+    Value(OutVal),
     Opaque(String),
 }
 
@@ -109,16 +138,6 @@ pub(super) fn apply_column_alias(
     Ok(Some(t))
 }
 
-pub(super) fn finalize_star(cols: Vec<(String, StarLane)>) -> Result<Vec<(String, SExpr)>, PrepareError> {
-    cols.into_iter()
-        .map(|(n, l)| match l {
-            StarLane::Real(e) => Ok((n, e)),
-            StarLane::Opaque(orig) => Err(unsup(format!(
-                "column '{orig}' has a non-scalar type"
-            ))),
-        })
-        .collect()
-}
 
 /// Bind-time LIKE over column NAMES for star filters: `%`/`_` over
 /// codepoints, no ESCAPE (an ESCAPE clause after a star filter does not
@@ -265,8 +284,26 @@ impl Binder<'_> {
         &self,
         qualifier: Option<&str>,
         opts: &sqlparser::ast::WildcardAdditionalOptions,
-    ) -> Result<Vec<(String, SExpr)>, PrepareError> {
-        finalize_star(self.expand_star_lanes(qualifier, opts)?)
+    ) -> Result<Vec<(String, OutVal)>, PrepareError> {
+        self.finalize_star(self.expand_star_lanes(qualifier, opts)?)
+    }
+
+    /// The surviving star columns as output values: a struct column
+    /// becomes its whole value, and an opaque one refuses by name.
+    pub(super) fn finalize_star(
+        &self,
+        cols: Vec<(String, StarLane)>,
+    ) -> Result<Vec<(String, OutVal)>, PrepareError> {
+        cols.into_iter()
+            .map(|(n, l)| match l {
+                StarLane::Real(e) => Ok((n, OutVal::Scalar(e))),
+                StarLane::Struct(node) => Ok((n, self.node_value(&node)?)),
+                StarLane::Value(v) => Ok((n, v)),
+                StarLane::Opaque(orig) => Err(unsup(format!(
+                    "column '{orig}' has a non-scalar type"
+                ))),
+            })
+            .collect()
     }
 
     pub(super) fn expand_star_lanes(
@@ -379,9 +416,8 @@ impl Binder<'_> {
             matched = true;
             // Interleave scalar lanes with opaque and struct columns back
             // into MODEL order (their positions are model positions;
-            // scalars fill the rest in order). Struct columns expand like
-            // opaque ones under a TABLE star: DuckDB would output the
-            // whole struct — non-scalar unless EXCLUDEd/REPLACEd.
+            // scalars fill the rest in order). A struct column expands as
+            // its whole value, as on DuckDB.
             let mut scalars = self.in_cols[..self.n_plain].iter().enumerate();
             for pos in 0..self.n_plain + self.opaque.len() + self.structs.len() {
                 if let Some((_, oname)) = self.opaque.iter().find(|(p, _)| *p == pos) {
@@ -394,7 +430,11 @@ impl Binder<'_> {
                     cols.push((
                         self.this_name.clone(),
                         sc.name.clone(),
-                        StarLane::Opaque(sc.name.clone()),
+                        StarLane::Struct(NodeRef {
+                            src: NodeSrc::Row,
+                            path: vec![sc.name.clone()],
+                            refusal: format!("column '{}' has a non-scalar type", sc.name),
+                        }),
                     ));
                 } else {
                     let (i, c) = scalars.next().expect("scalar count matches positions");
@@ -412,26 +452,55 @@ impl Binder<'_> {
         }
         // Joined tables expand in FROM order, columns in DECLARED order
         // (measured): value columns as probe lanes, key columns via the
-        // dynamic-side reconstruction, USING keys suppressed (merged into
-        // the left occurrence).
+        // dynamic-side reconstruction, USING keys suppressed under `*`
+        // (merged into the left occurrence).
         for (j, sj) in self.joins.iter().enumerate() {
             if !qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&sj.name)) {
                 continue;
             }
             matched = true;
-            // Declared order: a struct or non-vocabulary column
-            // expands as ONE opaque entry, exactly like the row star above —
+            // Declared order: a struct column expands as ONE entry, its whole
+            // value, and a non-vocabulary column as one opaque entry —
             // EXCLUDE removes it, surviving is the named refusal. Iterating
             // `cols` here would expand a struct's flattened leaves as
             // phantom columns and silently DROP an opaque column, a column
-            // set DuckDB never produces.
+            // set DuckDB never produces. A USING/NATURAL struct key merges
+            // into the left occurrence like a scalar key; under its own
+            // table's star it stays opaque (its whole value is not served).
             for sc in sj.table.star.iter() {
                 let ci = match sc {
+                    super::super::plan::StarCol::Opaque(oname)
+                        if qualifier.is_none() && key_struct(sj, oname) =>
+                    {
+                        if exclude.iter().any(|(t, e)| {
+                            t.as_deref()
+                                .is_some_and(|t| t.eq_ignore_ascii_case(&sj.name))
+                                && e.eq_ignore_ascii_case(oname)
+                        }) {
+                            return Err(unsup(
+                                "EXCLUDE of a USING-merged column (DuckDB unmerges it)",
+                            ));
+                        }
+                        continue;
+                    }
                     super::super::plan::StarCol::Opaque(oname) => {
+                        let is_struct = sj
+                            .table
+                            .structs
+                            .iter()
+                            .any(|s| s.name == *oname && !key_struct(sj, oname));
                         cols.push((
                             sj.name.clone(),
                             oname.clone(),
-                            StarLane::Opaque(oname.clone()),
+                            if is_struct {
+                                StarLane::Struct(NodeRef {
+                                    src: NodeSrc::Static(j),
+                                    path: vec![oname.clone()],
+                                    refusal: format!("column '{oname}' has a non-scalar type"),
+                                })
+                            } else {
+                                StarLane::Opaque(oname.clone())
+                            },
                         ));
                         continue;
                     }
@@ -458,7 +527,10 @@ impl Binder<'_> {
                     ));
                 } else {
                     let kp = kp.expect("checked above");
-                    if !sj.using {
+                    // A USING key merges into the left occurrence under `*`;
+                    // its own table's star keeps it, with that table's
+                    // values (measured: `d.*` lists d's key, NULL on a miss).
+                    if !sj.using || qualifier.is_some() {
                         cols.push((
                             sj.name.clone(),
                             c.name.clone(),
@@ -524,10 +596,17 @@ impl Binder<'_> {
                                     nullable: c.ty.nullable,
                                 })
                             }
-                            // Nested-struct / unmappable fields expand as
-                            // non-scalar entries: EXCLUDE removes them,
-                            // surviving is the named error.
-                            _ => StarLane::Opaque(f.name.clone()),
+                            // A nested struct field expands as its whole
+                            // value.
+                            StructNode::Nested(_) => StarLane::Struct(NodeRef {
+                                src: NodeSrc::Row,
+                                path: vec![sc.name.clone(), f.name.clone()],
+                                refusal: format!("column '{}' has a non-scalar type", f.name),
+                            }),
+                            // An unmappable field expands as a non-scalar
+                            // entry: EXCLUDE removes it, surviving is the
+                            // named error.
+                            StructNode::Opaque => StarLane::Opaque(f.name.clone()),
                         };
                         cols.push((sc.name.clone(), f.name.clone(), lane));
                     }
@@ -543,7 +622,12 @@ impl Binder<'_> {
                                 &sc.name,
                                 &[Ident::new(&f.name)],
                             )?),
-                            _ => StarLane::Opaque(f.name.clone()),
+                            StructNode::Nested(_) => StarLane::Struct(NodeRef {
+                                src: NodeSrc::Static(j),
+                                path: vec![sc.name.clone(), f.name.clone()],
+                                refusal: format!("column '{}' has a non-scalar type", f.name),
+                            }),
+                            StructNode::Opaque => StarLane::Opaque(f.name.clone()),
                         };
                         cols.push((sc.name.clone(), f.name.clone(), lane));
                     }
@@ -615,7 +699,10 @@ impl Binder<'_> {
                         )))
                     }
                     [pos] => {
-                        cols[pos].2 = StarLane::Real(fold(self.expr(&it.expr)?));
+                        cols[pos].2 = match self.struct_value(&it.expr)? {
+                            Some(v) => StarLane::Value(v),
+                            None => StarLane::Real(fold(self.expr(&it.expr)?)),
+                        };
                         // The output name takes the REPLACE alias's exact
                         // case (measured on struct-star; the match itself
                         // stays case-insensitive).
@@ -710,7 +797,7 @@ impl Binder<'_> {
     pub(super) fn expand_columns_item(
         &self,
         e: &SqlExpr,
-    ) -> Result<Option<Vec<(String, SExpr)>>, PrepareError> {
+    ) -> Result<Option<Vec<(String, OutVal)>>, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         let SqlExpr::Function(f) = e else {
             return Ok(None);
@@ -724,7 +811,7 @@ impl Binder<'_> {
         let all =
             self.expand_star_lanes(None, &sqlparser::ast::WildcardAdditionalOptions::default())?;
         match &list.args[..] {
-            [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Some(finalize_star(all)?)),
+            [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Some(self.finalize_star(all)?)),
             // COLUMNS(* EXCLUDE/REPLACE/... ) — measured identical to the
             // bare `* <modifiers>` select item (names, order, values;
             // pins-waveA/columns-replace.json), so route through the same
@@ -751,7 +838,7 @@ impl Binder<'_> {
                         "No matching columns found that match regex \"{pat}\""
                     )));
                 }
-                Ok(Some(finalize_star(cols)?))
+                Ok(Some(self.finalize_star(cols)?))
             }
             _ => Err(unsup("COLUMNS argument form")),
         }

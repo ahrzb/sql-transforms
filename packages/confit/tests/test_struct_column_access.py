@@ -79,6 +79,9 @@ T = pa.Table.from_pylist(ROWS, schema=ROW)
         "SELECT v.* FROM __THIS__ JOIN d ON k = v.x",
         "SELECT v.* FROM __THIS__ LEFT JOIN d USING (w)",
         "SELECT n.* EXCLUDE (m) FROM __THIS__ LEFT JOIN d ON k = id",
+        # a nested struct field is a whole STRUCT value, as for `s.n`
+        "SELECT s['n'] FROM __THIS__",
+        "SELECT n.* FROM __THIS__ LEFT JOIN d ON k = id",
     ],
 )
 def test_struct_column_access_matches_duckdb(sql):
@@ -108,9 +111,6 @@ def test_struct_column_access_refuses_where_duckdb_does(sql, needle):
 @pytest.mark.parametrize(
     "sql",
     [
-        # a nested struct field is a whole STRUCT value, as for `s.n`
-        "SELECT s['n'] FROM __THIS__",
-        "SELECT n.* FROM __THIS__ LEFT JOIN d ON k = id",
         # `s` names the relation here: `s['a']` is NOT `s.a` (the table's
         # column), so the subscript form keeps the refusing path
         "SELECT s['a'] FROM __THIS__ AS s",
@@ -144,6 +144,12 @@ def test_a_relation_subscript_reads_its_column(sql):
         "SELECT d AS o FROM __THIS__ LEFT JOIN d ON k = id",
     ],
 )
-def test_a_whole_relation_value_refuses_by_name(sql):
-    v = assert_parity(sql, T, statics={"d": D}, expect="REFUSED")
-    assert v.oracle == "serves" and "as a value (its whole row struct)" in v.detail
+def test_a_whole_relation_value_reads_its_row_struct(sql):
+    assert_parity(sql, T, statics={"d": D}, expect="AGREE")
+
+
+def test_a_relation_in_a_scalar_context_refuses_by_name():
+    v = assert_parity(
+        "SELECT t + 1 AS o FROM __THIS__ AS t", T, statics={"d": D}, expect="REFUSED"
+    )
+    assert "as a value (its whole row struct)" in v.detail

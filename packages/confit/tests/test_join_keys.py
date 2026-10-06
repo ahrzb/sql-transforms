@@ -367,13 +367,33 @@ def test_the_using_merge_takes_the_left_value_on_a_miss():
     )
 
 
-def test_a_struct_key_is_not_a_servable_value():
-    """Non-goal, pinned: `w` becomes a KEY, it does not become servable."""
+def test_a_merged_struct_key_reads_as_the_left_value():
+    """A struct key merges into the left occurrence, as a scalar key does:
+    bare `w` and `*` read the request side's struct."""
+    row = _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}])
+    static = _static_w(_S1, {"mean": 1.0})
+    check(
+        "SELECT w AS o FROM __THIS__ NATURAL JOIN s",
+        row,
+        static,
+        [{"o": {"mean": 1.0}}],
+    )
+    check(
+        "SELECT * FROM __THIS__ NATURAL JOIN s",
+        row,
+        static,
+        [{"id": 5, "w": {"mean": 1.0}, "z": 7}],
+    )
+
+
+def test_a_struct_key_is_not_a_servable_value_on_its_own_side():
+    """The static side's struct key is not served whole: `s.w`, and `s.*`,
+    which lists it."""
     row = _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}])
     static = _static_w(_S1, {"mean": 1.0})
     for sql in (
-        "SELECT w AS o FROM __THIS__ NATURAL JOIN s",
-        "SELECT * FROM __THIS__ NATURAL JOIN s",
+        "SELECT s.w AS o FROM __THIS__ NATURAL JOIN s",
+        "SELECT s.* FROM __THIS__ NATURAL JOIN s",
     ):
         with pytest.raises(ValueError, match="w"):
             DuckDBInferFn(

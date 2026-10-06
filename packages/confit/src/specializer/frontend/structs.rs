@@ -325,133 +325,66 @@ impl Binder<'_> {
         Ok(Some((values, pick)))
     }
 
-    /// A struct-VALUED projection item — `struct_pack(n := e, ...)`, or that
-    /// guarded by `CASE WHEN g IS NULL THEN NULL ELSE ... END` (θ export).
-    /// Lowered to the same wide-lane shape a named extern uses: a
-    /// whole-validity lane (false = the whole struct is NULL, distinct from
-    /// a struct of NULLs) plus one component lane per field. `None` when
-    /// this isn't that shape.
-    ///
-    /// Stricter than DuckDB, deliberately — unnamed args
-    /// (`struct_pack(i)` infers the field name there) and
-    /// leading-underscore fields bind on the oracle; the recognizer
-    /// refuses both (projection-loop-only, pydantic model boundary).
-    /// Field ACCESS over struct_pack is `desugar_struct_field`'s
-    /// bind-time desugar and never reaches this recognizer.
-    pub(super) fn struct_pack_lanes(
+    /// A list- or struct-valued projection item as its out lanes and their
+    /// shape: a list literal, or a struct value ([`Self::struct_value`]).
+    /// `None` when `e` is neither.
+    pub(super) fn wide_item(
         &self,
         e: &SqlExpr,
         base: &str,
-    ) -> Result<Option<(Vec<(String, SExpr)>, Vec<String>)>, PrepareError> {
+    ) -> Result<Option<(Vec<(String, SExpr)>, super::super::WideShape)>, PrepareError> {
+        if let Some(r) = self.list_item(e, base)? {
+            return Ok(Some(r));
+        }
+        Ok(self.struct_value(e)?.map(|v| {
+            debug_assert!(matches!(v, OutVal::Struct { .. }), "a struct value");
+            v.into_lanes(base)
+        }))
+    }
+
+    /// A list literal as an output column — unnamed lanes, the boundary an
+    /// extern's list return crosses — bare or guarded by `CASE WHEN g IS
+    /// NULL THEN NULL ELSE [...] END`: the whole-value validity, then one
+    /// lane per element. `None` when `e` is not that shape.
+    fn list_item(
+        &self,
+        e: &SqlExpr,
+        base: &str,
+    ) -> Result<Option<(Vec<(String, SExpr)>, super::super::WideShape)>, PrepareError> {
         let mut inner = e;
         while let SqlExpr::Nested(i) = inner {
             inner = i;
         }
-        // The guard arm: exactly the shape the θ rewrite emits. Anything
-        // else with a struct in it falls through and refuses by name.
+        // The guard arm: exactly the shape the θ rewrite emits.
         let (guard, packed) = match inner {
             SqlExpr::Case {
-                operand,
+                operand: None,
                 conditions,
-                else_result,
+                else_result: Some(alt),
                 ..
-            } if operand.is_none() && conditions.len() == 1 => {
+            } if conditions.len() == 1 => {
                 let arm = &conditions[0];
                 // The oracle's own serialization parenthesizes both arms.
                 let mut res = &arm.result;
                 while let SqlExpr::Nested(i) = res {
                     res = i;
                 }
-                let is_null_lit = matches!(
-                    res,
-                    SqlExpr::Value(v) if matches!(v.value, SqlValue::Null)
-                );
-                match (is_null_lit, else_result) {
-                    (true, Some(alt)) => (Some(&arm.condition), &**alt),
-                    _ => return Ok(None),
+                if !matches!(res, SqlExpr::Value(v) if matches!(v.value, SqlValue::Null)) {
+                    return Ok(None);
                 }
+                (Some(&arm.condition), &**alt)
             }
             other => (None, other),
         };
-        let mut packed_inner = packed;
-        while let SqlExpr::Nested(i) = packed_inner {
-            packed_inner = i;
-        }
-        // A list literal: unnamed lanes, the boundary an extern's list
-        // return crosses.
-        let list = list_literal(packed_inner);
-        if let Some(elems) = &list {
-            if elems.len() < 2 {
-                return Err(unsup(
-                    "a one-element list as an output column (a width-1 lane is a scalar \
-                     at the boundary)",
-                ));
-            }
-        }
-        let SqlExpr::Function(f) = packed_inner else {
-            if list.is_none() {
-                return Ok(None);
-            }
-            return self.wide_lanes(guard, Vec::new(), &list.expect("checked"), base);
-        };
-        if let Some(elems) = list {
-            return self.wide_lanes(guard, Vec::new(), &elems, base);
-        }
-        if !f.name.to_string().eq_ignore_ascii_case("struct_pack") {
-            return Ok(None);
-        }
-        use sqlparser::ast::{FunctionArg, FunctionArguments};
-        let FunctionArguments::List(list) = &f.args else {
+        let Some(elems) = list_literal(packed) else {
             return Ok(None);
         };
-        // Every field must be NAMED — an unnamed struct_pack arg is a
-        // binder error in the oracle too.
-        let mut names: Vec<String> = Vec::with_capacity(list.args.len());
-        let mut values: Vec<&SqlExpr> = Vec::with_capacity(list.args.len());
-        for a in &list.args {
-            match a {
-                FunctionArg::Named { name, arg, .. } => {
-                    let sqlparser::ast::FunctionArgExpr::Expr(v) = arg else {
-                        return Ok(None);
-                    };
-                    names.push(name.value.clone());
-                    values.push(v);
-                }
-                _ => return Ok(None),
-            }
+        if elems.len() < 2 {
+            return Err(unsup(
+                "a one-element list as an output column (a width-1 lane is a scalar \
+                 at the boundary)",
+            ));
         }
-        if names.is_empty() {
-            return Ok(None);
-        }
-        for (i, n) in names.iter().enumerate() {
-            // Measured: DuckDB's binder rejects a duplicate struct entry
-            // name, case-insensitively — never serve what batch cannot.
-            if names[..i].iter().any(|m| m.eq_ignore_ascii_case(n)) {
-                return Err(PrepareError::Bind(format!(
-                    "duplicate struct entry name \"{n}\""
-                )));
-            }
-            // A _-leading field becomes a pydantic private attribute, so
-            // the row model would silently drop it while batch serves it.
-            if n.starts_with('_') {
-                return Err(unsup(format!(
-                    "struct field '{n}' cannot cross the row-path model \
-                     boundary (a leading underscore is private) — rename it"
-                )));
-            }
-        }
-        self.wide_lanes(guard, names, &values, base)
-    }
-
-    /// The lanes of a struct (named) or list (unnamed) projection item: the
-    /// whole-value validity, then one lane per field or element.
-    fn wide_lanes(
-        &self,
-        guard: Option<&SqlExpr>,
-        names: Vec<String>,
-        values: &[&SqlExpr],
-        base: &str,
-    ) -> Result<Option<(Vec<(String, SExpr)>, Vec<String>)>, PrepareError> {
         // Whole-value validity: the guard's IS NOT NULL, else always-true.
         let valid = match guard {
             None => SExpr {
@@ -467,15 +400,13 @@ impl Binder<'_> {
                 let SqlExpr::IsNull(target) = guard_inner else {
                     return Ok(None);
                 };
-                let bound = match self.expr_or_null(target)? {
-                    None => {
-                        // A provably-NULL guard: the struct is always NULL.
-                        SExpr {
-                            kind: SKind::Lit(Lit::I1(false)),
-                            ty: Ty::I1,
-                            nullable: false,
-                        }
-                    }
+                match self.expr_or_null(target)? {
+                    // A provably-NULL guard: the list is always NULL.
+                    None => SExpr {
+                        kind: SKind::Lit(Lit::I1(false)),
+                        ty: Ty::I1,
+                        nullable: false,
+                    },
                     Some(t) => SExpr {
                         kind: SKind::IsNull {
                             negated: true,
@@ -484,31 +415,30 @@ impl Binder<'_> {
                         ty: Ty::I1,
                         nullable: false,
                     },
-                };
-                bound
+                }
             }
         };
-        let mut lanes = Vec::with_capacity(1 + values.len());
-        lanes.push((format!("{base}\u{1}valid"), valid));
-        let bound: Vec<SExpr> = if names.is_empty() {
-            self.list_elements(values)?.into_iter().map(fold).collect()
-        } else {
-            values
-                .iter()
-                .map(|v| {
-                    // struct_pack(a := NULL) is STRUCT(a INTEGER) on DuckDB —
-                    // SQLNULL's int32 home.
-                    Ok(match self.expr_or_null(v)? {
-                        None => null_of(Ty::I32),
-                        Some(x) => fold(x),
-                    })
-                })
-                .collect::<Result<_, PrepareError>>()?
-        };
-        for (j, b) in bound.into_iter().enumerate() {
+        let mut lanes = Vec::with_capacity(1 + elems.len());
+        for (j, b) in self.list_elements(&elems)?.into_iter().map(fold).enumerate() {
+            // DuckDB evaluates the ELSE arm only on the rows that reach it.
+            let b = if guard.is_some() {
+                let ty = b.ty;
+                SExpr {
+                    kind: SKind::Case {
+                        arms: vec![(valid.clone(), b)],
+                        default: None,
+                    },
+                    ty,
+                    nullable: true,
+                }
+            } else {
+                b
+            };
             lanes.push((format!("{base}\u{1}{j}"), b));
         }
-        Ok(Some((lanes, names)))
+        let width = lanes.len() as u32;
+        lanes.insert(0, (format!("{base}\u{1}valid"), valid));
+        Ok(Some((lanes, super::super::WideShape::List(width))))
     }
 }
 

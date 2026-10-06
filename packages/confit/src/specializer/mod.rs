@@ -22,20 +22,59 @@ mod tests;
 
 pub use frontend::PrepareError;
 
-/// One wide UDF output field: the marshaller assembles model field `name`
-/// from out columns `[first, first + 1 + width)` — a whole-call validity
-/// lane (false = the field is NULL, distinct from a container of NULLs)
-/// followed by `width` nullable component lanes.
+/// One wide output field: the boundary assembles output field `name` from
+/// out columns `[first, first + shape.lanes())`, laid out as `shape` says.
 #[derive(Debug, Clone)]
 pub struct WideOut {
     pub name: String,
     pub first: u32,
-    pub width: u32,
-    /// Declared output field names — empty for an unnamed width-k extern
-    /// (the `list | None` boundary); non-empty for a NAMED extern at every
-    /// width, where the boundary assembles a STRUCT keyed by these names,
-    /// matching DuckDB's struct registration.
-    pub names: Vec<String>,
+    pub shape: WideShape,
+}
+
+impl WideOut {
+    /// How many fields or elements the value has at its top level.
+    pub fn width(&self) -> u32 {
+        match &self.shape {
+            WideShape::Scalar => 0,
+            WideShape::List(k) => *k,
+            WideShape::Struct(fields) => fields.len() as u32,
+        }
+    }
+
+    /// The top-level field names: empty for a list.
+    pub fn names(&self) -> Vec<String> {
+        match &self.shape {
+            WideShape::Struct(fields) => fields.iter().map(|(n, _)| n.clone()).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// How a wide output's lanes nest, in lane order. A container starts with
+/// its validity lane (false = the container is NULL, distinct from a
+/// container of NULLs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WideShape {
+    /// One scalar lane: a field of a struct.
+    Scalar,
+    /// An unnamed width-k extern's `list | None`: the validity lane, then
+    /// `k` element lanes.
+    List(u32),
+    /// A struct (a named extern, `struct_pack`, a struct literal or a
+    /// struct column): the validity lane, then each field's lanes in field
+    /// order, matching DuckDB's struct.
+    Struct(Vec<(String, WideShape)>),
+}
+
+impl WideShape {
+    /// How many out lanes this shape takes.
+    pub fn lanes(&self) -> u32 {
+        match self {
+            WideShape::Scalar => 1,
+            WideShape::List(k) => 1 + k,
+            WideShape::Struct(fields) => 1 + fields.iter().map(|(_, s)| s.lanes()).sum::<u32>(),
+        }
+    }
 }
 
 /// One map key at the BOUNDARY: where to read it out of a build row, and
@@ -63,6 +102,10 @@ pub struct StaticKey {
 pub struct StaticVal {
     /// The column's SEGMENT path, read exactly like [`StaticKey::path`].
     pub path: Vec<String>,
+    /// True when the value is a struct NODE's presence, not a leaf's value:
+    /// TRUE if the node at `path` is non-NULL, else NULL (see
+    /// [`plan::StaticTable::presence`]).
+    pub present: bool,
     pub map: plan::MapVal,
 }
 
@@ -106,7 +149,8 @@ pub struct Prepared {
     pub join_facts: Vec<JoinFact>,
     pub program: ir::Program,
     pub statics: Vec<StaticSpec>,
-    /// Width-k UDF output fields, in projection order (see [`WideOut`]).
+    /// Wide output fields (lists and structs), in projection order (see
+    /// [`WideOut`]).
     pub wide_outputs: Vec<WideOut>,
     /// `None` when the query provably emits EXACTLY one output row per
     /// input row (out[i] <-> in[i]); otherwise names the first construct
@@ -302,9 +346,18 @@ pub fn prepare_full(
                     .val_cols
                     .iter()
                     .zip(plan::map_vals(&t.cols, &j.val_cols))
-                    .map(|(&c, map)| StaticVal {
-                        path: paths[c as usize].clone(),
-                        map,
+                    .map(|(&c, map)| match t.presence.iter().find(|(_, l)| *l == c) {
+                        // A node's presence lane walks to the NODE.
+                        Some((path, _)) => StaticVal {
+                            path: path.clone(),
+                            present: true,
+                            map,
+                        },
+                        None => StaticVal {
+                            path: paths[c as usize].clone(),
+                            present: false,
+                            map,
+                        },
                     })
                     .collect(),
             }

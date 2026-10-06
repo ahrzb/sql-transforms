@@ -33,23 +33,7 @@ impl Binder<'_> {
     /// propagates NULL), as an IS-NOT-DISTINCT key it matches its own kind
     /// (every level below, where a node's NULL is a value).
     pub(super) fn present_key(&self, path: &[String]) -> SExpr {
-        let mut lanes = self.minted_lanes.borrow_mut();
-        let idx = match lanes.iter().position(|l| l.path == path) {
-            Some(i) => i,
-            None => {
-                lanes.push(super::super::plan::InputLane {
-                    name: format!("{} (present)", path.join(".")),
-                    path: path.to_vec(),
-                    kind: super::super::plan::LaneKind::Present,
-                });
-                lanes.len() - 1
-            }
-        };
-        let lane = SExpr {
-            kind: SKind::Col((self.in_cols.len() + idx) as u32),
-            ty: Ty::I1,
-            nullable: false,
-        };
+        let lane = self.present_lane(path);
         SExpr {
             kind: SKind::Case {
                 arms: vec![(
@@ -64,6 +48,28 @@ impl Binder<'_> {
             },
             ty: Ty::I1,
             nullable: true,
+        }
+    }
+
+    /// The input lane "the row struct node at `path` is non-NULL", as a
+    /// non-nullable boolean. Mints it on first use and reuses it after.
+    pub(super) fn present_lane(&self, path: &[String]) -> SExpr {
+        let mut lanes = self.minted_lanes.borrow_mut();
+        let idx = match lanes.iter().position(|l| l.path == path) {
+            Some(i) => i,
+            None => {
+                lanes.push(super::super::plan::InputLane {
+                    name: format!("{} (present)", path.join(".")),
+                    path: path.to_vec(),
+                    kind: super::super::plan::LaneKind::Present,
+                });
+                lanes.len() - 1
+            }
+        };
+        SExpr {
+            kind: SKind::Col((self.in_cols.len() + idx) as u32),
+            ty: Ty::I1,
+            nullable: false,
         }
     }
 
@@ -172,6 +178,14 @@ impl Binder<'_> {
     /// a hard error (measured). The schema part follows the registry-noise
     /// rule (known-limitations §5).
     pub(super) fn compound(&self, parts: &[sqlparser::ast::Ident]) -> Result<SExpr, PrepareError> {
+        self.compound_res(parts).and_then(Resolved::scalar)
+    }
+
+    /// [`Self::compound`], with a whole struct answered as its node.
+    pub(super) fn compound_res(
+        &self,
+        parts: &[sqlparser::ast::Ident],
+    ) -> Result<Resolved, PrepareError> {
         // R0: memory.schema.(this|join).column[.fields...] -- the default
         // catalog, then the same rung as R1.
         if parts.len() >= 4 && parts[0].value.eq_ignore_ascii_case("memory") {
@@ -179,7 +193,7 @@ impl Binder<'_> {
             if rel.eq_ignore_ascii_case(&self.this_name)
                 && schema.eq_ignore_ascii_case(&self.this_schema)
             {
-                if let Some(r) = self.this_col_with_fields(&parts[3].value, &parts[4..]) {
+                if let Some(r) = self.this_col_res(&parts[3].value, &parts[4..]) {
                     return r;
                 }
             } else if self.joins.iter().any(|sj| {
@@ -196,7 +210,7 @@ impl Binder<'_> {
             if parts[1].value.eq_ignore_ascii_case(&self.this_name)
                 && parts[0].value.eq_ignore_ascii_case(&self.this_schema)
             {
-                if let Some(r) = self.this_col_with_fields(&parts[2].value, &parts[3..]) {
+                if let Some(r) = self.this_col_res(&parts[2].value, &parts[3..]) {
                     return r;
                 }
             } else if
@@ -221,7 +235,7 @@ impl Binder<'_> {
         // R2: this.column[.fields...] / join.column
         if parts.len() >= 2 {
             if parts[0].value.eq_ignore_ascii_case(&self.this_name) {
-                if let Some(r) = self.this_col_with_fields(&parts[1].value, &parts[2..]) {
+                if let Some(r) = self.this_col_res(&parts[1].value, &parts[2..]) {
                     return r;
                 }
             } else if let Some(r) = self.qualified_path(&parts[0].value, &parts[1..]) {
@@ -230,7 +244,7 @@ impl Binder<'_> {
         }
         // R3: bare column[.fields...]
         if parts.len() >= 2 {
-            if let Some(r) = self.bare_col_with_fields(&parts[0].value, &parts[1..]) {
+            if let Some(r) = self.bare_col_res(&parts[0].value, &parts[1..]) {
                 return r;
             }
             // Nothing bound anywhere. DuckDB surfaces the error of the
@@ -260,21 +274,21 @@ impl Binder<'_> {
                         parts[0].value, parts[1].value
                     )));
                 }
-                return self.qualified(&parts[1].value, &parts[2].value);
+                return self.qualified_res(&parts[1].value, &parts[2].value);
             }
             if relation(0) {
-                return self.qualified(&parts[0].value, &parts[1].value);
+                return self.qualified_res(&parts[0].value, &parts[1].value);
             }
             return match parts.len() {
-                2 => self.qualified(&parts[0].value, &parts[1].value),
-                3 => self.qualified(&parts[1].value, &parts[2].value),
+                2 => self.qualified_res(&parts[0].value, &parts[1].value),
+                3 => self.qualified_res(&parts[1].value, &parts[2].value),
                 _ => Err(PrepareError::Bind(format!(
                     "Referenced table \"{}.{}\" not found",
                     parts[0].value, parts[1].value
                 ))),
             };
         }
-        self.column(&parts[0].value)
+        self.column_res(&parts[0].value)
     }
 
     /// A static table's column addressed by `parts`: the head resolves
@@ -293,7 +307,7 @@ impl Binder<'_> {
         &self,
         table: &str,
         parts: &[sqlparser::ast::Ident],
-    ) -> Option<Result<SExpr, PrepareError>> {
+    ) -> Option<Result<Resolved, PrepareError>> {
         let head = &parts[0].value;
         let (j, sj) = self
             .joins
@@ -304,7 +318,7 @@ impl Binder<'_> {
             return None;
         }
         if parts.len() == 1 {
-            return Some(self.qualified(table, head));
+            return Some(self.qualified_res(table, head));
         }
         if let Some(sc) = sj
             .table
@@ -312,9 +326,9 @@ impl Binder<'_> {
             .iter()
             .find(|s| s.name.eq_ignore_ascii_case(head))
         {
-            return Some(self.static_struct_lane(j, sc, table, head, &parts[1..]));
+            return Some(self.static_struct_res(j, sc, table, head, &parts[1..]));
         }
-        Some(match self.qualified(table, head) {
+        Some(match self.qualified_res(table, head) {
             Ok(_) => Err(PrepareError::Bind(format!(
                 "Cannot extract field '{}' from expression \"{head}\" \
                  because it is not a struct, union, map, or json",
@@ -336,29 +350,46 @@ impl Binder<'_> {
         head: &str,
         fields: &[sqlparser::ast::Ident],
     ) -> Result<SExpr, PrepareError> {
+        self.static_struct_res(j, sc, table, head, fields)
+            .and_then(Resolved::scalar)
+    }
+
+    /// The lane of static struct leaf `ci` of join `j`.
+    pub(super) fn static_leaf(&self, j: usize, ci: u32, table: &str) -> Result<SExpr, PrepareError> {
         let sj = &self.joins[j];
+        if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
+            return Ok(self.static_lane(j, pos));
+        }
+        // The struct is a NATURAL/USING key, so its leaves are
+        // key lanes, not value lanes — and a key column
+        // reconstructs from the dynamic side exactly like a scalar
+        // key does (on a match the two are equal; a LEFT miss is
+        // NULL).
+        let kp = sj
+            .key_cols
+            .iter()
+            .position(|k| k.src == KeySrc::Lane(ci))
+            .ok_or_else(|| {
+                PrepareError::Internal(format!(
+                    "struct leaf lane {ci} of '{table}' is neither a value \
+                     nor a key lane"
+                ))
+            })?;
+        self.key_lane(j, kp)
+    }
+
+    /// [`Self::static_struct_lane`], with a nested struct field answered
+    /// as its node.
+    pub(super) fn static_struct_res(
+        &self,
+        j: usize,
+        sc: &super::super::plan::StructCol,
+        table: &str,
+        head: &str,
+        fields: &[sqlparser::ast::Ident],
+    ) -> Result<Resolved, PrepareError> {
         match walk_fields(&sc.fields, fields) {
-            Ok(ci) => {
-                if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
-                    return Ok(self.static_lane(j, pos));
-                }
-                // The struct is a NATURAL/USING key, so its leaves are
-                // key lanes, not value lanes — and a key column
-                // reconstructs from the dynamic side exactly like a scalar
-                // key does (on a match the two are equal; a LEFT miss is
-                // NULL).
-                let kp = sj
-                    .key_cols
-                    .iter()
-                    .position(|k| k.src == KeySrc::Lane(ci))
-                    .ok_or_else(|| {
-                        PrepareError::Internal(format!(
-                            "struct leaf lane {ci} of '{table}' is neither a value \
-                             nor a key lane"
-                        ))
-                    })?;
-                self.key_lane(j, kp)
-            }
+            Ok(ci) => self.static_leaf(j, ci, table).map(Resolved::Lane),
             Err(WalkStop::Missing { at }) => Err(PrepareError::Bind(format!(
                 "Could not find key \"{}\" in struct",
                 fields[at].value
@@ -379,11 +410,15 @@ impl Binder<'_> {
                 let display: Vec<&str> = std::iter::once(head)
                     .chain(fields[..=at].iter().map(|f| f.value.as_str()))
                     .collect();
-                Err(unsup(format!(
-                    "static table '{table}' column '{}' is a struct — \
-                     project its fields instead",
-                    display.join(".")
-                )))
+                Ok(Resolved::Node(NodeRef {
+                    src: NodeSrc::Static(j),
+                    path: declared_path(sc, &fields[..=at]),
+                    refusal: format!(
+                        "static table '{table}' column '{}' is a struct — \
+                         project its fields instead",
+                        display.join(".")
+                    ),
+                }))
             }
         }
     }
@@ -396,6 +431,17 @@ impl Binder<'_> {
         name: &str,
         fields: &[sqlparser::ast::Ident],
     ) -> Option<Result<SExpr, PrepareError>> {
+        self.this_col_res(name, fields)
+            .map(|r| r.and_then(Resolved::scalar))
+    }
+
+    /// [`Self::this_col_with_fields`], with a whole struct answered as its
+    /// node.
+    pub(super) fn this_col_res(
+        &self,
+        name: &str,
+        fields: &[sqlparser::ast::Ident],
+    ) -> Option<Result<Resolved, PrepareError>> {
         for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
             if c.name.eq_ignore_ascii_case(name) {
                 if let Some(f) = fields.first() {
@@ -405,11 +451,11 @@ impl Binder<'_> {
                         f.value, c.name
                     ))));
                 }
-                return Some(Ok(SExpr {
+                return Some(Ok(Resolved::Lane(SExpr {
                     kind: SKind::Col(i as u32),
                     ty: c.ty.ty,
                     nullable: c.ty.nullable,
-                }));
+                })));
             }
         }
         if let Some((_, n)) = self
@@ -433,18 +479,18 @@ impl Binder<'_> {
     /// table's — a static struct head is a binding here exactly as it is
     /// under a qualifier, which is what lets an unqualified `w.mean` reach
     /// a lane instead of hunting for a table called `w`.
-    pub(super) fn bare_col_with_fields(
+    pub(super) fn bare_col_res(
         &self,
         name: &str,
         fields: &[sqlparser::ast::Ident],
-    ) -> Option<Result<SExpr, PrepareError>> {
+    ) -> Option<Result<Resolved, PrepareError>> {
         // DuckDB decides AMBIGUITY before it looks at the fields —
         // a head that binds in the driving table AND in a join scope refuses
         // even when only one side is a struct the path could walk. Resolving
         // the struct first would answer a query DuckDB rejects.
         // GetMatchingBinding THROWS and no rung catches it, so the verdict
         // is on the head name alone, whatever the heads hold.
-        let row = self.this_col_with_fields(name, fields);
+        let row = self.this_col_res(name, fields);
         let hits = usize::from(row.is_some())
             + self
                 .joins
@@ -480,7 +526,7 @@ impl Binder<'_> {
             .iter()
             .find(|s| s.name.eq_ignore_ascii_case(name))
         {
-            return Some(self.static_struct_lane(j, sc, &sj.name, name, fields));
+            return Some(self.static_struct_res(j, sc, &sj.name, name, fields));
         }
         if let Some(e) = opaque_static_refusal(&sj.table, name, &sj.name) {
             return Some(Err(e));
@@ -494,27 +540,32 @@ impl Binder<'_> {
         ))))
     }
 
-    /// Walk `fields` down a struct column to a scalar leaf lane. Empty
-    /// fields = the whole struct (non-scalar output, named rejection).
+    /// Walk `fields` down a row struct column to a scalar leaf lane. Empty
+    /// fields, or fields that end on a nested struct, are the whole struct:
+    /// its node.
     pub(super) fn walk_struct(
         &self,
         sc: &super::super::plan::StructCol,
         fields: &[sqlparser::ast::Ident],
-    ) -> Result<SExpr, PrepareError> {
+    ) -> Result<Resolved, PrepareError> {
         if fields.is_empty() {
-            return Err(unsup(format!(
-                "struct column '{}' as a whole value (project its fields instead)",
-                sc.name
-            )));
+            return Ok(Resolved::Node(NodeRef {
+                src: NodeSrc::Row,
+                path: vec![sc.name.clone()],
+                refusal: format!(
+                    "struct column '{}' as a whole value (project its fields instead)",
+                    sc.name
+                ),
+            }));
         }
         match walk_fields(&sc.fields, fields) {
             Ok(lane) => {
                 let c = &self.in_cols[lane as usize];
-                Ok(SExpr {
+                Ok(Resolved::Lane(SExpr {
                     kind: SKind::Col(lane),
                     ty: c.ty.ty,
                     nullable: c.ty.nullable,
-                })
+                }))
             }
             Err(WalkStop::Missing { at }) => Err(PrepareError::Bind(format!(
                 "Could not find key \"{}\" in struct",
@@ -528,10 +579,14 @@ impl Binder<'_> {
             Err(WalkStop::OpaqueField { field }) => Err(unsup(format!(
                 "struct field '{field}' has a non-scalar type"
             ))),
-            Err(WalkStop::Nested { field, .. }) => Err(unsup(format!(
-                "struct field '{field}' as a whole value (project its \
-                 scalar leaves instead)"
-            ))),
+            Err(WalkStop::Nested { field, at }) => Ok(Resolved::Node(NodeRef {
+                src: NodeSrc::Row,
+                path: declared_path(sc, &fields[..=at]),
+                refusal: format!(
+                    "struct field '{field}' as a whole value (project its \
+                     scalar leaves instead)"
+                ),
+            })),
         }
     }
 
@@ -539,9 +594,14 @@ impl Binder<'_> {
     /// scope: the dynamic table plus every joined static table's value
     /// columns (DuckDB semantics; ambiguity is an error).
     pub(super) fn column(&self, name: &str) -> Result<SExpr, PrepareError> {
+        self.column_res(name).and_then(Resolved::scalar)
+    }
+
+    /// [`Self::column`], with a whole struct answered as its node.
+    pub(super) fn column_res(&self, name: &str) -> Result<Resolved, PrepareError> {
         if self.beside.borrow().iter().any(|b| b.eq_ignore_ascii_case(name)) {
             let saved = self.beside.take();
-            let here = self.column(name);
+            let here = self.column_res(name);
             *self.beside.borrow_mut() = saved;
             // Any binding at all on this side, a refused non-scalar one
             // included, makes the name ambiguous.
@@ -558,14 +618,14 @@ impl Binder<'_> {
             }
             return here;
         }
-        let mut hits: Vec<SExpr> = Vec::new();
+        let mut hits: Vec<Resolved> = Vec::new();
         for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
             if c.name.eq_ignore_ascii_case(name) {
-                hits.push(SExpr {
+                hits.push(Resolved::Lane(SExpr {
                     kind: SKind::Col(i as u32),
                     ty: c.ty.ty,
                     nullable: c.ty.nullable,
-                });
+                }));
             }
         }
         if let Some((_, n)) = self
@@ -582,11 +642,10 @@ impl Binder<'_> {
             .iter()
             .find(|s| s.name.eq_ignore_ascii_case(name))
         {
-            // A bare struct reference is its WHOLE value — non-scalar out.
-            return Err(unsup(format!(
-                "struct column '{}' as a whole value (project its fields instead)",
-                sc.name
-            )));
+            // A bare struct reference is its WHOLE value: a hit like any
+            // other column, so a joined table with the same name still
+            // makes it ambiguous.
+            hits.push(self.walk_struct(sc, &[])?);
         }
         for (j, sj) in self.joins.iter().enumerate() {
             for pos in 0..sj.val_cols.len() {
@@ -601,7 +660,7 @@ impl Binder<'_> {
                     .eq_ignore_ascii_case(name)
                     && !sj.merged.iter().any(|m| m.eq_ignore_ascii_case(name))
                 {
-                    hits.push(self.static_lane(j, pos));
+                    hits.push(Resolved::Lane(self.static_lane(j, pos)));
                 }
             }
             // Key columns resolve via reconstruction. A USING join's key
@@ -617,7 +676,7 @@ impl Binder<'_> {
                     if !sj.table.is_leaf_lane(*ci)
                         && sj.table.cols[*ci as usize].name.eq_ignore_ascii_case(name)
                     {
-                        hits.push(self.key_lane(j, kp)?);
+                        hits.push(Resolved::Lane(self.key_lane(j, kp)?));
                     }
                 }
             }
@@ -627,7 +686,7 @@ impl Binder<'_> {
         // BINDS on DuckDB, so it still counts for ambiguity, and as a sole
         // hit it is the named non-scalar refusal rather than a "does not
         // exist" lie.
-        let join_opaque = self.joins.iter().find_map(|sj| {
+        let join_opaque = self.joins.iter().enumerate().find_map(|(j, sj)| {
             sj.table
                 .structs
                 .iter()
@@ -635,29 +694,36 @@ impl Binder<'_> {
                 // into the left occurrence — it is not a second binding,
                 // so it cannot make the name ambiguous.
                 .find(|s| !key_struct(sj, &s.name) && s.name.eq_ignore_ascii_case(name))
-                .map(|s| (sj.name.clone(), s.name.clone(), "struct".to_string()))
+                .map(|s| (j, s.name.clone(), "struct".to_string()))
                 .or_else(|| {
                     sj.table
                         .opaque
                         .iter()
                         .find(|(c, _)| c.eq_ignore_ascii_case(name))
-                        .map(|(c, aty)| (sj.name.clone(), c.clone(), aty.clone()))
+                        .map(|(c, aty)| (j, c.clone(), aty.clone()))
                 })
         });
-        if let Some((tname, cname, aty)) = &join_opaque {
-            if hits.is_empty() {
-                return Err(unsup(if aty == "struct" {
-                    format!(
-                        "static table '{tname}' column '{cname}' is a struct — \
-                         project its fields instead"
-                    )
-                } else {
-                    format!(
-                        "static table '{tname}' column '{cname}' has a non-scalar type: {aty}"
-                    )
-                }));
+        if let Some((j, cname, aty)) = join_opaque {
+            if !hits.is_empty() {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous column '{name}' (qualify it)"
+                )));
             }
-            return Err(PrepareError::Bind(format!("ambiguous column '{name}' (qualify it)")));
+            let tname = &self.joins[j].name;
+            if aty != "struct" {
+                return Err(unsup(format!(
+                    "static table '{tname}' column '{cname}' has a non-scalar type: {aty}"
+                )));
+            }
+            // A static struct's whole value: its node.
+            return Ok(Resolved::Node(NodeRef {
+                src: NodeSrc::Static(j),
+                path: vec![cname.clone()],
+                refusal: format!(
+                    "static table '{tname}' column '{cname}' is a struct — \
+                     project its fields instead"
+                ),
+            }));
         }
         match hits.len() {
             // The REAL column wins over a same-named select alias (measured
@@ -689,7 +755,7 @@ impl Binder<'_> {
                         .rev()
                         .find(|(a, _)| a.eq_ignore_ascii_case(name))
                     {
-                        return Ok(e.clone());
+                        return Ok(Resolved::Lane(e.clone()));
                     }
                 }
                 if self
@@ -733,8 +799,9 @@ impl Binder<'_> {
     }
 
     /// `table.col` bind: the dynamic table by its FROM spelling, a joined
-    /// static table by its alias (or name).
-    pub(super) fn qualified(&self, table: &str, name: &str) -> Result<SExpr, PrepareError> {
+    /// static table by its alias (or name). A whole struct answers as its
+    /// node.
+    pub(super) fn qualified_res(&self, table: &str, name: &str) -> Result<Resolved, PrepareError> {
         if table.eq_ignore_ascii_case(&self.this_name) {
             let mut hit = None;
             for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
@@ -757,10 +824,7 @@ impl Binder<'_> {
                 .iter()
                 .find(|s| s.name.eq_ignore_ascii_case(name))
             {
-                return Err(unsup(format!(
-                    "struct column '{}' as a whole value (project its fields instead)",
-                    sc.name
-                )));
+                return self.walk_struct(sc, &[]);
             }
             if hit.is_none() && name.eq_ignore_ascii_case("rowid") {
                 return Err(unsup("rowid pseudo-column"));
@@ -768,11 +832,11 @@ impl Binder<'_> {
             let (i, c) = hit.ok_or_else(|| {
                 PrepareError::Bind(format!("column '{name}' does not exist in '{table}'"))
             })?;
-            return Ok(SExpr {
+            return Ok(Resolved::Lane(SExpr {
                 kind: SKind::Col(i as u32),
                 ty: c.ty.ty,
                 nullable: c.ty.nullable,
-            });
+            }));
         }
         for (j, sj) in self.joins.iter().enumerate() {
             if !sj.name.eq_ignore_ascii_case(table) {
@@ -798,7 +862,7 @@ impl Binder<'_> {
                 }
             }
             if let Some(pos) = hit {
-                return Ok(self.static_lane(j, pos));
+                return Ok(Resolved::Lane(self.static_lane(j, pos)));
             }
             // Qualified key access reconstructs from the dynamic side —
             // measured to stay addressable even after USING (NULL on a
@@ -808,13 +872,28 @@ impl Binder<'_> {
                 if !sj.table.is_leaf_lane(*ci)
                     && sj.table.cols[*ci as usize].name.eq_ignore_ascii_case(name)
                 {
-                    return self.key_lane(j, kp);
+                    return self.key_lane(j, kp).map(Resolved::Lane);
                 }
             }
             if name.eq_ignore_ascii_case("rowid") {
                 return Err(unsup("rowid pseudo-column"));
             }
             if let Some(e) = opaque_static_refusal(&sj.table, name, table) {
+                // A static struct's whole value: its node. A USING/NATURAL
+                // struct key's is not served.
+                if let (Some(sc), PrepareError::Unsupported(refusal)) = (
+                    sj.table
+                        .structs
+                        .iter()
+                        .find(|s| !key_struct(sj, &s.name) && s.name.eq_ignore_ascii_case(name)),
+                    &e,
+                ) {
+                    return Ok(Resolved::Node(NodeRef {
+                        src: NodeSrc::Static(j),
+                        path: vec![sc.name.clone()],
+                        refusal: refusal.clone(),
+                    }));
+                }
                 return Err(e);
             }
             return Err(PrepareError::Bind(format!(

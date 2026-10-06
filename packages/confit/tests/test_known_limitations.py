@@ -148,9 +148,10 @@ def test_non_scalar_rejection_is_reference_time():
             DuckDBInferFn(sql, row_tables={"__THIS__": L}, static_tables={})
 
 
-def test_struct_whole_value_rejects_but_fields_serve():
-    # Structs of scalars serve AS FIELDS (flattened to lanes); the struct as
-    # a whole value stays a named non-scalar rejection.
+def test_struct_fields_and_whole_values_serve():
+    # Structs of scalars serve as fields (flattened to lanes) and as whole
+    # values (assembled from those lanes at the boundary); through a derived
+    # table a whole struct stays a named rejection.
     M = pa.schema([pa.field("a", pa.struct([pa.field("i", pa.int64())]))])
     fn = DuckDBInferFn(
         "SELECT a.i FROM __THIS__",
@@ -158,9 +159,18 @@ def test_struct_whole_value_rejects_but_fields_serve():
         static_tables={},
     )
     assert fn.infer_rows([{"a": {"i": 5}}]) == [{"i": 5}]
-    with pytest.raises(ValueError, match="whole value"):
+    fn = DuckDBInferFn(
+        "SELECT a FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
+    )
+    assert fn.infer_rows([{"a": {"i": 5}}, {"a": None}]) == [
+        {"a": {"i": 5}},
+        {"a": None},
+    ]
+    with pytest.raises(ValueError, match="derived table"):
         DuckDBInferFn(
-            "SELECT a FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
+            "SELECT b FROM (SELECT a AS b FROM __THIS__)",
+            row_tables={"__THIS__": M},
+            static_tables={},
         )
     # the bracket spelling is the same field (test_struct_column_access.py)
     fn = DuckDBInferFn(

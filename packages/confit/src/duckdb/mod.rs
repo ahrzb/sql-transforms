@@ -26,7 +26,7 @@ use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
 use crate::specializer::frontend::macros::SqlMacro;
-use crate::specializer::{prepare_full, StaticSpec, WideOut};
+use crate::specializer::{prepare_full, StaticSpec, WideOut, WideShape};
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
 /// Arrow is what the caller wrote.
@@ -383,11 +383,59 @@ fn flatten_static(
                     node: StructNode::Nested(n),
                 });
             }
-            // dropped, as before: an unservable leaf is invisible here
-            schema::RowField::Opaque(_) => {}
+            // Kept, with no lane: a reference to it refuses by name, and a
+            // whole-struct output or struct key that would carry it refuses
+            // instead of silently dropping the field.
+            schema::RowField::Opaque(_) => tree.push(StructField {
+                name: fname.clone(),
+                node: StructNode::Opaque,
+            }),
         }
     }
     tree
+}
+
+/// One presence lane per struct NODE of `structs` (each struct column and
+/// each struct field below it), appended after every other lane, so no leaf
+/// index moves (see `StaticTable::presence`).
+fn presence_lanes(
+    cols: &mut Vec<Col>,
+    structs: &[crate::specializer::plan::StructCol],
+) -> Vec<(Vec<String>, u32)> {
+    use crate::specializer::plan::{StructField, StructNode};
+    fn push(cols: &mut Vec<Col>, path: &[String], out: &mut Vec<(Vec<String>, u32)>) {
+        cols.push(Col {
+            // display-only, like a leaf's dotted name
+            name: format!("{} (present)", path.join(".")),
+            ty: ColTy {
+                ty: Ty::I1,
+                nullable: true,
+            },
+        });
+        out.push((path.to_vec(), cols.len() as u32 - 1));
+    }
+    fn walk(
+        cols: &mut Vec<Col>,
+        path: &mut Vec<String>,
+        fields: &[StructField],
+        out: &mut Vec<(Vec<String>, u32)>,
+    ) {
+        for f in fields {
+            if let StructNode::Nested(n) = &f.node {
+                path.push(f.name.clone());
+                push(cols, path, out);
+                walk(cols, path, n, out);
+                path.pop();
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for sc in structs {
+        let mut path = vec![sc.name.clone()];
+        push(cols, &path, &mut out);
+        walk(cols, &mut path, &sc.fields, &mut out);
+    }
+    out
 }
 
 /// A presence lane's row value must be a struct node (a mapping or an object
@@ -516,22 +564,58 @@ fn dec_py(py: Python<'_>, v: i128, ty: Ty) -> PyResult<Py<PyAny>> {
         .unbind())
 }
 
-/// One field of the output boundary: a plain scalar lane, or a wide UDF
-/// field assembled from its whole-validity lane plus k component lanes.
-/// Empty `names` is the unnamed boundary (the field is
-/// `list | None`); non-empty assembles a STRUCT keyed by the declared
-/// names. Either way a NULL whole-validity is the NULL field —
-/// distinct from a container of NULLs.
+/// One field of the output boundary: a plain scalar lane, or a list or
+/// struct assembled from its lanes (see [`WideNode`]).
 #[derive(Clone)]
 pub(crate) enum EmitField {
     Scalar(usize),
-    Wide {
-        name: String,
+    Wide { name: String, node: WideNode },
+}
+
+/// A list or struct field's value, its lanes resolved to out-lane indices.
+/// A container's validity lane comes first, and its NULL is the NULL value,
+/// distinct from a container of NULLs.
+#[derive(Clone)]
+pub(crate) enum WideNode {
+    /// A scalar lane, with the display path a range refusal names
+    /// (`p.a`, `p[1]`).
+    Lane(usize, String),
+    /// `list | None`: the validity lane, then the element lanes.
+    List { valid: usize, items: Vec<WideNode> },
+    /// A struct keyed by its field names, in field order (DuckDB's struct
+    /// value; a dict on the row path).
+    Struct {
         valid: usize,
-        first: usize,
-        width: usize,
-        names: Vec<String>,
+        fields: Vec<(String, WideNode)>,
     },
+}
+
+impl WideNode {
+    /// `shape`'s lanes from out lane `*next` on, which it moves past them.
+    fn build(shape: &WideShape, at: &str, next: &mut usize) -> WideNode {
+        let mut take = || {
+            *next += 1;
+            *next - 1
+        };
+        match shape {
+            WideShape::Scalar => WideNode::Lane(take(), at.to_string()),
+            WideShape::List(k) => {
+                let valid = take();
+                let items = (0..*k)
+                    .map(|j| WideNode::Lane(take(), format!("{at}[{j}]")))
+                    .collect();
+                WideNode::List { valid, items }
+            }
+            WideShape::Struct(fields) => {
+                let valid = take();
+                let fields = fields
+                    .iter()
+                    .map(|(n, s)| (n.clone(), WideNode::build(s, &format!("{at}.{n}"), next)))
+                    .collect();
+                WideNode::Struct { valid, fields }
+            }
+        }
+    }
 }
 
 impl EmitField {
@@ -552,14 +636,11 @@ fn emit_plan(out_cols: &[Col], wide: &[WideOut]) -> Vec<EmitField> {
     while i < out_cols.len() {
         if let Some(wo) = w.peek() {
             if wo.first as usize == i {
+                let node = WideNode::build(&wo.shape, &wo.name, &mut i);
                 plan.push(EmitField::Wide {
                     name: wo.name.clone(),
-                    valid: i,
-                    first: i + 1,
-                    width: wo.width as usize,
-                    names: wo.names.clone(),
+                    node,
                 });
-                i += 1 + wo.width as usize;
                 w.next();
                 continue;
             }
@@ -617,55 +698,62 @@ fn lane_py(py: Python<'_>, st: &RunState, ty: Ty, lane: usize, r: usize) -> PyRe
     })
 }
 
-/// A wide field's value at row `r`: None when the whole-call validity lane
-/// says NULL, else the k-element list (unnamed extern) or the dict keyed by
-/// the declared field names (named extern — DuckDB's struct value). Values
-/// may be None either way. `tys` are the children's declared types: a
-/// struct_pack child is an arbitrary expression, so it can carry a narrow
-/// width, and the width contract holds for children exactly as for scalar
-/// columns (see narrow_check) — on this boundary and the arrow one alike.
+/// Whether a container's validity lane says the container is there at
+/// row `r`.
+pub(crate) fn valid_at(st: &RunState, valid: usize, r: usize) -> PyResult<bool> {
+    let OutCol::I1(v) = &st.out[valid] else {
+        return Err(build_err("internal: wide validity lane is not i1"));
+    };
+    let (ok, whole) = v[r];
+    Ok(ok && whole)
+}
+
+/// A wide field's value at row `r`: None when its validity lane says NULL,
+/// else the list, or the dict keyed by the field names (DuckDB's struct
+/// value), nested as the field is. Values may be None either way. `tys`
+/// are the out lanes' declared types: a field can be an arbitrary
+/// expression, so it can carry a narrow width, and the width contract holds
+/// for it exactly as for a scalar column (see narrow_check) — on this
+/// boundary and the arrow one alike.
 pub(crate) fn wide_py(
     py: Python<'_>,
     st: &RunState,
-    valid: usize,
-    first: usize,
-    width: usize,
-    names: &[String],
+    node: &WideNode,
     tys: &[Ty],
-    field: &str,
     r: usize,
 ) -> PyResult<Py<PyAny>> {
-    let OutCol::I1(vlane) = &st.out[valid] else {
-        return Err(build_err("internal: wide validity lane is not i1"));
-    };
-    let (ok, whole) = vlane[r];
-    if !(ok && whole) {
-        return Ok(py.None());
-    }
-    let items = (first..first + width)
-        .enumerate()
-        .map(|(j, l)| {
-            if let (OutCol::I64(v), Some(_)) = (&st.out[l], tys[j].int_range()) {
+    use pyo3::IntoPyObjectExt;
+    match node {
+        WideNode::Lane(l, at) => {
+            if let (OutCol::I64(v), Some(_)) = (&st.out[*l], tys[*l].int_range()) {
                 let (ok, x) = v[r];
                 if ok {
-                    let child = match names.get(j) {
-                        Some(n) => format!("{field}.{n}"),
-                        None => format!("{field}[{j}]"),
-                    };
-                    narrow_check(tys[j], &child, x)?;
+                    narrow_check(tys[*l], at, x)?;
                 }
             }
-            lane_py(py, st, tys[j], l, r)
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    if names.is_empty() {
-        return Ok(pyo3::types::PyList::new(py, items)?.unbind().into_any());
+            lane_py(py, st, tys[*l], *l, r)
+        }
+        WideNode::List { valid, items } => {
+            if !valid_at(st, *valid, r)? {
+                return Ok(py.None());
+            }
+            let items = items
+                .iter()
+                .map(|i| wide_py(py, st, i, tys, r))
+                .collect::<PyResult<Vec<_>>>()?;
+            pyo3::types::PyList::new(py, items)?.into_py_any(py)
+        }
+        WideNode::Struct { valid, fields } => {
+            if !valid_at(st, *valid, r)? {
+                return Ok(py.None());
+            }
+            let d = PyDict::new(py);
+            for (n, f) in fields {
+                d.set_item(n, wide_py(py, st, f, tys, r)?)?;
+            }
+            Ok(d.unbind().into_any())
+        }
     }
-    let d = PyDict::new(py);
-    for (n, v) in names.iter().zip(items) {
-        d.set_item(n, v)?;
-    }
-    Ok(d.unbind().into_any())
 }
 
 /// Declared UDFs, parsed off the Python objects at construction: the
@@ -1255,6 +1343,19 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
             let name = vc.path.join(".");
             let name = name.as_str();
             let v = get(&vc.path)?;
+            // A struct NODE's presence: TRUE when the node is there, NULL
+            // when it is NULL (the walk above stops at a NULL ancestor too).
+            // Its lane is always declared nullable (`presence_lanes`).
+            if vc.present {
+                debug_assert!(vc.map.nullable, "a presence lane is nullable");
+                if v.is_none() {
+                    vals.extend(exec::null_val_slots(Ty::I1));
+                } else {
+                    vals.push(ScalarVal::I1(true));
+                    vals.push(ScalarVal::I1(true));
+                }
+                continue;
+            }
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<ScalarVal> {
                 Ok(match ty {
                     Ty::I1 => ScalarVal::I1(v.extract()?),
@@ -1656,27 +1757,8 @@ impl Marshaller {
                             )?;
                         }
                     },
-                    EmitField::Wide {
-                        valid,
-                        first,
-                        width,
-                        names,
-                        ..
-                    } => {
-                        d.set_item(
-                            k,
-                            wide_py(
-                                py,
-                                &self.state,
-                                *valid,
-                                *first,
-                                *width,
-                                names,
-                                &self.out_tys[*first..*first + *width],
-                                &k.to_string_lossy(),
-                                r,
-                            )?,
-                        )?;
+                    EmitField::Wide { node, .. } => {
+                        d.set_item(k, wide_py(py, &self.state, node, &self.out_tys, r)?)?;
                     }
                 }
             }
@@ -1916,12 +1998,14 @@ impl DuckDBInferFn {
                     }
                 }
             }
+            let presence = presence_lanes(&mut cols, &structs);
             catalog.push(StaticTable {
                 name: name.clone(),
                 cols,
                 opaque,
                 star,
                 structs,
+                presence,
             });
         }
 
@@ -2219,6 +2303,7 @@ impl DuckDBInferFn {
         fun.run(&batch, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
 
+        let tys: Vec<Ty> = out_cols.iter().map(|c| c.ty.ty).collect();
         let mut out = Vec::with_capacity(st.emitted);
         for r in 0..st.emitted {
             let dict = PyDict::new(py);
@@ -2257,21 +2342,8 @@ impl DuckDBInferFn {
                             )?;
                         }
                     },
-                    EmitField::Wide {
-                        valid,
-                        first,
-                        width,
-                        names,
-                        ..
-                    } => {
-                        let tys: Vec<Ty> = out_cols[*first..*first + *width]
-                            .iter()
-                            .map(|c| c.ty.ty)
-                            .collect();
-                        dict.set_item(
-                            name,
-                            wide_py(py, &st, *valid, *first, *width, names, &tys, name, r)?,
-                        )?;
+                    EmitField::Wide { node, .. } => {
+                        dict.set_item(name, wide_py(py, &st, node, &tys, r)?)?;
                     }
                 }
             }

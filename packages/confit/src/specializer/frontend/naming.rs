@@ -580,6 +580,15 @@ fn print(e: &SqlExpr) -> Option<String> {
             cur
         }
         SqlExpr::Array(a) if !a.named => format!("main.list_value({})", list(&a.elem)?),
+        // A `{'k': v}` literal is struct_pack in DuckDB's binder.
+        SqlExpr::Dictionary(fields) => format!(
+            "main.struct_pack({})",
+            fields
+                .iter()
+                .map(|f| Some(format!("{} := {}", ident(&f.key.value), print(&f.value)?)))
+                .collect::<Option<Vec<_>>>()?
+                .join(", ")
+        ),
         SqlExpr::Trim {
             trim_where: None,
             trim_what,

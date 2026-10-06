@@ -652,9 +652,35 @@ fn pa_ty<'py>(pa: &Bound<'py, PyModule>, t: Ty) -> PyResult<Bound<'py, PyAny>> {
     }
 }
 
+/// A wide node's arrow type: `list_` of its element type, or a `struct`
+/// keyed by its field names, nested as the node is.
+fn node_type<'py>(
+    pa: &Bound<'py, PyModule>,
+    out_cols: &[Col],
+    node: &super::WideNode,
+) -> PyResult<Bound<'py, PyAny>> {
+    match node {
+        super::WideNode::Lane(l, _) => pa_ty(pa, out_cols[*l].ty.ty),
+        // Every element lane carries the list's one element type.
+        super::WideNode::List { items, .. } => {
+            let first = items
+                .first()
+                .ok_or_else(|| err("internal: a list field has no element lanes"))?;
+            pa.call_method1("list_", (node_type(pa, out_cols, first)?,))
+        }
+        super::WideNode::Struct { fields, .. } => {
+            let members = fields
+                .iter()
+                .map(|(n, f)| pa.call_method1("field", (n.as_str(), node_type(pa, out_cols, f)?)))
+                .collect::<PyResult<Vec<_>>>()?;
+            pa.call_method1("struct", (PyList::new(pa.py(), members)?,))
+        }
+    }
+}
+
 /// The output contract as a `pa.Schema` — field for field what [`emit`]'s
 /// `from_arrays` table carries (same declared widths, `list_`/`struct` for
-/// wide UDF fields, default-nullable like DuckDB's own `.arrow()` export).
+/// wide fields, default-nullable like DuckDB's own `.arrow()` export).
 pub fn output_schema(
     py: Python<'_>,
     out_cols: &[Col],
@@ -666,28 +692,10 @@ pub fn output_schema(
         let (name, ty) = match field {
             super::EmitField::Scalar(i) => {
                 let c = &out_cols[*i];
-                (c.name.clone(), pa_ty(&pa, c.ty.ty)?)
+                (c.name.as_str(), pa_ty(&pa, c.ty.ty)?)
             }
-            super::EmitField::Wide {
-                name,
-                first,
-                width,
-                names: field_names,
-                ..
-            } => {
-                let ty = if field_names.is_empty() {
-                    pa.call_method1("list_", (pa_ty(&pa, out_cols[*first].ty.ty)?,))?
-                } else {
-                    let members = field_names
-                        .iter()
-                        .zip(&out_cols[*first..*first + *width])
-                        .map(|(fname, c)| {
-                            pa.call_method1("field", (fname.as_str(), pa_ty(&pa, c.ty.ty)?))
-                        })
-                        .collect::<PyResult<Vec<_>>>()?;
-                    pa.call_method1("struct", (PyList::new(py, members)?,))?
-                };
-                (name.clone(), ty)
+            super::EmitField::Wide { name, node } => {
+                (name.as_str(), node_type(&pa, out_cols, node)?)
             }
         };
         fields.push(pa.call_method1("field", (name, ty))?);
@@ -697,10 +705,10 @@ pub fn output_schema(
         .unbind())
 }
 
-/// Engine output -> pa.Table, one `Array.from_buffers` per scalar field; a
-/// wide UDF field assembles as `pa.array` of `None | [components]` (the
-/// python-list path — the wide boundary is transformer output, not the
-/// scalar hot lane).
+/// Engine output -> pa.Table. Each scalar field, and each struct with its
+/// children, is `Array.from_buffers` over rust-built buffers; a list field
+/// assembles as `pa.array` of `None | [elements]` (the python-list path —
+/// lists are transformer output, not the scalar hot lane).
 pub fn emit(
     py: Python<'_>,
     out_cols: &[Col],
@@ -708,257 +716,189 @@ pub fn emit(
     st: &RunState,
 ) -> PyResult<Py<PyAny>> {
     let pa = PyModule::import(py, "pyarrow")?;
-    let from_buffers = pa.getattr("Array")?.getattr("from_buffers")?;
-    let py_buffer = pa.getattr("py_buffer")?;
-    let n = st.emitted;
+    let e = Emitter {
+        py,
+        from_buffers: pa.getattr("Array")?.getattr("from_buffers")?,
+        py_buffer: pa.getattr("py_buffer")?,
+        pa,
+        out_cols,
+        st,
+        n: st.emitted,
+        tys: out_cols.iter().map(|c| c.ty.ty).collect(),
+    };
     let mut arrays = Vec::with_capacity(plan.len());
     let mut names = Vec::with_capacity(plan.len());
     for field in plan {
-        let (c, oc) = match field {
-            super::EmitField::Scalar(i) => (&out_cols[*i], &st.out[*i]),
-            super::EmitField::Wide {
-                name,
-                valid,
-                first,
-                width,
-                names: field_names,
-            } => {
-                names.push(name.clone());
-                let lane_ty = |t: crate::specializer::ir::Ty| match t {
-                    crate::specializer::ir::Ty::I1 => pa.call_method0("bool_"),
-                    // struct_pack fields are arbitrary expressions, so the
-                    // width is real here (ord() inside a struct is int32 on
-                    // DuckDB).
-                    // wide_py refuses out-of-range children by name before
-                    // pa.array ever sees the values.
-                    crate::specializer::ir::Ty::I8 => pa.call_method0("int8"),
-                    crate::specializer::ir::Ty::I16 => pa.call_method0("int16"),
-                    crate::specializer::ir::Ty::I32 => pa.call_method0("int32"),
-                    crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
-                    crate::specializer::ir::Ty::U8 => pa.call_method0("uint8"),
-                    crate::specializer::ir::Ty::U16 => pa.call_method0("uint16"),
-                    crate::specializer::ir::Ty::U32 => pa.call_method0("uint32"),
-                    crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
-                    // `string`, not `large_string` — see the scalar lane
-                    // below for why.
-                    crate::specializer::ir::Ty::Str => pa.call_method0("string"),
-                    // A struct_pack field can be a DECIMAL expression; a UDF
-                    // return never is.
-                    crate::specializer::ir::Ty::Dec(p, s) => pa.call_method1("decimal128", (p, s)),
-                    t @ (crate::specializer::ir::Ty::I128 | crate::specializer::ir::Ty::U64) => {
-                        pa_ty(&pa, t)
-                    }
-                };
-                // Unnamed extern: list<elem>; named extern: struct keyed by
-                // the declared names, matching DuckDB's output.
-                let out_ty = if field_names.is_empty() {
-                    pa.call_method1("list_", (lane_ty(out_cols[*first].ty.ty)?,))?
-                } else {
-                    let members = field_names
-                        .iter()
-                        .zip(&out_cols[*first..*first + *width])
-                        .map(|(fname, c)| {
-                            pa.call_method1("field", (fname.as_str(), lane_ty(c.ty.ty)?))
-                        })
-                        .collect::<PyResult<Vec<_>>>()?;
-                    pa.call_method1("struct", (PyList::new(py, members)?,))?
-                };
-                let child_tys: Vec<crate::specializer::ir::Ty> = out_cols
-                    [*first..*first + *width]
-                    .iter()
-                    .map(|c| c.ty.ty)
-                    .collect();
-                let mut values = Vec::with_capacity(n);
-                for r in 0..n {
-                    values.push(super::wide_py(
-                        py,
-                        st,
-                        *valid,
-                        *first,
-                        *width,
-                        field_names,
-                        &child_tys,
-                        name,
-                        r,
-                    )?);
-                }
-                let vals = PyList::new(py, values)?;
-                let kw = pyo3::types::PyDict::new(py);
-                // A HUGEINT child past 38 digits leaves as DuckDB exports
-                // it: the raw i128 in a decimal128(38,0), which pa.array
-                // refuses to build from a Decimal. Build at decimal256(39,0)
-                // and cast down unchecked, keeping the raw value.
-                if child_tys.contains(&crate::specializer::ir::Ty::I128) {
-                    let wide = |t: crate::specializer::ir::Ty| match t {
-                        crate::specializer::ir::Ty::I128 => pa.call_method1("decimal256", (39, 0)),
-                        t => lane_ty(t),
-                    };
-                    let wide_ty = if field_names.is_empty() {
-                        pa.call_method1("list_", (wide(child_tys[0])?,))?
-                    } else {
-                        let members = field_names
-                            .iter()
-                            .zip(&child_tys)
-                            .map(|(fname, t)| pa.call_method1("field", (fname.as_str(), wide(*t)?)))
-                            .collect::<PyResult<Vec<_>>>()?;
-                        pa.call_method1("struct", (PyList::new(py, members)?,))?
-                    };
-                    kw.set_item("type", wide_ty)?;
-                    let built = pa.call_method("array", (vals,), Some(&kw))?;
-                    let cast_kw = pyo3::types::PyDict::new(py);
-                    cast_kw.set_item("safe", false)?;
-                    arrays.push(built.call_method("cast", (out_ty,), Some(&cast_kw))?);
-                    continue;
-                }
-                kw.set_item("type", out_ty)?;
-                arrays.push(pa.call_method("array", (vals,), Some(&kw))?);
-                continue;
+        match field {
+            super::EmitField::Scalar(i) => {
+                let c = &out_cols[*i];
+                names.push(c.name.clone());
+                arrays.push(e.lane(*i, &c.name, None)?);
             }
+            super::EmitField::Wide { name, node } => {
+                names.push(name.clone());
+                arrays.push(e.node(node, None)?);
+            }
+        }
+    }
+    let table = e
+        .pa
+        .getattr("Table")?
+        .call_method1("from_arrays", (arrays, names))?;
+    Ok(table.unbind())
+}
+
+/// What [`emit`] builds each array from.
+struct Emitter<'a, 'py> {
+    py: Python<'py>,
+    pa: Bound<'py, PyModule>,
+    from_buffers: Bound<'py, PyAny>,
+    py_buffer: Bound<'py, PyAny>,
+    out_cols: &'a [Col],
+    st: &'a RunState,
+    n: usize,
+    /// The out lanes' declared types, for [`super::wide_py`].
+    tys: Vec<Ty>,
+}
+
+/// The i64 lane's values at the declared width `T`. A live value out of
+/// range refuses by name: every such input DuckDB itself traps on.
+fn narrowed<T: TryFrom<i64> + Default>(
+    v: &[(bool, i64)],
+    live: &[bool],
+    refuse: impl Fn(i64) -> PyErr,
+) -> PyResult<Vec<T>> {
+    v.iter()
+        .zip(live)
+        .map(|((_, x), l)| {
+            if *l {
+                T::try_from(*x).map_err(|_| refuse(*x))
+            } else {
+                Ok(T::default())
+            }
+        })
+        .collect()
+}
+
+impl<'py> Emitter<'_, 'py> {
+    fn buffer(&self, raw: &[u8]) -> PyResult<Py<PyAny>> {
+        Ok(self.py_buffer.call1((PyBytes::new(self.py, raw),))?.unbind())
+    }
+
+    /// `Array.from_buffers` with `live` as the validity bitmap, then `bufs`
+    /// (and `children`, for a struct).
+    fn array(
+        &self,
+        dtype: Bound<'py, PyAny>,
+        live: &[bool],
+        bufs: Vec<Py<PyAny>>,
+        children: Option<Vec<Bound<'py, PyAny>>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (vbits, nulls) = bitmap(live.iter().copied(), self.n);
+        let vbuf: Py<PyAny> = if nulls == 0 {
+            self.py.None()
+        } else {
+            self.buffer(&vbits)?
         };
-        names.push(c.name.clone());
-        let (dtype, validity, bufs): (Bound<'_, PyAny>, (Vec<u8>, usize), Vec<Py<PyAny>>) =
-            match oc {
+        let buf_list = PyList::new(self.py, std::iter::once(vbuf).chain(bufs))?;
+        match children {
+            None => self.from_buffers.call1((dtype, self.n, buf_list, nulls)),
+            Some(ch) => self.from_buffers.call1((
+                dtype,
+                self.n,
+                buf_list,
+                nulls,
+                0,
+                PyList::new(self.py, ch)?,
+            )),
+        }
+    }
+
+    /// Out lane `i` as an arrow array. `name` is what a range refusal
+    /// names. `mask`, when given, NULLs each row where an enclosing struct
+    /// is NULL and skips that row's range check: a child is NULL wherever
+    /// its parent is, as in DuckDB's own export, and a value no reader can
+    /// reach never refuses (the row boundary does not look at it either).
+    fn lane(&self, i: usize, name: &str, mask: Option<&[bool]>) -> PyResult<Bound<'py, PyAny>> {
+        let (n, pa) = (self.n, &self.pa);
+        let ty = self.out_cols[i].ty.ty;
+        let live_of = |oks: &mut dyn Iterator<Item = bool>| -> Vec<bool> {
+            oks.enumerate()
+                .map(|(r, ok)| ok && mask.is_none_or(|m| m[r]))
+                .collect()
+        };
+        let (dtype, live, bufs): (Bound<'_, PyAny>, Vec<bool>, Vec<Py<PyAny>>) =
+            match &self.st.out[i] {
                 OutCol::I64(v) => {
                     // The column's declared width narrows the emitted buffer
-                    // (values compute in the i64 lane). Out of range refuses
-                    // by name: every such input DuckDB itself traps on.
-                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
-                    let ty = c.ty.ty;
-                    let narrow_err = |x: i64| {
-                        let ty_name = super::arrow_ty_name(ty);
+                    // (values compute in the i64 lane).
+                    let live = live_of(&mut v.iter().map(|(ok, _)| *ok));
+                    let refuse = |x: i64| {
                         err(format!(
-                            "infer_arrow: column '{}' value {x} is outside its \
-                             {ty_name} range",
-                            c.name,
+                            "infer_arrow: column '{name}' value {x} is outside its {} range",
+                            super::arrow_ty_name(ty),
                         ))
                     };
                     let (dtype, raw): (_, Vec<u8>) = match ty {
-                        Ty::I32 => {
-                            let mut data: Vec<i32> = Vec::with_capacity(v.len());
-                            for (ok, x) in v.iter() {
-                                data.push(if *ok {
-                                    i32::try_from(*x).map_err(|_| narrow_err(*x))?
-                                } else {
-                                    0
-                                });
-                            }
-                            (pa.call_method0("int32")?, cast_bytes(&data, 4))
-                        }
-                        Ty::I16 => {
-                            let mut data: Vec<i16> = Vec::with_capacity(v.len());
-                            for (ok, x) in v.iter() {
-                                data.push(if *ok {
-                                    i16::try_from(*x).map_err(|_| narrow_err(*x))?
-                                } else {
-                                    0
-                                });
-                            }
-                            (pa.call_method0("int16")?, cast_bytes(&data, 2))
-                        }
-                        Ty::I8 => {
-                            let mut data: Vec<i8> = Vec::with_capacity(v.len());
-                            for (ok, x) in v.iter() {
-                                data.push(if *ok {
-                                    i8::try_from(*x).map_err(|_| narrow_err(*x))?
-                                } else {
-                                    0
-                                });
-                            }
-                            (pa.call_method0("int8")?, cast_bytes(&data, 1))
-                        }
-                        Ty::U32 => {
-                            let mut data: Vec<u32> = Vec::with_capacity(v.len());
-                            for (ok, x) in v.iter() {
-                                data.push(if *ok {
-                                    u32::try_from(*x).map_err(|_| narrow_err(*x))?
-                                } else {
-                                    0
-                                });
-                            }
-                            (pa.call_method0("uint32")?, cast_bytes(&data, 4))
-                        }
-                        Ty::U16 => {
-                            let mut data: Vec<u16> = Vec::with_capacity(v.len());
-                            for (ok, x) in v.iter() {
-                                data.push(if *ok {
-                                    u16::try_from(*x).map_err(|_| narrow_err(*x))?
-                                } else {
-                                    0
-                                });
-                            }
-                            (pa.call_method0("uint16")?, cast_bytes(&data, 2))
-                        }
-                        Ty::U8 => {
-                            let mut data: Vec<u8> = Vec::with_capacity(v.len());
-                            for (ok, x) in v.iter() {
-                                data.push(if *ok {
-                                    u8::try_from(*x).map_err(|_| narrow_err(*x))?
-                                } else {
-                                    0
-                                });
-                            }
-                            (pa.call_method0("uint8")?, cast_bytes(&data, 1))
-                        }
+                        Ty::I32 => (
+                            pa.call_method0("int32")?,
+                            cast_bytes(&narrowed::<i32>(v, &live, refuse)?, 4),
+                        ),
+                        Ty::I16 => (
+                            pa.call_method0("int16")?,
+                            cast_bytes(&narrowed::<i16>(v, &live, refuse)?, 2),
+                        ),
+                        Ty::I8 => (
+                            pa.call_method0("int8")?,
+                            cast_bytes(&narrowed::<i8>(v, &live, refuse)?, 1),
+                        ),
+                        Ty::U32 => (
+                            pa.call_method0("uint32")?,
+                            cast_bytes(&narrowed::<u32>(v, &live, refuse)?, 4),
+                        ),
+                        Ty::U16 => (
+                            pa.call_method0("uint16")?,
+                            cast_bytes(&narrowed::<u16>(v, &live, refuse)?, 2),
+                        ),
+                        Ty::U8 => (
+                            pa.call_method0("uint8")?,
+                            cast_bytes(&narrowed::<u8>(v, &live, refuse)?, 1),
+                        ),
                         _ => {
                             let data: Vec<i64> = v.iter().map(|(_, x)| *x).collect();
                             (pa.call_method0("int64")?, cast_bytes(&data, 8))
                         }
                     };
-                    (
-                        dtype,
-                        vb,
-                        vec![py_buffer.call1((PyBytes::new(py, &raw),))?.unbind()],
-                    )
+                    (dtype, live, vec![self.buffer(&raw)?])
                 }
                 // x86-64 little-endian i128 IS arrow's decimal128 layout,
                 // so the payload slice goes straight into the buffer — the
                 // same `cast_bytes` shape the i64 lane uses.
                 // UBIGINT computes in the i128 lane and emits as uint64; the
                 // lowering's range trap already proved every value fits.
-                OutCol::Dec(v) if c.ty.ty == Ty::U64 => {
-                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                OutCol::Dec(v) if ty == Ty::U64 => {
+                    let live = live_of(&mut v.iter().map(|(ok, _)| *ok));
                     let data: Vec<u64> = v.iter().map(|(_, x)| *x as u64).collect();
-                    (
-                        pa_ty(&pa, Ty::U64)?,
-                        vb,
-                        vec![py_buffer
-                            .call1((PyBytes::new(py, &cast_bytes(&data, 8)),))?
-                            .unbind()],
-                    )
+                    (pa_ty(pa, Ty::U64)?, live, vec![self.buffer(&cast_bytes(&data, 8))?])
                 }
                 OutCol::Dec(v) => {
-                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                    let live = live_of(&mut v.iter().map(|(ok, _)| *ok));
                     let data: Vec<i128> = v.iter().map(|(_, x)| *x).collect();
-                    (
-                        pa_ty(&pa, c.ty.ty)?,
-                        vb,
-                        vec![py_buffer
-                            .call1((PyBytes::new(py, &cast_bytes(&data, 16)),))?
-                            .unbind()],
-                    )
+                    (pa_ty(pa, ty)?, live, vec![self.buffer(&cast_bytes(&data, 16))?])
                 }
                 OutCol::F64(v) => {
-                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                    let live = live_of(&mut v.iter().map(|(ok, _)| *ok));
                     let data: Vec<f64> = v.iter().map(|(_, x)| *x).collect();
-                    let raw = unsafe {
-                        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 8)
-                    };
                     (
                         pa.call_method0("float64")?,
-                        vb,
-                        vec![py_buffer.call1((PyBytes::new(py, raw),))?.unbind()],
+                        live,
+                        vec![self.buffer(&cast_bytes(&data, 8))?],
                     )
                 }
                 OutCol::I1(v) => {
-                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                    let live = live_of(&mut v.iter().map(|(ok, _)| *ok));
                     let (data_bits, _) = bitmap(v.iter().map(|(_, x)| *x), n);
-                    (
-                        pa.call_method0("bool_")?,
-                        vb,
-                        vec![py_buffer
-                            .call1((PyBytes::new(py, &data_bits),))?
-                            .unbind()],
-                    )
+                    (pa.call_method0("bool_")?, live, vec![self.buffer(&data_bits)?])
                 }
                 // `pa.string()`, 32-bit offsets, because that is what
                 // DuckDB's own `.arrow()` returns for a VARCHAR column.
@@ -967,13 +907,13 @@ pub fn emit(
                 // `pa.concat_tables([duck_out, ours])` raised, and so did any
                 // pinned-schema writer.
                 OutCol::Str(v) => {
-                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                    let live = live_of(&mut v.iter().map(|(ok, _)| *ok));
                     let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
                     let mut bytes: Vec<u8> = Vec::new();
                     offsets.push(0);
-                    for (ok, r) in v.iter() {
-                        if *ok {
-                            bytes.extend_from_slice(st.arena.get(*r).as_bytes());
+                    for ((_, s), l) in v.iter().zip(&live) {
+                        if *l {
+                            bytes.extend_from_slice(self.st.arena.get(*s).as_bytes());
                         }
                         // 32-bit offsets are the whole point, so the 2 GiB
                         // ceiling is real. Refuse by name rather than wrap:
@@ -987,34 +927,75 @@ pub fn emit(
                         })?;
                         offsets.push(end);
                     }
-                    let off_raw = unsafe {
-                        std::slice::from_raw_parts(
-                            offsets.as_ptr() as *const u8,
-                            offsets.len() * 4,
-                        )
-                    };
                     (
                         pa.call_method0("string")?,
-                        vb,
+                        live,
                         vec![
-                            py_buffer.call1((PyBytes::new(py, off_raw),))?.unbind(),
-                            py_buffer.call1((PyBytes::new(py, &bytes),))?.unbind(),
+                            self.buffer(&cast_bytes(&offsets, 4))?,
+                            self.buffer(&bytes)?,
                         ],
                     )
                 }
             };
-        let (vbits, nulls) = validity;
-        let vbuf: Py<PyAny> = if nulls == 0 {
-            py.None()
-        } else {
-            py_buffer.call1((PyBytes::new(py, &vbits),))?.unbind()
-        };
-        let buf_list = PyList::new(py, std::iter::once(vbuf).chain(bufs))?;
-        let arr = from_buffers.call((dtype, n, buf_list, nulls), None)?;
-        arrays.push(arr);
+        self.array(dtype, &live, bufs, None)
     }
-    let table = pa
-        .getattr("Table")?
-        .call_method1("from_arrays", (arrays, names))?;
-    Ok(table.unbind())
+
+    /// A field's array: a lane as above; a struct over its children's
+    /// arrays, each built the same way and NULL wherever the struct is;
+    /// a list through the python-list path.
+    fn node(&self, node: &super::WideNode, mask: Option<&[bool]>) -> PyResult<Bound<'py, PyAny>> {
+        match node {
+            super::WideNode::Lane(l, at) => self.lane(*l, at, mask),
+            super::WideNode::Struct { valid, fields } => {
+                let here = (0..self.n)
+                    .map(|r| Ok(super::valid_at(self.st, *valid, r)? && mask.is_none_or(|m| m[r])))
+                    .collect::<PyResult<Vec<bool>>>()?;
+                let children = fields
+                    .iter()
+                    .map(|(_, f)| self.node(f, Some(&here)))
+                    .collect::<PyResult<Vec<_>>>()?;
+                let dtype = node_type(&self.pa, self.out_cols, node)?;
+                self.array(dtype, &here, Vec::new(), Some(children))
+            }
+            super::WideNode::List { items, .. } => self.list(node, items, mask),
+        }
+    }
+
+    /// A list field as `pa.array` over each row's `None | [elements]`.
+    fn list(
+        &self,
+        node: &super::WideNode,
+        items: &[super::WideNode],
+        mask: Option<&[bool]>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (py, pa) = (self.py, &self.pa);
+        let mut values = Vec::with_capacity(self.n);
+        for r in 0..self.n {
+            values.push(if mask.is_none_or(|m| m[r]) {
+                super::wide_py(py, self.st, node, &self.tys, r)?
+            } else {
+                py.None()
+            });
+        }
+        let vals = PyList::new(py, values)?;
+        let out_ty = node_type(pa, self.out_cols, node)?;
+        let kw = pyo3::types::PyDict::new(py);
+        // A HUGEINT element past 38 digits leaves as DuckDB exports it: the
+        // raw i128 in a decimal128(38,0), which pa.array refuses to build
+        // from a Decimal. Build at decimal256(39,0) and cast down unchecked,
+        // keeping the raw value.
+        let huge = items
+            .iter()
+            .any(|i| matches!(i, super::WideNode::Lane(l, _) if self.tys[*l] == Ty::I128));
+        if huge {
+            let wide_ty = pa.call_method1("list_", (pa.call_method1("decimal256", (39, 0))?,))?;
+            kw.set_item("type", wide_ty)?;
+            let built = pa.call_method("array", (vals,), Some(&kw))?;
+            let cast_kw = pyo3::types::PyDict::new(py);
+            cast_kw.set_item("safe", false)?;
+            return built.call_method("cast", (out_ty,), Some(&cast_kw));
+        }
+        kw.set_item("type", out_ty)?;
+        pa.call_method("array", (vals,), Some(&kw))
+    }
 }

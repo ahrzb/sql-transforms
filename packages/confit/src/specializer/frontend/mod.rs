@@ -56,6 +56,7 @@ mod calls;
 mod lets;
 mod lists;
 mod naming;
+mod outputs;
 
 use self::refusal::*;
 
@@ -69,6 +70,7 @@ use self::star::*;
 use self::typing::*;
 use self::decimal::*;
 use self::lists::*;
+use self::outputs::*;
 
 pub use self::functions::{is_builtin, BUILTIN_NAMES};
 
@@ -602,19 +604,19 @@ fn bind_select(
         exprs.push(e);
         Ok(())
     };
-    // A bare wide UDF item expands to its whole-validity lane plus k
-    // component lanes; the WideOut records how the boundary reassembles
-    // them into ONE field — `list | None` for an unnamed extern, a struct
-    // keyed by the declared names for a named one.
+    // A list or struct item expands to its lanes, the validity first; the
+    // WideOut records how the boundary reassembles them into ONE field —
+    // `list | None` for an unnamed extern or a list literal, a struct for
+    // the rest (see `WideShape`).
     let push_wide = |out_cols: &mut Vec<Col>,
                          exprs: &mut Vec<SExpr>,
                          wide_outs: &mut Vec<super::WideOut>,
                          base: String,
                          lanes: Vec<(String, SExpr)>,
-                         names: Vec<String>|
+                         shape: super::WideShape|
      -> Result<(), PrepareError> {
         let first = out_cols.len() as u32;
-        let width = (lanes.len() - 1) as u32;
+        debug_assert_eq!(lanes.len() as u32, shape.lanes(), "lanes and shape disagree");
         for (name, ex) in lanes {
             out_cols.push(Col {
                 name,
@@ -628,10 +630,24 @@ fn bind_select(
         wide_outs.push(super::WideOut {
             name: base,
             first,
-            width,
-            names,
+            shape,
         });
         Ok(())
+    };
+    // One star or COLUMNS column: a scalar lane, or a struct's lanes.
+    let push_val = |out_cols: &mut Vec<Col>,
+                    exprs: &mut Vec<SExpr>,
+                    wide_outs: &mut Vec<super::WideOut>,
+                    name: String,
+                    v: OutVal|
+     -> Result<(), PrepareError> {
+        match v {
+            OutVal::Scalar(e) => push_item(out_cols, exprs, name, e),
+            v => {
+                let (lanes, shape) = v.into_lanes(&name);
+                push_wide(out_cols, exprs, wide_outs, name, lanes, shape)
+            }
+        }
     };
     // A projection `share.rs` lowers reads lets as `SKind::Let`.
     binder.let_reads.set(!env.many);
@@ -664,35 +680,36 @@ fn bind_select(
                 }
                 continue;
             }
-            // A struct-valued item (θ export): same wide-lane boundary as a
-            // named extern's output struct.
+            // A list or struct-valued item: a list literal, a struct column,
+            // struct_pack, a struct literal or a named extern's output.
             let base = match item {
                 SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
                 _ => name_of(e)?,
             };
-            if let Some((lanes, names)) = binder.struct_pack_lanes(e, &base)? {
-                push_wide(&mut out_cols, &mut exprs, &mut wide_outs, base, lanes, names)?;
+            if let Some((lanes, shape)) = binder.wide_item(e, &base)? {
+                push_wide(&mut out_cols, &mut exprs, &mut wide_outs, base, lanes, shape)?;
                 continue;
             }
         }
         match item {
             SelectItem::UnnamedExpr(e) => {
                 if let Some((lanes, names)) = binder.wide_extern_lanes(e, &name_of(e)?)? {
+                    let shape = extern_shape(&lanes, names);
                     push_wide(
                         &mut out_cols,
                         &mut exprs,
                         &mut wide_outs,
                         name_of(e)?,
                         lanes,
-                        names,
+                        shape,
                     )?;
                     continue;
                 }
                 // COLUMNS('re') expands like a filtered star, keeping the
                 // bare column names (pins-waveB/).
                 if let Some(cols) = binder.expand_columns_item(e)? {
-                    for (name, ex) in cols {
-                        push_item(&mut out_cols, &mut exprs, name, ex)?;
+                    for (name, v) in cols {
+                        push_val(&mut out_cols, &mut exprs, &mut wide_outs, name, v)?;
                     }
                 } else {
                     push_item(&mut out_cols, &mut exprs, name_of(e)?, fold(binder.expr(e)?))?
@@ -702,21 +719,22 @@ fn bind_select(
                 if let Some((lanes, names)) = binder.wide_extern_lanes(expr, &alias.value)? {
                     // No lateral-alias registration: the assembled field is
                     // a container, which no scalar expression can reference.
+                    let shape = extern_shape(&lanes, names);
                     push_wide(
                         &mut out_cols,
                         &mut exprs,
                         &mut wide_outs,
                         alias.value.clone(),
                         lanes,
-                        names,
+                        shape,
                     )?;
                     continue;
                 }
                 // An alias on COLUMNS stamps EVERY expansion (duplicates
                 // feed the dedup rename — measured).
                 if let Some(cols) = binder.expand_columns_item(expr)? {
-                    for (_, ex) in cols {
-                        push_item(&mut out_cols, &mut exprs, alias.value.clone(), ex)?;
+                    for (_, v) in cols {
+                        push_val(&mut out_cols, &mut exprs, &mut wide_outs, alias.value.clone(), v)?;
                     }
                     continue;
                 }
@@ -730,8 +748,8 @@ fn bind_select(
                 push_item(&mut out_cols, &mut exprs, alias.value.clone(), e)?
             }
             SelectItem::Wildcard(opts) => {
-                for (name, e) in binder.expand_star(None, opts)? {
-                    push_item(&mut out_cols, &mut exprs, name, e)?;
+                for (name, v) in binder.expand_star(None, opts)? {
+                    push_val(&mut out_cols, &mut exprs, &mut wide_outs, name, v)?;
                 }
             }
             SelectItem::QualifiedWildcard(kind, opts) => {
@@ -751,8 +769,8 @@ fn bind_select(
                         return Err(unsup("expression.* wildcard"))
                     }
                 };
-                for (name, e) in binder.expand_star(Some(&table), opts)? {
-                    push_item(&mut out_cols, &mut exprs, name, e)?;
+                for (name, v) in binder.expand_star(Some(&table), opts)? {
+                    push_val(&mut out_cols, &mut exprs, &mut wide_outs, name, v)?;
                 }
             }
             SelectItem::ExprWithAliases { .. } => return Err(unsup("multi-alias SELECT item")),
@@ -779,6 +797,9 @@ fn bind_select(
             "SELECT list is empty after resolving * expressions!".to_string(),
         ));
     }
+    // The output fields' names, then the lanes' (a list or struct field's
+    // lanes are named after it, so two fields of one name would share them).
+    dedup_field_names(&mut out_cols, &mut wide_outs);
     dedup_output_names(&mut out_cols);
 
     // WHERE binds AFTER the projection so DuckDB's lateral-alias extension
