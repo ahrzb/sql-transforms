@@ -1059,6 +1059,47 @@ def test_an_unknown_id_raises_as_the_twin_does():
         assert "not in the fitted instances" in str(o.try_answer(sql))
 
 
+@pytest.mark.parametrize("returns", ["struct", "list"])
+@pytest.mark.parametrize("instances", [1, 2])
+def test_a_lane_of_one_arm_reads_no_id(returns, instances):
+    # Past the first lane, a lane that is one arm (one instance, or equal
+    # fits) is its expression alone: the body reads the id as often at any
+    # width. The first lane still answers each id as the twin does, on a
+    # read of the last lane too.
+    from confit.oracle import Oracle
+
+    from sql_transform.native._check import _serve
+
+    def make(width: int) -> PythonTransform:
+        X = np.random.default_rng(0).normal(size=(20, width))
+        r = (
+            pa.struct([(f"f{j}", pa.float64()) for j in range(width)])
+            if returns == "struct"
+            else pa.list_(pa.float64(), width)
+        )
+        takes = pa.schema([(f"x{i}", pa.float64()) for i in range(width)])
+        fits = {k: StandardScaler().fit(X) for k in range(instances)}
+        return PythonTransform("tf", fits, takes, r)
+
+    def rows(ids: list[int | None]) -> pa.Table:
+        x = pa.array([0.5] * len(ids))
+        return pa.table({"__iid": pa.array(ids, pa.int64()), "x0": x, "x1": x, "x2": x})
+
+    reads = [to_native(make(w), strict=True).sql_body.count('"__iid"') for w in (3, 6)]
+    assert reads[0] == reads[1]
+    step = make(3)
+    native = to_native(step, strict=True)
+    assert check(step, native, rows([0, None, instances - 1])) == 3
+    last = ".f2" if returns == "struct" else "[3]"
+    sql = f"SELECT tf(__iid, x0, x1, x2){last} AS o FROM __THIS__"
+    unknown = rows([99])
+    assert "not in the fitted instances" in str(_serve(sql, unknown, native))
+    with Oracle() as o:
+        native.register(o)
+        o.load("__THIS__", unknown)
+        assert "not in the fitted instances" in str(o.try_answer(sql))
+
+
 @pytest.mark.parametrize(
     "make",
     [

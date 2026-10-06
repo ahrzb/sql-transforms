@@ -16,9 +16,11 @@ The framework does the rest, the same way for every entry: one
 `SqlFunction` named like the step, taking the instance id then the
 features, whose every lane selects the instance's expression by id
 (`CASE WHEN id = 0 THEN ... WHEN id IN (1, 2) THEN ... END`, instances
-whose lane is the same SQL sharing an arm). As in the step, a NULL id
-answers NULL (a NULL struct or list, for a struct or list return) and an
-id the step does not know raises. Before it is returned, confit builds it into the query
+whose lane is the same tree sharing an arm). Past the first lane, a lane
+that is one arm (every lane, in a step of one instance) is the tree alone,
+without the CASE. As in the step, a NULL id answers NULL (a NULL struct or
+list, for a struct or list return) and an id the step does not know
+raises. Before it is returned, confit builds it into the query
 reading every lane (`query`): a translation confit refuses leaves the step
 Python.
 
@@ -179,17 +181,25 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
         same = SameTree()
 
         def select(j: int) -> S.Expr:
-            # Instances whose lane is the same tree (a stateless estimator,
-            # or equal fits) share one arm.
+            # Instances whose lane is the same tree (one instance, a
+            # stateless estimator, or equal fits) share one arm.
             arms: dict[int, tuple[list[int], S.Expr]] = {}
             for k, out in per_id:
                 key = same.key(out[j]) if len(per_id) > 1 else 0
                 arms.setdefault(key, ([], out[j]))[0].append(k)
+            (ks0, v0), *rest = arms.values()
+            if j and not rest:
+                # One arm needs no CASE past the first lane: a known id
+                # answers it, an unknown one raises from the first lane
+                # (below), and a NULL one is a NULL struct or list
+                # (`null_when`). Without a CASE per lane, a step of one
+                # instance builds 1.1-1.4x and serves 1.1-1.3x as fast
+                # (release build, master 4c831d8).
+                return v0
 
             def hit(ks: list[int]) -> S.Expr:
                 return iid == S.lit(ks[0]) if len(ks) == 1 else iid.isin(*ks)
 
-            (ks0, v0), *rest = arms.values()
             e = S.case(hit(ks0), v0)
             for ks, v in rest:
                 e = e.when(hit(ks), v)

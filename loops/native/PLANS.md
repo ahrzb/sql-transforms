@@ -15,6 +15,8 @@ Easiest first; each is one family, one PR.
    measurement, release build of 4865d9f). Then fit the trees cap again on
    the new spelling: reading 4 measured 0.25 ms a path step at 1,173 steps
    and 0.44 ms at 21,353 (finding 56), where `trees.py` assumes 0.28 ms.
+   Its build grew faster than the trees here (the board's T22 has the
+   measurements), so it may need its own cap, with the paths past it.
 2. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
