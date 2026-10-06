@@ -9,10 +9,18 @@ missing, or unknown. So rather than restating sklearn's rules (infrequent
 categories, `drop`, `encoded_missing_value`, `handle_unknown`, target
 means), the translation asks the fitted estimator: it transforms one probe
 row per class, reads the feature's block, and spells each lane as a CASE
-over the classes. The values are the twin's own, so the entry is bit-exact;
-a class the twin raises on (an unknown category under
-`handle_unknown="error"`) is NULL there, and the input guard traps on it
-(`_reject`).
+over the classes. The values are the twin's own, so the entry is bit-exact.
+
+Where the twin raises (an unknown category under `handle_unknown="error"`,
+or a missing value it did not fit), the input guard traps: one test a
+feature, a value in none of the classes the twin answers (`_reject`).
+Every other value a lane's ELSE then meets traps too, so the ELSE answers
+the lane's largest group, and a one-hot lane is one comparison. Past
+SEARCH_PAST strings, a test that a string is one of them is one substring
+search rather than an IN list (`_among`). confit builds the guard again at
+each field read of a struct output (loops/native/PLANS.md, "Needs from
+confit"), so with IN lists a wide encoder's build grew with its fields
+times its categories: MEASUREMENTS.
 
 The classes follow the feature's declared type, which fixes what the step
 hands `transform`: a string or None, a float or NaN, or a boolean or NaN
@@ -32,6 +40,12 @@ from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, TargetEncoder
 
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, rejects, translates
+
+# Past this many strings, `_among` tests a string by one substring search
+# rather than an equality with each (module docstring).
+SEARCH_PAST = 4
+# Separators for that search: the first that no string holds.
+_SEPARATORS = ("\x1f", "\x1e", "\x1d", "\x1c")
 
 
 def _widths(est: Any, n: int) -> list[int]:
@@ -127,9 +141,13 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
             known = [c for c in classes[j] if not _missing(c)]
             rows_b = [(c, _probe(est, bits, j, c, np.bool_)) for c in known]
         raises = t != pa.bool_() and unknown is None
-        _reject(xj, string, classes[j], rows, raises, null if booleans else None)
+        if raises and all(got is None for _, got in rows):
+            raise NotNative(
+                f"{type(est).__name__}: the twin raises on every value of feature {j}"
+            )
+        _reject(xj, string, rows, raises, null if booleans else None)
         if booleans:
-            _reject(xj, string, known, rows_b, False, ~null)
+            _reject(xj, string, rows_b, False, ~null)
         for lane in range(offset, offset + widths[j]):
             e = _lane(xj, string, rows, unknown, lane)
             if booleans:
@@ -146,22 +164,26 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
 def _reject(
     xj: S.Expr,
     string: bool,
-    classes: list[Any],
     rows: list[tuple[Any, list[float] | None]],
     unknown: bool,
     where: S.Expr | None,
 ) -> None:
-    """The input guard's tests for one feature (`_registry.rejects`): the
-    classes the twin raises on (`rows`), and, where it raises on an
-    `unknown` value (`handle_unknown="error"`), a value of none of them;
-    on rows where `where` holds, the form (float64 or boolean) the probes
-    ran in."""
-    raised = [c for c, got in rows if got is None]
-    tests = [_member(xj, string, raised)] if raised else []
+    """The input guard's test for one feature (`_registry.rejects`), on
+    rows where `where` holds (the form, float64 or boolean, the probes ran
+    in): where the twin raises on an `unknown` value
+    (`handle_unknown="error"`), a value in none of the classes it answers,
+    else one of the classes it raises on (`rows`)."""
     if unknown:
-        tests.append(~_member(xj, string, classes))
-    for test in tests:
-        rejects(test if where is None else where & test)
+        kept = [c for c, got in rows if got is not None]
+        test = ~_member(xj, string, kept)
+        if string and not any(_missing(c) for c in kept):
+            test = test | xj.isnull()  # NOT on NULL is NULL, not true
+    else:
+        raised = [c for c, got in rows if got is None]
+        if not raised:
+            return
+        test = _member(xj, string, raised)
+    rejects(test if where is None else where & test)
 
 
 def _probe(
@@ -190,14 +212,19 @@ def _lane(
     lane: int,
 ) -> S.Expr:
     """One output lane: the CASE over the feature's classes, the values
-    grouped, unknown values (and classes the twin raises on) in the ELSE."""
+    grouped. The ELSE answers unknown values or, where the twin raises on
+    them (`unknown` is None), the largest group: every other value it then
+    meets is one the twin raises on, where the input guard traps."""
     groups: dict[str, tuple[float, list[Any]]] = {}
     for c, got in rows:
         if got is None:
             continue
         v = got[lane]
         groups.setdefault(repr(v), (v, []))[1].append(c)
-    other = None if unknown is None else unknown[lane]
+    if unknown is not None:
+        other = unknown[lane]
+    else:
+        other = max(groups.values(), key=lambda g: len(g[1]), default=(None,))[0]
     arms = []
     for _, (v, members) in groups.items():
         if other is not None and repr(v) == repr(other):
@@ -215,15 +242,34 @@ def _lane(
 
 def _member(xj: S.Expr, string: bool, members: list[Any]) -> S.Expr:
     """`xj` falls in one of `members`: a missing member by IS NULL or isnan,
-    the rest by equality (so -0.0 is 0.0, as sklearn's matching has it)."""
+    the rest by `_among`."""
     present = [c for c in members if not _missing(c)]
     conds = []
     if present:
-        lits = [S.lit(c) if string else f64(c) for c in present]
-        conds.append(xj == lits[0] if len(lits) == 1 else xj.isin(*lits))
+        conds.append(_among(xj, string, present))
     if len(present) < len(members):
         conds.append(xj.isnull() if string else isnan(xj))
     e = conds[0]
     for c in conds[1:]:
         e = e | c
     return e
+
+
+def _among(xj: S.Expr, string: bool, present: list[Any]) -> S.Expr:
+    """`xj` equals one of `present`, none of them missing (on a NULL `xj`,
+    NULL or false): by equality, so -0.0 is 0.0 as sklearn's matching has
+    it, or, past SEARCH_PAST strings, by one substring search, which confit
+    builds faster (module docstring). Join the strings with a separator
+    that none holds, and wrap them in it. An `xj` that holds no separator,
+    wrapped in it, is found there exactly when it is one of the strings:
+    the match starts at a separator, where a string starts, and its last
+    character is the next separator, where that string ends. An `xj` that
+    holds one is none of them."""
+    if string and len(present) > SEARCH_PAST:
+        sep = next((s for s in _SEPARATORS if not any(s in c for c in present)), None)
+        if sep is not None:
+            joined = S.lit(sep + sep.join(present) + sep)
+            found = S.fn("contains", joined, S.fn("concat", S.lit(sep), xj, S.lit(sep)))
+            return found & ~S.fn("contains", xj, S.lit(sep))
+    lits = [S.lit(c) if string else f64(c) for c in present]
+    return xj == lits[0] if len(lits) == 1 else xj.isin(*lits)

@@ -1234,6 +1234,77 @@ def test_an_encoder_reads_a_boolean_row_by_its_dtype(make):
     assert check(step, to_native(step, strict=True), rows) >= 3
 
 
+@pytest.mark.parametrize("held", [0, 1, 4], ids=["free", "held-one", "held-all"])
+@pytest.mark.parametrize(
+    "make",
+    [
+        OrdinalEncoder,
+        lambda: OneHotEncoder(sparse_output=False),
+        lambda: OrdinalEncoder(
+            handle_unknown="use_encoded_value", unknown_value=-1, min_frequency=2
+        ),
+    ],
+    ids=["OrdinalEncoder", "OneHotEncoder", "OrdinalEncoder-infrequent"],
+)
+def test_an_encoder_finds_many_strings_by_one_search(make, held):
+    # Past SEARCH_PAST strings, a value is found among them by one substring
+    # search of the strings joined by a separator that none holds: the
+    # input guard's, and the infrequent group's. Where a string holds the
+    # first separator, the next; where one holds them all, an IN list. A
+    # part or a join of the strings, or a value holding a separator, is
+    # none of them.
+    from sql_transform.native.encode import _SEPARATORS, SEARCH_PAST
+
+    holds = {0: [], 1: ["q\x1fr"], 4: ["q" + "".join(_SEPARATORS)]}[held]
+    rare = ["", "a b", "日本", "ab", "x%y", *holds]
+    X = np.array([["a"]] * 4 + [["b"]] * 4 + [[c] for c in rare], dtype=object)
+    assert len(rare) > SEARCH_PAST
+    est = make().fit(X)
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.string())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    native = to_native(step, strict=True)
+    assert ("contains(" in native.sql_body) == (held < 4)
+    values = [
+        *["a", "b", *rare, None, "zz", "A", "日", "q", "r", "ba", "a b "],
+        *["a\x1fb", "\x1fa\x1f", "\x1f", "a\x1eb", "\x1ea\x1e", "a\x1f"],
+    ]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.string()),
+        }
+    )
+    assert check(step, native, rows) >= 2 + len(rare)
+
+
+def test_a_onehot_lane_tests_its_category_alone():
+    # Under handle_unknown="error" the ELSE answers the largest group, 0:
+    # every other value it meets traps in the input guard.
+    X = np.array([[f"c{i}"] for i in range(12)], dtype=object)
+    est = OneHotEncoder(sparse_output=False).fit(X)
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.string())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(12)]),
+    )
+    native = to_native(step, strict=True)
+    assert "IN (" not in native.sql_body
+    values = [f"c{i}" for i in range(12)] + [None, "zz", "c1\x1fc2", ""]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.string()),
+        }
+    )
+    assert check(step, native, rows) == 12
+
+
 def test_a_null_id_is_a_null_struct():
     # The whole struct, as DuckDB reads it from each definition (confit
     # serves field reads, which are NULL either way).
