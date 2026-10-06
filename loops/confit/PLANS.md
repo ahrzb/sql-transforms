@@ -44,23 +44,13 @@ catalog entries. Today:
 
 Open, low priority (the catalog caps it meanwhile):
 
-- **Two CASE trees in one expression build superlinearly** (asked
-  2026-10-05). QuantileTransformer's entry, `0.5*(tree(c) - tree(-c))` with
-  `c = coalesce(x, NaN)` and q bisection leaves per tree, built in 4.48 s at
-  q=2,000 on 49acad5; after #363 it builds in 0.28 / 0.66 / 1.76 s at q =
-  500 / 1,000 / 2,000, against 0.10 / 0.21 / 0.46 s for one tree of the
-  column: about 3.8 times one tree, growing a little faster than q. Find
-  where the remaining superlinear term is (the per-leaf `c` is shared now)
-  before the catalog lifts its 4,000-quantile cap.
-  The real entry (one instance, one feature, `to_native`) builds in about
-  1.6 s at q=1,000 and 5.5 s at q=2,000, the same on master 8a67154 and on
-  49acad5 (three alternating runs each, release, one container; a reported
-  2x regression after #363 did not reproduce here — a debug `.so`, which the
-  tests' native guard rebuilds when Rust sources are newer, is the likely
-  cause). The superlinear term is Cranelift's `define_function`: 1.1 s at
-  q=1,000 and 4.6 s at q=2,000, on a program linear in q (36,000 blocks,
-  60,000 instructions at q=2,000); frontend, lowering and verify together
-  stay under 0.8 s.
+- **Closed 2026-10-05: two CASE trees in one expression.** The catalog now
+  spells each QuantileTransformer feature as one search tree (native #391;
+  0.54 / 1.3 / 3.2 s at 1,000 / 2,000 / 4,000 quantiles), so it no longer
+  needs this. What remains general is Cranelift's superlinear compile of a
+  deep CASE tree (`define_function`: 1.1 s at q=1,000, 4.6 s at q=2,000 on a
+  program linear in q; IsotonicRegression at 20,000 thresholds: 22 s), on
+  the board as its own item.
 
 Follow-ups from the shared-subexpression work:
 
