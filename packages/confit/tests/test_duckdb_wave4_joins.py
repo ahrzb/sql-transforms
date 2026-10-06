@@ -9,8 +9,16 @@ rewrite, cross join to a 1-row static.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+import pyarrow as pa
 import pytest
 from test_duckdb_interpreter import duck_check, static
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from fuzz.parity import assert_parity  # noqa: E402
 
 R = static(
     {"id": "int", "category": "int", "budget": "int"},
@@ -229,6 +237,29 @@ def test_cross_join_to_multirow_static_rejects_cleanly():
             L_ROWS,
             {"two": two},
         )
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("n", [0, 1, 3])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT lid, val FROM __THIS__ CROSS JOIN s0",
+        "SELECT 7 AS o FROM __THIS__ JOIN s0 ON TRUE",
+        "SELECT lid FROM __THIS__ LEFT JOIN s0 ON TRUE",
+    ],
+)
+def test_a_join_that_reads_no_static_column_keeps_its_row_count(sql, n, shape):
+    # float32 is opaque to confit, so the join's map has no key and no value.
+    # The row count of the static table still decides the output. Such a map
+    # failed IR verification (campaign seeds 5101642, 5101719).
+    s0 = pa.table({"c0": pa.array([None] * n, pa.float32())})
+    rows = static(L, L_ROWS)
+    if n > 1 and shape is None:
+        v = assert_parity(sql, rows, statics={"s0": s0}, expect="REFUSED")
+        assert "has no equality key" in v.detail
+    else:
+        assert_parity(sql, rows, statics={"s0": s0}, shape=shape)
 
 
 @pytest.mark.parametrize(

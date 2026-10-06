@@ -81,8 +81,7 @@ fn err(errs: &mut Vec<VerifyError>, block: Option<usize>, inst: Option<usize>, m
 
 fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
     // A verified program must print to parseable canonical text, so text-only
-    // constraints (identifier function name, non-empty map signatures — the
-    // grammar cannot express `map() -> ()`) are verifier rules too.
+    // constraints (an identifier function name) are verifier rules too.
     if !super::print::is_ident(&p.name) {
         err(
             errs,
@@ -93,16 +92,13 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
     }
     // Maps may have EMPTY keys (cross join to a table whose
     // single-entry-ness the duplicate-key check enforces at compile) and
-    // EMPTY values (all-key/semi joins — the probe carries only the hit).
-    // A map that is empty on BOTH axes carries no information at all.
+    // EMPTY values (all-key/semi joins — the probe carries only the hit),
+    // or both: a keyless join that reads no column still carries whether
+    // the table has its row (`CROSS JOIN s` over a static table whose
+    // columns are all of a type confit does not serve; campaign seed
+    // 5101642).
     for (i, st) in p.statics.iter().enumerate() {
         match st {
-            StaticTy::Map { keys, values } if keys.is_empty() && values.is_empty() => err(
-                errs,
-                None,
-                None,
-                format!("@{i}: map static with neither keys nor values"),
-            ),
             StaticTy::Model { n_features: 0 } => err(
                 errs,
                 None,

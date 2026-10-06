@@ -294,8 +294,9 @@ struct BoundQuery {
     stages: Vec<Stage>,
     joins: Vec<JoinSpec>,
     out_cols: Vec<Col>,
-    /// Per output column: a constant NULL. DuckDB keeps a bare NULL typed
-    /// SQLNULL through a query level, and a consumer binds against that
+    /// Per output column: a constant NULL, or a whole item that reads such a
+    /// column of the level below. DuckDB keeps a bare NULL typed SQLNULL
+    /// through each query level, and a consumer binds against that
     /// type; confit does not model it, so the level above binds such a
     /// column only as a whole projection item and refuses it anywhere else
     /// ([`Binder::null_col`]). The refusal comes where the column binds,
@@ -486,7 +487,17 @@ fn bind_query<'q>(
     for e in b.lets.iter_mut() {
         into_level(e, off);
     }
-    let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
+    // A whole item that reads a bare NULL column passes it up as one: on
+    // DuckDB it is still SQLNULL a level higher.
+    let null_cols = b
+        .project
+        .iter()
+        .map(|(_, e)| match e.kind {
+            SKind::NullOf => true,
+            SKind::Slot(i) => inner.null_cols[i as usize],
+            _ => false,
+        })
+        .collect();
     let mut stages = inner.stages;
     stages.push(Stage {
         joins: (off..off + b.joins.len() as u32).collect(),

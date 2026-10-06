@@ -606,6 +606,17 @@ def test_the_sharded_nightly_findings_stay_fixed(seed, kind):
     assert oracle.run_case(gen.gen(seed)).kind == kind
 
 
+# Campaign seeds 5101642 and 5101719: a CROSS JOIN to a static table whose
+# columns are all float32, which confit does not serve, so the join reads
+# none of them. Its map then has no key and no value, which IR verification
+# rejected as an internal error. The static tables have more than one row,
+# so the case refuses by name.
+@pytest.mark.parametrize("seed", [5101642, 5101719])
+def test_a_join_that_reads_no_static_column_refuses_by_name(seed):
+    v = oracle.run_case(gen.gen(seed))
+    assert v.kind == "REFUSED" and "has no equality key" in v.detail, v.detail
+
+
 # 4211849: a bare name shared with a static struct column is ambiguous
 # (DuckDB's refusal), so qualifying it is a different query. 4873273: NOT over
 # a comparison is the negated comparison, so `NOT (a = b)` in a JOIN ON
