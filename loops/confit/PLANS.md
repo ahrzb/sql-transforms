@@ -258,6 +258,12 @@ The first five are ruled, in this order; the rest follow.
 
 ## Refusals
 
+- **An internal error, not a refusal by name,** for a CROSS JOIN (or `JOIN
+  ... ON TRUE`) to a static table whose columns are all opaque (one `float32`
+  column): `internal specializer bug: lowered program failed verification:
+  @0: map static with neither keys nor values` (campaign seeds 5101642,
+  5101719; master has it too). The verifier (`ir/verify.rs`) says such a map
+  carries no information, but its row count does: 0 rows give no output.
 - **Echo fallback.** `expr_refusal` names the expression forms seen so far; an
   unlisted form still prints itself. Add names as `refusal_quality`'s echo
   list shows them.
