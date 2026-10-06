@@ -6,10 +6,11 @@ concatenation of its parts' (below, `_column_transformer`, `_union`).
 The twin: `Xt = X`, then for each step of `_iter()` (every step, the final
 one included, skipping `"passthrough"` and `None`), `Xt = step.transform(Xt)`.
 The first step that runs is handed the row as the step hands it; every later
-one the previous step's output, a float64 array. So the translation hands
-the first step the features and their declared types, and each later step
-the previous step's lanes typed DOUBLE. A nested `Pipeline` is one more
-catalog entry, and composes the same way.
+one the previous step's output, a float64 array, or over boolean features
+only a boolean one where a step hands booleans back. So the translation
+hands the first step the features and their declared types, and each later
+step the previous step's lanes typed DOUBLE, or boolean then. A nested
+`Pipeline` is one more catalog entry, and composes the same way.
 
 Only bit-exact steps compose: a lane within k ulps of its twin, read by a
 later step, is not within k ulps after it (`x - mean_` near `mean_` turns
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import warnings
 from typing import Any
 
 import numpy as np
@@ -31,7 +33,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.compose._column_transformer import _is_empty_column_selection
 from sklearn.impute import MissingIndicator
 from sklearn.pipeline import FeatureUnion, Pipeline
-from sklearn.preprocessing import FunctionTransformer
+from sklearn.preprocessing import (
+    FunctionTransformer,
+    OneHotEncoder,
+    OrdinalEncoder,
+    TargetEncoder,
+)
 from sklearn.utils._indexing import _determine_key_type, _safe_indexing
 
 from sql_transform.native._helpers import f64
@@ -95,19 +102,42 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
                 f"Pipeline step {name!r}: {type(step).__name__} is not the last"
                 f" step and {why}, not float64"
             )
-    if len(steps) > 1 and types and all(t == pa.bool_() for t in types):
-        # The row is then a boolean array, which a selector hands on as is.
-        raise NotNative("Pipeline over boolean features only")
     if not steps and pa.string() in types:
         # Every step passes: the step's float() of a string raises.
         raise NotNative("Pipeline of passthrough steps over a string feature")
-    for _, name, step in steps:
+    # Over boolean features only, a row none NULL is a boolean array, and a
+    # step that hands booleans back (a selector, `Binarizer`, the identity)
+    # hands the next one a boolean array too: its lanes stay typed boolean,
+    # for the next step's own rule (`FunctionTransformer` has one).
+    booleans = bool(types) and all(t == pa.bool_() for t in types)
+    for k, (_, name, step) in enumerate(steps):
         try:
             x = list(entries[type(step)].translate(step, x, types))
         except NotNative as e:
             raise NotNative(f"Pipeline step {name!r}: {e}") from None
-        types = [pa.float64()] * len(x)
+        if booleans:
+            dtype = on_booleans(step, len(types))
+            booleans = dtype == np.bool_
+            if dtype not in (None, np.bool_, np.float64) and k < len(steps) - 1:
+                raise NotNative(
+                    f"Pipeline step {name!r}: {type(step).__name__} hands on"
+                    f" {dtype} over boolean features only"
+                )
+        types = [pa.bool_() if booleans else pa.float64()] * len(x)
     return x
+
+
+def on_booleans(est: Any, n: int) -> np.dtype | None:
+    """The dtype of `est`'s output on a row of `n` booleans, as the step
+    hands a row of boolean features none NULL; None where `est` raises on
+    it (as `SimpleImputer(strategy="most_frequent")` does: the twin then
+    answers only rows with a NULL, which are float64)."""
+    try:
+        with warnings.catch_warnings(), np.errstate(all="ignore"):
+            warnings.simplefilter("ignore")
+            return np.asarray(est.transform(np.zeros((1, n), dtype=bool))).dtype
+    except Exception:  # noqa: BLE001 — the twin raises it too
+        return None
 
 
 # ColumnTransformer and FeatureUnion (sklearn 1.9). Both run each fitted
@@ -180,6 +210,17 @@ def _reads_objects(part: Any) -> str | None:
     return None
 
 
+def _encodes(part: Any) -> bool:
+    """An encoder reads `part`'s columns: it is one, a pipeline's first
+    step that runs, or a part of a union."""
+    if isinstance(part, Pipeline):
+        runs = list(part._iter(with_final=True, filter_passthrough=True))
+        return bool(runs) and _encodes(runs[0][2])
+    if isinstance(part, ColumnTransformer | FeatureUnion):
+        return any(_encodes(p) for _, p, _ in _parts(part))
+    return isinstance(part, OneHotEncoder | OrdinalEncoder | TargetEncoder)
+
+
 def _narrow_float(est: Any) -> bool:
     """`est`'s output may be float32 or narrower, which a weight then
     multiplies in that precision."""
@@ -207,13 +248,31 @@ def _weight(
     if isinstance(w, numbers.Integral):
         # An integer output (or a passed boolean) times an integer is an
         # integer, whose zero has no sign: 0 * -2 is 0, not -0.0.
-        why = _float64_out(part)
-        if why or pa.bool_() in types:
+        why = _float64_out(part) or _passes_booleans(owner, part, types)
+        if why:
             raise NotNative(
                 f"{where}: an integer weight on an output that may not be float64"
-                f" ({why or 'a boolean feature'}) multiplies in integers"
+                f" ({why}) multiplies in integers"
             )
     return float(w)
+
+
+def _passes_booleans(owner: str, part: Any, types: list[pa.DataType]) -> str | None:
+    """Why `part` may hand on booleans, or None when it cannot. A
+    `ColumnTransformer` hands its parts objects, a boolean feature as a
+    Python bool, which a selector keeps. A `FeatureUnion` hands each part
+    the row, a boolean array only over boolean features none NULL (a
+    number or a NULL makes it float64): the part's output on one says."""
+    if pa.bool_() not in types:
+        return None
+    if owner == "ColumnTransformer":
+        return "a boolean feature"
+    if not all(t == pa.bool_() for t in types):
+        return None
+    dtype = on_booleans(part, len(types))
+    if dtype in (None, np.float64):
+        return None
+    return f"{dtype} over boolean features only"
 
 
 def _part(
@@ -285,6 +344,14 @@ def _column_transformer(
         why = _reads_objects(part)
         if why:
             raise NotNative(f"{where}: {why}, as the twin hands it")
+        if any(types[i] == pa.bool_() for i in cols) and _encodes(part):
+            # An object array of Python bools, which sklearn matches its
+            # own way (categories [nan]: [True, False] answers as objects
+            # and raises as booleans); the entry probes the step's rows.
+            raise NotNative(
+                f"{where}: an encoder over a boolean feature reads it as an"
+                " object, which the entry does not probe"
+            )
         out += _part(
             "ColumnTransformer",
             name,

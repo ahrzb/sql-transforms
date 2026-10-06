@@ -11,13 +11,16 @@ import pytest
 import sklearn
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
+from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
+    Binarizer,
     FunctionTransformer,
     MaxAbsScaler,
     MinMaxScaler,
     OneHotEncoder,
+    OrdinalEncoder,
     PowerTransformer,
     StandardScaler,
 )
@@ -175,16 +178,145 @@ def test_a_pipeline_with_transform_input_stays_python():
             to_native(step, strict=True)
 
 
-def test_a_pipeline_over_booleans_only_stays_python():
-    from sklearn.feature_selection import VarianceThreshold
+_BITS = np.array([[True, False], [False, False], [True, True], [False, True]])
+_BIT_ROWS = {
+    "__iid": pa.array([0, 0, 0, 0, None], pa.int64()),
+    "x0": pa.array([True, False, None, True, False]),
+    "x1": pa.array([False, True, True, None, True]),
+}
 
-    X = np.array([[True, False], [False, False], [True, True]])
-    step = _step(
-        make_pipeline(VarianceThreshold(), StandardScaler()),
-        X,
-        [pa.bool_(), pa.bool_()],
+
+def _bits(est, beside: bool = False) -> tuple[PythonTransform, pa.Table]:
+    """`est` over two boolean features (and a double, `beside`), and rows
+    with booleans only, NULLs and a NULL id."""
+    X, types, rows = _BITS, [pa.bool_(), pa.bool_()], _BIT_ROWS
+    if beside:
+        X = np.column_stack([_BITS.astype(float), [1.5, -2.0, 0.5, 3.0]])
+        types = [*types, pa.float64()]
+        rows = {**rows, "x2": pa.array([2.5, -0.0, None, 4.0, 1.0])}
+    est.fit(X, np.arange(len(X)) % 2)
+    # The width from a float row: a boolean one may raise (`np.negative`).
+    width = np.asarray(est.transform(X[:1].astype(float))).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{i}", t) for i, t in enumerate(types)]),
+        pa.struct([(f"f{j}", pa.float64()) for j in range(width)]),
     )
-    with pytest.raises(NotNative, match="boolean features only"):
+    return step, pa.table(rows)
+
+
+@pytest.mark.parametrize("beside", [False, True], ids=["booleans", "beside-double"])
+def test_a_pipeline_hands_booleans_on_as_its_twin_does(beside):
+    # A selector hands a boolean row on as booleans, which the next step
+    # reads as 0/1, as it reads its own boolean features.
+    for est, compared in (
+        (make_pipeline(VarianceThreshold(), StandardScaler()), 5),
+        # Binarizer rejects NaN: the twin answers the rows without a NULL.
+        (
+            make_pipeline(
+                VarianceThreshold(), Binarizer(threshold=0.5), MaxAbsScaler()
+            ),
+            3,
+        ),
+        (make_pipeline(VarianceThreshold(), FunctionTransformer(np.sqrt)), 5),
+        (make_pipeline(Binarizer(), OneHotEncoder(sparse_output=False)), 3),
+    ):
+        step, rows = _bits(est, beside)
+        assert check(step, to_native(step, strict=True), rows) == compared
+
+
+@pytest.mark.parametrize(
+    "make, reason",
+    [
+        (
+            lambda: make_pipeline(
+                VarianceThreshold(), FunctionTransformer(np.negative)
+            ),
+            r"step 'functiontransformer': FunctionTransformer\(func=np\.negative\)"
+            " over boolean features only: numpy raises TypeError",
+        ),
+        (
+            lambda: make_pipeline(
+                VarianceThreshold(), FunctionTransformer(np.sqrt), StandardScaler()
+            ),
+            "step 'functiontransformer': FunctionTransformer hands on float16 over"
+            " boolean features only",
+        ),
+    ],
+    ids=["a-function-numpy-refuses", "a-narrow-dtype-handed-on"],
+)
+def test_a_pipeline_over_booleans_only_refuses(make, reason):
+    step, _ = _bits(make())
+    with pytest.raises(NotNative, match=reason):
+        to_native(step, strict=True)
+    # Beside a double the row is float64: served.
+    step, rows = _bits(make(), beside=True)
+    assert check(step, to_native(step, strict=True), rows) == 5
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        lambda: OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+        lambda: make_pipeline(
+            OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+            StandardScaler(),
+        ),
+    ],
+    ids=["encoder", "pipeline"],
+)
+def test_a_column_transformer_refuses_an_encoder_over_a_boolean(part):
+    step, _ = _bits(ColumnTransformer([("enc", part(), [0, 1])]), beside=True)
+    with pytest.raises(
+        NotNative,
+        match="part 'enc': an encoder over a boolean feature reads it as an object",
+    ):
+        to_native(step, strict=True)
+    # Over the double only, it is served.
+    step, rows = _bits(
+        ColumnTransformer([("enc", part(), [2]), ("p", "passthrough", [0, 1])]),
+        beside=True,
+    )
+    assert check(step, to_native(step, strict=True), rows) == 5
+
+
+def test_an_integer_weight_over_booleans():
+    # A FeatureUnion part that hands booleans back, times an integer, is an
+    # integer (0 * -2 is 0, not -0.0): refused over booleans only, served
+    # beside a double, where the row is float64.
+    def make():
+        return FeatureUnion(
+            [("sel", VarianceThreshold()), ("std", StandardScaler())],
+            transformer_weights={"sel": -2, "std": 3},
+        )
+
+    step, _ = _bits(make())
+    with pytest.raises(
+        NotNative,
+        match="part 'sel': an integer weight on an output that may not be float64"
+        r" \(bool over boolean features only\)",
+    ):
+        to_native(step, strict=True)
+    step, rows = _bits(make(), beside=True)
+    assert check(step, to_native(step, strict=True), rows) == 5
+    # A part whose output is float64 on a boolean row takes it.
+    step, rows = _bits(
+        FeatureUnion([("std", StandardScaler())], transformer_weights={"std": -2})
+    )
+    assert check(step, to_native(step, strict=True), rows) == 5
+    # A ColumnTransformer hands its parts objects, a boolean as a Python
+    # bool, which a selector keeps: refused over any boolean feature.
+    step, _ = _bits(
+        ColumnTransformer(
+            [("sel", VarianceThreshold(), [0, 2]), ("std", StandardScaler(), [1])],
+            transformer_weights={"sel": -2},
+        ),
+        beside=True,
+    )
+    with pytest.raises(
+        NotNative, match=r"part 'sel': an integer weight .* \(a boolean feature\)"
+    ):
         to_native(step, strict=True)
 
 

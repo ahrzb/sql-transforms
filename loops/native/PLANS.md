@@ -8,11 +8,6 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Boolean features in the fixture generator.** No entry is tested on a
-   boolean column yet ("Left Python", the encoders), though the step reads
-   one as 0/1 (`_registry._feature`) and a `ColumnTransformer` passes it
-   through. Every class's draws change, so it is its own ticket, run alone.
-
 ## Waiting on the owner
 
 - **`AdditiveChi2Sampler`:** its lanes are `factor * cos(j * (s *
@@ -129,8 +124,6 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `OneHotEncoder(sparse_output=True)`, the default: a sparse output, which
   the Python step does not serve either (it reads a row with `float()`,
   and a sparse row is not a float). A note for the step, not the catalog.
-- An encoder over a boolean feature: the fixtures make no boolean features
-  yet, for any entry.
 - `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
   for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
   twin rounds x to float32 before it bins it, which the entry does not
@@ -152,8 +145,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
   (bit-exact) and `exp`, `log`, `log2`, `tan` (within 1 ulp), `log10`
   (within 2) and `cbrt` (within 3) (lambdas, partials, user functions,
-  other ufuncs); with `kw_args`; over a string feature, or a boolean one
-  except for the identity (numpy keeps a boolean row boolean). `log1p`
+  other ufuncs); with `kw_args`; over a string feature. Over boolean
+  features only (a row none NULL is a boolean array), a function whose
+  answers on False and True are not its doubles' on 0.0 and 1.0
+  (`function._on_booleans`): `negative`, `positive` and `sign` raise,
+  `reciprocal` answers int8 (1/False is 0), `sin`, `cos`, `tan` and `exp`
+  answer float16. `log1p`
   and `expm1` have no DuckDB function. `sin` and `cos`,
   and the bounded functions, only where `kernel_distance` finds numpy's
   kernel within the function's bound of confit's (numpy picks its kernel
@@ -166,8 +163,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
   whose output is not float64 (`MissingIndicator`'s booleans, an encoder's
   or discretizer's `dtype`: exact 0/1 or small integers either way, not
   yet shown to read the same downstream); passthrough steps only, over a
-  string feature (the step's `float()` raises). A `set_output` container
-  between steps is not examined yet.
+  string feature (the step's `float()` raises); over boolean features
+  only, a step before the last that hands on a dtype other than bool or
+  float64 (`FunctionTransformer(np.sqrt)`'s float16; a selector's,
+  `Binarizer`'s or the identity's booleans are served, read as 0/1 by
+  the next step). A `set_output` container between steps is not examined
+  yet.
 - `SplineTransformer(sparse_output=True)`: a sparse output
   (decisions/open/sparse-outputs.md). `extrapolation="linear"` at
   `degree=0, n_knots=2` over two or more features: the twin's running
@@ -195,8 +196,14 @@ Configurations a translator declines (`NotNative`), each with its ground:
   array, on which `np.sqrt` raises and the exact functions answer as
   Python floats do (conservative for those). A weight that is not a
   double, on a float32 output (multiplied in float32), or an integer
-  weight on an output that may not be float64 or over a boolean feature
-  (an integer product has no -0.0); a weighted passthrough in a
+  weight on an output that may not be float64 (an integer product has no
+  -0.0): in a `ColumnTransformer` over any boolean feature (handed as a
+  Python bool, which a selector keeps), in a `FeatureUnion` over boolean
+  features only, where the part hands a boolean row back not float64; an
+  encoder part over a boolean feature in a `ColumnTransformer` (handed a
+  Python bool in an object array, which sklearn matches its own way:
+  categories [nan] answer [True, False] as objects and raise on it as
+  booleans; the entry probes the step's rows); a weighted passthrough in a
   `FeatureUnion` (the twin multiplies the step's list, which raises). A
   `ColumnTransformer` with a passthrough part before the last step of a
   `Pipeline` (its object output, as for the `Pipeline` rule above).

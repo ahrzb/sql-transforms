@@ -605,6 +605,14 @@ SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 # past 300 lanes (PolynomialFeatures, OneHotEncoder, KBinsDiscretizer) run
 # in 35 s, against 31 s at 300 and 44 s at 2,000 (master 49acad5).
 MAX_LANES = 1000
+# A feature's type: a double, an integer or a boolean, by these cumulative
+# shares (a boolean about 15%); and the share of steps all boolean.
+SHARES = [0.6, 0.85]
+BOOL_STEPS = 0.07
+# Refusals the generator draws, each tested by name on its own
+# (test_a_function_transformer_refuses, compose_test.py): a function the
+# twin computes in a narrower dtype on a boolean array.
+REFUSED = ("over boolean features only",)
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
@@ -631,6 +639,9 @@ def _fit_matrix(
     cols = []
     strings = [t == pa.string() for t in types]
     for kind, t, hole in zip(kinds, types, holes, strict=True):
+        if t == pa.bool_():
+            cols.append(_bool_column(rng, n, hole, marker))
+            continue
         if t == pa.string():
             # The step's share of VOCAB for this feature: kind - 3 of them.
             c = rng.choice(np.array(VOCAB[: kind - 3], dtype=object), n)
@@ -675,9 +686,41 @@ def _fit_matrix(
         # rows reach `transform`.
         X = np.empty((n, len(cols)), dtype=object)
         for j, c in enumerate(cols):
-            X[:, j] = c if strings[j] else [float(v) for v in c]
+            boolean = types[j] == pa.bool_()
+            X[:, j] = c if strings[j] else [_scalar(v, boolean) for v in c]
         return X, y
+    # Booleans only make a boolean matrix; beside a number, or with a hole,
+    # a float64 one: as numpy makes the step's row.
     return np.column_stack(cols), y
+
+
+def _bool_column(
+    rng: np.random.Generator, n: int, hole: str | None, marker: float
+) -> np.ndarray:
+    """A boolean feature's fit column: True at a drawn rate, sometimes
+    never or always (a constant column). A hole is the marker, NaN unless
+    an imputer says otherwise, as a NULL boolean reaches `transform` as
+    NaN, and it makes the column float; without holes it stays boolean.
+    A marker of 0 or 1 is not avoided as a number's is: the step hands
+    False and True, which equal it, and the twin reads them as missing."""
+    p = (0.0, 1.0, rng.uniform(0.1, 0.9))[int(rng.choice(3, p=[0.1, 0.1, 0.8]))]
+    c = rng.random(n) < p
+    if hole is None:
+        return c
+    f = c.astype(float)
+    if hole == "all":
+        f[:] = marker
+    else:
+        f[rng.random(n) < 0.2] = marker
+        f[rng.integers(n)] = marker
+    return f
+
+
+def _scalar(v: Any, boolean: bool) -> Any:
+    """A fit value in an object matrix as the step hands it: a boolean
+    feature's False and True as Python bools (from a float column too, one
+    with holes), a number or a hole as a float."""
+    return bool(v) if boolean and v in (0.0, 1.0) else float(v)
 
 
 def _step(cls_factory, seed: int, variant: int = 0) -> PythonTransform:
@@ -717,21 +760,34 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     wide = rng.random() < 0.3
     n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
     n_features = min(n_features, getattr(cls_factory, "max_features", n_features))
-    types = [
-        pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
-    ]
+    # Mostly doubles, some integers and booleans; a few steps all boolean,
+    # whose rows reach `transform` as a boolean array.
+    if rng.random() < BOOL_STEPS:
+        types = [pa.bool_()] * n_features
+    else:
+        types = [
+            (pa.float64(), pa.int64(), pa.bool_())[int(np.searchsorted(SHARES, r))]
+            for r in rng.random(n_features)
+        ]
     kinds = [int(rng.integers(5)) for _ in range(n_features)]
     runs = _runs(cls_factory())
     proto = runs[0]  # what reads the row
     positive = getattr(cls_factory, "positive", False)
+    if positive:
+        # No boolean column fits: False is not positive, and all True is
+        # constant, which Box-Cox's fit rejects too.
+        types = [pa.float64() if t == pa.bool_() else t for t in types]
     if not proto.__sklearn_tags__().input_tags.two_d_array:
         # A one-dimensional input (IsotonicRegression): one feature.
         n_features, types, kinds = 1, types[:1], kinds[:1]
     regression = runs[-1].__sklearn_tags__().estimator_type == "regressor"
     if proto.__sklearn_tags__().input_tags.categorical:
         # Categories: few distinct values per feature, about half of them
-        # strings (kind 5..8: two to five of VOCAB).
+        # strings (kind 5..8: two to five of VOCAB), the others booleans or
+        # few-valued numbers; an all-boolean step stays so.
         for j in range(n_features):
+            if types[j] == pa.bool_():
+                continue
             if rng.random() < 0.5:
                 types[j], kinds[j] = pa.string(), int(rng.integers(5, 9))
             else:
@@ -768,7 +824,9 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
                 if k and w != width:
                     break
                 instances[k], width = est, w
-        except ValueError:
+        except (ValueError, TypeError):
+            # sklearn rejects the data, or numpy cannot run the fit on it
+            # (a quantile of a boolean column subtracts booleans).
             return None
     if width == 0 or width > MAX_LANES:
         return None
@@ -815,6 +873,13 @@ def _rows(step: PythonTransform, seed: int, positive: bool = False) -> pa.Table:
             ]
             cols[f.name] = pa.array(strs, pa.string())
             continue
+        if f.type == pa.bool_():
+            bits = [
+                None if g == "nulls" and rng.random() < 0.3 else rng.random() < 0.5
+                for g in regimes
+            ]
+            cols[f.name] = pa.array(bits, pa.bool_())
+            continue
         vals = [_value(rng, g) for g in regimes]
         if positive:
             vals = [None if v is None else abs(v) for v in vals]
@@ -845,8 +910,9 @@ def test_an_entry_matches_its_twin(cls, j, seed):
     try:
         native = to_native(step, strict=True)
     except NotNative as e:
-        # A wide step may outgrow what confit builds; a narrow one may not.
-        if len(step.takes) <= 4:
+        # A wide step may outgrow what confit builds; a narrow one may not,
+        # unless it is a configuration refused by name (REFUSED).
+        if len(step.takes) <= 4 and not any(r in str(e) for r in REFUSED):
             raise
         pytest.skip(f"stays Python: {e}")
     rows = _rows(step, seed, getattr(make, "positive", False))
@@ -957,15 +1023,137 @@ def test_an_encoder_reads_a_string_feature_missing_at_fit(make):
     assert check(step, to_native(step, strict=True), rows) == 5
 
 
+def _encoder_fit(beside: str | None, hole: bool) -> tuple[np.ndarray, list]:
+    """Two boolean columns (the first constant True), and a third beside
+    them: none, a number or a string; with a hole (NaN) in the second."""
+    bits = np.array([[True, False], [True, True], [True, False], [True, True]] * 2)
+    cols: list[Any] = [bits[:, 0], bits[:, 1].astype(float) if hole else bits[:, 1]]
+    if hole:
+        cols[1][3] = np.nan
+    types = [pa.bool_(), pa.bool_()]
+    if beside is None:
+        return np.column_stack(cols), types
+    if beside == "number":
+        cols.append(np.arange(8) % 3 - 1.0)
+        return np.column_stack(cols), [*types, pa.float64()]
+    X = np.empty((8, 3), dtype=object)
+    for j in (0, 1):
+        X[:, j] = [v if v != v else bool(v) for v in cols[j]]
+    X[:, 2] = ["a", "b"] * 4
+    return X, [*types, pa.string()]
+
+
+@pytest.mark.parametrize(
+    "beside, hole, dtype",
+    [
+        (None, False, np.bool_),
+        (None, True, np.float64),
+        ("number", False, np.float64),
+        ("string", False, object),
+        ("string", True, object),
+    ],
+    ids=["bool", "bool-hole", "float", "object", "object-hole"],
+)
+@pytest.mark.parametrize(
+    "make",
+    [
+        OrdinalEncoder,
+        lambda: OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-1,
+            encoded_missing_value=-2,
+        ),
+        lambda: OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+        lambda: OneHotEncoder(sparse_output=False, drop="if_binary"),
+        TargetEncoder,
+    ],
+    ids=["ordinal", "ordinal-unknown", "onehot", "onehot-if-binary", "target"],
+)
+def test_an_encoder_reads_a_boolean_feature(make, beside, hole, dtype):
+    # Its categories are booleans, doubles or objects as the fit matrix
+    # is; the step hands False, True or NaN, and the first feature's False
+    # was never fitted.
+    X, types = _encoder_fit(beside, hole)
+    est = make().fit(X, np.array([0, 1] * 4))
+    assert est.categories_[1].dtype == dtype
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{i}", t) for i, t in enumerate(types)]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    cols = {
+        "__iid": pa.array([0] * 6, pa.int64()),
+        "x0": pa.array([True, False, None, True, False, True]),
+        "x1": pa.array([False, True, True, None, False, True]),
+    }
+    if beside == "number":
+        cols["x2"] = pa.array([0.0, 1.0, -1.0, None, 7.0, 0.0])
+    elif beside == "string":
+        cols["x2"] = pa.array(["a", "b", None, "a", "zz", "b"])
+    native = to_native(step, strict=True)
+    assert check(step, native, pa.table(cols)) > 0
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+        lambda: OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+        lambda: TargetEncoder(target_type="continuous"),
+    ],
+    ids=["OrdinalEncoder", "OneHotEncoder", "TargetEncoder"],
+)
+def test_an_encoder_reads_a_boolean_row_by_its_dtype(make):
+    # A first feature fitted only missing (categories [nan]): True is
+    # unknown, which a float64 row (a NULL in it) answers and a boolean
+    # row (none) may not; the entry follows each.
+    X = np.array([[np.nan, 1.0], [np.nan, 0.0], [np.nan, 1.0], [np.nan, 0.0]])
+    est = make().fit(X, np.array([0.5, 1.5, 2.0, -1.0]))
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    takes = pa.schema([("x0", pa.bool_()), ("x1", pa.bool_())])
+    step = PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), width))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * 5, pa.int64()),
+            "x0": pa.array([True, True, None, False, True]),
+            "x1": pa.array([False, None, True, None, True]),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) >= 3
+
+
+def test_an_imputer_answers_a_boolean_row_its_twin_rejects():
+    # A row of booleans none NULL is a boolean array, which
+    # SimpleImputer(strategy="most_frequent") rejects; the entry answers it
+    # (goal.md, "Tolerated differences"), and a row with a NULL, which is
+    # float64, as the twin does.
+    X = np.array([[1.0, 0.0], [np.nan, 1.0], [1.0, 1.0], [0.0, np.nan]])
+    est = SimpleImputer(strategy="most_frequent").fit(X)
+    takes = pa.schema([("x0", pa.bool_()), ("x1", pa.bool_())])
+    step = PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), 2))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0, 0, 0, 0], pa.int64()),
+            "x0": pa.array([True, None, False, None]),
+            "x1": pa.array([False, True, None, None]),
+        }
+    )
+    with pytest.raises(ValueError, match="does not support data with dtype bool"):
+        est.transform([[True, False]])
+    assert check(step, to_native(step, strict=True), rows) == 3
+
+
 def test_a_null_id_is_a_null_struct():
     # The whole struct, as DuckDB reads it from each definition (confit
     # serves field reads, which are NULL either way).
     from confit.oracle import Oracle
 
-    step = _step(StandardScaler, 1)
+    step = _step(StandardScaler, 4)
     assert pa.types.is_struct(step.returns)
     args = ", ".join(["__iid", *step.takes.names])
-    rows = _rows(step, 1).slice(0, 2)
+    rows = _rows(step, 4).slice(0, 2)
     rows = rows.set_column(0, "__iid", pa.array([None, 0], pa.int64()))
     answers = []
     for fn in (step, to_native(step, strict=True)):
@@ -1128,6 +1316,37 @@ def test_the_identity_passes_a_boolean_as_its_double():
     assert check(step, to_native(step, strict=True), rows) == 3
 
 
+@pytest.mark.parametrize(
+    "func", [np.abs, np.square, np.sqrt, np.floor, np.log, np.sin, np.negative]
+)
+@pytest.mark.parametrize("beside", [False, True], ids=["booleans", "beside-double"])
+def test_a_function_over_booleans_answers_as_numpy(func, beside):
+    # Over booleans only, a row none NULL is a boolean array: served where
+    # numpy answers it as it answers 0.0 and 1.0. Beside a double (or with
+    # a NULL) the row is float64, and every served function serves.
+    est = FunctionTransformer(func)
+    if not beside and func in (np.sin, np.negative):
+        with pytest.raises(NotNative, match="over boolean features only"):
+            to_native(_bool_step(est, beside), strict=True)
+        return
+    step = _bool_step(est, beside)
+    rows = {
+        "__iid": pa.array([0, 0, 0, 0, None], pa.int64()),
+        "x0": pa.array([True, False, None, True, False]),
+        "x1": pa.array([False, False, True, None, True]),
+    }
+    if beside:
+        rows["x2"] = pa.array([2.5, -0.0, None, 4.0, 1.0])
+    assert check(step, to_native(step, strict=True), pa.table(rows)) == 5
+
+
+def _bool_step(est: Any, beside: bool) -> PythonTransform:
+    types = [pa.bool_(), pa.bool_(), *([pa.float64()] if beside else [])]
+    est.fit(np.zeros((2, len(types))))
+    takes = pa.schema([(f"x{i}", t) for i, t in enumerate(types)])
+    return PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), len(types)))
+
+
 def _sum_rows(X):
     return np.asarray(X, dtype=float) + 1.0
 
@@ -1152,8 +1371,21 @@ def _sum_rows(X):
             "kw_args",
         ),
         (FunctionTransformer(), [pa.string()], "string feature"),
-        (FunctionTransformer(np.square), [pa.bool_()], "boolean feature"),
-        (FunctionTransformer(np.log), [pa.bool_()], "boolean feature"),
+        (
+            FunctionTransformer(np.negative),
+            [pa.bool_()],
+            r"func=np\.negative\) over boolean features only: numpy raises TypeError",
+        ),
+        (
+            FunctionTransformer(np.sin),
+            [pa.bool_(), pa.bool_()],
+            r"over boolean features only: it answers float16 \[0\.0, 0\.8413",
+        ),
+        (
+            FunctionTransformer(np.reciprocal, validate=True),
+            [pa.bool_()],
+            r"over boolean features only: it answers int8 \[0, 1\], not \[inf, 1\.0\]",
+        ),
     ],
     ids=lambda v: None,
 )
