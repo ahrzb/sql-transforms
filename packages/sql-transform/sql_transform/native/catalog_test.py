@@ -236,6 +236,14 @@ FIXTURES[QuantileTransformer] = [
 ]
 
 
+def narrow(factory: Callable[[], Any], n: int) -> Callable[[], Any]:
+    """`factory`'s steps take at most `n` features: a translation whose
+    build time grows faster than its width (a family's measured widths
+    are in its module) is checked the same on fewer of them."""
+    factory.max_features = n  # type: ignore[attr-defined]
+    return factory
+
+
 def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
     """A SplineTransformer given an array of knots, the same for each of
     however many features its fit sees (the step draws its width)."""
@@ -261,8 +269,13 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 # under "uniform", runs under "quantile", where few-valued columns do too,
 # and a zero period under "periodic"); a column only missing makes NaN
 # knots under "quantile". Rows at and beside the knots are in
-# test_spline_at_the_knots. Every width the generator draws builds in a few
-# seconds since confit #387 (spline.py, `_build_estimate`).
+# test_spline_at_the_knots. From degree 2 the steps take at most
+# SPLINE_FEATURES features. Every width the generator draws builds in a few
+# seconds since confit #387 (spline.py, `_build_estimate`), but the
+# family's gate share grows with it: 31 s on 4 workers at 8 features, 49 s
+# at 16, 60 s without the limit (2026-10-06). The 200-seed sweep
+# (NATIVE_SEEDS=200, loops/native/report-format.md) covers every width.
+SPLINE_FEATURES = 8
 FIXTURES[SplineTransformer] = [
     SplineTransformer,
     lambda: SplineTransformer(degree=0, n_knots=2, extrapolation="continue"),
@@ -272,31 +285,36 @@ FIXTURES[SplineTransformer] = [
         degree=1, n_knots=3, extrapolation="linear", include_bias=False
     ),
     lambda: SplineTransformer(degree=1, n_knots=2, extrapolation="periodic"),
-    lambda: SplineTransformer(
-        degree=2, n_knots=6, knots="quantile", extrapolation="periodic"
+    *(
+        narrow(f, SPLINE_FEATURES)
+        for f in [
+            lambda: SplineTransformer(
+                degree=2, n_knots=6, knots="quantile", extrapolation="periodic"
+            ),
+            lambda: SplineTransformer(
+                degree=2,
+                n_knots=4,
+                knots="quantile",
+                extrapolation="constant",
+                order="F",
+            ),
+            lambda: SplineTransformer(degree=3, n_knots=8, extrapolation="error"),
+            lambda: SplineTransformer(
+                degree=3, n_knots=4, extrapolation="continue", handle_missing="error"
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=5, extrapolation="periodic", include_bias=False
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=4, knots="quantile", extrapolation="continue"
+            ),
+            lambda: SplineTransformer(
+                degree=4, n_knots=3, extrapolation="linear", handle_missing="error"
+            ),
+            _spline_with_knots(degree=2, extrapolation="continue"),
+            _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
+        ]
     ),
-    lambda: SplineTransformer(
-        degree=2,
-        n_knots=4,
-        knots="quantile",
-        extrapolation="constant",
-        order="F",
-    ),
-    lambda: SplineTransformer(degree=3, n_knots=8, extrapolation="error"),
-    lambda: SplineTransformer(
-        degree=3, n_knots=4, extrapolation="continue", handle_missing="error"
-    ),
-    lambda: SplineTransformer(
-        degree=4, n_knots=5, extrapolation="periodic", include_bias=False
-    ),
-    lambda: SplineTransformer(
-        degree=4, n_knots=4, knots="quantile", extrapolation="continue"
-    ),
-    lambda: SplineTransformer(
-        degree=4, n_knots=3, extrapolation="linear", handle_missing="error"
-    ),
-    _spline_with_knots(degree=2, extrapolation="continue"),
-    _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
 ]
 
 
@@ -698,6 +716,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # Mostly narrow; sometimes wide enough for a row reduction's blocks.
     wide = rng.random() < 0.3
     n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
+    n_features = min(n_features, getattr(cls_factory, "max_features", n_features))
     types = [
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]

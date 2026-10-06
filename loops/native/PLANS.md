@@ -62,14 +62,15 @@ Easiest first; each is one family, one PR.
   just before its first reader) took the build from growing with the
   parameters times that text to about linear in it: 32 features of degree
   3, 8 knots, build in 1.1-2.4 s (21-46 s before), and the entry's 7 s
-  cap now refuses only degree 5 at 7 knots from 32 features, and degree 4
-  or 5 at 64 (spline.py, `_build_estimate`). The size still doubles per
+  cap now refuses only degree 5 at 7 knots from 32 features (`continue`,
+  `periodic`) or 64 (the others), and degree 4 at 64 (`continue`, 5
+  knots) (spline.py, `_build_estimate`). The size still doubles per
   degree, so the need stands: a binding (a `let`, or a nested function
   whose arguments are evaluated once) would make the recurrence linear in
   the degree, and serve the steps past the token cap.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
-#353, #358, #362, #363, #374, #375, #377, #390): a constant CASE
+#353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -102,7 +103,10 @@ under a guard on `abs(x)` as trap-free (`FunctionTransformer(np.sin)` at
 and 19.5 us at 128, uncapped, with the guard spelled through `abs`); and
 a subexpression shared only where it costs no row anything (a
 three-instance `QuantileTransformer` served 64 rows in 21,480 us after
-#363; now 1,033; release build, master 8a67154); and `cbrt` as glibc's,
+#363; now 1,033; release build, master 8a67154); a shared value
+computed just before its first reader (a `SplineTransformer` of 32
+features, degree 3, 8 knots, built in 21-46 s, now 1.1-2.4 s; the build
+no longer grows with the parameters times the body); and `cbrt` as glibc's,
 as DuckDB's is (confit parted from DuckDB on 99,438 of 200,000 draws, by
 up to 3 ulps; now on none, so `FunctionTransformer(np.cbrt)` is served
 within its 3 ulps of numpy).

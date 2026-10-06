@@ -124,7 +124,7 @@ def _build_estimate(lanes: list[S.Expr], params: int) -> float:
     9 to 21 s. Before #387 (master 8a67154) the build grew with the tree
     times the parameters, 4 to 10 times longer at 32 features. The
     estimate is one estimator's: a step's instances compound it
-    linearly: 1, 2, 3 instances of a 25-feature fit build in 0.37, 0.72,
+    linearly (1, 2, 3 instances of a 25-feature fit build in 0.37, 0.72,
     1.14 s, where they took 7.8, 16.7, 33.1 s before #387)."""
     memo: dict[int, int] = {}
 
