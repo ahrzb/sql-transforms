@@ -4603,3 +4603,37 @@ fn a_shared_value_read_by_a_later_one_lives_until_that_one_is_computed() {
         .count();
     assert_eq!(exps, 1, "big is computed once");
 }
+
+#[test]
+fn a_null_guard_branches_only_around_what_can_trap() {
+    // `CASE WHEN k IS NULL THEN NULL ELSE <list or struct> END`, the shape
+    // a SQL function's null_when gives its body. DuckDB evaluates the ELSE
+    // arm only on the rows that reach it, so an element or a field that
+    // can trap keeps a CASE of its own: one branch each. One that cannot
+    // trap is read on every row, and the boundary NULLs it where the value
+    // is NULL, so the guard adds no branch for it.
+    let ins = cols(&[("k", Ty::I64, true), ("x", Ty::F64, true)]);
+    let brifs = |sql: &str| {
+        let p = prep(sql, &ins).unwrap();
+        p.blocks
+            .iter()
+            .filter(|b| matches!(b.term, super::ir::Term::Brif { .. }))
+            .count()
+    };
+    let safe: Vec<String> = (1..=4).map(|j| format!("x * {j}.5 + 1.0")).collect();
+    let traps: Vec<String> = (2..=5).map(|j| format!("CAST(k * {j} AS DOUBLE)")).collect();
+    let mixed = vec![safe[0].clone(), traps[0].clone(), safe[1].clone()];
+    for (elems, trapping) in [(&safe, 0), (&traps, 4), (&mixed, 1)] {
+        let fields: Vec<String> =
+            elems.iter().enumerate().map(|(j, e)| format!("f{j} := {e}")).collect();
+        let list = format!("[{}]", elems.join(", "));
+        let pack = format!("struct_pack({})", fields.join(", "));
+        for value in [list, pack] {
+            let plain = brifs(&format!("SELECT {value} AS o FROM __THIS__"));
+            let guarded = brifs(&format!(
+                "SELECT CASE WHEN k IS NULL THEN NULL ELSE {value} END AS o FROM __THIS__"
+            ));
+            assert_eq!(guarded, plain + trapping, "{value}");
+        }
+    }
+}

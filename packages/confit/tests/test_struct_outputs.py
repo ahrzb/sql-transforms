@@ -188,6 +188,19 @@ def test_a_case_arm_not_taken_does_not_trap():
     )
 
 
+def test_a_guarded_struct_is_null_where_its_guard_is():
+    """A field that cannot trap is read on every row, also where the guard
+    makes the struct NULL (x is NULL and k is not on the second row). The
+    struct and its nested structs are NULL there."""
+    for sql in [
+        "SELECT CASE WHEN x IS NULL THEN NULL ELSE {'a': CAST(k AS DOUBLE) * 1.5, "
+        "'n': {'b': coalesce(x, 2.0) + k}} END AS o FROM __THIS__",
+        "SELECT CASE WHEN x IS NULL THEN NULL ELSE "
+        "struct_pack(a := k * 2, b := coalesce(x, 2.0)) END AS o FROM __THIS__",
+    ]:
+        agree(sql)
+
+
 _C = pa.struct(
     [
         ("d", pa.decimal128(9, 4)),
