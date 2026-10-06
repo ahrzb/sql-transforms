@@ -1799,12 +1799,12 @@ def test_spline_refuses(params, reason):
 
 
 def test_spline_refuses_a_build_past_the_cap():
-    # 32 features of degree 5, 7 knots, "continue": estimated at 9.4 s, and
-    # past confit's 4,000,000-token expansion cap too. The estimate refuses
-    # it before confit is asked, with its own reason.
-    X = np.random.default_rng(0).normal(size=(50, 32)) * 10
-    est = SplineTransformer(degree=5, n_knots=7, extrapolation="continue").fit(X)
-    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(32)])
+    # 128 features of degree 5, 8 knots, "continue": estimated at 16 s, and
+    # built in 15 s (spline.py, `_build_estimate`). The estimate refuses it
+    # before confit is asked.
+    X = np.random.default_rng(0).normal(size=(50, 128)) * 10
+    est = SplineTransformer(degree=5, n_knots=8, extrapolation="continue").fit(X)
+    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(128)])
     returns = pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)])
     step = PythonTransform("tf", {0: est}, takes, returns)
     with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):

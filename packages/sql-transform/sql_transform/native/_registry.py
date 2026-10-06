@@ -40,6 +40,7 @@ from confit import DuckDBInferFn, Function, SqlFunction
 from confit import sql as S
 
 from sql_transform._udf import PythonTransform
+from sql_transform.native._helpers import SameTree
 
 Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
 
@@ -175,12 +176,15 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
         if why:
             raise NotNative(why)
 
+        same = SameTree()
+
         def select(j: int) -> S.Expr:
-            # Instances whose lane is the same SQL (a stateless estimator,
+            # Instances whose lane is the same tree (a stateless estimator,
             # or equal fits) share one arm.
-            arms: dict[str, tuple[list[int], S.Expr]] = {}
+            arms: dict[int, tuple[list[int], S.Expr]] = {}
             for k, out in per_id:
-                arms.setdefault(out[j].sql(), ([], out[j]))[0].append(k)
+                key = same.key(out[j]) if len(per_id) > 1 else 0
+                arms.setdefault(key, ([], out[j]))[0].append(k)
 
             def hit(ks: list[int]) -> S.Expr:
                 return iid == S.lit(ks[0]) if len(ks) == 1 else iid.isin(*ks)

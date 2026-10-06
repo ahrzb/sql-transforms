@@ -8,24 +8,14 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **The spline on confit's binding (#412).** `_build_estimate` now
-   overstates the build 2 to 6 times: it estimates 5.9 to 9.4 s for steps
-   that build in 1.1 to 3.5 s, so the 7 s cap refuses four of the five
-   steps that the confit loop measured. Fit it again on builds of master,
-   or drop it. The translation now costs about as much as the build (0.5
-   to 1.0 s in `SqlFunction(...)` at degree 5 over 32 features): the
-   `.sql()` keys in `spline._arms` and in `_registry` (`arms.setdefault(
-   out[j].sql(), ...)`) write each value out in full, which still doubles
-   per degree. Key them by a memo per node, or by identity where that is
-   enough.
-2. **One CASE per tree** (#412). Build each tree's nested CASE once, and
+1. **One CASE per tree** (#412). Build each tree's nested CASE once, and
    read that object in every output field of the tree. On the default
    forest (2,286 output fields) it serves 118 us a row against 202 us for
    the paths, and builds in 1.28 s against 1.84 s (the confit loop's
    measurement, release build of 4865d9f). Then fit the trees cap again on
    the new spelling: reading 4 measured 0.25 ms a path step at 1,173 steps
    and 0.44 ms at 21,353 (finding 56), where `trees.py` assumes 0.28 ms.
-3. **The kernel probe draws random significands**
+2. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
    The registered bounds hold on 2,000,000 random-significand draws in each
@@ -33,7 +23,7 @@ Easiest first; each is one family, one PR.
    1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
    that reads 0 makes a bounded function bit-exact on that platform: it
    serves by default, is checked at 0 and composes, as `sin` and `cos`.
-4. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
@@ -212,10 +202,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   on, and writes a row above the knots into the previous feature's lane.
   Knots that are not sorted, partly NaN, or span past a double, and a
   spline whose `c` is not sklearn's shape (no fit makes these). A step
-  past an estimated 7 s build, per estimator: degree 5 at 7 knots from
-  32 features (`continue`, `periodic`) or 64 (the others), degree 4 at 5
-  knots and 64 features of `continue`, and everything past confit's
-  token cap (Needs from confit, "A value bound once"); and any
+  past an estimated 7 s build, per estimator (`spline._build_estimate`):
+  of the configurations measured, none up to 64 features, and ten of 96
+  and 128 features that build in 7.1 to 15 s; and any
   step where scipy's `BSpline` does not round as the unfused recurrence
   (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the
   entry answers: NaN past the knots under `extrapolation="error"`, 0.0

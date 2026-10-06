@@ -9,42 +9,18 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
-| T21 | The spline on confit's binding of a value once: structural keys, and `_build_estimate` fitted again or dropped | `claude/project-thread-2pg6vk` | T20 | `spline.py`, `_registry.py` | inline | | next |
 | T22 | One CASE per tree, and the trees cap fitted again | `claude/project-thread-2pg6vk` | T21 | `trees.py` | inline | | next |
 
-T20 merged on 2026-10-06: the fixture generator draws ±inf, and `check`
-raises when it compares no row. Its 200-seed parity run passed 35,055
-steps of 176 configurations, with 0 failures and 145 named skips.
-Coverage is 31 of 68. The loop runs from the "Transforms Loop" project
-thread.
+T21 merged on 2026-10-06: the spline compares its arms, and the step
+its instances' output fields, by tree instead of by SQL text, and the
+spline's build cap is fitted again on confit's binding of a value once
+(#412). Coverage is 31 of 68. The loop runs from the "Transforms Loop"
+project thread.
 
-T21 and T22 change separate files, inline, one at a time (PLANS "Next",
-items 1 and 2). Then the parity bound in `native.check` and the families
-on it (PLANS "Ruled 2026-10-06, to build"), which overlap T21 in
-`_registry.py`. `decisions/open/bounded-steps-in-compositions.md` waits
-on the owner; `compose.py` keeps refusing bounded steps meanwhile.
-
-## T21: the spline on confit's binding of a value once
-
-**Why.** Since confit #412, a value that a SQL function body reads twice
-or more binds once, so the spline's expression no longer doubles per
-degree when confit builds it. `_build_estimate` still models the old
-build: it estimates 5.9 to 9.4 s for steps that build in 1.1 to 3.5 s, so
-the 7 s cap refuses four of the five steps that the confit loop measured.
-And the translation now costs about as much as the build (0.5 to 1.0 s in
-`SqlFunction(...)` at degree 5 over 32 features): the `.sql()` keys in
-`spline._arms` and in `_registry`'s `select` write each value out in
-full, which doubles per degree (PLANS "Next", item 1).
-
-**Do.**
-- Compare arms and output fields by a structural key with a memo per
-  node, linear in the distinct nodes, not by `.sql()`.
-- Measure warm release builds of master over the grid of `spline.py`'s
-  docstring (1 to 64 features, degrees 1 to 5, 5 to 8 knots, the five
-  extrapolations). Fit `_build_estimate` again, or drop it if no step the
-  entry takes on passes 7 s. Say which in the PR, with the fit's error.
-- Update the module docstring's widths and build times.
-- Run the 200-seed parity run of `SplineTransformer` and the gate.
+T22 is next (PLANS "Next", item 1). Then the parity bound in
+`native.check` and the families on it (PLANS "Ruled 2026-10-06, to
+build"). `decisions/open/bounded-steps-in-compositions.md` waits on the
+owner; `compose.py` keeps refusing bounded steps meanwhile.
 
 ## T22: one CASE per tree
 
@@ -56,7 +32,7 @@ serves 118 µs a row against 202 µs for the paths, and builds in 1.28 s
 against 1.84 s (the confit loop's measurement, release build of 4865d9f).
 The trees cap (`MAX_PATH_STEPS`) assumes 0.28 ms a path step, where
 reading 4 measured 0.25 ms at 1,173 steps and 0.44 ms at 21,353 (finding
-56; PLANS "Next", item 2).
+56; PLANS "Next", item 1).
 
 **Do.**
 - Build each tree's nested CASE once, NaN routed as `_apply_dense` routes
