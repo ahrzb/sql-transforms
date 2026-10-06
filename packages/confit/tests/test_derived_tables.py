@@ -202,7 +202,16 @@ def test_what_stays_refused_is_refused_by_name(sql, named):
 # over the column binds against that type, which confit does not model. Each
 # of these read it as INTEGER: a wrong type where a constant condition folded
 # the column away after it typed the CASE (nightly seed 4824388), a bind
-# error where DuckDB serves.
+# error where DuckDB serves. A whole item passes the column up a level, where
+# it is still SQLNULL.
+@pytest.mark.parametrize(
+    "sub",
+    [
+        "(SELECT NULL AS x, a FROM __THIS__)",
+        "(SELECT (t.x) AS x, a FROM (SELECT NULL AS x, a FROM __THIS__) AS t)",
+        "(SELECT x, a FROM (SELECT * FROM (SELECT NULL AS x, a FROM __THIS__)))",
+    ],
+)
 @pytest.mark.parametrize(
     "sql",
     [
@@ -214,8 +223,7 @@ def test_what_stays_refused_is_refused_by_name(sql, named):
         "SELECT a FROM {sub} WHERE CASE WHEN TRUE THEN a > 0 ELSE x END",
     ],
 )
-def test_an_expression_over_a_bare_null_column_refuses(sql):
-    sub = "(SELECT NULL AS x, a FROM __THIS__)"
+def test_an_expression_over_a_bare_null_column_refuses(sql, sub):
     rows = _table([(1, "x"), (-2, None)])
     v = assert_parity(sql.format(sub=sub), rows, expect="REFUSED")
     assert "bare NULL subquery column" in v.detail
