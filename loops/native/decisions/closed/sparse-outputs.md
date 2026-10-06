@@ -41,93 +41,125 @@ Should the step densify a sparse output, as `.toarray()` does?
 loop's proposal: authors write `OneHotEncoder()` far more often than
 `OneHotEncoder(sparse_output=False)`.
 
-**Methodology (2026-10-06).** The note is
-[research/2026-10-06/sparse.md](../research/2026-10-06/sparse.md), re-run by
-an adversarial verifier. The environment is scikit-learn 1.9.0, scipy 1.18.0,
-DuckDB 1.5.5; master 113fba7.
+**Methodology (2026-10-06).** The evidence is in the research note
+[research/2026-10-06/sparse.md](../research/2026-10-06/sparse.md). An
+adversarial verifier repeated the work of the note. The environment was
+scikit-learn (sklearn) 1.9.0, scipy 1.18.0 and DuckDB 1.5.5, on master at
+commit 113fba7.
 
-1. **The failure, reproduced under both of sklearn 1.9's sparse interfaces.**
-   - Under `spmatrix`, the default, the first row raises this record's
-     TypeError.
-   - Under `sparray`, new in 1.9, it raises `produced k values, declared 1`.
-2. **The fit is wrong before the first row is served.**
-   - `_projection.py:352` probes the output with `np.asarray(sparse)`, which
-     is a 0-d object array.
-   - So the step is declared `struct<f0: double>`, and a field read such as
-     `.c_red` fails at fit.
-   - Patching only `__call__` still fails, with the width error.
-3. **Inventory.** The verifier swept all 84 sklearn transformers on dense
+1. **The note reproduces the failure under both sparse interfaces of sklearn
+   1.9.**
+   - Under `spmatrix` (the scipy sparse matrix), which is the default, the
+     first row raises the TypeError above.
+   - Under `sparray` (the scipy sparse array), which is new in 1.9, the first
+     row raises the width error `produced k values, declared 1`.
+2. **Fit declares the wrong output before the step serves a row.**
+   - The fit probe (`_projection.py:352`) transforms one row to find the
+     number of output fields (the width). It converts the output with
+     `np.asarray(sparse)`, which gives a 0-dimensional object array.
+   - So fit declares the step as `struct<f0: double>`, a struct with one
+     field. A field read such as `.c_red` then fails at fit.
+   - If a patch densifies only the serve call (`PythonTransform.__call__`),
+     the step still fails with the width error.
+3. **Inventory.** The verifier tested all 84 sklearn transformers on dense
    input.
-   - Sparse by default, in scope: OneHotEncoder, KBinsDiscretizer,
-     RandomTreesEmbedding, KNeighborsTransformer and
-     RadiusNeighborsTransformer. The last two have no dense switch.
-   - Sparse on request: SplineTransformer(`sparse_output`),
-     MissingIndicator(`sparse=True`), FunctionTransformer, and compositions.
-4. **Values, compared on raw bits.**
-   - **OneHotEncoder:** 648 configurations, 129,600 rows, 0 differ from the
-     dense configuration.
-   - **KBinsDiscretizer:** 48 configurations, 11,856 rows, 0 differ.
-   - These two are equal by construction: sklearn's dense path is
-     `.toarray()` of the same CSR.
-   - **SplineTransformer** is equal except at degree 0. With `constant`,
-     values above the knots differ. With `periodic`, the sparse twin raises
+   - These in-scope transformers give a sparse output by default:
+     OneHotEncoder, KBinsDiscretizer, RandomTreesEmbedding,
+     KNeighborsTransformer and RadiusNeighborsTransformer. The last two have
+     no parameter that makes the output dense.
+   - These transformers give a sparse output only on request:
+     SplineTransformer(`sparse_output`), MissingIndicator(`sparse=True`),
+     FunctionTransformer and compositions.
+4. **The note compared the values on raw bits.**
+   - **OneHotEncoder:** 0 of 129,600 rows over 648 configurations differ
+     from the dense configuration.
+   - **KBinsDiscretizer:** 0 of 11,856 rows over 48 configurations differ.
+   - These two are bit-exact by construction. The dense path of sklearn is
+     `.toarray()` of the same compressed sparse row (CSR) matrix.
+   - **SplineTransformer** gives equal values, except at degree 0. With the
+     `constant` extrapolation, the values above the knots differ. With the
+     `periodic` extrapolation, the twin of the sparse configuration raises
      on every row.
-   - **ColumnTransformer and FeatureUnion:** a sparse stack drops −0.0. That
-     changed 10 of 189 and 25 of 126 rows, every one ±0.
-5. **Peer converters** (sourced).
-   - skl2onnx densifies OneHotEncoder, and refuses KBins `onehot`.
-   - hummingbird densifies both.
-   - sklearn's own ColumnTransformer densifies with `.toarray()`.
-6. **Cost.** `.toarray()` takes 1–24 µs per row for widths from 10 to 10^5,
-   at most 0.4% of the step.
-7. **The fix, demonstrated** (patched outside the repo). Densify the fit
-   probe and `__call__`. OneHotEncoder(), KBinsDiscretizer(`onehot`) and
-   SplineTransformer(degree 3, sparse) then declare the same struct as their
-   dense configurations. They serve bit-equal on DuckDB and confit, under
-   both interfaces.
-8. **Verifier corrections taken.**
-   - A fourth site fails the same way: `model/_foreign.py:128`, reached
-     through `Transform.from_estimator`. It raises IndexError.
-   - Without the `encode.py` probe fix, the catalog refuses (NotNative) and
-     does not mistranslate.
-   - Spline needs a second carve-out: degree 0 with `periodic`.
+   - **ColumnTransformer and FeatureUnion:** if they stack their parts into
+     a sparse output, the stack drops −0.0. This changed 10 of 189 rows for
+     ColumnTransformer and 25 of 126 rows for FeatureUnion. In each changed
+     row, the difference was −0.0 against +0.0.
+5. **Peer converters** (read in their source code).
+   - The converter skl2onnx densifies OneHotEncoder. It raises an error for
+     KBinsDiscretizer with `encode="onehot"`.
+   - The converter hummingbird densifies both.
+   - The ColumnTransformer of sklearn densifies with `.toarray()`.
+6. **Cost.** For widths from 10 to 10^5 output fields, `.toarray()` takes
+   1–24 µs per row. This is at most 0.4% of the time of the step.
+7. **The note demonstrates the fix** with a patch outside the repository.
+   The patch densifies the output at the fit probe and at the serve call.
+   Then OneHotEncoder(), KBinsDiscretizer(`onehot`) and
+   SplineTransformer(degree 3, sparse) declare the same struct as their
+   dense configurations. Under both interfaces, they serve values that are
+   bit-exact with their dense configurations, on DuckDB and on confit.
+8. **The record takes these corrections from the verifier.**
+   - A fourth site fails the same way. The site is `model/_foreign.py:128`,
+     the estimator wrapper that `Transform.from_estimator` uses. It raises
+     `IndexError`.
+   - The OneHotEncoder entry has a probe (`native/encode.py`) that calls the
+     twin for each category. If this probe does not densify, the entry
+     raises `NotNative`. It does not give a wrong translation.
+   - SplineTransformer needs a second case that the entry does not serve:
+     degree 0 with the `periodic` extrapolation.
 
-**Recommendation.** Option 1, as one helper: `.toarray()` behind
-`scipy.sparse.issparse`.
+**Recommendation.** Use option 1, with one helper function. If
+`scipy.sparse.issparse` is true for an output, the helper calls `.toarray()`
+on it.
 
-1. **Sites:**
-   - `_udf.py:314`, the serve call;
-   - `_projection.py:352`, the fit probe;
-   - `model/_foreign.py:128`;
-   - `native/encode.py:110`, needed only to make sparse OneHotEncoder native;
-   - the width reads in `catalog_test.py` and `compose_test.py`.
-2. **Catalog follow-ups:**
-   - Drop the sparse guards for OneHotEncoder, KBinsDiscretizer and
+1. **Use the helper at these sites:**
+   - the serve call (`_udf.py:314`)
+   - the fit probe (`_projection.py:352`)
+   - the estimator wrapper (`model/_foreign.py:128`)
+   - the probe of the OneHotEncoder entry (`native/encode.py:110`). This
+     site is necessary only to make a sparse OneHotEncoder native.
+   - the code that reads the width in the catalog tests (`catalog_test.py`)
+     and the composition tests (`compose_test.py`)
+2. **Then make these changes in the catalog:**
+   - Remove the conditions that make these entries raise `NotNative` for a
+     sparse output: OneHotEncoder, KBinsDiscretizer and
      MissingIndicator(`sparse=True`). Their translation is exact by
      construction.
-   - Serve sparse SplineTransformer, except at degree 0 with `constant` or
-     `periodic`.
-   - In a Pipeline, refuse a real-valued sparse step that is not last:
-     Spline into Normalizer drifts up to 4 ulps. Allow 0/1 producers.
-   - A FeatureUnion or ColumnTransformer with sparse output either refuses,
-     or canonicalises −0.0 with `+ 0.0`, which works in both DuckDB and
-     confit.
-3. **Tests:**
-   - Both sparse interfaces.
-   - The width-1 case, `drop='if_binary'`.
-   - Field reads at fit.
-   - Assert that `check` compared every row (`compared == n`). A step that
-     raises on every row otherwise compares nothing, and passes.
+   - Serve a sparse SplineTransformer, except at degree 0 with the
+     `constant` or the `periodic` extrapolation.
+   - In a Pipeline, raise `NotNative` for a real-valued sparse step that is
+     not the last step. The reason is that SplineTransformer into Normalizer
+     drifts by up to 4 ulps (units in the last place). Allow a sparse step
+     that gives only the values 0 and 1.
+   - If a FeatureUnion or a ColumnTransformer has a sparse output, do one of
+     two things in the entry:
+     - raise `NotNative`
+     - change −0.0 to +0.0 with `+ 0.0`, which works in both DuckDB and
+       confit
+3. **Add these tests:**
+   - Test both sparse interfaces, `spmatrix` and `sparray`.
+   - Test the width-1 case, which has one output field, with
+     OneHotEncoder(`drop='if_binary'`).
+   - Test field reads at fit.
+   - Assert that `native.check` compared every row (`compared == n`).
+     `native.check` is the test that serves the same query with the twin and
+     with the entry, and compares the results. If the twin raises on every
+     row and the test does not assert this, `native.check` compares no rows
+     and passes.
 
-Why, judged against the goal that inference does not change:
+These are the reasons for the recommendation. Each reason judges the options
+against the goal that inference does not change.
 
-- **Densifying keeps OneHotEncoder and KBins exactly identical.** It is the
-  same `.toarray()` sklearn performs for the dense configuration.
-- **Option 2 asks the author to fit a different model.** A densified
-  Pipeline refits other `scale_` values: 3–65 ulps on these fixtures.
+- **Densifying keeps OneHotEncoder and KBinsDiscretizer bit-exact.**
+  Densifying is the same `.toarray()` that sklearn does for the dense
+  configuration.
+- **Option 2 asks the author to fit a different model.** If the author
+  changes a Pipeline to the dense configuration, the Pipeline fits other
+  `scale_` values. On the test data of the note, the outputs differ by 3–65
+  ulps.
 - **Option 2 cannot serve every case.** KNeighborsTransformer and
-  RadiusNeighborsTransformer need an author-written wrapper.
-- **The container depends on the caller.** sklearn picks it from the caller's
-  thread-local config at serve time, so the same fitted model serves or
-  fails depending on who calls it. The step should not depend on that.
-- **The cost is under 0.4%** of the step.
+  RadiusNeighborsTransformer need a wrapper that the author writes.
+- **The container depends on the caller.** At serve time, sklearn picks the
+  container (`spmatrix` or `sparray`) from the configuration of the calling
+  thread. So the same fitted model serves or fails, depending on who calls
+  it. The step should not depend on that.
+- **The cost is under 0.4%** of the time of the step.

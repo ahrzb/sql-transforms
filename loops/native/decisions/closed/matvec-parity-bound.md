@@ -61,37 +61,79 @@ loop's proposal.
 
 **What would close it.** An owner ruling on the form of a matvec bound.
 
-**Methodology (2026-10-06).** The notes are in
-[research/2026-10-06/](../research/2026-10-06/README.md): matvec.md,
-distances.md and framework.md, each re-run by an adversarial verifier, plus
-critique.md and inference.md (inference.md is verified).
+**Methodology (2026-10-06).** The research notes are in
+[research/2026-10-06/](../research/2026-10-06/README.md). This record uses
+five of them:
 
-The setup:
-- **Environment.** x86-64 with AVX-512; numpy 2.5.1, scikit-learn 1.9.0,
-  OpenBLAS 0.3.33 (`DYNAMIC_ARCH`), DuckDB 1.5.5; master 113fba7.
-- **The twin under other conditions.** Other CPUs' BLAS kernels are selected
-  with `OPENBLAS_CORETYPE`. Each configuration runs in its own process,
-  against one pickled model and the same rows.
-- **The term scale.** `S_full = (Σ|x_i·c_ki| + Σ|m_i·c_ki|) / scale_k`. K is
-  `|a − b| / (eps·S_full)`.
+- matvec.md is the note on the matvec (matrix-vector product) families. An
+  adversarial verifier re-ran it. The verifier is a second agent that tried
+  to refute each claim of the note.
+- distances.md is the note on distances to fitted centres and on the kernel
+  samplers. An adversarial verifier re-ran it too.
+- framework.md is the note on the general form of a parity bound. An
+  adversarial verifier re-ran it too.
+- critique.md is the note that settles the contradictions between the
+  notes.
+- inference.md is the note that tests if the entry changes a prediction. An
+  adversarial verifier re-ran it too.
 
-1. **What the twin computes** (sourced from sklearn, numpy `matmul.c.src`
-   v2.5.1 and OpenBLAS v0.3.33 kernels, then measured).
-   - One row is `gemv` for k ≥ 2 components, and `ddot` for k = 1.
-   - Its order depends on:
-     - the CPU's kernel;
-     - k, and where the lane sits among the k;
-     - the layout of `components_`: the `covariance_eigh` solver gives
-       F-order, so `dgemv_n`;
-     - row against batch;
-     - the thread count, once m·n ≥ 460,800.
-   - An emulation of the SkylakeX and Haswell `dgemv_t` order matched every
-     lane tested bit for bit: 10,640 random lanes per kernel, and 6,970 more
-     on the verifier's shapes. It uses FMA, which DuckDB lacks.
-2. **The twin against itself.** Catalog `PCA(whiten=True)` fixtures, seeds
-   0–199, 25,208 lanes:
+The research used this setup and these terms:
 
-   | pair | lanes differing | max ulps | max K |
+- **Environment.** The host is x86-64 with AVX-512 (Advanced Vector
+  Extensions, 512-bit). The software is numpy 2.5.1, scikit-learn (sklearn)
+  1.9.0, OpenBLAS 0.3.33 and DuckDB 1.5.5. The code is master at commit
+  113fba7.
+- **OpenBLAS.** OpenBLAS is the library of BLAS (Basic Linear Algebra
+  Subprograms) kernels that the twin uses. Its build option `DYNAMIC_ARCH`
+  makes it select a kernel for the CPU at run time. OpenBLAS names its
+  kernels after CPU generations, for example SkylakeX, Haswell and
+  Sandybridge.
+- **The twin under other conditions.** The research selected the BLAS
+  kernels of other CPUs with the environment variable `OPENBLAS_CORETYPE`.
+  Each configuration ran in its own process. All configurations used one
+  fitted model, saved with Python's `pickle`, and the same rows.
+- **The term scale.** This record uses the full term scale of an output
+  field k, `S_full = (Σ|x_i·c_ki| + Σ|m_i·c_ki|) / scale_k`. Here x is the
+  input row of n features, c_k is component k and m is the fitted mean
+  `mean_`. `scale_k` is the number by which whitening divides component k.
+- **The record's S.** The term scale above uses |m·c_k| as its second term.
+  S_full uses Σ|m_i·c_ki| in its place.
+- **K.** For two results a and b of one field, K is
+  `|a − b| / (eps·S_full)`, with eps = 2^-52.
+- **check.** `native.check` is the test that serves the same query with the
+  twin and with the entry and compares the results. This record calls it
+  `check`.
+
+In the counts below, a field is one output field of one row. A sourced claim
+cites the code of a package or a URL. A derived claim gives its derivation.
+
+1. **What the twin computes** (sourced, then measured). The sources are
+   sklearn, numpy's matrix product code `matmul.c.src` v2.5.1 and the
+   OpenBLAS v0.3.33 kernels.
+   - If there are k ≥ 2 components, the twin computes one row with `gemv`,
+     the BLAS matrix-vector product. If k = 1, it uses `ddot`, the BLAS dot
+     product.
+   - The order of its sum depends on these conditions:
+     - the CPU kernel
+     - k, and the position of the field among the k components
+     - the memory layout of `components_`, the fitted matrix of components
+     - a call on one row or a call on a batch
+     - the thread count, once the matrix of the product has
+       m·n ≥ 460,800 elements
+   - The `covariance_eigh` solver of PCA gives `components_` in F-order
+     (column-major). So OpenBLAS uses its kernel `dgemv_n`.
+   - The research emulated the order of `dgemv_t`, the OpenBLAS kernel for
+     `components_` in C-order (row-major). The emulation of the SkylakeX and
+     Haswell kernels was bit-exact on every field tested.
+   - That is 10,640 random fields for each kernel, and 6,970 more on the
+     matrix shapes of the verifier.
+   - The emulation uses fused multiply-add (FMA), and DuckDB does not have
+     FMA.
+2. **The twin against itself.** The data is the catalog's fixtures for
+   `PCA(whiten=True)`, which is PCA with whitening. The seeds are 0–199,
+   with 25,208 fields in all:
+
+   | pair | fields differing | max ulps | max K |
    |---|---|---|---|
    | entry vs twin (SkylakeX, one row) | 4,819 | 9,877,709,850 | 2.99 |
    | twin, batch vs one row, same machine | 4,696 | 9,877,709,850 | 2.99 |
@@ -99,150 +141,223 @@ The setup:
    | twin, Haswell vs SkylakeX kernel | 680 | 568 | 1.76 |
    | twin, 1 thread vs 4 threads (fixtures are below 460,800) | 0 | 0 | 0 |
 
-   At 1,000 seeds, entry vs twin reaches K = 4.12.
-3. **A bound that holds whatever the data** (derived; re-derived by two
+   At 1,000 seeds, the entry against the twin reaches K = 4.12.
+3. **A bound that holds whatever the data** (derived, and re-derived by two
    verifiers).
-   - Any summation tree over n products, fused or not, errs by at most
-     γ_n·Σ|x_i c_ki| per side (Higham, *Accuracy and Stability*, §3.1).
-   - The twin recomputes `M = mean_ @ components_.T` on every call, on the
-     host that serves it. M errs by at most γ_n·Σ|m_i c_ki|.
+   - On each side, any summation tree over n products, fused or not, has an
+     error of at most γ_n·Σ|x_i c_ki|. The source is Higham, *Accuracy and
+     Stability of Numerical Algorithms*, §3.1.
+   - Here γ_n = n·u/(1 − n·u), and u = 2^-53 is the unit roundoff.
+   - The twin recomputes the projected mean `M = mean_ @ components_.T` on
+     every call, on the host that serves it. The error of M is at most
+     γ_n·Σ|m_i c_ki|.
    - The subtraction and the division add about 2·eps·S.
-   - Hence `|entry − twin| ≤ (n + 2)·eps·S_full` to first order. K = n + 3
-     absorbs the second-order terms and check's own rounding of S.
+   - So `|entry − twin| ≤ (n + 2)·eps·S_full` to first order.
+   - K = n + 3 also covers the second-order terms and the rounding of S in
+     `check` itself.
 4. **K against the width n** (measured on synthetic PCA-like data from
-   n = 4 to 8,192, plus the verifiers' own datasets).
-   - When the terms share a sign, K grows roughly as n^0.4: about 12 at
-     n = 2,048
-     and 16–17 at n = 8,192.
-   - With mixed signs it stays near 1.5–3.
-   - A constructed row reaches about (n − 2)/4, which is 7.25 at n = 32.
+   n = 4 to 8,192, and on the datasets of the verifiers).
+   - If the terms share a sign, K grows roughly as n^0.4. K is about 12 at
+     n = 2,048, and 16–17 at n = 8,192.
+   - If the signs are mixed, K stays near 1.5–3.
+   - A constructed row reaches a K of about (n − 2)/4, which is 7.25 at
+     n = 32.
 5. **Alternatives measured.**
-   - *A correctly rounded dot product* (Ogita–Rump–Oishi Dot2, spelled in
-     DuckDB SQL) was correctly rounded on 5,000 of 5,000 rows, at 11× the
-     cost. It only halves the provable K, because the twin itself is up to
-     2.84 eps·S from exact.
-   - *Pairwise summation* has the same flop count and the error bound
-     γ_{⌈log2 n⌉+1}. At n = 2,048 it cut measured K from 13.1 to 3.5. A
-     left-to-right nested sum of 999 terms exceeds DuckDB's default
-     `max_expression_depth` (1000); 500 terms parse.
-   - *An allclose test*: its atol depends on the data's units. It is 3.5e-5 on
-     these fixtures, and 2.6e283 once the ±1e300 edge rows are included.
-6. **The other families this record decides** (distances.md).
-   - *KMeans and kin* compute `sqrt(max(((−2·x·c) + ‖x‖²) + ‖c‖², 0))`.
+   - *A correctly rounded dot product.* The research wrote the Dot2
+     algorithm of Ogita, Rump and Oishi in DuckDB SQL. It gave the correctly
+     rounded result on 5,000 of 5,000 rows, at 11× the cost of the
+     left-to-right sum.
+   - Dot2 only halves the provable K, because the twin itself is up to
+     2.84 eps·S from the exact result.
+   - *Pairwise summation* adds the terms as a balanced tree of pairs. It has
+     the same number of floating-point operations as the left-to-right sum.
+     Its error bound is γ_{⌈log2 n⌉+1}. At n = 2,048, it cut the measured K
+     from 13.1 to 3.5.
+   - A nested left-to-right sum of 999 terms exceeds the maximum depth of an
+     expression in DuckDB, `max_expression_depth` (1000 by default). A
+     nested sum of 500 terms parses.
+   - *An allclose test.* The numpy test `allclose` passes if
+     |a − b| ≤ atol + rtol·|b|. Its absolute term atol depends on the units
+     of the data.
+   - On these fixtures, an atol of 3.5e-5 is necessary to pass every field.
+     If the fixtures include the edge rows at ±1e300, the necessary atol is
+     2.6e283.
+6. **The other families that this record decides** (distances.md).
+   - *KMeans and kin* compute the distance to a centre c as
+     `sqrt(max(((−2·x·c) + ‖x‖²) + ‖c‖², 0))`.
      - On the distance itself, K reaches about 9e7 near a centre.
-     - On its square, with `S = ‖x‖² + ‖c‖² + 2Σ|x_i c_i|`, K ≤ 2.4. The
-       derived bound is n + 4.
-   - *RBF and SkewedChi2 samplers* hold with S = c·(Σ|L_i W_ij| + |b_j| + 1),
-     at measured K ≤ 2.8. The derived bounds are n + 2 and n + 3.
+     - On the square of the distance, with
+       `S = ‖x‖² + ‖c‖² + 2Σ|x_i c_i|`, K ≤ 2.4. The derived bound is
+       n + 4.
+   - *The RBF (radial basis function) and SkewedChi2 samplers* hold with
+     S = c·(Σ|L_i W_ij| + |b_j| + 1), at a measured K ≤ 2.8. The derived
+     bounds are n + 2 and n + 3.
+     - In this S, W and b are the random weights and offsets of the
+       sampler, and c is its output factor.
+     - L_i is x_i for RBF. For SkewedChi2, L_i is ln(x_i + s), where s is
+       its `skewedness` parameter.
    - *Nystroem* needs an S that accounts for its kernel.
-   - *PolynomialCountSketch* is an FFT convolution, not a matvec. Its proposed
-     per-row S can be exactly 0 while the twin returns noise, so it needs a
-     normwise S.
-7. **Downstream predictions** (inference.md, verified, plus one
-   independent check of Box-Cox).
-   - The setup: PCA, KMeans, Yeo-Johnson and chi2, each in front of
-     LogisticRegression, a linear regressor, a decision tree, a random forest,
-     HistGradientBoosting and KMeans argmin. About 1.6M served rows, against
-     14 twin variants (CPU kernel, numpy SIMD, threads, batch).
-   - LogisticRegression, the linear regressor, the decision tree, the random
-     forest and KMeans argmin: on new rows, neither the entry nor any twin
-     variant changed a label or a tree leaf.
+   - *PolynomialCountSketch* is a convolution through the fast Fourier
+     transform (FFT), not a matvec. The S that the research proposed for
+     each row can be exactly 0 while the twin returns noise.
+   - So PolynomialCountSketch needs a normwise S, computed from the norms of
+     whole vectors.
+7. **Downstream predictions** (inference.md, verified, and one independent
+   measurement of Box-Cox).
+   - The research put PCA, KMeans, Yeo-Johnson and chi2 (the additive chi2
+     sampler) each in front of six models. The models are
+     LogisticRegression, a linear regressor, a decision tree, a random
+     forest, HistGradientBoosting and KMeans argmin (the nearest centre).
+   - It served about 1.6 million rows, against 14 variants of the twin. The
+     variants change the CPU kernel, numpy's SIMD (single instruction,
+     multiple data) kernels, the thread count or the batch.
+   - On new rows, neither the entry nor any variant of the twin changed a
+     label or a tree leaf of these five models: LogisticRegression, the
+     linear regressor, the decision tree, the random forest and KMeans
+     argmin.
    - HistGradientBoosting puts its thresholds at training values of a
-     feature. A served row that repeats a training value lands on such a
-     threshold, and one rounding decides the branch.
-     - Matvec: on re-served training rows the entry changed 6,569 branch rows
-       and 19 labels of 1.63M. The twin's own `fit_transform` against
-       one-row serving changed 3,349 and 7, and the batch twin 3,899 and 7.
-     - KMeans: the entry was 2–5× worse than every twin variant, for example
-       313 against 161 branch rows.
-     - Elementwise families: on one host the twin's row, batch and
-       `fit_transform` outputs are bit-identical, so the twin never flips
-       there. The shipped Box-Cox entry (ulp bound 4) flipped 53–80 labels
-       per 200,000 fresh grid-valued rows (verifier, 4 seeds), and 13–24 in
-       an independent check (2 seeds). Yeo-Johnson flipped 86–111 per
-       100,000–200,000 rows, against 17–98 for the twin without AVX-512 numpy.
-   - The left-to-right entry equals the twin on the Sandybridge kernel bit for
-     bit, in 11 of 12 PCA cases. With a nonzero `mean_` this holds only if
-     the mean constant is also summed left to right.
-8. **Verifier corrections taken.**
+     feature. If a served row repeats a training value, the row lands on
+     such a threshold. Then one rounding decides the branch.
+     - *Matvec.* The research served the training rows again. Out of 1.63
+       million rows, the entry changed the branch of 6,569 rows and the
+       label of 19.
+     - `fit_transform` is the sklearn method that fits a step and
+       transforms the training data in one call. Against one-row serving,
+       the twin's own `fit_transform` changed the branch of 3,349 rows and
+       the label of 7.
+     - The twin in batch calls changed the branch of 3,899 rows and the
+       label of 7.
+     - *KMeans.* The entry was 2–5× worse than every variant of the twin.
+       For example, the branch changed for 313 rows, against 161.
+     - *Elementwise families.* On one host, the twin's outputs for a row,
+       for a batch and from `fit_transform` are bit-exact with each other.
+       So the twin never flips a label there.
+     - The Box-Cox entry that the catalog serves today has an ulp bound
+       of 4. It flipped 53–80 labels per 200,000 new rows with values on a
+       grid (the verifier, 4 seeds).
+     - An independent measurement of Box-Cox found 13–24 flips (2 seeds).
+     - The Yeo-Johnson entry flipped 86–111 labels per 100,000–200,000
+       rows. The twin without numpy's AVX-512 kernels flipped 17–98.
+   - In 11 of 12 PCA cases, the left-to-right entry is bit-exact with the
+     twin on the Sandybridge kernel. If `mean_` is not zero, this holds
+     only if the translation also sums the constant M left to right.
+8. **The record takes these corrections from the verifiers.**
    - The thread count does change the twin above m·n = 460,800.
-   - The record's |m·c| scale never fails inside `check`, because one process
-     shares M. S_full matters when the twin is served on another host.
-   - Measured envelopes such as "K ≤ 0.7·√n" are false.
-   - The bit-exact entry-vs-DuckDB half of `check` cannot catch a wrong
-     constant, since both sides share it.
+   - The record's S, with |m·c_k|, never fails inside `check`, because one
+     process shares M. If another host serves the twin, S_full matters.
+   - Upper limits fitted to measurements, such as "K ≤ 0.7·√n", are false.
+   - One half of `check` compares confit's answer for the entry with the
+     answer of DuckDB, bit-exact. That half cannot find a wrong constant,
+     because both sides share it.
 9. **Not reproduced.**
-   - The record's lane counts: 3,855 and 23,050. Every run gives 4,618 and
-     25,208.
-   - Its commit: its numbers match the fixture generator at HEAD, not b851298.
+   - The first table of the record counts 3,855 and 23,050 fields. Every
+     run gives 4,618 and 25,208.
+   - The record names commit b851298. Its numbers match the fixture
+     generator at the current commit (HEAD), not at b851298.
 
-**Recommendation.** Option 1, amended into one general form that also closes
-the power and additive chi2 records.
+**Recommendation.** Take Option 1, amended into one general form. That
+form also closes two other records: the power record
+(`power-parity-bound.md`) and the additive chi2 record
+(`additive-chi2-parity-bound.md`).
 
-1. **The contract.** Per lane, `|g(entry) − g(twin)| ≤ K·eps·S + τ`.
-   - S is declared per family, as a formula over the fitted state and the row.
-   - K is derived from per-operation error bounds, and may depend on the
-     width n.
-   - g is the identity, except where a family names another comparison map.
+1. **The contract.** For each output field,
+   `|g(entry) − g(twin)| ≤ K·eps·S + τ`.
+   - S is the error scale. Each family declares S as a formula over the
+     fitted state and the row.
+   - Each family derives K from the error bounds of its operations. K may
+     depend on the width n.
+   - g is a comparison map. It is the identity, unless a family names
+     another map.
    - τ is a small floor for underflow.
-   - The measured maximum is kept as evidence, never as K.
-   - Today's ulp bounds are the special case S = |lane|, so the exact
-     families are unchanged.
+   - Keep the measured maximum as evidence. Never use it as K.
+   - Today's ulp bounds are the special case S = |y|, where y is the value
+     of the field. So the exact families do not change.
 2. **Matvec:** S = S_full and K = n + 3.
-3. **KMeans and kin:** g squares the distance; S = ‖x‖² + ‖c‖² + 2Σ|x_i c_i|;
-   K = n + 5. The extra 1 covers check's own rounding of the difference of
-   squares.
-4. **Samplers:** RBF n + 3, SkewedChi2 n + 4, Nystroem max(n + 5, m + 3), each
-   one over its derivation to cover check's rounding of S.
-   PolynomialCountSketch is not served until a normwise S and K are derived.
-5. **The entry sums pairwise.** It costs the same as left to right, halves the
-   provable K, cuts measured K about 4× at n = 2,048, and keeps SQL depth at
-   log2 n.
-6. **check computes S overflow-safely.**
-   - NaN matches only NaN.
-   - A lane with exactly one infinite side passes only if the other side is
-     finite, has the same sign, and lies within K·eps·S of DBL_MAX.
-7. **Refuse noise lanes:** a `whiten=True` component whose scale was clipped
-   to eps, or whose variance is ≲ eps × the largest. Such a lane is rounding
-   noise of size O(1) for the twin too. On rank-deficient data the twin flips
-   labels against itself (batch vs row: 109 LR and 594 HGB flips per 70k
-   rows) about as often as the entry does (114 and 645).
+3. **KMeans and kin:** g squares the distance. The error scale is
+   S = ‖x‖² + ‖c‖² + 2Σ|x_i c_i|, and K = n + 5. The extra 1 covers the
+   rounding of the difference of squares in `check` itself.
+4. **Samplers:** K is n + 3 for RBF, n + 4 for SkewedChi2 and
+   max(n + 5, m + 3) for Nystroem. Here m is the number of components of
+   Nystroem.
+   - Each K is 1 more than its derivation, to cover the rounding of S in
+     `check`.
+   - Do not serve PolynomialCountSketch until a derivation gives a normwise
+     S and its K.
+5. **The entry sums pairwise.** Pairwise summation has these effects:
+   - It costs the same as the left-to-right sum.
+   - It halves the provable K.
+   - It cuts the measured K about 4× at n = 2,048.
+   - It keeps the depth of the SQL expression at log2 n.
+6. **check computes S in a way that is safe from overflow.**
+   - NaN (not a number) matches only NaN.
+   - If exactly one side of a field is infinite, the field passes only under
+     three conditions:
+     - The other side is finite.
+     - It has the same sign.
+     - It lies within K·eps·S of DBL_MAX, the largest finite double.
+7. **Do not serve noise fields.** A noise field is a field of a
+   `whiten=True` component with one of these two properties:
+   - sklearn clipped its scale to eps.
+   - Its variance is at most about eps times the largest variance.
 
-Why, judged against the goal that inference does not change when the entry
-replaces the twin:
+   Such a field is rounding noise of size O(1), that is, of order 1, for
+   the twin too. Rank-deficient data is data whose matrix does not have
+   full rank. On such data, the twin flips labels against itself about as
+   often as the entry does:
 
-- **The twin does not give one answer.** The same model and row differ by
-  9.9e9 ulps between a one-row and a batch call on one machine, and by 2,026
-  ulps between CPU kernels. A ulp bound would fail sklearn against itself.
-- **The term scale is what stays invariant.** Every pair measured (entry or
-  twin, any kernel, row or batch) stays within K ≤ 4.12 of S_full.
+   | comparison, per 70,000 rows | LogisticRegression flips | HistGradientBoosting flips |
+   |---|---|---|
+   | the twin, batch vs row | 109 | 594 |
+   | the entry | 114 | 645 |
+
+These are the reasons, judged against the goal that inference does not
+change when the entry replaces the twin:
+
+- **The twin does not give one answer.** For the same model and row, the
+  twin differs by 9.9e9 ulps between a one-row call and a batch call on one
+  machine. It differs by 2,026 ulps between CPU kernels. A ulp bound would
+  fail sklearn against itself.
+- **The term scale is the quantity that stays invariant.** Every pair that
+  the research measured stays within K ≤ 4.12 of S_full. The pairs include
+  the entry and the twin, any kernel, and row or batch calls.
 - **Predictions mostly behave the same way, but not always.**
   - Linear models, trees, forests and KMeans argmin changed no prediction.
-  - HistGradientBoosting on repeated training values does change. For matvec,
-    the twin changes it against itself about half as often as the entry. For
-    elementwise families on one host, the twin never does.
-  - So a parity bound promises the twin's envelope across hosts, not
-    bit-equal predictions on one host. The owner's ruling below therefore
-    makes bit-exact the default.
-- **A measured K is not a bound.** K = 3 already breaks at 1,000 seeds and on
-  wider inputs. n + 3 holds for every order.
-- **The looser K costs almost no detection power.** A structural bug (a
-  dropped term, a wrong sign or index) moves a lane by about S/n, far above
-  (n + 3)·eps·S for any n below about 10^7.
+  - On repeated training values, the predictions of HistGradientBoosting do
+    change. For matvec, the twin changes them against itself about half as
+    often as the entry.
+  - For elementwise families on one host, the twin never changes them.
+  - So a parity bound promises the range of the twin's own results across
+    hosts. It does not promise bit-exact predictions on one host. The
+    owner's ruling below therefore makes bit-exact the default.
+- **A measured K is not a bound.** K = 3 already fails at 1,000 seeds and
+  on wider inputs. K = n + 3 holds for every order.
+- **The looser K costs almost no power to detect defects.** A structural
+  defect, such as a dropped term, a wrong sign or a wrong index, moves a
+  field by about S/n. That is far above (n + 3)·eps·S for any n below about
+  10^7.
 - **Why S_full and not the record's S:**
   - Both agree inside `check`.
-  - The twin recomputes M on whatever host serves it. With |M|, a twin on
-    another CPU kernel reaches K = 1,731.
+  - The twin recomputes M on whatever host serves it. With |M| in S, a twin
+    on another CPU kernel reaches K = 1,731.
 
-Still for the owner (critique.md §2):
-- **Same-host or cross-host?** Is the contract "on the host that translated
-  the step", which is all `check` can test? That decides S_full, and whether
-  per-call recomputations count as shared constants: PCA's M, KMeans's ‖c‖²,
-  chi2's `cosh(πjs)`.
-- **May a bounded step sit in a composition?** `compose.py` refuses any
-  nonzero bound today. Option 1 alone therefore leaves
-  `make_pipeline(StandardScaler(), PCA())` NotNative. A bounded step last in a
-  Pipeline needs no new theory. One that feeds a discontinuous step (a
-  binner, a threshold) has no bound.
-- **check's API.** It must move from an integer ulp bound to a per-lane S that
-  reads the fitted estimator, with K(n).
+These questions are still for the owner (critique.md §2):
+
+- **Same host or another host?** Is the contract "on the host that
+  translated the step"? That is all that `check` can test. The answer
+  decides two things:
+  - It decides if S must be S_full.
+  - It decides if values that the twin recomputes on each call count as
+    shared constants. These values are PCA's M, KMeans's ‖c‖² and chi2's
+    `cosh(πjs)`.
+- **May a bounded step sit in a composition?** A bounded step is a step
+  whose bound is not 0. Today, the catalog module for compositions
+  (`compose.py`) raises `NotNative` for any bounded step.
+  - So with Option 1 alone, the translation of
+    `make_pipeline(StandardScaler(), PCA())` still raises `NotNative`.
+  - If a bounded step is the last step of a Pipeline, it needs no new
+    theory.
+  - A bounded step that feeds a discontinuous step, such as a binner or a
+    threshold, has no bound.
+- **The API of check.** Its application programming interface (API) must
+  change from an integer ulp bound to an S for each field. That S reads the
+  fitted estimator, and K is a function K(n) of the width.
