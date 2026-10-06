@@ -21,7 +21,8 @@ and the edges stay float64, so searchsorted counts the edges `e` with
 such test is one comparison of the double `x` against a moved cutpoint
 (`_f32_cut`), computed at build: the lanes are the float64 ones over the
 moved edges, and the codes and 0/1 lanes, float32 in the twin, are exact
-as doubles.
+as doubles. Where float32 makes a value infinite the twin raises, and the
+input guard traps (`_registry.rejects`).
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ from confit import sql as S
 from sklearn.preprocessing import KBinsDiscretizer
 
 from sql_transform._trees import _f32_grid_threshold
-from sql_transform.native._helpers import f64
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._helpers import f64, narrows_to_infinity
+from sql_transform.native._registry import NotNative, rejects, translates
 
 
 def _inner(est: Any, j: int) -> list[float]:
@@ -119,8 +120,10 @@ def _kbins(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     for j, xj in enumerate(x):
         edges = _inner(est, j)
         if narrow:
-            # The twin bins float32(x): each edge moves to its cutpoint.
+            # The twin bins float32(x): each edge moves to its cutpoint. Its
+            # validation rejects a value float32 makes infinite.
             edges = [float(c) for c in _f32_cut(np.array(edges))]
+            rejects(narrows_to_infinity(xj))
         if est.encode == "ordinal":
             out.append(_bin(xj, edges))
         else:

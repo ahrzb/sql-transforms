@@ -46,7 +46,14 @@ from sklearn.preprocessing import (
 from sklearn.utils._indexing import _determine_key_type, _safe_indexing
 
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import NotNative, catalog, translates
+from sql_transform.native._registry import (
+    NotNative,
+    catalog,
+    handed,
+    handed_on,
+    translate_part,
+    translates,
+)
 
 
 def _float64_out(est: Any) -> str | None:
@@ -79,7 +86,7 @@ def _float64_out(est: Any) -> str | None:
     return None
 
 
-@translates(Pipeline)
+@translates(Pipeline, composes=True)
 def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # `transform_input` transforms fit metadata only; `memory` and
     # `verbose` act in fit. Refused all the same: the composition is
@@ -108,14 +115,20 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
     if not steps and pa.string() in types:
         # Every step passes: the step's float() of a string raises.
         raise NotNative("Pipeline of passthrough steps over a string feature")
-    # Over boolean features only, a row none NULL is a boolean array, and a
-    # step that hands booleans back (a selector, `Binarizer`, the identity)
+    # Over boolean features only, a row none NULL is a boolean array (where
+    # the pipeline is handed the step's list, or such an array), and a step
+    # that hands booleans back (a selector, `Binarizer`, the identity)
     # hands the next one a boolean array too: its lanes stay typed boolean,
     # for the next step's own rule (`FunctionTransformer` has one).
-    booleans = bool(types) and all(t == pa.bool_() for t in types)
+    hand = handed()
+    booleans = (
+        hand in ("list", "booleans")
+        and bool(types)
+        and all(t == pa.bool_() for t in types)
+    )
     for k, (_, name, step) in enumerate(steps):
         try:
-            x = list(entries[type(step)].translate(step, x, types))
+            x = translate_part(step, x, types, hand)
         except NotNative as e:
             raise NotNative(f"Pipeline step {name!r}: {e}") from None
         if booleans:
@@ -127,7 +140,28 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
                     f" {dtype} over boolean features only"
                 )
         types = [pa.bool_() if booleans else pa.float64()] * len(x)
+        if k < len(steps) - 1:
+            hand = _next_hand(name, step, hand, booleans)
     return x
+
+
+def _next_hand(name: str, step: Any, hand: str, booleans: bool) -> str:
+    """How the twin hands the step after `step` its row (`HANDS`): a
+    boolean array where the row has no NULL while booleans flow, else
+    `step`'s output, float64 (`_float64_out`), or, from a step handed
+    objects that keeps its input's dtype (a selector,
+    `SimpleImputer(strategy="most_frequent")`), objects."""
+    if booleans:
+        return "booleans"
+    if hand != "objects":
+        return "doubles"
+    if catalog()[type(step)].composes:
+        raise NotNative(
+            f"Pipeline step {name!r}: a {type(step).__name__} handed objects"
+            " (a ColumnTransformer's part), whose output the input guard"
+            " does not probe"
+        )
+    return handed_on()
 
 
 def on_booleans(est: Any, n: int) -> np.dtype | None:
@@ -285,8 +319,10 @@ def _part(
     weight: Any,
     x: list[S.Expr],
     types: list[pa.DataType],
+    hand: str,
 ) -> list[S.Expr]:
-    """One part's lanes over its own features, weighted."""
+    """One part's lanes over its own features, weighted; the twin hands
+    it its row as `hand`."""
     where = f"{owner} part {name!r}"
     entry = catalog().get(type(part))
     if entry is None:
@@ -302,7 +338,7 @@ def _part(
         )
     w = None if weight is None else _weight(owner, name, part, weight, types)
     try:
-        out = list(entry.translate(part, x, types))
+        out = translate_part(part, x, types, hand)
     except NotNative as e:
         raise NotNative(f"{where}: {e}") from None
     return out if w is None else [o * f64(w) for o in out]
@@ -315,7 +351,7 @@ def _refuse_container(est: Any) -> None:
         raise NotNative(f"{type(est).__name__}.set_output(transform={config!r})")
 
 
-@translates(ColumnTransformer)
+@translates(ColumnTransformer, composes=True)
 def _column_transformer(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:
@@ -329,6 +365,10 @@ def _column_transformer(
             f" has {n}"
         )
     weights = est.transformer_weights or {}
+    # `_check_X` makes the step's list an object array, and hands an array
+    # on as it is: each part is handed its columns of it.
+    hand = handed()
+    hand = "objects" if hand == "list" else hand
     out: list[S.Expr] = []
     for name, part, columns in _parts(est):
         where = f"ColumnTransformer part {name!r}"
@@ -361,11 +401,12 @@ def _column_transformer(
             weights.get(name),
             [x[i] for i in cols],
             [types[i] for i in cols],
+            hand,
         )
     return out
 
 
-@translates(FeatureUnion)
+@translates(FeatureUnion, composes=True)
 def _union(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     _refuse_container(est)
     weights = est.transformer_weights or {}
@@ -374,5 +415,5 @@ def _union(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
         if _passes(part) and weights.get(name) is not None:
             # It hands back the step's list, and `list * w` raises.
             raise NotNative(f"FeatureUnion part {name!r}: a weighted passthrough")
-        out += _part("FeatureUnion", name, part, weights.get(name), x, types)
+        out += _part("FeatureUnion", name, part, weights.get(name), x, types, handed())
     return out

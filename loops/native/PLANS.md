@@ -8,7 +8,14 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **The kernel probe draws random significands**
+1. **Fit `trees._case_seconds` again.** The confit loop answered the
+   forest's slower build ("Needs from confit" below) with #422 (T8): a
+   list of 3,200 elements, 100 trees, builds in 1.0 s, not 3.2 s, and 250
+   trees in 3.6 s, not 17.5 s. The input guard (T25) adds build time to a
+   struct return read field by field ("Needs from confit"). Measure both
+   spellings on master again, with both return types, and refit the
+   estimate.
+2. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
    The registered bounds hold on 2,000,000 random-significand draws in each
@@ -16,7 +23,7 @@ Easiest first; each is one family, one PR.
    1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
    that reads 0 makes a bounded function bit-exact on that platform: it
    serves by default, is checked at 0 and composes, as `sin` and `cos`.
-2. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
@@ -29,15 +36,11 @@ default, and a bound above 0 serves only on the caller's request (it can
 flip HistGradientBoosting labels on repeated training values). T19 built
 that request, `to_native(step, allow_bound=True)`. In order:
 
-1. **The input guard** (tolerated-differences.md): probe each leaf for the
-   values its twin rejects, trap in the first output field, check "raises
-   iff the twin raises" on every row. The row generator draws ±inf since
-   T20, and the periodic spline breach at ±inf is fixed (#406).
-2. **Densify sparse outputs** (sparse-outputs.md): one helper at
+1. **Densify sparse outputs** (sparse-outputs.md): one helper at
    `_udf.py:314`, `_projection.py:352`, `model/_foreign.py:128` and
    `native/encode.py:110`; then drop the sparse guards of OneHotEncoder,
    KBinsDiscretizer, MissingIndicator and SplineTransformer (not degree 0).
-3. **Families on the parity bound.** Since T24 a family declares its error
+2. **Families on the parity bound.** Since T24 a family declares its error
    scale, `translates(cls, scale=ErrorScale(k, s, tau, g))`, and
    `native.check` holds each row to it (`_registry.ErrorScale` says what
    each operand is). The first family also lists its error scale in the
@@ -54,12 +57,26 @@ that request, `to_native(step, allow_bound=True)`. In order:
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
      not served until a normwise S is derived.
-4. **Still open for the owner:** a bounded step inside a composition
+3. **Still open for the owner:** a bounded step inside a composition
    (decisions/open/bounded-steps-in-compositions.md). `compose.py` keeps
    refusing one meanwhile.
 
 ## Needs from confit
 
+- **A trap in one field of a struct output, bound once for all the field
+  reads of a call.** The input guard traps in the first output field.
+  Where a query reads every field of a struct output one by one, each
+  trap in a field adds build time to every field read: a confit-only
+  struct of 2,000 fields builds in 0.52 s without a trap, 0.94 s with the
+  unknown-id trap, and 1.37 s with the guard's trap too; read as one
+  value, 0.015 s in each case (release build, master f72214b). In the
+  catalog, a `RandomTreesEmbedding` of 100 trees (2,000 fields, struct
+  return) builds in 2.9 s without the guard and 5.1 s with it, and
+  `StandardScaler` at 128 features in 0.12 s and 0.31 s; a list return
+  does not pay it. A reproduction is in the message sent to the confit
+  loop, 2026-10-06 (`/mnt/project-files/transforms-loop/`). The build
+  estimates (`trees._case_seconds`, `spline._build_estimate`) do not
+  count the guard yet.
 - **One CASE per tree that builds about linearly in the output fields.**
   `trees.py` spells a forest as one nested CASE per tree, which every
   output field of the tree reads, where its build is estimated within
@@ -68,10 +85,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
   square of the output fields, and confit's #417 (a whole struct as one
   output value) slowed it: 100 trees of depth 5 (2,286 output fields), a
   list return, built in 0.67 s before #417 and in 2.7 s after; a struct
-  return builds in 3.8 s (release build, a7cd5aa and d36e64a). A
-  reproduction is in the message sent to the confit loop, 2026-10-06.
-  The confit loop answers there if it changes the build; then fit
-  `trees._case_seconds` again.
+  return builds in 3.8 s (release build, a7cd5aa and d36e64a). The confit
+  loop answered with #422 (T8, "Next" above).
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
@@ -171,8 +186,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   double spans, or a platform whose `np.interp` fuses its multiply-add
   (`quantile.interp_is_numpys` probes it).
 - `PowerTransformer(method="yeo-johnson")` and `standardize=True`
-  (waiting on the owner, above). Where the twin rejects
-  x <= 0, the entry answers NaN (goal.md, "Tolerated differences").
+  (on the parity bound, above).
 - `FunctionTransformer` with a `func` other than the identity and numpy's
   `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
@@ -201,7 +215,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   float64 (`FunctionTransformer(np.sqrt)`'s float16; a selector's,
   `Binarizer`'s or the identity's booleans are served, read as 0/1 by
   the next step). A `set_output` container between steps is not examined
-  yet.
+  yet. A composition before the last step of a `Pipeline` that is a
+  `ColumnTransformer`'s part: the twin hands it an object array, and the
+  input guard does not probe what it hands on.
+- A step whose twin raises on the input guard's probe row: each feature
+  at 1.0, False or an empty string, or the row its family gives
+  (`Entry.base`, a fitted category or knot). Nothing is left to probe
+  from.
 - `SplineTransformer(sparse_output=True)`: a sparse output
   (decisions/closed/sparse-outputs.md). `extrapolation="linear"` at
   `degree=0, n_knots=2` over two or more features: the twin's running
@@ -213,10 +233,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   of the configurations measured, none up to 64 features, and ten of 96
   and 128 features that build in 7.1 to 15 s; and any
   step where scipy's `BSpline` does not round as the unfused recurrence
-  (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the
-  entry answers: NaN past the knots under `extrapolation="error"`, 0.0
-  for NaN under `handle_missing="error"`, and 0.0 above the knots under
-  `extrapolation="constant"` at `degree=0`.
+  (`spline.bspline_is_scipys`, an FMA build). `extrapolation="error"`
+  with a feature whose knots are NaN: the twin raises on every number
+  there.
 - A `ColumnTransformer` or `FeatureUnion` with a part that is not a
   catalog entry, or one registered with a bound; a sparse output
   (`sparse_output_`); a `set_output` container (the step's
@@ -243,10 +262,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   to float32), past 8,000 thresholds (about 6 s to build; one CASE tree
   builds in about 0.7 ms a threshold, 22 s at 20,000), with thresholds
   further apart than a double spans, or on a platform whose `np.interp`
-  fuses its multiply-add (`quantile.interp_is_numpys`). Where the twin
-  raises (`out_of_bounds="raise"` outside the range, NaN, infinity), the
-  entry answers NaN, or the constant of a one-threshold fit (goal.md,
-  "Tolerated differences").
+  fuses its multiply-add (`quantile.interp_is_numpys`).
 - `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
   `np.max` and `np.min` included: on a tie of signed zeros numpy's SIMD
   reduction answers the zero its lane order reaches, neither the first
@@ -259,8 +275,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (`trees._spelling`): 200 trees of depth 5 (4,657 output fields, 7.9 s
   for the paths), and one unbounded tree over 4,000 rows (8.3 s for one
   CASE per tree). One unbounded tree over 2,000 rows, refused before T22,
-  is served. Where the twin raises (±inf, a value past float32's range)
-  the entry answers a leaf (goal.md, "Tolerated differences").
+  is served.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

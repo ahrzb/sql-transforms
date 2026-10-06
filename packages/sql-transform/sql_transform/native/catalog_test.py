@@ -1050,9 +1050,9 @@ def test_an_unknown_id_raises_as_the_twin_does():
     rows = _rows(step, 0)
     rows = rows.set_column(0, "__iid", pa.array([99] * rows.num_rows, pa.int64()))
     sql = query(step)
-    assert isinstance(_serve(sql, rows, step), Exception)
+    assert all(isinstance(a, Exception) for a in _serve(sql, rows, step))
     got = _serve(sql, rows, native)
-    assert "not in the fitted instances" in str(got)
+    assert all("not in the fitted instances" in str(b) for b in got)
     with Oracle() as o:
         native.register(o)
         o.load("__THIS__", rows)
@@ -1232,27 +1232,6 @@ def test_an_encoder_reads_a_boolean_row_by_its_dtype(make):
         }
     )
     assert check(step, to_native(step, strict=True), rows) >= 3
-
-
-def test_an_imputer_answers_a_boolean_row_its_twin_rejects():
-    # A row of booleans none NULL is a boolean array, which
-    # SimpleImputer(strategy="most_frequent") rejects; the entry answers it
-    # (goal.md, "Tolerated differences"), and a row with a NULL, which is
-    # float64, as the twin does.
-    X = np.array([[1.0, 0.0], [np.nan, 1.0], [1.0, 1.0], [0.0, np.nan]])
-    est = SimpleImputer(strategy="most_frequent").fit(X)
-    takes = pa.schema([("x0", pa.bool_()), ("x1", pa.bool_())])
-    step = PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), 2))
-    rows = pa.table(
-        {
-            "__iid": pa.array([0, 0, 0, 0], pa.int64()),
-            "x0": pa.array([True, None, False, None]),
-            "x1": pa.array([False, True, None, None]),
-        }
-    )
-    with pytest.raises(ValueError, match="does not support data with dtype bool"):
-        est.transform([[True, False]])
-    assert check(step, to_native(step, strict=True), rows) == 3
 
 
 def test_a_null_id_is_a_null_struct():
@@ -2186,18 +2165,32 @@ def test_trees_at_the_cutpoints(spelling):
     native = to_native(step, strict=True)
     answered = [r for r in rows if finite(r)]
     assert check(step, native, table(answered)) == len(answered)
-    # Where the twin raises, the entry answers (check serves every row),
-    # and check compares none.
+    # Where the twin raises, the entry traps (check asserts it on each
+    # row), and check compares none.
     with pytest.raises(ParityError, match="compares no row"):
         check(step, native, table([r for r in rows if not finite(r)]))
 
 
-def test_trees_answer_where_the_twin_raises():
+def test_trees_trap_where_the_twin_raises():
+    from sql_transform.native._check import _serve
+    from sql_transform.native._registry import query
+
     X = np.random.default_rng(0).normal(size=(20, 2))
     est = RandomTreesEmbedding(n_estimators=2, sparse_output=False).fit(X)
     with pytest.raises(ValueError, match="infinity or a value too large"):
         est.transform([[2.0**128 * (1 - 2.0**-25), 0.0]])
     est.transform([[F32_LAST, 0.0]])  # the twin answers the double below
+    step = _tree_step(est, 2)
+    rows = pa.table(
+        {
+            "__iid": pa.array([0, 0], pa.int64()),
+            "x0": pa.array([F32_LAST, 2.0**128 * (1 - 2.0**-25)]),
+            "x1": pa.array([0.0, 0.0]),
+        }
+    )
+    got = _serve(query(step), rows, to_native(step, strict=True))
+    assert not isinstance(got[0], Exception)
+    assert "the fitted estimator rejects" in str(got[1])
 
 
 def test_trees_refuse_a_sparse_output():

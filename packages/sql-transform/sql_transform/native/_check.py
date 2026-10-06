@@ -19,9 +19,10 @@ import pyarrow as pa
 from confit import DuckDBInferFn, compare
 from confit import sql as S
 from confit.oracle import Oracle
+from sklearn.preprocessing import SplineTransformer
 
 from sql_transform._udf import PythonTransform
-from sql_transform.native._registry import ErrorScale, catalog, query
+from sql_transform.native._registry import ErrorScale, catalog, is_trap, query
 
 EPS = np.longdouble(2.0**-52)
 _DBL_MAX = np.longdouble(sys.float_info.max)
@@ -127,14 +128,98 @@ def _once(step: PythonTransform, id_col: str) -> str:
     return f"SELECT {reads} FROM (SELECT {call} FROM __THIS__)"  # noqa: S608
 
 
-def _serve(sql: str, rows: pa.Table, fn: Any) -> list[dict] | Exception:
+def _serve(sql: str, rows: pa.Table, fn: Any) -> list[Any] | Exception:
+    """Each row's answer, or the error it traps with: the function built
+    once, every row served together, and one by one where one traps. The
+    error confit raises when it does not build `fn`."""
     try:
         f = DuckDBInferFn(
             sql, row_tables={"__THIS__": rows.schema}, static_tables={}, udfs=[fn]
         )
-        return f.infer_arrow(rows).to_pylist()
-    except Exception as e:  # noqa: BLE001 — a trap is an answer here
+    except Exception as e:  # noqa: BLE001 — a refusal is reported by the caller
         return e
+    try:
+        return f.infer_arrow(rows).to_pylist()
+    except Exception:  # noqa: BLE001 — a trap: serve the rows one by one
+        return [_one(f, rows.slice(i, 1)) for i in range(rows.num_rows)]
+
+
+def _one(f: DuckDBInferFn, row: pa.Table) -> Any:
+    """One row's answer, or the error it traps with."""
+    try:
+        return f.infer_arrow(row).to_pylist()[0]
+    except Exception as e:  # noqa: BLE001 — a trap is this row's answer
+        return e
+
+
+def _definition(
+    step: PythonTransform, native: Any, rows: pa.Table, got: list[Any], id_col: str
+) -> None:
+    """Raise `ParityError` unless DuckDB, running the native twin's own
+    definition, answers exactly what confit served: the rows confit
+    answers in one query, and each row it traps on alone, which DuckDB
+    must trap on too (a trap fails the whole query)."""
+    answered = [i for i, g in enumerate(got) if not isinstance(g, Exception)]
+    with Oracle() as o:
+        native.register(o)
+        o.load("__ALL__", rows.append_column("__row", pa.array(range(rows.num_rows))))
+        cols = ", ".join(S.col(n).sql() for n in rows.column_names)
+
+        def answer(ids: list[int]) -> Any:
+            o.execute(
+                f"CREATE OR REPLACE VIEW __THIS__ AS SELECT {cols} FROM __ALL__"  # noqa: S608
+                f" WHERE __row IN ({', '.join(map(str, ids))})"
+            )
+            return o.try_answer(_once(step, id_col))
+
+        if answered:
+            want = answer(answered)
+            if not isinstance(want, pa.Table):
+                raise ParityError(f"DuckDB does not run the native definition: {want}")
+            compare.assert_rows(
+                [got[i] for i in answered], want.to_pylist(), ctx=_once(step, id_col)
+            )
+        for i in range(len(got)):
+            if i not in answered and isinstance(answer([i]), pa.Table):
+                raise ParityError(
+                    f"row {i}: confit traps ({got[i]}) where DuckDB answers the"
+                    f" native definition; input {_input(rows, i)}"
+                )
+
+
+def _tolerated(est: Any, error: Exception) -> bool:
+    """`error`, which the step raised for `est`, is a twin error that is
+    not validation: the entry may answer there (decisions/closed/
+    tolerated-differences.md, the ruling, lists each). The one listed:
+    SplineTransformer with degree 0 and `extrapolation="constant"`, whose
+    slice assignment above the knots fails to broadcast."""
+    if "could not be broadcast" not in str(error):
+        return False
+    return any(
+        isinstance(e, SplineTransformer)
+        and e.degree == 0
+        and e.extrapolation == "constant"
+        for e in _estimators(est)
+    )
+
+
+def _estimators(est: Any) -> list[Any]:
+    """`est` and every estimator it holds, a composition's parts with
+    theirs."""
+    out = [est]
+    if hasattr(est, "get_params"):
+        for v in est.get_params(deep=False).values():
+            vs = v if isinstance(v, list | tuple) else [v]
+            for w in vs:
+                w = w[1] if isinstance(w, tuple) and len(w) > 1 else w
+                if hasattr(w, "transform"):
+                    out += _estimators(w)
+    for name in ("steps", "transformer_list", "transformers_"):
+        for part in getattr(est, name, None) or []:
+            w = part[1]
+            if hasattr(w, "transform"):
+                out += _estimators(w)
+    return out
 
 
 def check(
@@ -152,41 +237,51 @@ def check(
     per lane instead. `rows` holds `id_col` and one column per declared
     feature.
 
-    Where the step itself raises on a row (sklearn rejecting an input it
-    validates), the native answer is not compared: loops/native/goal.md,
-    "Where the twin raises". Where it raises on every row, nothing is
-    compared and `check` raises: such rows prove nothing. Returns the number
-    of rows compared, at least 1."""
+    Where the step raises on a row (sklearn rejecting an input it
+    validates), the native twin must trap, and nowhere else: its input
+    guard (loops/native/goal.md, "Where the twin raises"). The one twin
+    error that is not validation the ruling lists is let through
+    (`_tolerated`). A native error must be one of its traps, the guard's
+    or an unknown id's (`is_trap`). Where both trap on every row, nothing
+    is compared and `check` raises: such rows prove nothing. Returns the
+    number of rows compared, at least 1."""
     sql = query(step, id_col)
 
     # The native twin against its own definition, exactly.
     got = _serve(sql, rows, native)
     if isinstance(got, Exception):
         raise ParityError(f"the native twin does not serve: {got}")
-    with Oracle() as o:
-        native.register(o)
-        o.load("__THIS__", rows)
-        want = o.try_answer(_once(step, id_col))
-    if isinstance(want, Exception) or not isinstance(want, pa.Table):
-        raise ParityError(f"DuckDB does not run the native definition: {want}")
-    compare.assert_rows(got, want.to_pylist(), ctx=sql)
+    _definition(step, native, rows, got, id_col)
 
     # The swap: the Python step on the same query.
     twin = _serve(sql, rows, step)
     if isinstance(twin, Exception):
-        # Row by row, so a row the step rejects leaves the others compared.
-        twin = [_serve(sql, rows.slice(i, 1), step) for i in range(rows.num_rows)]
-        twin = [t[0] if isinstance(t, list) else None for t in twin]
+        raise ParityError(f"the step does not serve: {twin}")
     entries = catalog()
     ids = rows.column(id_col).to_pylist()
     compared = 0
     for i, (a, b) in enumerate(zip(twin, got, strict=True)):
-        if a is None:
-            continue  # the step raised on this row
-        compared += 1
         # The row's instance, and its bound. A NULL id answers NULL on both
         # sides, compared exactly.
         est = None if ids[i] is None else step.instances.get(ids[i])
+        if isinstance(b, Exception) and not is_trap(step.name, b):
+            raise ParityError(
+                f"row {i}: the native twin fails ({b}), not by one of its"
+                f" traps; input {_input(rows, i)}"
+            )
+        if isinstance(b, Exception) and not isinstance(a, Exception):
+            raise ParityError(
+                f"row {i}: the native twin traps ({b}) where the step answers"
+                f" {a!r}; input {_input(rows, i)}"
+            )
+        if isinstance(a, Exception):
+            if isinstance(b, Exception) or (est is not None and _tolerated(est, a)):
+                continue
+            raise ParityError(
+                f"row {i}: the step raises ({a}) where the native twin answers"
+                f" {b!r}; input {_input(rows, i)}"
+            )
+        compared += 1
         entry = None if est is None else entries.get(type(est))
         scale = None if ulps is not None or entry is None else entry.scale
         if ulps is not None:

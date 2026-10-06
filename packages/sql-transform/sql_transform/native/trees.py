@@ -37,7 +37,7 @@ _f32_grid_threshold` computes (its docstring has the proof). NaN is
 routed by an explicit test, since DuckDB orders NaN above every number
 (`NaN <= t'` is false). Comparisons and constants only, so the entry is
 bit-exact. Where the twin raises (±inf, or past float32's range) the
-entry answers a leaf (goal.md, "Tolerated differences").
+entry traps: its input guard (`_registry.rejects`).
 
 One CASE per tree serves 1.5-2x as fast as the paths, but its build
 grows faster with the lanes. The entry spells a forest with one CASE per
@@ -77,8 +77,8 @@ from confit import sql as S
 from sklearn.ensemble import RandomTreesEmbedding
 
 from sql_transform._trees import _f32_grid_threshold
-from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._helpers import f64, isnan, narrows_to_infinity
+from sql_transform.native._registry import NotNative, rejects, translates
 
 # The longest build the entry takes on, in seconds, by the estimates below
 # (module docstring).
@@ -186,6 +186,8 @@ def _embed(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
             f"RandomTreesEmbedding: {len(cats)} encoded blocks for"
             f" {len(est.estimators_)} trees"
         )
+    for xj in x:
+        rejects(narrows_to_infinity(xj))
     case = _spelling(est) == "case"
     out: list[S.Expr] = []
     for tree, leaves in zip(est.estimators_, cats, strict=True):

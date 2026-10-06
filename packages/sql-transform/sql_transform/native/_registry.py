@@ -32,12 +32,28 @@ family flips none (loops/native/decisions/closed/matvec-parity-bound.md).
 A parity bound is an ulp bound (`ulps`), or an error scale
 (`ErrorScale`) for a family that rounds in an order its twin does not
 follow.
+
+Where the validation of the twin raises, the entry traps
+(loops/native/decisions/closed/tolerated-differences.md, the ruling): the
+input guard. Each estimator a translation reads, the step's own or a
+composition's part, adds tests on its own input expressions: the values
+its twin rejects in each feature, found by handing the fitted estimator
+±inf, NaN and NULL in the container its twin is handed (`_probed`), and
+its family's domain tests (`rejects`), such as Box-Cox's `x <= 0`. The
+framework joins an instance's tests with OR into the first output field,
+`CASE WHEN ... THEN error(...)`, which DuckDB and confit fire on a read of
+any field, as they fire the unknown-id trap.
 """
 
 from __future__ import annotations
 
+import contextvars
+import math
+import sys
+import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import reduce
 from typing import Any
 
 import numpy as np
@@ -46,7 +62,7 @@ from confit import DuckDBInferFn, Function, SqlFunction
 from confit import sql as S
 
 from sql_transform._udf import PythonTransform
-from sql_transform.native._helpers import SameTree
+from sql_transform.native._helpers import SameTree, f64, isnan
 
 Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
 
@@ -86,12 +102,19 @@ class Entry:
     estimator's own bound, from 0 to the ceiling; without it, every
     estimator's bound is the ceiling. An entry with a `scale` is bounded
     by that error scale instead, never bit-exact. A step whose bound is
-    above 0 serves only with `to_native(step, allow_bound=True)`."""
+    above 0 serves only with `to_native(step, allow_bound=True)`.
+
+    `base(est, types)` is the input guard's probe row, a value the twin
+    accepts in each feature, for a family where the default (`_base`)
+    may not be one (an encoder's categories). A composition (`composes`)
+    is not probed: its parts are."""
 
     translate: Translator
     ulps: int
     per_estimator: Callable[[Any], int] | None = None
     scale: ErrorScale | None = None
+    base: Callable[[Any, list[pa.DataType]], list[Any]] | None = None
+    composes: bool = False
 
     @property
     def varies(self) -> bool:
@@ -139,6 +162,10 @@ _UNKNOWN = (
     "{}: an instance id not in the fitted instances (params table and"
     " instances are from different fits)"
 )
+# What the input guard traps with: the twin raises on the row.
+_REJECTED = (
+    "{}: a value in this row that the fitted estimator rejects, as its twin raises"
+)
 
 
 class NotNative(Exception):  # noqa: N818 — a reason, raised and caught
@@ -150,13 +177,16 @@ def translates(
     ulps: int = 0,
     bound: Callable[[Any], int] | None = None,
     scale: ErrorScale | None = None,
+    base: Callable[[Any, list[pa.DataType]], list[Any]] | None = None,
+    composes: bool = False,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
     unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
     ceiling and `bound(est)` each fitted estimator's own bound (a class
     whose configurations differ: `FunctionTransformer` is bit-exact for the
     identity and within 2 ulps for `np.log10`). With `scale`, the bound is
-    that error scale. A subclass is not covered: it may override what
+    that error scale. `base` and `composes` are the input guard's
+    (`Entry`). A subclass is not covered: it may override what
     `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
@@ -167,7 +197,7 @@ def translates(
         for c in classes:
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
-            _CATALOG[c] = Entry(fn, ulps, bound, scale)
+            _CATALOG[c] = Entry(fn, ulps, bound, scale, base, composes)
         return fn
 
     return deco
@@ -176,6 +206,201 @@ def translates(
 def catalog() -> dict[type, Entry]:
     """The registered estimator classes and their entries."""
     return dict(_CATALOG)
+
+
+# How the twin hands an estimator its row, which fixes what its validation
+# sees: "list", the step's own one-row list, which numpy makes a boolean
+# array over boolean features none NULL, objects beside a string, and
+# float64 otherwise; "objects", an object array (a ColumnTransformer's
+# part, as its `_check_X` makes it from the list); "doubles", a float64
+# array (a pipeline's later step); "booleans", a later step over boolean
+# features only, a boolean array where the step's row has no NULL and
+# float64 where it has one.
+HANDS = ("list", "objects", "doubles", "booleans")
+
+
+@dataclass
+class _Guard:
+    """The input guard of the instance being translated: its tests so far;
+    how the twin hands the estimator now being translated its row
+    (`HANDS`); and, over boolean features only, the test that the step's
+    row has no NULL."""
+
+    hand: str
+    no_null: S.Expr | None
+    tests: list[S.Expr] = field(default_factory=list)
+    # How the last estimator probed hands on its output (`handed_on`).
+    out: str = "doubles"
+
+
+_GUARD: contextvars.ContextVar[_Guard] = contextvars.ContextVar("guard")
+
+
+def is_trap(name: str, error: BaseException) -> bool:
+    """`error` is one of the traps of the native twin of step `name`: its
+    input guard's, or an unknown instance id's."""
+    s = str(error)
+    return _REJECTED.format(name) in s or _UNKNOWN.format(name) in s
+
+
+def rejects(test: S.Expr) -> None:
+    """Trap where `test` holds: a family's domain test on the input
+    expressions of the estimator now being translated, where its twin
+    raises past the values `_probed` finds (Box-Cox's `x <= 0`, an
+    unknown category)."""
+    _GUARD.get().tests.append(test)
+
+
+def handed() -> str:
+    """How the twin hands the estimator now being translated its row
+    (`HANDS`): a composition hands its parts theirs from it."""
+    return _GUARD.get().hand
+
+
+def handed_on() -> str:
+    """How the estimator last translated (not a composition) hands on its
+    output to a pipeline's next step: as objects where it returns its
+    probe row as an object array (a selector handed objects keeps them),
+    else as doubles."""
+    return _GUARD.get().out
+
+
+def translate_part(
+    est: Any, x: list[S.Expr], types: list[pa.DataType], hand: str
+) -> list[S.Expr]:
+    """`est`'s output lanes over `x`, a part of the composition now being
+    translated, which the twin hands its row as `hand`. Its input guard's
+    tests join the instance's."""
+    if hand not in HANDS:
+        raise ValueError(f"a hand of {hand!r}")
+    entry = _CATALOG[type(est)]
+    g = _GUARD.get()
+    outer, g.hand = g.hand, hand
+    try:
+        out = list(entry.translate(est, x, types))
+        if not entry.composes:
+            g.tests += _probed(est, x, types, entry, g)
+    finally:
+        g.hand = outer
+    return out
+
+
+def _base(types: list[pa.DataType]) -> list[Any]:
+    """The default probe row: 1.0 in a number, False in a boolean, an
+    empty string in a string."""
+    return [
+        "" if t == pa.string() else False if t == pa.bool_() else 1.0 for t in types
+    ]
+
+
+def _specials(t: pa.DataType) -> list[Any]:
+    """The values of a feature of type `t` that a validation may reject: a
+    string's NULL (None); a double's ±inf and NaN (NULL); an integer's or
+    a boolean's NULL, which the step reads as NaN."""
+    if t == pa.string():
+        return [None]
+    if t == pa.float64():
+        return [math.inf, -math.inf, math.nan]
+    return [math.nan]
+
+
+def _container(hand: str, row: list[Any]) -> Any:
+    """The one-row input of `transform` that `row`'s values make in `hand`."""
+    if hand == "list":
+        return [row]
+    if hand == "objects":
+        return np.array([row], dtype=object)
+    if hand == "doubles":
+        return np.array([row], dtype=np.float64)
+    return np.asarray([row])  # "booleans": a boolean array, or float64 with NaN
+
+
+def _answer(est: Any, arg: Any) -> np.ndarray | None:
+    """`est.transform(arg)`, or None where it raises: whatever it raises,
+    the step raises."""
+    try:
+        with warnings.catch_warnings(), np.errstate(all="ignore"):
+            warnings.simplefilter("ignore")
+            return np.asarray(est.transform(arg))
+    except Exception:  # noqa: BLE001 — any error is the twin raising
+        return None
+
+
+def _raises(est: Any, arg: Any) -> bool:
+    return _answer(est, arg) is None
+
+
+def _probed(
+    est: Any, x: list[S.Expr], types: list[pa.DataType], entry: Entry, g: _Guard
+) -> list[S.Expr]:
+    """The tests on `x` where `est`'s twin raises, by probing: handed the
+    probe row with each feature in turn set to each of its `_specials`,
+    as the twin hands it its row (`g.hand`).
+
+    The validation of every catalog estimator raises per value (an
+    infinity, a NaN), so one feature's probe answers for every row with
+    that value there. One raise is per row: over boolean features only, a
+    row none NULL is a boolean array, which some estimators reject
+    whatever its values (`SimpleImputer(strategy="most_frequent")`); the
+    probe row, then a boolean array, raising with each value flipped says
+    so, and the test is that the row has no NULL. A probe row that raises
+    otherwise leaves nothing to probe from: the step stays Python."""
+    name = type(est).__name__
+    base = list(entry.base(est, types)) if entry.base else _base(types)
+    tests: list[S.Expr] = []
+    got = _answer(est, _container(g.hand, base))
+    g.out = "objects" if got is not None and got.dtype == object else "doubles"
+    if got is None:
+        boolean = (
+            g.hand in ("list", "booleans")
+            and bool(types)
+            and all(t == pa.bool_() for t in types)
+            and g.no_null is not None
+        )
+        flipped = [not v for v in base] if boolean else base
+        if not boolean or not _raises(est, _container(g.hand, flipped)):
+            raise NotNative(
+                f"{name}: the twin raises on the input guard's probe row {base!r}"
+            )
+        tests.append(g.no_null)
+    for j, (xj, t) in enumerate(zip(x, types, strict=True)):
+        hits = [
+            v
+            for v in _specials(t)
+            if _raises(est, _container(g.hand, [*base[:j], v, *base[j + 1 :]]))
+        ]
+        if hits:
+            tests.append(_holds(xj, t, hits))
+    return tests
+
+
+def _holds(x: S.Expr, t: pa.DataType, values: list[Any]) -> S.Expr:
+    """`x` holds one of `values`, probe values of a feature of type `t`."""
+    if t == pa.string():
+        return x.isnull()
+    pos, neg = math.inf in values, -math.inf in values
+    nan = any(isinstance(v, float) and math.isnan(v) for v in values)
+    if pos and neg and nan:
+        # DuckDB orders NaN above every number: one comparison for the three.
+        return S.fn("abs", x) > f64(sys.float_info.max)
+    if pos and neg:
+        return S.fn("abs", x) == f64(math.inf)
+    terms = [
+        *([x == f64(math.inf)] if pos else []),
+        *([x == f64(-math.inf)] if neg else []),
+        *([isnan(x)] if nan else []),
+    ]
+    return any_of(terms)
+
+
+def any_of(tests: list[S.Expr]) -> S.Expr:
+    """The tests joined with OR."""
+    return reduce(lambda a, b: a | b, tests)
+
+
+def all_of(tests: list[S.Expr]) -> S.Expr:
+    """The tests joined with AND."""
+    return reduce(lambda a, b: a & b, tests)
 
 
 def _feature(param: S.Expr, t: pa.DataType) -> S.Expr:
@@ -215,14 +440,27 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
 
     def body(iid: S.Expr, *params: S.Expr) -> Any:
         feats = [_feature(p, t) for p, t in zip(params, types, strict=True)]
+        no_null = None
+        if types and all(t == pa.bool_() for t in types):
+            no_null = all_of([~isnan(f) for f in feats])
         per_id: list[tuple[int, list[S.Expr]]] = []
         for k, est in sorted(step.instances.items()):
-            out = list(_CATALOG[type(est)].translate(est, feats, types))
+            token = _GUARD.set(_Guard("list", no_null))
+            try:
+                out = translate_part(est, feats, types, "list")
+                tests = _GUARD.get().tests
+            finally:
+                _GUARD.reset(token)
             if len(out) != len(lanes):
                 raise NotNative(
                     f"instance {k}: {type(est).__name__} translates to"
                     f" {len(out)} lanes, the step declares {len(lanes)}"
                 )
+            if tests:
+                # The input guard, in the first lane: a read of any lane
+                # fires it, as it fires the unknown-id trap below.
+                trap = S.fn("error", S.lit(_REJECTED.format(step.name)))
+                out[0] = S.case(any_of(tests), trap).otherwise(out[0])
             per_id.append((k, out))
         # After the translators, so that a configuration they refuse says
         # why; `SqlFunction` calls this body before confit builds anything.
