@@ -1,512 +1,507 @@
-"""SQLProjection tests: the training-set round-trip invariant.
+"""SQLProjection: one output row per ``__THIS__`` row, from that row and params.
 
-The standing invariant for this loop and every one after it: fit + transform,
-applied to the training set, must be bit-equal to running the original SQL
-with ``__THIS__`` pointing at the training set. It is free — the training set
-is the oracle input, so no expected values are written by hand. Today
-"transform" is played by DuckDB executing ``serving_sql`` against the fitted
-params; when ``infer``/``infer_batch`` land, the same assertion runs through
-the real serving path and gates the wiring end-to-end.
+The refusal table (`REFUSED`) exercises the named reasons in `REASONS`;
+a reason nothing exercises is a refusal nobody has named.
+
+Executable row-local cases from `packages/sql-transform/docs/contract.md`.
 """
 
-import inspect
-import math
-import os
-import random
-
-import duckdb
 import pyarrow as pa
 import pytest
 
-from sql_transform import MarginalizeError, SQLProjection
+from sql_transform import NotRowWise, run
+from sql_transform._projection import REASONS, SQLProjection
 
-TRAIN = pa.table(
+F = pa.table(
     {
-        "country": ["US", "US", None, "DE", None, "DE", "FR"],
-        "city": ["a", None, "a", "b", None, None, "c"],
-        "age": [40.0, 30.0, None, 25.0, 50.0, None, 35.0],
-        "fare": [7, 8, None, 9, 10, 11, None],
-        "name": ["x", "y", "z", "w", "v", "u", "t"],
+        "store": ["S1", "S1", "S1", "S2", "S2", "S2"],
+        "price": [10.0, 20.0, 30.0, 100.0, 300.0, 500.0],
+    }
+)
+# Shuffled on purpose, with an unseen store in the middle: row order and the
+# NULL for a key fit never saw are both part of what `transform` promises.
+X = pa.table(
+    {
+        "store": ["S2", "NEW", "S1"],
+        "price": [200.0, 7.0, 10.0],
     }
 )
 
+KEYED = """
+    SELECT t.store, t.price / f.m AS z
+    FROM __THIS__ t
+    LEFT JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+      ON t.store = f.store
+"""
 
-def gate(sql: str, table: pa.Table = TRAIN, schema: bool = False) -> SQLProjection:
-    """Assert original == marginalized under the oracle; returns the fitted p."""
-    p = SQLProjection(sql, this_schema=table.schema if schema else None).fit(table)
-    con = duckdb.connect()
-    try:
-        # Both sides single-threaded: DuckDB's parallel window aggregation is
-        # not bit-deterministic for floats, so the original text only has a
-        # unique bit-answer at threads=1 — which is also how fit computes.
-        con.execute("SET threads = 1")
-        con.register("__THIS__", table)
-        orig = con.execute(f"SELECT * FROM ({sql}) ORDER BY ALL").to_arrow_table()
-        for name, params_table in p.params.items():
-            con.register(name, params_table)
-        rew = con.execute(
-            f"SELECT * FROM ({p.serving_sql}) ORDER BY ALL"
-        ).to_arrow_table()
-    finally:
-        con.close()
-    assert orig.schema == rew.schema, f"\n{orig.schema}\n!=\n{rew.schema}"
-    # pyarrow equals says NaN != NaN; fall back to a NaN-aware (and signed-
-    # zero-strict) recursive compare when the fast path disagrees.
-    assert orig.equals(rew) or _same(orig.to_pylist(), rew.to_pylist()), (
-        f"\n{orig.to_pydict()}\n!=\n{rew.to_pydict()}"
-    )
-    return p
+GLOBAL = """
+    SELECT t.price / f.m AS z
+    FROM __THIS__ t, (SELECT avg(price) AS m FROM __FIT__) f
+"""
 
 
-def _same(a, b):
-    if isinstance(a, float) and isinstance(b, float):
-        if math.isnan(a) and math.isnan(b):
-            return True
-        return a == b and math.copysign(1.0, a) == math.copysign(1.0, b)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict=True))
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(_same(v, b[k]) for k, v in a.items())
-    return type(a) is type(b) and a == b
+# ---------------------------------------------------------------- the laws
 
 
-def test_standard_scaler_with_null_keys_and_null_inputs():
-    p = gate(
-        "SELECT (age - avg(age) OVER (PARTITION BY country))"
-        " / stddev_samp(age) OVER (PARTITION BY country) AS age_z FROM __THIS__"
-    )
-    (params,) = p.params.values()
-    # NULL is a partition of its own and must be a real params row.
-    assert None in params.column("country").to_pylist()
-
-
-def test_global_and_keyed_windows_mixed():
-    gate(
-        "SELECT age - avg(age) OVER () AS c,"
-        " fare - avg(fare) OVER (PARTITION BY country) AS f,"
-        " name FROM __THIS__"
-    )
-
-
-def test_multi_key_partition_with_nulls_in_both_keys():
-    gate("SELECT avg(age) OVER (PARTITION BY country, city) AS m FROM __THIS__")
-
-
-def test_single_row_groups():
-    # stddev_samp of a single-row group is NULL; must survive the join back.
-    gate("SELECT stddev_samp(age) OVER (PARTITION BY name) AS s FROM __THIS__")
-
-
-@pytest.mark.parametrize(
-    "agg",
-    [
-        "avg(age)",
-        "sum(fare)",
-        "count(age)",
-        "count(*)",
-        "min(age)",
-        "max(fare)",
-        "stddev(age)",
-        "stddev_pop(age)",
-        "stddev_samp(age)",
-        "var_pop(age)",
-        "var_samp(age)",
-        "variance(age)",
-        "median(age)",
-        "median(fare)",
-    ],
-)
-def test_every_allowlisted_aggregate(agg):
-    gate(f"SELECT {agg} OVER (PARTITION BY country) AS m, name FROM __THIS__")
-    gate(f"SELECT {agg} OVER () AS g, name FROM __THIS__")
-
-
-def test_expression_aggregate_arguments():
-    gate("SELECT avg(age * 2 + fare) OVER (PARTITION BY country) AS m FROM __THIS__")
-
-
-@pytest.mark.parametrize(
-    "expr",
-    [
-        # running aggregates: order values join the key set
-        "sum(fare) OVER (PARTITION BY country ORDER BY age)",
-        "avg(age) OVER (ORDER BY fare)",
-        "count(*) OVER (PARTITION BY country ORDER BY age)",
-        # explicit RANGE / GROUPS frames with constant bounds
-        "sum(age) OVER (PARTITION BY country ORDER BY fare"
-        " RANGE BETWEEN 2 PRECEDING AND CURRENT ROW)",
-        "sum(age) OVER (PARTITION BY country ORDER BY fare"
-        " GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW)",
-        # whole-partition frames are per-partition constants
-        "sum(age) OVER (PARTITION BY country ORDER BY fare"
-        " ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)",
-        # rank family: functions of the order values
-        "rank() OVER (PARTITION BY country ORDER BY age)",
-        "dense_rank() OVER (PARTITION BY country ORDER BY age DESC NULLS FIRST)",
-        "percent_rank() OVER (ORDER BY age)",
-        "cume_dist() OVER (PARTITION BY country ORDER BY age)",
-        # value functions
-        "first_value(name) OVER (PARTITION BY country ORDER BY age)",
-        "first_value(city IGNORE NULLS) OVER (PARTITION BY country ORDER BY age)",
-        "last_value(name) OVER (PARTITION BY country ORDER BY age)",
-        "nth_value(name, 2) OVER (PARTITION BY country ORDER BY age)",
-        # FILTER / DISTINCT / ordered-argument aggregates
-        "avg(age) FILTER (WHERE fare > 8) OVER (PARTITION BY country)",
-        "count(DISTINCT city) OVER (PARTITION BY country)",
-        "string_agg(name, ',') OVER (PARTITION BY country)",
-        "string_agg(name, ',' ORDER BY age) OVER (PARTITION BY country)",
-        # order-sensitive / formerly non-allowlisted aggregates
-        "first(name) OVER (PARTITION BY country)",
-        "array_agg(name) OVER (PARTITION BY country)",
-        "quantile_cont(age, 0.25) OVER (PARTITION BY country)",
-        "bool_and(age > 30) OVER (PARTITION BY country)",
-        "corr(age, fare) OVER (PARTITION BY country)",
-        "mode(city) OVER (PARTITION BY country)",
-        # expression keys
-        "sum(fare) OVER (PARTITION BY substr(country, 1, 1))",
-        "avg(age) OVER (PARTITION BY country ORDER BY fare % 3)",
-        "avg(age) OVER (PARTITION BY country, city ORDER BY fare, name)",
-    ],
-)
-def test_widened_window_surface(expr):
-    gate(f"SELECT {expr} AS m, name FROM __THIS__")
-
-
-def test_named_window_is_inlined_by_the_parser():
-    gate(
-        "SELECT avg(age) OVER w AS m, name FROM __THIS__"
-        " WINDOW w AS (PARTITION BY country)"
-    )
-
-
-# --- projection chains and scalar subqueries (loop 3) ------------------------
-
-
-def test_cte_chain_flattening():
-    gate(
-        "WITH a AS (SELECT age + 1 AS b, name FROM __THIS__)"
-        " SELECT b * 2 AS c, name FROM a"
-    )
-
-
-def test_nested_aggregation_dag():
-    # Standardize, then aggregate the standardized values: the DAG case.
-    gate(
-        "WITH c AS (SELECT age - avg(age) OVER () AS cx, country FROM __THIS__)"
-        " SELECT cx / stddev_samp(cx) OVER (PARTITION BY country) AS z FROM c"
-    )
-
-
-def test_three_level_chain():
-    gate(
-        "WITH a AS (SELECT age - avg(age) OVER () AS ca, country FROM __THIS__),"
-        " b AS (SELECT ca * 2 AS cb, country FROM a)"
-        " SELECT cb - avg(cb) OVER (PARTITION BY country) AS m FROM b"
-    )
-
-
-def test_derived_table_with_windows():
-    gate(
-        "SELECT z + 1 AS z1 FROM"
-        " (SELECT (age - avg(age) OVER (PARTITION BY country)) AS z FROM __THIS__)"
-        " AS sub"
-    )
-
-
-def test_upper_level_window_keys_on_projected_expression():
-    gate(
-        "WITH a AS (SELECT substr(country, 1, 1) AS c1, age FROM __THIS__)"
-        " SELECT age - avg(age) OVER (PARTITION BY c1) AS m FROM a"
-    )
-
-
-def test_star_through_cte_with_windows():
-    gate(
-        "WITH a AS (SELECT name, age - avg(age) OVER () AS ca FROM __THIS__)"
-        " SELECT * FROM a"
-    )
-
-
-def test_scalar_subquery():
-    gate("SELECT age / (SELECT max(age) FROM __THIS__) AS r, name FROM __THIS__")
-
-
-def test_scalar_subquery_with_where_and_group_by_inside():
-    gate(
-        "SELECT age - (SELECT avg(age) FROM __THIS__ WHERE fare > 8) AS d,"
-        " (SELECT count(*) FROM (SELECT country FROM __THIS__ GROUP BY country))"
-        " AS n_countries FROM __THIS__"
-    )
-
-
-def test_exists_subquery():
-    gate(
-        "SELECT EXISTS(SELECT 1 FROM __THIS__ WHERE age > 45) AS any_old FROM __THIS__"
-    )
-
-
-def test_scalar_subquery_inside_cte():
-    gate(
-        "WITH a AS (SELECT age / (SELECT max(age) FROM __THIS__) AS r FROM __THIS__)"
-        " SELECT r - avg(r) OVER () AS rc FROM a"
-    )
-
-
-# --- schema-aware resolution (loop 4) ----------------------------------------
-
-
-def test_schema_mode_basic_and_star():
-    gate(
-        "SELECT age - avg(age) OVER (PARTITION BY country) AS m FROM __THIS__",
-        schema=True,
-    )
-    gate("SELECT * FROM __THIS__", schema=True)
-    gate("SELECT *, avg(age) OVER () AS m FROM __THIS__", schema=True)
-
-
-def test_schema_mode_columns_expansion():
-    gate("SELECT COLUMNS('c.*') FROM __THIS__", schema=True)
-    gate("SELECT COLUMNS('age|fare') FROM __THIS__", schema=True)
-
-
-def test_schema_mode_star_modifiers_through_cte():
-    gate(
-        "WITH a AS (SELECT * FROM __THIS__)"
-        " SELECT * EXCLUDE (name) REPLACE (age + 1 AS age) FROM a",
-        schema=True,
-    )
-    gate(
-        "WITH a AS (SELECT * EXCLUDE (city) FROM __THIS__)"
-        " SELECT age - avg(age) OVER (PARTITION BY country) AS m FROM a",
-        schema=True,
-    )
-
-
-def test_schema_mode_star_rename():
-    gate("SELECT * RENAME (age AS years) FROM __THIS__", schema=True)
-
-
-def test_schema_mode_lateral_alias_resolves():
-    # 'b' is not a column, so the alias applies: (age + 1) * 2.
-    gate("SELECT age + 1 AS b, b * 2 AS c FROM __THIS__", schema=True)
-    # 'fare' IS a column, so the column wins over the alias.
-    gate("SELECT age + 1 AS fare, fare * 2 AS c FROM __THIS__", schema=True)
-
-
-def test_schema_mode_struct_access_through_cte_column():
-    table = pa.table({"s": [{"f": 1.0}, {"f": 2.0}, {"f": None}], "g": ["a", "a", "b"]})
-    gate(
-        "WITH a AS (SELECT s, g FROM __THIS__)"
-        " SELECT s.f - avg(s.f) OVER (PARTITION BY g) AS d FROM a",
-        table,
-        schema=True,
-    )
-
-
-def test_schema_mode_windows_over_columns_expansion():
-    gate(
-        "SELECT avg(fare) OVER (PARTITION BY country) AS m,"
-        " * EXCLUDE (name) FROM __THIS__",
-        schema=True,
-    )
-
-
-def test_schema_is_authoritative_at_fit():
-    schema = pa.schema([("age", pa.float64()), ("country", pa.string())])
-    p = SQLProjection("SELECT * FROM __THIS__", this_schema=schema).fit(TRAIN)
-    # Extra table columns drop; order follows the declared schema.
-    (out_names) = p.serving_sql
-    assert "__cf_t.age AS age, __cf_t.country AS country" in out_names
-    with pytest.raises(MarginalizeError, match="missing schema column"):
-        SQLProjection("SELECT * FROM __THIS__", this_schema=schema).fit(
-            pa.table({"age": [1.0]})
-        )
-
-
-def test_plan_is_inspectable():
-    p = SQLProjection(
-        "WITH c AS (SELECT age - avg(age) OVER () AS cx FROM __THIS__)"
-        " SELECT stddev_samp(cx) OVER () AS s FROM c"
-    )
-    names = [step.name for step in p.plan]
-    assert names == [
-        "__CF_LEVEL_0__",
-        "__CF_PARAMS_0__",
-        "__CF_LEVEL_1__",
-        "__CF_PARAMS_1__",
+def test_rows_and_order_with_an_unseen_key():
+    out = SQLProjection(KEYED).fit(F).transform(X)
+    assert out.num_rows == X.num_rows
+    assert out.column_names == ["store", "z"]
+    assert out.to_pylist() == [
+        {"store": "S2", "z": 200.0 / 300.0},
+        {"store": "NEW", "z": None},
+        {"store": "S1", "z": 0.5},
     ]
-    assert all(step.sql.startswith("SELECT") for step in p.plan)
 
 
-def test_quoted_and_unicode_identifiers():
-    table = pa.table({"país": ["ES", "ES", None], "weird col": [1.0, 2.0, 3.0]})
-    gate(
-        'SELECT "weird col" - avg("weird col") OVER (PARTITION BY "país") AS z'
-        " FROM __THIS__",
-        table,
-    )
+def test_solo_batch_equals_concatenation_of_single_rows():
+    fitted = SQLProjection(KEYED).fit(F)
+    batch = fitted.transform(X).to_pylist()
+    solo = [
+        row
+        for i in range(X.num_rows)
+        for row in fitted.transform(X.slice(i, 1)).to_pylist()
+    ]
+    assert batch == solo
 
 
-def test_struct_field_access_passthrough():
-    table = pa.table(
+def test_faithful_fit_transform_equals_run():
+    p = SQLProjection(GLOBAL)
+    frozen = p.fit(F).transform(F).to_pylist()
+    both = run(p, F).to_pylist()
+    key = lambda r: tuple((v is None, v) for v in r.values())  # noqa: E731
+    assert sorted(frozen, key=key) == sorted(both, key=key)
+
+
+def test_cross_join_to_a_one_row_params_table():
+    out = SQLProjection(GLOBAL).fit(F).transform(X)
+    assert [r["z"] for r in out.to_pylist()] == [
+        200.0 / 160.0,
+        7.0 / 160.0,
+        10.0 / 160.0,
+    ]
+
+
+def test_params_are_inspectable_and_fit_is_gone_from_the_text():
+    fitted = SQLProjection(KEYED).fit(F)
+    assert all(isinstance(t, pa.Table) for t in fitted.params.values())
+    assert {len(t) for t in fitted.params.values()} == {2}
+    assert "__FIT__" not in fitted.sql
+
+
+def test_decorrelation_distinguishes_misses_null_keys_and_false_guards():
+    import duckdb
+
+    fit = pa.table({"g": ["a", "a", None], "v": [10, 20, 7], "enabled": [True] * 3})
+    request = pa.table(
         {
-            "s": [{"f": 1.0}, {"f": 2.0}, {"f": None}],
-            "g": ["a", "a", "b"],
+            "g": ["NEW", None, "a", "a"],
+            "v": [2, 14, 12, 12],
+            "enabled": [True, True, True, False],
         }
     )
-    gate("SELECT s.f - avg(s.f) OVER (PARTITION BY g) AS d FROM __THIS__", table)
+    sql = """
+        SELECT t.g,
+               t.v - (SELECT avg(f.v) FROM __FIT__ f
+                      WHERE f.g IS NOT DISTINCT FROM t.g AND t.enabled) AS d,
+               (SELECT count(*) FROM __FIT__ f
+                WHERE f.g IS NOT DISTINCT FROM t.g AND t.enabled) AS n,
+               (SELECT count(*) FROM __FIT__ f
+                WHERE f.g = t.g AND t.enabled) AS n_eq
+        FROM __THIS__ t
+    """
+    expected = [
+        {"g": "NEW", "d": None, "n": 0, "n_eq": 0},
+        {"g": None, "d": 7.0, "n": 1, "n_eq": 0},
+        {"g": "a", "d": -3.0, "n": 2, "n_eq": 2},
+        {"g": "a", "d": None, "n": 0, "n_eq": 0},
+    ]
+    fitted = SQLProjection(sql).fit(fit)
+    assert fitted.transform(request).to_pylist() == expected
+    with duckdb.connect() as con:
+        con.execute("SET threads = 1")
+        con.execute("PRAGMA disable_optimizer")
+        con.register("__FIT__", fit)
+        con.register("__THIS__", request)
+        original = con.execute(sql).to_arrow_table().to_pylist()
+    assert sorted(original, key=repr) == sorted(expected, key=repr)
+    try:
+        fn = fitted.compile()
+    except ValueError as exc:
+        assert str(exc).startswith("unsupported:")
+    else:
+        assert fn.infer_rows(request.to_pylist()) == expected
+        assert fn.infer_arrow(request).to_pylist() == expected
 
 
-def test_star_with_aggregate():
-    gate("SELECT *, avg(age) OVER (PARTITION BY country) AS m FROM __THIS__")
+def test_the_input_order_is_the_output_order_not_the_join_order():
+    """A LEFT JOIN emits unmatched rows last; the threaded ordinal wins."""
+    fitted = SQLProjection(KEYED).fit(F)
+    first = fitted.transform(
+        pa.table({"store": ["NEW", "S1"], "price": [1.0, 10.0]})
+    ).to_pylist()
+    assert first[0]["store"] == "NEW"
 
 
-def test_no_aggregates_identity():
-    p = gate("SELECT age + 1 AS b, name FROM __THIS__")
-    assert p.params == {}
+# ------------------------------------------------------------- what refuses
+
+INNER_KEYED = """
+    SELECT t.price - f.m AS d
+    FROM __THIS__ t
+    JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+      ON t.store = f.store
+"""
+
+THIS_ON_THE_RIGHT = """
+    SELECT t.price - f.m AS d
+    FROM (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+    LEFT JOIN __THIS__ t ON t.store = f.store
+"""
+
+FULL_OUTER = """
+    SELECT t.price - f.m AS d
+    FROM __THIS__ t
+    FULL JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+      ON t.store = f.store
+"""
+
+REFUSED = [
+    ("aggregate", "SELECT sum(t.price) AS s FROM __THIS__ t"),
+    (
+        "window",
+        "SELECT avg(t.price) OVER (PARTITION BY t.store) AS m FROM __THIS__ t",
+    ),
+    ("group-by", "SELECT t.store, count(*) AS c FROM __THIS__ t GROUP BY t.store"),
+    ("group-by", "SELECT t.store, count(*) AS c FROM __THIS__ t GROUP BY ALL"),
+    ("modifier", "SELECT DISTINCT t.store AS s FROM __THIS__ t"),
+    ("modifier", "SELECT t.price AS p FROM __THIS__ t ORDER BY t.price"),
+    ("modifier", "SELECT t.price AS p FROM __THIS__ t LIMIT 2"),
+    ("filter", "SELECT t.price AS p FROM __THIS__ t WHERE t.price > 0"),
+    (
+        "filter",
+        "SELECT t.price AS p FROM __THIS__ t QUALIFY row_number() OVER () = 1",
+    ),
+    ("this-twice", "SELECT a.price - b.price AS d FROM __THIS__ a, __THIS__ b"),
+    ("set-operation", "SELECT t.price AS p FROM __THIS__ t UNION ALL SELECT 1"),
+    (
+        "recursive-cte",
+        "WITH RECURSIVE r AS ("
+        "  SELECT t.price AS p FROM __THIS__ t"
+        "  UNION ALL SELECT p + 1 FROM r WHERE p < 100"
+        ") SELECT p FROM r",
+    ),
+    ("join", INNER_KEYED),
+    ("join", THIS_ON_THE_RIGHT),
+    ("join", FULL_OUTER),
+    # __THIS__ read from an expression: the output rows are the params rows,
+    # so nothing tracks the batch.
+    (
+        "spine",
+        "SELECT (SELECT max(t.price) FROM __THIS__ t) AS m"
+        " FROM (SELECT avg(price) AS m0 FROM __FIT__) f",
+    ),
+    # unnest turns one row into none or many — the row count is no longer 1-1.
+    ("spine", "SELECT unnest(t.tags) AS tag, t.price FROM __THIS__ t"),
+    # a positional reference resolves by position, which the model's own
+    # appended columns (the ordinal, derived params) silently shift.
+    ("spine", "SELECT #1 AS a FROM __THIS__ t"),
+    # __THIS__ never read at all: one row out whatever the batch is.
+    ("spine", "SELECT f.m FROM (SELECT avg(price) AS m FROM __FIT__) f"),
+    # a correlated subquery over __THIS__ reads the *other* rows of the batch.
+    (
+        "spine",
+        "SELECT (SELECT sum(o.price) FROM __THIS__ o WHERE o.store = t.store) AS s"
+        " FROM __THIS__ t",
+    ),
+]
 
 
-def test_unaliased_outputs_keep_names():
-    gate("SELECT age + 1, avg(age) OVER () FROM __THIS__")
+@pytest.mark.parametrize(("reason", "sql"), REFUSED)
+def test_refused_at_construction(reason, sql):
+    with pytest.raises(NotRowWise) as e:
+        SQLProjection(sql)
+    assert e.value.reason == reason, e.value
 
 
-def test_fuzz_differential():
-    """Seeded random projections; MARGINALIZE_FUZZ_N deepens the run."""
-    n = int(os.environ.get("MARGINALIZE_FUZZ_N", "1500"))
-    rng = random.Random(20260729)
-    aggs = ["avg", "sum", "min", "max", "count", "stddev_samp", "median"]
-    for _ in range(n):
-        rows = rng.randrange(1, 40)
-        # Explicit arrow types: an all-None pick must stay a typed column, not
-        # degrade to pa.null() (which DuckDB coerces to INTEGER — degenerate).
-        table = pa.table(
-            {
-                "k1": pa.array(
-                    [rng.choice(["a", "b", "c", None]) for _ in range(rows)],
-                    type=pa.string(),
-                ),
-                "k2": pa.array(
-                    [rng.choice([1, 2, None]) for _ in range(rows)], type=pa.int64()
-                ),
-                "x": pa.array(
-                    [rng.choice([rng.uniform(-9, 9), None]) for _ in range(rows)],
-                    type=pa.float64(),
-                ),
-                "y": pa.array(
-                    [rng.choice([rng.randrange(100), None]) for _ in range(rows)],
-                    type=pa.int64(),
-                ),
-            }
+def test_every_reason_is_exercised():
+    assert {reason for reason, _ in REFUSED} == set(REASONS)
+
+
+def test_the_refusal_names_the_offending_expression():
+    with pytest.raises(NotRowWise, match=r"sum\(t\.price\)"):
+        SQLProjection("SELECT sum(t.price) AS s FROM __THIS__ t")
+
+
+# --------------------------------------------------- what deliberately builds
+
+
+def test_params_only_levels_are_free():
+    """Aggregates, ORDER BY and LIMIT over params are constant at serving —
+    the gate only constrains the levels that carry the batch's rows."""
+    p = SQLProjection("""
+        WITH s AS (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store)
+        SELECT t.price / (SELECT max(m) FROM (SELECT m FROM s ORDER BY m LIMIT 2)) AS z
+        FROM __THIS__ t
+    """)
+    out = p.fit(F).transform(X)
+    assert out.num_rows == X.num_rows
+
+
+def test_a_where_inside_a_params_relation_is_free():
+    p = SQLProjection("""
+        SELECT t.price / f.m AS z
+        FROM __THIS__ t,
+             (SELECT avg(price) AS m FROM __FIT__ WHERE price > 15) f
+    """)
+    assert p.fit(F).transform(X).num_rows == X.num_rows
+
+
+# ------------------------------------------------- what refuses at fit
+
+
+def test_a_join_without_group_by_refuses_at_fit_naming_the_key():
+    """The measured case: four training rows in the artifact, one serving row
+    became three, no error — under SQLTransform. Here it refuses, with the
+    repeating key and its count straight out of the probe."""
+    from sql_transform import KeyNotUnique
+
+    p = SQLProjection("""
+        WITH s AS (SELECT store, price AS m FROM __FIT__)
+        SELECT t.price / s.m AS z FROM __THIS__ t LEFT JOIN s ON t.store = s.store
+    """)
+    with pytest.raises(KeyNotUnique, match=r"S1.*3 rows.*become 3"):
+        p.fit(F)
+
+
+def test_a_multi_row_relation_beside_this_refuses_at_fit():
+    from sql_transform import KeyNotUnique
+
+    p = SQLProjection("""
+        SELECT t.price - f.price AS d
+        FROM __THIS__ t, (SELECT store, price FROM __FIT__ WHERE price > 15) f
+    """)
+    with pytest.raises(KeyNotUnique, match=r"5 rows"):
+        p.fit(F)
+
+
+def test_an_empty_relation_beside_this_refuses_at_fit():
+    """Cross join to zero rows makes every serving row disappear — the other
+    way to break the row count, and quieter."""
+    from sql_transform import KeyNotUnique
+
+    p = SQLProjection("""
+        SELECT t.price - f.price AS d
+        FROM __THIS__ t, (SELECT store, price FROM __FIT__ WHERE price > 999) f
+    """)
+    with pytest.raises(KeyNotUnique, match=r"0 rows"):
+        p.fit(F)
+
+
+def test_de_dup_idioms_pass_the_measurement():
+    """DISTINCT and QUALIFY row_number are correct de-dup spellings; a syntax
+    rule would refuse them, the measurement does not."""
+    distinct = SQLProjection("""
+        SELECT t.price / f.price AS r
+        FROM __THIS__ t
+        LEFT JOIN (SELECT DISTINCT store, first(price) OVER (
+            PARTITION BY store ORDER BY price) AS price FROM __FIT__) f
+          ON t.store = f.store
+    """)
+    assert distinct.fit(F).transform(X).num_rows == X.num_rows
+
+    qualified = SQLProjection("""
+        SELECT t.price / f.price AS r
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, price FROM __FIT__
+                   QUALIFY row_number() OVER (PARTITION BY store ORDER BY price) = 1) f
+          ON t.store = f.store
+    """)
+    assert qualified.fit(F).transform(X).num_rows == X.num_rows
+
+
+def test_null_keyed_duplicates_refuse_conservatively():
+    """GROUP BY folds NULL keys into one group, which is exact for the INDF
+    joins the model emits and conservative for an author-written `=` join —
+    the safe direction (spec: the KeyNotUnique section)."""
+    from sql_transform import KeyNotUnique
+
+    nulls = pa.table({"store": ["S1", None, None], "price": [10.0, 5.0, 7.0]})
+    p = SQLProjection("""
+        SELECT t.price / f.m AS z
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, price AS m FROM __FIT__) f ON t.store = f.store
+    """)
+    with pytest.raises(KeyNotUnique, match=r"2 rows"):
+        p.fit(nulls)
+
+
+def test_a_unique_key_with_extra_conjuncts_passes():
+    """Extra non-equality conjuncts only filter matches further; uniqueness
+    over the equality keys already bounds them at one."""
+    p = SQLProjection("""
+        SELECT t.price / f.m AS z
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+          ON t.store = f.store AND f.m > 0
+    """)
+    assert p.fit(F).transform(X).num_rows == X.num_rows
+
+
+# ------------------------------------------------------- the compiled row path
+
+
+def test_compile_returns_confits_own_function():
+    from confit import DuckDBInferFn
+
+    fn = SQLProjection(KEYED).fit(F).compile()
+    assert isinstance(fn, DuckDBInferFn)
+    assert fn.shape == "map"
+
+
+def test_parity_batch_oracle_equals_row_path():
+    """The parity law: DuckDB batch and Confit row-at-a-time, bit-exact."""
+    fitted = SQLProjection(KEYED).fit(F)
+    batch = fitted.transform(X).to_pylist()
+    rows = fitted.compile().infer_rows(X.to_pylist())
+    assert batch == rows
+
+
+def test_one_row_inference():
+    fn = SQLProjection(GLOBAL).fit(F).compile()
+    (out,) = fn.infer_rows([{"store": "S1", "price": 16.0}])
+    assert out["z"] == 16.0 / 160.0
+
+
+def test_a_label_column_in_fit_is_optional_at_serving():
+    """The serving row model comes from the fit relation's schema, every
+    field Optional — a label present at fit and absent at serving is fine."""
+    labelled = F.append_column("y", pa.array([1.0] * 6))
+    fn = SQLProjection(GLOBAL).fit(labelled).compile()
+    (out,) = fn.infer_rows([{"store": "S1", "price": 16.0}])  # no y supplied
+    assert out["z"] == 16.0 / 160.0
+
+
+def test_a_foreign_leaf_serves_in_batch_but_refuses_to_compile_by_name():
+    """Relation-batch callbacks stay separate from scalar serving UDFs."""
+    import pyarrow.compute as pc
+
+    from sql_transform import Transform, TransformError
+
+    sc = Transform(  # noqa: F841 — captured SQL member
+        fit=lambda f: pa.table({"m": [pc.mean(f["v"]).as_py()]}),
+        transform=lambda p, t: pa.table({"v": pc.divide(t["v"], p["m"][0])}),
+        takes=("v",),
+        returns=("v",),
+    )
+    p = SQLProjection("""
+        SELECT sc_transform(f.theta, struct_pack(v := t.price)).v AS z
+        FROM __THIS__ t,
+             (SELECT sc_fit(struct_pack(v := price)) AS theta FROM __FIT__) f
+    """)
+    fitted = p.fit(F)
+    assert fitted.transform(X).num_rows == X.num_rows
+    with pytest.raises(TransformError, match="row path"):
+        fitted.compile()
+
+
+def test_the_reserved_row_name_is_already_unwritable():
+    """P8 owns the threading column: an author cannot collide with it."""
+    from sql_transform import TransformError
+
+    with pytest.raises(TransformError, match="reserved"):
+        SQLProjection("SELECT t.price AS __cf_row FROM __THIS__ t")
+
+
+def test_public_artifact_reads_the_same_captured_snapshot_in_every_interface():
+    import pandas as pd
+    from confit import DuckDBInferFn
+
+    dim = pd.DataFrame({"store": ["S1", "S2"], "factor": [2.0, 3.0]})
+    fitted = SQLProjection(
+        "SELECT t.store, t.price * d.factor AS z "
+        "FROM __THIS__ t LEFT JOIN dim d ON t.store = d.store",
+        captured={"dim": dim},
+    ).fit(F)
+    dim.loc[0, "factor"] = 99.0
+    assert fitted.transform(X).to_pylist() == [
+        {"store": "S2", "z": 600.0},
+        {"store": "NEW", "z": None},
+        {"store": "S1", "z": 20.0},
+    ]
+    fitted.params["dim"] = pa.table({"store": ["S1", "S2"], "factor": [4.0, 5.0]})
+    expected = [
+        {"store": "S2", "z": 1000.0},
+        {"store": "NEW", "z": None},
+        {"store": "S1", "z": 40.0},
+    ]
+    public = DuckDBInferFn(
+        sql=fitted.sql,
+        row_tables={"__THIS__": fitted.schema},
+        static_tables=fitted.params,
+        udfs=list(fitted.udfs.values()),
+        shape="map",
+    )
+    assert fitted.transform(X).to_pylist() == expected
+    assert fitted.compile().infer_rows(X.to_pylist()) == expected
+    assert public.infer_rows(X.to_pylist()) == expected
+    assert public.infer_arrow(X).to_pylist() == expected
+
+
+def test_caller_catalog_probes_and_batch_restore_observed_threads():
+    import duckdb
+
+    from sql_transform import TransformError
+
+    con = duckdb.connect()
+    try:
+        con.execute("SET threads = 3")
+        con.execute("CREATE TABLE dim AS SELECT 'S1' AS store, 2.0 AS factor")
+        fitted = SQLProjection(
+            "SELECT t.store, t.price * d.factor AS z "
+            "FROM __THIS__ t LEFT JOIN dim d ON t.store = d.store",
+            connection=con,
+        ).fit(F)
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)
+        assert fitted.transform(X).to_pylist() == [
+            {"store": "S2", "z": None},
+            {"store": "NEW", "z": None},
+            {"store": "S1", "z": 20.0},
+        ]
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)
+        with pytest.raises(TransformError, match="captur|catalog"):
+            fitted.compile()
+        with pytest.raises(duckdb.Error):
+            fitted.transform(pa.table({"store": ["S1"]}))
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)
+        assert (
+            con.execute(
+                "SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '%__x%'"
+            ).fetchall()
+            == []
         )
-        exprs = []
-        for i in range(rng.randrange(1, 4)):
-            col = rng.choice(["x", "y"])
-            keys = rng.sample(["k1", "k2", "k2 % 2"], k=rng.randrange(0, 3))
-            p = f"PARTITION BY {', '.join(keys)}" if keys else ""
-            ovp = f"OVER ({p})"
-            o = rng.choice(["y", "x", "y % 7"])
-            po = f"OVER ({p + ' ' if p else ''}ORDER BY {o})"
-            agg = rng.choice(aggs)
-            arg = col if agg != "count" else rng.choice([col, "*"])
-            template = rng.choice(
-                [
-                    f"{agg}({arg}) {ovp}",
-                    f"{col} - {agg}({arg}) {ovp}",
-                    f"{col} + 1",
-                    # widened surface: running, frames, rank/value fns,
-                    # FILTER/DISTINCT, order-sensitive aggregates
-                    f"{agg}({arg}) {po}",
-                    f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
-                    " RANGE BETWEEN 2 PRECEDING AND CURRENT ROW)",
-                    f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
-                    " GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW)",
-                    f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
-                    " ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)",
-                    f"rank() {po}",
-                    f"dense_rank() {po}",
-                    f"cume_dist() {po}",
-                    f"first_value({col}) {po}",
-                    f"last_value({col}) {po}",
-                    f"nth_value({col}, 2) {po}",
-                    f"{agg}(DISTINCT {arg.replace('*', col)}) {ovp}",
-                    f"{agg}({arg}) FILTER (WHERE {o} > 1) {ovp}",
-                    f"first({col}) {ovp}",
-                    f"string_agg(k1, '|') {ovp}",
-                    f"string_agg(k1, '|' ORDER BY {o}) {ovp}",
-                    f"array_agg(k1) {ovp}",
-                    f"quantile_cont({col}, 0.25) {ovp}",
-                    f"bool_and({col} > 2) {ovp}",
-                ]
-            )
-            exprs.append(f"{template} AS e{i}")
-        inner = f"SELECT {', '.join(exprs)} FROM __THIS__"
-        schema = bool(rng.randrange(2))
-        shape = rng.randrange(4)
-        if shape == 0:
-            gate(inner, table, schema=schema)
-        elif shape == 1:
-            # wrap in a CTE and project over it
-            outer = ", ".join(f"e{j} AS f{j}" for j in range(len(exprs)))
-            gate(f"WITH c AS ({inner}) SELECT {outer} FROM c", table, schema=schema)
-        elif shape == 2:
-            # a second aggregation level over the first (numeric, type-safe)
-            k_in = rng.choice(["PARTITION BY k1", "PARTITION BY k2", ""])
-            k_out = rng.choice(["PARTITION BY k1", "PARTITION BY k2, k1", ""])
-            agg2 = rng.choice(["avg", "sum", "median", "stddev_samp"])
-            gate(
-                f"WITH c AS (SELECT x - avg(x) OVER ({k_in}) AS e0, k1, k2"
-                f" FROM __THIS__)"
-                f" SELECT e0 - {agg2}(e0) OVER ({k_out}) AS g0 FROM c",
-                table,
-                schema=schema,
-            )
-        else:
-            # sprinkle a scalar subquery into a fresh projection
-            gate(
-                f"SELECT x - (SELECT {rng.choice(['max', 'min', 'avg'])}(x)"
-                f" FROM __THIS__) AS s0, {exprs[0]} FROM __THIS__",
-                table,
-                schema=schema,
-            )
+    finally:
+        con.close()
 
 
-# --- surface: the not-yet-implemented half stays honest ----------------------
+def test_empty_outer_params_preserve_requests():
+    fitted = SQLProjection(
+        "SELECT t.store, t.price - f.price AS d "
+        "FROM __THIS__ t LEFT JOIN "
+        "(SELECT price FROM __FIT__ WHERE price > 999) f ON true"
+    ).fit(F)
+    assert fitted.transform(X).to_pylist() == [
+        {"store": "S2", "d": None},
+        {"store": "NEW", "d": None},
+        {"store": "S1", "d": None},
+    ]
 
 
-def test_unfitted_params_access_raises():
-    p = SQLProjection("SELECT avg(a) OVER () AS m FROM __THIS__")
-    with pytest.raises(MarginalizeError, match="not fitted"):
-        _ = p.params
-
-
-def test_from_file(tmp_path):
-    f = tmp_path / "q.sql"
-    f.write_text("SELECT age + 1 AS b FROM __THIS__", encoding="utf-8")
-    assert SQLProjection.from_file(str(f)).serving_sql
-
-
-def test_template_input_is_a_later_loop():
-    with pytest.raises(NotImplementedError, match="t-string"):
-        SQLProjection(t"SELECT 1 AS x FROM __THIS__")
-
-
-@pytest.mark.parametrize("attr", ["infer", "infer_batch", "backend", "boundary"])
-def test_serving_surface_requires_fit(attr):
-    # The serving half is live (see _serving_test.py); unfitted use refuses.
-    p = SQLProjection("SELECT age + 1 AS b FROM __THIS__")
-    with pytest.raises(MarginalizeError, match="not fitted"):
-        v = getattr(p, attr)
-        if callable(v):
-            v(None)
-
-
-def test_signatures_are_stable():
-    assert str(inspect.signature(SQLProjection.fit)) == (
-        "(self, table: 'pa.Table', /) -> 'SQLProjection'"
-    )
-    assert str(inspect.signature(SQLProjection.infer)) == (
-        "(self, row: 'dict[str, Any] | Any', /) -> 'dict[str, Any]'"
-    )
-    assert str(inspect.signature(SQLProjection.infer_batch)) == (
-        "(self, rows: 'list[dict[str, Any] | Any]', /) -> 'list[dict[str, Any]]'"
-    )
+def test_params_star_does_not_require_unused_fit_labels_on_requests():
+    labelled = F.append_column("label", pa.array([True] * F.num_rows))
+    fitted = SQLProjection(
+        "SELECT t.price, p.* FROM __THIS__ t, (SELECT avg(price) AS m FROM __FIT__) p"
+    ).fit(labelled)
+    rows = [{"price": 2.0}, {"price": 7.0}]
+    expected = [{"price": 2.0, "m": 160.0}, {"price": 7.0, "m": 160.0}]
+    assert fitted.transform(pa.Table.from_pylist(rows)).to_pylist() == expected
+    assert fitted.compile().infer_rows(rows) == expected

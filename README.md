@@ -1,7 +1,10 @@
 # SQL Transforms
 
-Define ML feature transforms as SQL, fit once, then serve them row-at-a-time
-with sub-microsecond latency.
+Author compositional SQL over fit and request data. Fit once, then use batch
+execution or compile row-local projections through Confit.
+
+Read the [system specification](docs/specs/README.md) for current behavior,
+interfaces, and refusals.
 
 ## Packages
 
@@ -10,7 +13,7 @@ This repository is a workspace of two packages:
 | package | what it is |
 |---|---|
 | [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB (optimizer-off reading) or refuses at build time. Usable on its own. |
-| [`packages/sql-transform`](packages/sql-transform) | The authoring surface: `SQLProjection`. The **fit half works**: window aggregates over `__THIS__` are marginalized into materialized params tables plus a rewritten serving SQL. The serving half (through Confit) is a later loop. |
+| [`packages/sql-transform`](packages/sql-transform) | The authoring package: general `SQLTransform` composition and row-local `SQLProjection`. Fit binds fit data and writes params. Confit compiles admitted fitted projections or names a construct it does not serve. |
 
 ## Installation
 
@@ -64,42 +67,51 @@ fn.infer_rows([Row(age=40.0)])          # row objects in, row objects out
 fn.infer_arrow(pa.table({"age": [40.0]}))  # pa.Table in, pa.Table out
 ```
 
-`sql_transform.SQLProjection` is the authoring layer on top of Confit. You
-write SQL with window aggregates, and `fit()` computes them once. The fit half
-works today. See [packages/sql-transform](packages/sql-transform).
+`sql_transform` authors SQL over fit data (`__FIT__`) and request data
+(`__THIS__`). Fit binds the fit data and returns a fitted artifact:
 
 ```python
+import pyarrow as pa
 from sql_transform import SQLProjection
 
-p = SQLProjection(
-    "SELECT (age - avg(age) OVER (PARTITION BY country)) AS d FROM __THIS__"
-).fit(train)
-p.serving_sql   # the rewritten projection: params joins instead of aggregates
-p.params        # {"__CF_PARAMS_0__": <pyarrow.Table>}
+fit_data = pa.table({"v": [10.0, 20.0]})
+requests = pa.table({"v": [12.0, 22.0]})
+fitted = SQLProjection(
+    "SELECT t.v - p.m AS d FROM __THIS__ t, "
+    "(SELECT avg(v) AS m FROM __FIT__) p"
+).fit(fit_data)
+
+assert fitted.transform(requests).to_pydict() == {"d": [-3.0, 7.0]}
+fn = fitted.compile()
+assert fn.infer_rows(requests.to_pylist()) == [{"d": -3.0}, {"d": 7.0}]
 ```
+
+Use `SQLProjection.marginalize(...)` for the bounded one-level window
+convenience. The ordinary constructor expects explicit fit/request SQL.
+The [authoring contract](packages/sql-transform/docs/contract.md) defines
+composition, executable examples, public serving artifacts, and refusals.
 
 ## Architecture
 
-The two-phase shape — **fit works, the wiring between the phases is the next
-loop**:
+The authoring package and Confit have separate admission checks:
 
+```text
+Authored SQL: (fit data, request data) -> result
+                         |
+          authoring plan + SQLProjection row-local check
+                         |
+             fit(fit data) + params join probes
+                         |
+          fitted SQL + params + UDFs + request schema
+                         |
+             compile() -> Confit build or refusal
+                         |
+                  infer_rows / infer_arrow
 ```
-SQL over __THIS__
-      │
-      ▼
-   fit(train) ── marginalize each window aggregate (e.g. avg(age) OVER
-      │          (PARTITION BY country)) into a materialized params table and
-      │          rewrite the SQL to LEFT JOIN it instead of recomputing.
-      │          Bit-exact with DuckDB by differential gate.      [WORKS]
-      │
-      │  rewritten SQL + frozen params          [wiring: NOT IMPLEMENTED]
-      ▼
-   Confit ── partially evaluates the pair into a native function: binding-time
-      │      analysis collapses every static lookup into a prepare-time probe,
-      │      so nothing general remains at call time.             [WORKS]
-      ▼
- infer(row) / infer_batch(rows)
-```
+
+General `SQLTransform` supports composition and batch execution without the
+row-local rule. Fitted `SQLProjection.transform` also executes in batch.
+Only Confit-admitted projections compile for row-local serving.
 
 Confit's contract has two outcomes. In the first, the SQL and its static
 tables become a function that is bit-exact with DuckDB. In the second, the
@@ -120,10 +132,9 @@ statements from DuckDB's own test suite. Confit serves **543 of 678**
 bit-exact, and refuses the others with a named error (2026-10-05,
 [counts](packages/confit/docs/reports/corpus-counts.json)).
 
-In the authoring layer, `fit` of window aggregates (marginalization) works.
-The next work is typed input and output, serving through Confit, and static
-tables in authored SQL. After that comes the DRAFT-20 program, which stores
-fitted models as params tables.
+The [system specification](docs/specs/README.md) describes the current system
+by topic. Unsupported authoring syntax and its explicit alternatives are in
+the [authoring contract](packages/sql-transform/docs/contract.md#8-unsupported-forms-and-explicit-alternatives).
 
 ## Reports
 

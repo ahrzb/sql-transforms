@@ -1,6 +1,6 @@
-"""Re-pin `model/_shapes.json` against the installed DuckDB.
+"""Re-pin `sql_transform/_shapes.json` against the installed DuckDB.
 
-Not a code generator — the classes in `model/_nodes.py` are hand-written. This
+Not a code generator — the classes in `sql_transform/_nodes.py` are hand-written. This
 only writes down what `json_serialize_sql` emits, for every tag the corpus
 reaches, so that a version bump surfaces as a reviewable diff instead of as a
 wrong answer three layers down.
@@ -16,15 +16,16 @@ import json
 from pathlib import Path
 
 import duckdb
-from sql_transform.model._nodes_test import FIELDS_IN_CORPUS, PARSEABLE
+from sql_transform._nodes_test import FIELDS_IN_CORPUS, PARSEABLE
 
 MANIFEST = (
     Path(__file__).resolve().parent.parent
-    / "packages/sql-transform/sql_transform/model/_shapes.json"
+    / "packages/sql-transform/sql_transform/_shapes.json"
 )
 
 
 def main() -> None:
+    """Overwrite the manifest with the installed oracle's corpus shapes."""
     manifest = {
         "duckdb": duckdb.__version__,
         "statements": len(PARSEABLE),

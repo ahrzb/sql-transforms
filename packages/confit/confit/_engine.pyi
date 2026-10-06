@@ -34,8 +34,8 @@ class DuckDBInferFn:
         (`pa.field(name, t, nullable=False)` binds NOT NULL; arrow's default
         is nullable).
 
-        `udfs`: declared opaque scalar functions the SQL may call
-        (DRAFT-22). Each object carries `name: str`, a `takes: pa.Schema`
+        `udfs`: declared opaque scalar functions the SQL may call.
+        Each object carries `name: str`, a `takes: pa.Schema`
         (one field per argument, names and types together, in call order) and
         a `returns: pa.DataType`, plus a scalar `__call__(*args)` receiving
         one plain Python value per argument (None for NULL) and returning a
@@ -52,9 +52,8 @@ class DuckDBInferFn:
             pa.struct([...])      width-k with addressable field names —
                                   struct-valued at EVERY width, so `f(x).a`
                                   reads a lane off ONE call
-            pa.list_(t, k)        width-k unnamed (the DRAFT-22 list
-                                  boundary); FIXED size, because the width is
-                                  part of the declaration, and k >= 2 — a
+            pa.list_(t, k)        width-k unnamed; FIXED size, because the width
+                                  is part of the declaration, and k >= 2 — a
                                   width-1 list is a scalar and refuses
 
         Arguments bind against the DECLARED type, not their own: an argument

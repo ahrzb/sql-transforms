@@ -3,8 +3,7 @@
 > **STATUS: built — codegen engine shipped and proven equivalent on the committed
 > surface (differential suite runs both backends). Containers/UNNEST deferred.**
 > Front-end decided
-> (fork B, Python/sqlglot — see below). Plan:
-> [2026-07-17-codegen-inferfn.md](../plans/2026-07-17-codegen-inferfn.md).
+> (fork B, Python/sqlglot — see below).
 >
 > Still **not** settled, and NOT assumed by the plan: the two-engine framing and
 > the doc reconciliation (codegen is still filed under BACKLOG "Considered —

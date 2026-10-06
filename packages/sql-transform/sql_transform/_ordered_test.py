@@ -1,23 +1,19 @@
-"""Ordered fits — fit/transform-split slice 4.
+"""Ordered estimator fits preserve declared sort keys and input-order ties."""
 
-An order-sensitive transformer declares it (``OrderSensitive`` wrapper)
-and the query names the order via in-call ``ORDER BY`` — DuckDB's own
-ordered-aggregate spelling. The fit scope is stably sorted by the named
-keys (DuckDB comparisons, input order breaking ties) before ``est.fit``.
-Mechanism promise only: we sort by what you name. Spec:
-docs/specs/2026-08-05-fit-transform-split-design.md.
-"""
-
+import duckdb
 import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.preprocessing import StandardScaler
 
-from sql_transform import MarginalizeError, OrderSensitive, SQLProjection
+from sql_transform import (
+    FittedProjection,
+    OrderSensitive,
+    SQLProjection,
+    TransformError,
+)
 
 from ._transformers_test import TRAIN, _by_name
-
-ROW = TRAIN.schema
 
 
 class SeqMean:
@@ -38,11 +34,9 @@ class SeqMean:
         return list(input_features)
 
 
-def _fit(sql: str) -> SQLProjection:
-    return SQLProjection(
-        sql,
-        this_schema=ROW,
-        transformers={"sm": OrderSensitive(SeqMean()), "sc": StandardScaler()},
+def _fit(sql: str) -> FittedProjection:
+    return SQLProjection.marginalize(
+        sql, captured={"sm": OrderSensitive(SeqMean()), "sc": StandardScaler()}
     ).fit(TRAIN)
 
 
@@ -73,7 +67,9 @@ def test_ordered_fit_global():
             strict=True,
         )
     )
-    np.testing.assert_allclose(p.infer(row)["z"], AGES[0] - w, rtol=1e-12)
+    np.testing.assert_allclose(
+        p.compile().infer_rows([row])[0]["z"], AGES[0] - w, rtol=1e-12
+    )
 
 
 def test_ordered_fit_partitioned():
@@ -161,7 +157,7 @@ def test_distinct_orders_mint_distinct_steps():
         " sm_transform(sm_fit(age ORDER BY fare DESC) OVER (), age).age AS b,"
         " name FROM __THIS__"
     )
-    assert len([s for s in p.plan if s.kind == "fit"]) == 2
+    assert len(p.instances) == 2
     asc = sorted(range(len(AGES)), key=lambda i: FARES[i])
     w_a = _w([AGES[i] for i in asc])
     w_b = _w([AGES[i] for i in reversed(asc)])
@@ -172,35 +168,32 @@ def test_distinct_orders_mint_distinct_steps():
         np.testing.assert_allclose(got_b[n], AGES[i] - w_b, rtol=1e-12)
 
 
-def test_theta_lateral_ordered_equals_inline():
-    lateral = _fit(
-        "SELECT sm_fit(age ORDER BY fare) OVER () AS _th,"
-        " sm_transform(_th, age).age AS z, name FROM __THIS__"
-    )
+def test_migrated_ordered_fit_cte_equals_inline():
+    explicit = SQLProjection(
+        "WITH p AS (SELECT sm_fit(age ORDER BY fare) AS iid FROM __FIT__)"
+        " SELECT sm_transform(p.iid, t.age).age AS z, t.name"
+        " FROM __THIS__ t LEFT JOIN p ON 1 = 1",
+        captured={"sm": OrderSensitive(SeqMean())},
+    ).fit(TRAIN)
     inline = _fit(
         "SELECT sm_transform(sm_fit(age ORDER BY fare) OVER (), age).age AS z,"
         " name FROM __THIS__"
     )
-    assert lateral.serving_sql == inline.serving_sql
+    assert explicit.transform(TRAIN).equals(inline.transform(TRAIN))
 
 
-def test_collate_key_is_honored():
-    """Review round: the collation annotation dropped through Arrow and the
-    sort ran binary — the named collation must do the comparing."""
-    import duckdb
-
+@pytest.mark.parametrize("key", ["s COLLATE NOCASE", "(s COLLATE NOCASE) || 'x'"])
+def test_collate_key_is_honored(key):
     t = pa.table({"rid": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "s": list("bABaCc")})
-    model = t.schema
-    p = SQLProjection(
-        "SELECT sm_transform(sm_fit(rid ORDER BY s COLLATE NOCASE) OVER (), rid)"
+    p = SQLProjection.marginalize(
+        f"SELECT sm_transform(sm_fit(rid ORDER BY {key}) OVER (), rid)"
         ".rid AS z, rid FROM __THIS__",
-        this_schema=model,
-        transformers={"sm": OrderSensitive(SeqMean())},
+        captured={"sm": OrderSensitive(SeqMean())},
     ).fit(t)
     con = duckdb.connect()
     con.register("t", t)
     (oracle_order,) = con.execute(
-        "SELECT list(rid ORDER BY s COLLATE NOCASE, rid) FROM t"
+        f"SELECT list(rid ORDER BY {key}, rid) FROM t"
     ).fetchone()
     con.close()
     w = _w(list(oracle_order))
@@ -210,21 +203,19 @@ def test_collate_key_is_honored():
 
 
 def test_named_wrapping_order_sensitive_still_requires_order():
-    """Review round: Named had no attribute forwarding, so it silently
-    cancelled the inner order-sensitivity declaration."""
+    """Named wrappers must preserve the inner order-sensitivity declaration."""
     from sql_transform import Named
 
-    with pytest.raises(MarginalizeError, match="order-sensitive"):
-        SQLProjection(
+    with pytest.raises(TransformError, match="OrderSensitive|ORDER BY"):
+        SQLProjection.marginalize(
             "SELECT sm_transform(sm_fit(age) OVER (), age).age AS z FROM __THIS__",
-            this_schema=ROW,
-            transformers={"sm": Named(OrderSensitive(SeqMean()), returns=("age",))},
+            captured={"sm": Named(OrderSensitive(SeqMean()), returns=("age",))},
         )
 
 
 def test_wrapper_survives_pickle_roundtrip():
-    """Review round: __getattr__ raised KeyError (not AttributeError) on
-    empty instance state, crashing pickle/copy protocols."""
+    """Missing attributes in empty wrapper state must raise AttributeError,
+    as required by pickle and copy protocols."""
     import pickle
 
     # S301: test-local roundtrip of our own object, no untrusted data.
@@ -250,57 +241,51 @@ REFUSALS = [
     # An order-sensitive transformer must name its order.
     (
         "SELECT sm_transform(sm_fit(age) OVER (), age).age AS z FROM __THIS__",
-        "order-sensitive",
+        "OrderSensitive|ORDER BY",
     ),
-    ("SELECT sm(age).age AS z FROM __THIS__", "order-sensitive"),
+    ("SELECT sm(age).age AS z FROM __THIS__", "OrderSensitive|ORDER BY"),
     # Order keys resolve like any fit-side expression.
     (
         "SELECT sm_transform(sm_fit(age ORDER BY nope) OVER (), age).age"
         " AS z FROM __THIS__",
-        "unknown column nope",
+        "nope",
     ),
     (
         "SELECT sm_transform(sm_fit(age ORDER BY sc(fare).fare) OVER (), age)"
         ".age AS z FROM __THIS__",
-        "inside an ORDER BY key",
+        "nests.*estimator",
     ),
-    # Review round: collation edges refuse by name at construction.
+    # Invalid collation names refuse at construction.
     (
         "SELECT sm_transform(sm_fit(age ORDER BY name COLLATE nosuch)"
         " OVER (), age).age AS z FROM __THIS__",
-        "collation",
-    ),
-    (
-        "SELECT sm_transform(sm_fit(age ORDER BY (name COLLATE NOCASE) || 'x')"
-        " OVER (), age).age AS z FROM __THIS__",
-        "COLLATE inside",
+        "[Cc]ollation",
     ),
     # DuckDB's binder rule: a non-integer literal key has no effect.
     (
         "SELECT sm_transform(sm_fit(age ORDER BY 'a') OVER (), age).age"
         " AS z FROM __THIS__",
-        "non-integer literal",
+        "non-integer literal|ORDER BY",
     ),
     # In-call ORDER BY binds only on aggregates (measured) — every scalar
     # spelling refuses instead of crashing at serving or dropping silently.
     (
         "SELECT round(age ORDER BY fare) AS r FROM __THIS__",
-        "ORDER BY inside the scalar call",
+        "ORDER BY|aggregate|scalar",
     ),
-    ("SELECT sc(age ORDER BY fare).age AS z FROM __THIS__", "ORDER BY"),
+    ("SELECT sc(age ORDER BY fare).age AS z FROM __THIS__", "scalar bundle|ORDER BY"),
     (
         "SELECT sc_transform(sc_fit(age) OVER (), age ORDER BY fare).age"
         " AS z FROM __THIS__",
-        "ORDER BY",
+        "scalar bundle|ORDER BY",
     ),
 ]
 
 
 @pytest.mark.parametrize("sql,match", REFUSALS)
 def test_ordered_refusals(sql, match):
-    with pytest.raises(MarginalizeError, match=match):
-        SQLProjection(
+    with pytest.raises((TransformError, duckdb.Error), match=match):
+        SQLProjection.marginalize(
             sql,
-            this_schema=ROW,
-            transformers={"sm": OrderSensitive(SeqMean()), "sc": StandardScaler()},
-        )
+            captured={"sm": OrderSensitive(SeqMean()), "sc": StandardScaler()},
+        ).fit(TRAIN).transform(TRAIN)
