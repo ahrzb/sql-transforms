@@ -84,17 +84,17 @@ that request, `to_native(step, allow_bound=True)`. In order:
     2,450 fields (it took 3,100), and 160 trees of depth 5 (8.5 s) are
     refused.
   - The encoders under `handle_unknown="error"`, the default. Since T27
-    the guard is one test a feature, and a one-hot lane is one comparison.
-    The guard is an IN list, which confit expands into one comparison a
-    category (`frontend/expr.rs`) and builds and runs again at each field
-    read. `OneHotEncoder` over 8 string features of 50 categories (400
-    fields) builds in 5.3 s and serves a row in 920 us (the twin 1,695
-    us); over 8 features of 125 categories or 32 of 20 it is refused,
-    after 8.2 s and 4.8 s. Past 100 strings an ordinal encoder's guard is
-    one substring search (`contains`), which builds smaller:
-    `OrdinalEncoder` over 32 features of 125 categories builds in 1.2 s
-    (24 s with the IN lists) and serves a row in 1,127 us (1,033), and
-    over 32 of 500 in 3.3 s (refused after 235 s) and 3,208 us. A
+    the guard is one test a feature, and a one-hot output field is one
+    comparison. The guard is an IN list, which confit expands into one
+    comparison a category (`frontend/expr.rs`) and builds and runs again
+    at each field read. `OneHotEncoder` over 8 string features of 50
+    categories (400 fields) builds in 5.3 s and serves a row in 920 us
+    (the twin 1,695 us); over 8 features of 125 categories or 32 of 20 it
+    is refused, after 8.2 s and 4.8 s. Past 100 strings an ordinal
+    encoder's guard is one substring search (`contains`), which builds
+    smaller: `OrdinalEncoder` over 32 features of 125 categories builds in
+    1.2 s (24 s with the IN lists) and serves a row in 1,127 us (1,033),
+    and over 32 of 500 in 3.3 s (refused after 235 s) and 3,208 us. A
     one-hot encoder keeps the IN lists: each of its fields runs the guard,
     and over 8 features of 125 categories the search served a row in
     11.9 ms, against the twin's 2.8 ms (release build, master e1f15b9).
