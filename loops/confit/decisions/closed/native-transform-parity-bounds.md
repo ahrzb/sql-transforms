@@ -35,6 +35,11 @@ order cannot be the twin's declares a parity bound instead:
 - A ulp bound stays valid. It is a parity bound whose error scale is the
   size of the result.
 
+A parity bound above 0 is not the default. An entry with such a bound
+serves only when the caller asks for it. A bound above 0 can change a
+prediction: on repeated training values, HistGradientBoosting flipped labels
+for the entry where the twin flipped none.
+
 The rulings that apply this amendment are in
 `loops/native/decisions/closed/`: the matvec, power and additive chi2
 records. Each of them gives its S and K.

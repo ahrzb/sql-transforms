@@ -14,13 +14,19 @@ it was made from:
 - **Same call.** Same name, the instance id first, then the declared
   features, by position. The same return type: a scalar, a struct with
   the same field names, or a list of the same width.
-- **Same answer.** Bit-exact wherever the entry performs the twin's
-  operations in the twin's order. Otherwise, each output field is within the
-  family's parity bound, K·eps·S + τ. S is the error scale that the family
-  declares, and K is derived, not measured. The owner rulings are in
-  `loops/confit/decisions/closed/native-transform-parity-bounds.md` and
-  [decisions/closed/matvec-parity-bound.md](decisions/closed/matvec-parity-bound.md).
-  NaN equals NaN, and NULL equals NULL. With bound 0, -0.0 is not 0.0.
+- **Same answer.** By default, an entry serves only where it is bit-exact.
+  It is bit-exact where it does the twin's operations in the twin's order,
+  or where a kernel probe reads 0.
+  - An entry with a parity bound above 0 serves only when the caller asks
+    for it, with `to_native(step, allow_bound=True)`. Such an entry can
+    change a prediction: HistGradientBoosting flips labels on repeated
+    training values.
+  - A parity bound is K·eps·S + τ for each output field. S is the error
+    scale that the family declares, and K is derived, not measured.
+  - The owner rulings are in
+    `loops/confit/decisions/closed/native-transform-parity-bounds.md` and
+    [decisions/closed/matvec-parity-bound.md](decisions/closed/matvec-parity-bound.md).
+  - NaN equals NaN, and NULL equals NULL. With bound 0, -0.0 is not 0.0.
 - **Same inputs.** A feature reaches the translation as `PythonTransform`
   hands it to `transform`: a number (or boolean) as a DOUBLE with NULL read
   as NaN, a string as is.

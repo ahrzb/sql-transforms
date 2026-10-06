@@ -11,8 +11,16 @@ Easiest first; each is one family, one PR.
 ## Ruled 2026-10-06, to build
 
 The owner approved every recommendation in `decisions/closed/` (records
-and research in `decisions/research/2026-10-06/`). In order:
+and research in `decisions/research/2026-10-06/`), amended: bit-exact is the
+default, and a bound above 0 serves only on the caller's request (it can
+flip HistGradientBoosting labels on repeated training values). In order:
 
+0. **`to_native(step, allow_bound=False)`:** refuse (return the step, or
+   `NotNative` under `strict`) any configuration whose bound is above 0
+   unless `allow_bound=True`. Today that moves served Box-Cox (ulps 4) and
+   FunctionTransformer's exp/log/log2/log10/tan/cbrt behind the flag where
+   `kernel_distance` is not 0; where it reads 0 they stay default. Docs and
+   the coverage page say why (the HGB finding, matvec-parity-bound.md).
 1. **The parity bound in `native.check`:** per output field
    `|g(entry) - g(twin)| <= K*eps*S + tau`, with S and K declared per
    family, S computed overflow-safely, and the one-sided-infinity rule on

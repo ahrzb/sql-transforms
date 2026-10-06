@@ -10,7 +10,8 @@ the ground. When the owner rules, the record moves from `open/` to `closed/`.
   - [Where the twin raises](closed/tolerated-differences.md): the entry
     traps too, through an input guard.
   - [How close a matvec entry must be](closed/matvec-parity-bound.md): the
-    parity bound and its general form.
+    parity bound and its general form. Bit-exact is the default, and a bound
+    above 0 serves only when the caller asks for it.
   - [How close a power transform must be](closed/power-parity-bound.md).
   - [How close an additive chi2 sampler must
     be](closed/additive-chi2-parity-bound.md).
