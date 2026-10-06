@@ -8,17 +8,19 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `AdditiveChi2Sampler`. It no longer waits on the
-   machinery (a bound per configuration landed), but on a bound that is
-   not small: its lanes are
-   `factor * cos(j * (s * log(x)))` and the same with `sin`, and numpy's
-   `log`, 1 ulp from DuckDB's `ln`, reaches `cos` scaled by `j * s`, so the
-   result parts by up to 8,192 ulps near a zero of `cos` (400,000 draws of
-   `x`, `s = 0.5`, j = 1 and 2, 2026-10-05). It needs an owner ruling, as
-   the matvec families do, or numpy's `log` kernel spelled to the bit.
+1. **Boolean features in the fixture generator.** No entry is tested on a
+   boolean column yet ("Left Python", the encoders), though the step reads
+   one as 0/1 (`_registry._feature`) and a `ColumnTransformer` passes it
+   through. Every class's draws change, so it is its own ticket, run alone.
 
 ## Waiting on the owner
 
+- **`AdditiveChi2Sampler`:** its lanes are `factor * cos(j * (s *
+  log(x)))` and the same with `sin`, and numpy's `log`, up to 1 ulp from
+  DuckDB's `ln`, reaches `cos` and `sin` unchanged in absolute terms, so
+  near a zero the result parts by any number of ulps (8,192 over 400,000
+  draws), while within 0.91 eps of the lane's term scale
+  (decisions/open/additive-chi2-parity-bound.md).
 - **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
   `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
   `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
