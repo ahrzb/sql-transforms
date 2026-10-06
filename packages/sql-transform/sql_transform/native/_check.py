@@ -96,7 +96,9 @@ def check(
 
     Where the step itself raises on a row (sklearn rejecting an input it
     validates), the native answer is not compared: loops/native/goal.md,
-    "Where the twin raises". Returns the number of rows compared."""
+    "Where the twin raises". Where it raises on every row, nothing is
+    compared and `check` raises: such rows prove nothing. Returns the number
+    of rows compared, at least 1."""
     if ulps is None:
         ulps = bound(step)
     sql = query(step, id_col)
@@ -136,4 +138,8 @@ def check(
                     f"row {i} lane {k!r}: step {a[k]!r}, native {b[k]!r}"
                     f" ({d} ulps, bound {ulps}); input {row}"
                 )
+    if not compared:
+        raise ParityError(
+            f"check compares no row: the step raises on each of {rows.num_rows} rows"
+        )
     return compared
