@@ -13,7 +13,9 @@ fitted categories; a row the twin still rejects is drawn again):
   native   one 64-row call served by the native entry (median)
   twin     the same call served by the Python step (median)
 
-The speedup is twin / native. Timings need confit's release build.
+The speedup is twin / native. Timings need confit's release build. A
+configuration within a bound above 0 is measured too, as
+`to_native(step, allow_bound=True)` serves it.
 
 With --build-curve, it times the build alone against the width instead,
 `to_native` on one step shape over n DOUBLE features: PolynomialFeatures
@@ -70,7 +72,8 @@ def widest(cls) -> tuple[object, object, int, int, list[str]]:
     declined = []
     for _, j, seed, step in drawn:
         try:
-            return step, to_native(step, strict=True), j, seed, declined
+            native = to_native(step, strict=True, allow_bound=True)
+            return step, native, j, seed, declined
         except NotNative as e:
             declined.append(str(e))
     raise SystemExit(f"no fixture of {cls.__name__} translates")
@@ -191,7 +194,7 @@ def build_curve(shape: str, widths: list[int]) -> None:
         step = _curve_step(shape, n)
         t = time.perf_counter()
         try:
-            to_native(step, strict=True)
+            to_native(step, strict=True, allow_bound=True)
             what = ""
         except NotNative:
             what = ", refused"

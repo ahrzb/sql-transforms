@@ -977,7 +977,8 @@ def test_an_entry_matches_its_twin(cls, j, seed):
     make = FIXTURES[cls][j]
     step = _step(make, seed, j)
     try:
-        native = to_native(step, strict=True)
+        # A configuration within a bound above 0 is checked to that bound.
+        native = to_native(step, strict=True, allow_bound=True)
     except NotNative as e:
         # A wide step may outgrow what confit builds; a narrow one may not,
         # unless it is a configuration refused by name (REFUSED).
@@ -1367,7 +1368,8 @@ def test_a_function_matches_numpy_on_special_values(func):
             "x0": pa.array(SPECIALS, pa.float64()),
         }
     )
-    assert check(step, to_native(step, strict=True), rows) == len(SPECIALS)
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, rows) == len(SPECIALS)
 
 
 def test_the_identity_passes_a_boolean_as_its_double():
@@ -1405,7 +1407,8 @@ def test_a_function_over_booleans_answers_as_numpy(func, beside):
     }
     if beside:
         rows["x2"] = pa.array([2.5, -0.0, None, 4.0, 1.0])
-    assert check(step, to_native(step, strict=True), pa.table(rows)) == 5
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, pa.table(rows)) == 5
 
 
 def _bool_step(est: Any, beside: bool) -> PythonTransform:
@@ -1517,6 +1520,20 @@ def test_this_platforms_kernels_are_within_their_bounds():
         assert function.kernel_distance(func) <= bound_of(est), func.__name__
 
 
+def _kernels_part(monkeypatch, distance: int | None = None) -> None:
+    """Pin the kernel probe: each function `distance` ulps from confit's,
+    by default its own bound, as on x86-64 with AVX-512. A bounded
+    function's bound is 0 where the probe reads 0, so a test of the bound
+    above 0 pins it rather than read this platform's numpy."""
+    from sql_transform.native import function
+
+    monkeypatch.setattr(
+        function,
+        "kernel_distance",
+        lambda f: function._BOUNDS.get(f, 0) if distance is None else distance,
+    )
+
+
 @pytest.mark.parametrize(
     "funcs, ulps",
     [
@@ -1528,7 +1545,8 @@ def test_this_platforms_kernels_are_within_their_bounds():
     ],
     ids=lambda v: None,
 )
-def test_a_step_is_held_to_its_loosest_instance(funcs, ulps):
+def test_a_step_is_held_to_its_loosest_instance(monkeypatch, funcs, ulps):
+    _kernels_part(monkeypatch)
     instances = {
         k: FunctionTransformer(f).fit(np.zeros((2, 1))) for k, f in enumerate(funcs)
     }
@@ -1550,8 +1568,10 @@ def test_a_bounded_function_is_held_to_its_bound_not_to_0():
     step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
     x = np.random.default_rng(0).uniform(1e-3, 1e3, 2000)
     rows = pa.table({"__iid": pa.array([0] * len(x), pa.int64()), "x0": x})
-    native = to_native(step, strict=True)
-    assert function.kernel_distance(np.log10) <= bound_of(est) == 2
+    native = to_native(step, strict=True, allow_bound=True)
+    # Where the probe reads 0, numpy's kernel is glibc's and the bound is 0.
+    d = function.kernel_distance(np.log10)
+    assert bound_of(est) == (2 if d else 0)
     assert check(step, native, rows) == len(x)
     served = DuckDBInferFn(
         query(step),
@@ -1566,6 +1586,90 @@ def test_a_bounded_function_is_held_to_its_bound_not_to_0():
             check(step, native, rows, ulps=0)
     else:
         assert check(step, native, rows, ulps=0) == len(x)
+
+
+# --------------------------------------------- a bound above 0 (allow_bound)
+
+# What `to_native` raises under `strict` for a step within a bound above 0
+# (decisions/closed/matvec-parity-bound.md, the ruling's amendment).
+ON_REQUEST = (
+    "of its twin, not bit-exact; to_native serves a bound above 0 only with"
+    " allow_bound=True"
+)
+
+
+def test_box_cox_serves_only_on_request():
+    make = FIXTURES[PowerTransformer][0]
+    step = _step(make, 0)
+    assert bound(step) == 4
+    assert to_native(step) is step
+    with pytest.raises(
+        NotNative, match=r"PowerTransformer is within 4 ulps " + ON_REQUEST
+    ):
+        to_native(step, strict=True)
+    assert "stays Python" in explain_native(step)
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, _rows(step, 0, positive=True)) > 0
+    assert explain_native(step, allow_bound=True).endswith(
+        "-> SqlFunction, within 4 ulps"
+    )
+
+
+@pytest.mark.parametrize("func", BOUNDED, ids=lambda f: f.__name__)
+def test_a_bounded_function_serves_only_on_request(monkeypatch, func):
+    from sql_transform.native import function
+
+    _kernels_part(monkeypatch)
+    b = function._BOUNDS[func]
+    est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    assert bound_of(est) == b
+    assert to_native(step) is step
+    with pytest.raises(
+        NotNative, match=f"instance 0: FunctionTransformer is within {b} ulps"
+    ):
+        to_native(step, strict=True)
+    assert to_native(step, strict=True, allow_bound=True) is not step
+
+
+@pytest.mark.parametrize("func", BOUNDED, ids=lambda f: f.__name__)
+def test_a_bounded_function_whose_kernel_reads_0_serves_by_default(monkeypatch, func):
+    # numpy's kernel is glibc's there, as DuckDB's and confit's are: the
+    # function is bit-exact on this platform, and so composes too.
+    _kernels_part(monkeypatch, 0)
+    est = FunctionTransformer(func).fit(np.zeros((2, 1)))
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    assert bound_of(est) == 0
+    assert to_native(step, strict=True) is not step
+    pipe = make_pipeline(FunctionTransformer(func), StandardScaler())
+    pipe.fit(np.ones((3, 1)) + np.arange(3.0)[:, None])
+    composed = PythonTransform("p", {0: pipe}, pa.schema([("x0", pa.float64())]))
+    assert to_native(composed, strict=True) is not composed
+
+
+def test_a_step_serves_on_request_by_its_loosest_instance(monkeypatch):
+    _kernels_part(monkeypatch)
+    funcs = [None, np.sqrt, np.exp, np.log10, np.log10]
+    instances = {
+        k: FunctionTransformer(f).fit(np.zeros((2, 1))) for k, f in enumerate(funcs)
+    }
+    step = PythonTransform("tf", instances, pa.schema([("x0", pa.float64())]))
+    with pytest.raises(
+        NotNative, match="instance 3: FunctionTransformer is within 2 ulps"
+    ):
+        to_native(step, strict=True)
+    exact = {k: est for k, est in instances.items() if k < 2}
+    step = PythonTransform("tf", exact, pa.schema([("x0", pa.float64())]))
+    assert to_native(step, strict=True) is not step
+
+
+def test_a_refused_configuration_says_why_before_its_bound():
+    # Yeo-Johnson waits on the parity bound: allow_bound does not serve it,
+    # so the refusal names the configuration, not the bound.
+    step = _step(lambda: PowerTransformer(standardize=False), 0)
+    for allow in (False, True):
+        with pytest.raises(NotNative, match="method='yeo-johnson'"):
+            to_native(step, strict=True, allow_bound=allow)
 
 
 # ----------------------------------------------------------- SplineTransformer

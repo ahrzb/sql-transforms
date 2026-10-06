@@ -14,18 +14,32 @@ Easiest first; each is one family, one PR.
    `check` skips the rows where the twin raises (4.9% of the gate's rows),
    so a step that raises on every row compares nothing and passes. Every
    class's draws change: its own ticket, run alone, after T18 (#406).
-2. **The kernel probe draws random significands**
+2. **The spline on confit's binding (#412).** `_build_estimate` now
+   overstates the build 2 to 6 times: it estimates 5.9 to 9.4 s for steps
+   that build in 1.1 to 3.5 s, so the 7 s cap refuses four of the five
+   steps that the confit loop measured. Fit it again on builds of master,
+   or drop it. The translation now costs about as much as the build (0.5
+   to 1.0 s in `SqlFunction(...)` at degree 5 over 32 features): the
+   `.sql()` keys in `spline._arms` and in `_registry` (`arms.setdefault(
+   out[j].sql(), ...)`) write each value out in full, which still doubles
+   per degree. Key them by a memo per node, or by identity where that is
+   enough.
+3. **One CASE per tree** (#412). Build each tree's nested CASE once, and
+   read that object in every output field of the tree. On the default
+   forest (2,286 output fields) it serves 118 us a row against 202 us for
+   the paths, and builds in 1.28 s against 1.84 s (the confit loop's
+   measurement, release build of 4865d9f). Then fit the trees cap again on
+   the new spelling: reading 4 measured 0.25 ms a path step at 1,173 steps
+   and 0.44 ms at 21,353 (finding 56), where `trees.py` assumes 0.28 ms.
+4. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
    The registered bounds hold on 2,000,000 random-significand draws in each
    of three ranges (numpy 2.5.1 against DuckDB 1.5.5, 2026-10-06): `log`
-   1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3.
-3. **Fit the trees cap again** (reading 4, finding 56). `trees.py` takes
-   25,000 path steps as about 7 s, at 0.28 ms a step. Reading 4 measured
-   0.25 ms a step at 1,173 steps and 0.44 ms at 21,353, and #403's forest
-   of 100 trees at depth 6 (21,753 steps) built in 8.8-9.5 s. Fit the
-   estimate on the measured growth, as T13 did for the spline.
-4. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+   1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
+   that reads 0 makes a bounded function bit-exact on that platform: it
+   serves by default, is checked at 0 and composes, as `sin` and `cos`.
+5. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
@@ -35,14 +49,9 @@ Easiest first; each is one family, one PR.
 The owner approved every recommendation in `decisions/closed/` (records
 and research in `decisions/research/2026-10-06/`), amended: bit-exact is the
 default, and a bound above 0 serves only on the caller's request (it can
-flip HistGradientBoosting labels on repeated training values). In order:
+flip HistGradientBoosting labels on repeated training values). T19 built
+that request, `to_native(step, allow_bound=True)`. In order:
 
-0. **`to_native(step, allow_bound=False)`:** refuse (return the step, or
-   `NotNative` under `strict`) any configuration whose bound is above 0
-   unless `allow_bound=True`. Today that moves served Box-Cox (ulps 4) and
-   FunctionTransformer's exp/log/log2/log10/tan/cbrt behind the flag where
-   `kernel_distance` is not 0; where it reads 0 they stay default. Docs and
-   the coverage page say why (the HGB finding, matvec-parity-bound.md).
 1. **The parity bound in `native.check`:** per output field
    `|g(entry) - g(twin)| <= K*eps*S + tau`, with S and K declared per
    family, S computed overflow-safely, and the one-sided-infinity rule on
@@ -87,37 +96,6 @@ flip HistGradientBoosting labels on repeated training values). In order:
   quantiles over an estimator's features (6-8 s at that sum). Low priority
   for confit: a future entry that needs two trees in one expression would
   raise it again.
-- **A value bound once in a SQL function body.** A function body is
-  substituted as text, so an expression read twice is spelled twice, and
-  a recurrence whose every step reads the previous one twice doubles per
-  step. `SplineTransformer`'s de Boor recurrence does (scipy's order,
-  which the entry must keep): one lane of one feature at degree 3, 5
-  knots, is about 7 KB of SQL, at degree 5 about 33 KB, and 32 features
-  of degree 5 expand past the 4,000,000-token cap; `periodic` repeats its
-  mapped `x` (a remainder) at every read. #387 (a shared value computed
-  just before its first reader) took the build from growing with the
-  parameters times that text to about linear in it: 32 features of degree
-  3, 8 knots, build in 1.1-2.4 s (21-46 s before), and the entry's 7 s
-  cap refuses, for example, degree 5 at 7 knots from 22 features with
-  `continue` (21 build in 5.2 s), at 32 with `periodic` and at 64 with
-  `constant`, and degree 4 at 64 (`continue`, 5 knots) (spline.py,
-  `_build_estimate`; reading 4). The size still doubles per
-  degree, so the need stands: a binding (a `let`, or a nested function
-  whose arguments are evaluated once) would make the recurrence linear in
-  the degree, and serve the steps past the token cap.
-- **A value bound once, for tree embeddings.** `RandomTreesEmbedding`'s
-  fastest spelling is one nested CASE per tree answering its leaf id, each
-  lane `leaf = k`: confit computes the CASE once per row and serves 0.11 us
-  a lane (30 trees of depth 5, 693 lanes, 75 us a row). But the body is
-  text, so the CASE is spelled in every lane of its tree, quadratic in the
-  tree's leaves: the default `RandomTreesEmbedding(n_estimators=100,
-  max_depth=5, sparse_output=False)` fitted on `normal(size=(2000, 8))`
-  expands past the 4,000,000-token cap (the CASE spelling, a reproduction,
-  is in the T16 PR's description). The entry spells each lane as its
-  leaf's path instead (trees.py), linear in the text, at 0.22 us a lane;
-  a binding would serve the CASE spelling at every width the entry takes
-  (release build, 2026-10-06).
-
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
@@ -158,12 +136,25 @@ features, degree 3, 8 knots, built in 21-46 s, now 1.1-2.4 s; the build
 no longer grows with the parameters times the body); and `cbrt` as glibc's,
 as DuckDB's is (confit parted from DuckDB on 99,438 of 200,000 draws, by
 up to 3 ulps; now on none, so `FunctionTransformer(np.cbrt)` is served
-within its 3 ulps of numpy).
+within its 3 ulps of numpy); and a value bound once in a SQL function body
+(#412): a `confit.sql` node that the body reads twice or more, the same
+object, binds once and is computed once per row where it cannot trap. The
+spline's recurrence no longer doubles per degree in the build: degree 5, 7
+knots, 32 features with `continue` passed the token cap, and now builds in
+1.9-2.1 s, and 21 features in 1.1 s against 5.2 s. A tree's CASE built once
+and read by every output field of its tree serves the default
+`RandomTreesEmbedding` in 118 us a row, against 202 us for the shipped
+paths (the confit loop's measurements, release build of 4865d9f).
 
 ## Left Python
 
 Configurations a translator declines (`NotNative`), each with its ground:
 
+- Without `to_native(step, allow_bound=True)`, every configuration within
+  a bound above 0 (T19): Box-Cox (4 ulps), and `FunctionTransformer`'s
+  `exp`, `log`, `log2`, `log10`, `tan` and `cbrt` where the kernel probe
+  does not read 0 (the owner's amendment in
+  `decisions/closed/matvec-parity-bound.md`).
 - `Normalizer(norm="l2")` where sklearn's `row_norms` does not accumulate
   as numpy's x86-64 baseline einsum kernel, which `_helpers.row_sumsq`
   follows; `_helpers.row_sumsq_is_numpys` probes it. On aarch64 numpy's

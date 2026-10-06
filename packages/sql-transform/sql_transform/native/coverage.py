@@ -67,18 +67,20 @@ def _classes() -> dict[str, type]:
 def _exactness(entry: Entry) -> str:
     """An entry's bound as the table reads it. A per-estimator bound runs
     from bit-exact (the configurations whose own bound is 0) to the
-    class's ceiling."""
+    class's ceiling. A bound above 0 serves only on request."""
     b = entry.ulps
+    on_request = "served only with `allow_bound=True`"
     if b == 0:
         return "bit-exact"
     if entry.varies:
-        return f"bit-exact; within {b} ulps for some configurations"
-    return f"within {b} ulps"
+        return f"bit-exact; within {b} ulps for some configurations, {on_request}"
+    return f"within {b} ulps, {on_request}"
 
 
 def nonzero_ulp_bounds() -> int:
     """The KPI of that name (loops/native/report-format.md): the catalog
-    classes some configuration of which is served within a bound above 0."""
+    classes some configuration of which serves within a bound above 0,
+    with `allow_bound=True`."""
     return sum(1 for e in catalog().values() if e.ulps)
 
 

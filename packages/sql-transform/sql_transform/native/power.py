@@ -4,10 +4,12 @@
 DuckDB 1.5.5 has `ln` and `exp` (glibc's, as confit's are) but neither
 `log1p` nor `expm1`, and confit cannot add a function, as the definition
 must run on DuckDB. So `expm1` is spelled from `exp` and `ln`, within a
-few ulps of glibc's. Yeo-Johnson and `standardize=True` stay Python for
-now: their distance to the twin has no small bound in ulps of the result,
-and the parity bound the owner ruled for them
-(decisions/closed/power-parity-bound.md) is not in `native.check` yet.
+few ulps of glibc's, and Box-Cox serves within 4 ulps of the twin: only
+with `to_native(step, allow_bound=True)`. Yeo-Johnson and
+`standardize=True` stay Python for now: their distance to the twin has no
+small bound in ulps of the result, and the parity bound the owner ruled
+for them (decisions/closed/power-parity-bound.md) is not in
+`native.check` yet.
 """
 
 from __future__ import annotations

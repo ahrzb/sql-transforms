@@ -21,10 +21,14 @@ def test_a_bound_reads_by_its_shape():
         return x
 
     assert coverage._exactness(Entry(t, 0)) == "bit-exact"
-    assert coverage._exactness(Entry(t, 4)) == "within 4 ulps"
+    assert (
+        coverage._exactness(Entry(t, 4))
+        == "within 4 ulps, served only with `allow_bound=True`"
+    )
     assert (
         coverage._exactness(Entry(t, 3, lambda est: 0))
-        == "bit-exact; within 3 ulps for some configurations"
+        == "bit-exact; within 3 ulps for some configurations,"
+        " served only with `allow_bound=True`"
     )
 
 

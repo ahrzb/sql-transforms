@@ -48,6 +48,18 @@ def _numeric(est) -> PythonTransform:
     return _step(est, _numbers(), [pa.float64(), pa.float64()])
 
 
+@pytest.fixture
+def kernels_part(monkeypatch):
+    """Each bounded function at its own bound from confit's kernel, as on
+    x86-64 with AVX-512. Where this platform's kernel probe reads 0, the
+    function is bit-exact and composes (function.py)."""
+    from sql_transform.native import function
+
+    monkeypatch.setattr(
+        function, "kernel_distance", lambda f: function._BOUNDS.get(f, 0)
+    )
+
+
 class _MyPipeline(Pipeline):
     pass
 
@@ -122,6 +134,7 @@ class _MyPipeline(Pipeline):
     ],
 )
 @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+@pytest.mark.usefixtures("kernels_part")
 def test_a_pipeline_names_the_step_it_refuses(make, reason):
     step = _numeric(make())
     with pytest.raises(NotNative, match=reason):
@@ -525,6 +538,7 @@ class _MyScaler(StandardScaler):
         "fu-container",
     ],
 )
+@pytest.mark.usefixtures("kernels_part")
 def test_a_composition_names_the_part_it_refuses(make, reason):
     step = _composed(make())
     with pytest.raises(NotNative, match=reason):
@@ -592,6 +606,7 @@ def test_a_column_transformer_reads_columns_as_its_twin_does():
     assert check(step, to_native(step, strict=True), rows) == 4
 
 
+@pytest.mark.usefixtures("kernels_part")
 def test_an_exact_function_composes_where_a_bounded_one_does_not():
     # The part's own bound decides, not its class's ceiling.
     exact = FeatureUnion(
