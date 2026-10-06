@@ -124,6 +124,23 @@ Open, low priority (the catalog builds within its caps):
     the store rule; not explained. Its `to_native` takes 25 to 29 s,
     nearly all outside the trial build.
 
+- **A function past 2^24 instructions after Cranelift's optimizer stops
+  with a verifier error, not a refusal** (asked by the native loop
+  2026-10-06, its T27, #429; the catalog leaves the step Python either
+  way). OneHotEncoder over 16 string features of 125 categories (2,000
+  fields read one by one; the input guard is one `IN` list of 125 strings a
+  feature, in field 0) stops in `to_native` after 33 s with `cranelift
+  define: verifier errors (1 in all): inst16780117 (v16829075 = iconst.i64
+  1797): instruction result v16829075 is not defined by the instruction`.
+  `check_size` (`exec/cranelift.rs`) counts the function as built, so the
+  instructions that Cranelift adds after it (here a constant it rebuilds
+  in a block) can pass the 24-bit index. Smaller wide encoders get the
+  named refusal. Reproduction:
+  `/mnt/project-files/transforms-loop/confit-wide-encoder-verifier.py`
+  (master e1f15b9 with #429's `encode.py`). Measure it again with the
+  change that dropped the repeated guard copies, which makes such a
+  function smaller.
+
 - **Closed 2026-10-06: a trap in one field of a SQL function's struct
   costs each field read** (repros in `/mnt/project-files/transforms-loop/`).
   Every field read carried its own copy of field 0's input guard, and
