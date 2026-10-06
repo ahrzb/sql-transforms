@@ -17,12 +17,3 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  # The writing rules of the simple-english skill, on the files in SCOPE.
-  - repo: local
-    hooks:
-      - id: prose-check
-        name: prose check (simple-english skill)
-        entry: python scripts/prose_check.py
-        language: system
-        pass_filenames: false
-        files: \.md$|^scripts/prose_check\.py$

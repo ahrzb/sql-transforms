@@ -18,7 +18,9 @@ The catalog is one module per family (`scalers.py`, `impute.py`,
 `@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`,
 a `ColumnTransformer`, a `FeatureUnion`).
 This package imports confit and sklearn and nothing else of sql_transform
-but the step class, so the rest of the package can change around it.
+but the step class and `_trees._f32_grid_threshold` (the float32 cutpoint
+`discretize.py` and `trees.py` share with the tree predictors), so the
+rest of the package can change around it.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from sql_transform.native import quantile as _quantile  # noqa: F401  (registers
 from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
 from sql_transform.native import select as _select  # noqa: F401  (registers)
 from sql_transform.native import spline as _spline  # noqa: F401  (registers)
+from sql_transform.native import trees as _trees  # noqa: F401  (registers)
 from sql_transform.native._check import ParityError, check
 from sql_transform.native._registry import (
     Entry,

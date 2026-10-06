@@ -47,7 +47,9 @@ overflow a basis value, and `0.0 * inf` is the NaN the twin answers.
 p)` (DuckDB's `%` on DOUBLE; its `fmod` floors), then `m + p` when `m` and
 `p` differ in sign, and `copysign(0, p)` when `m` is zero. `p > 0`, so: 0.0
 when `m == 0`, `m + p` when `m < 0`, else `m`; that is `m + p` or `m +
-0.0`.
+0.0`. At ±inf the remainder is NaN, and scipy answers NaN on every lane;
+`handle_missing="zeros"` validates with infinity allowed, so the twin
+answers it, and the entry tests for it before the intervals.
 
 The boundary constants of `constant` and `linear` (`spl(t[k])`,
 `spl(t[k], nu=1)`, ...) are the fitted splines' own numbers, computed with
@@ -393,8 +395,15 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
     if ext == "periodic":
         period = hi - lo
         xv: S.Expr = f64(lo) + _remainder(x - f64(lo), period) if period > 0 else zero
+        head = [(nan, zero)]
+        if period > 0:
+            # The remainder of ±inf is NaN, which scipy answers with NaN on
+            # every lane; the arms would take it to the last interval, where
+            # a lane with no basis there is 0.0 (`handle_missing="zeros"`
+            # validates with infinity allowed, so the twin answers it).
+            head.append((S.fn("abs", x) == f64(math.inf), f64(math.nan)))
         lanes = _arms(t, k, c, xv, set(), every)
-        return [_lane([(nan, zero)], arms, xv) for arms in lanes]
+        return [_lane(head, arms, xv) for arms in lanes]
 
     if ext in ("continue", "error"):
         unbounded = {k, n - 1} if ext == "continue" else set()
