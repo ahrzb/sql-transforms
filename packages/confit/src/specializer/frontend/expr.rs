@@ -321,7 +321,16 @@ impl Binder<'_> {
         if self.expr_or_null(plain[0])?.is_some() {
             return Ok(false);
         }
-        let _second_binds = self.expr_or_null(plain[1])?;
+        // DuckDB evaluates the second operand, and it can trap there
+        // (`nullif(NULL, x + x)` overflows on optimizer-off DuckDB; nightly
+        // seeds 3058298, 3722953, campaign seed 992226). The bare NULL has
+        // no node that evaluates an operand for its trap only, so such an
+        // operand refuses by name.
+        if self.expr_or_null(plain[1])?.as_ref().is_some_and(can_trap) {
+            return Err(unsup(
+                "nullif(NULL, x) where x can trap (DuckDB evaluates x; a bare NULL cannot)",
+            ));
+        }
         Ok(true)
     }
 

@@ -14,21 +14,23 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    issue. Triage each filed class to a fix, a named exclusion, or an
    open-divergence pin. The first six sharded nights are triaged
    ([reports/2026-10-05-sharded-nightly-triage.md](reports/2026-10-05-sharded-nightly-triage.md)); still open from them:
-   - `nullif(NULL, x)` drops `x`, which DuckDB evaluates and can trap on
-     (seeds 3058298, 3722953). The adoptable-NULL channel has no node that
-     evaluates an operand for its trap only;
    - a narrow-width overflow traps on both engines, but confit's text names the
      arrow range instead of DuckDB's `Overflow in multiplication of INT8`
      (narrow left shifts likewise: `Overflow in left shift` / `Left-shift value
      8 is out of range`).
 
    The 2026-10-05 night (seeds 4200000..4599999) is triaged: its three
-   live classes are fixed and pinned (`test_fuzz_smoke.py`); its TIMEOUT and
-   OPT_EMULATED cases are the two classes below.
-
-   Still waiting from #305: seed 1159605 (OPT_EMULATED, owner ruling) and the
-   TIMEOUT class where confit traps first while DuckDB builds a 2 GiB string
-   (seed 1102717, EXCLUDED ratification).
+   live classes are fixed and pinned (`test_fuzz_smoke.py`). Its OPT_EMULATED
+   cases, with those of the 2026-10-05 campaigns, are confit findings, not
+   owner questions (docs/oracle/04: OPT_EMULATED is a finding), triaged
+   2026-10-06 (`tests/test_opt_emulated_triage.py`): `nullif(NULL, x)` over a
+   trapping `x` refuses by name (seeds 992226, 3058298, 3722953); a trapping
+   join condition between the two sides refuses by name (4291817); the
+   empty-static witness pads DECIMAL columns, so 1159605 is excused by its
+   ruling. Two questions do need the owner, each with a record in
+   [decisions/open/](decisions/): the empty-static witness against a
+   multi-trap row side (seed 4313391), and the oracle TIMEOUT where confit
+   traps first (seeds 4226438, 946454).
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet

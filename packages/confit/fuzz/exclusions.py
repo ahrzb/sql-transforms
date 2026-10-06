@@ -212,8 +212,8 @@ def _empty_static(ev: Evidence, raw) -> str | None:
 
 
 def _plain_value(t):
-    """A non-NULL value of Arrow type `t`: 0, 0.0, '', False, or a struct of
-    those. None where there is no plain value (opaque types)."""
+    """A non-NULL value of Arrow type `t`: 0, 0.0, '', False, a decimal 0, or a
+    struct of those. None where there is no plain value (opaque types)."""
     import pyarrow as pa  # noqa: PLC0415
 
     if pa.types.is_integer(t):
@@ -224,6 +224,10 @@ def _plain_value(t):
         return ""
     if pa.types.is_boolean(t):
         return False
+    if pa.types.is_decimal(t):
+        from decimal import Decimal  # noqa: PLC0415
+
+        return Decimal(0)
     if pa.types.is_struct(t):
         return {
             t.field(i).name: _plain_value(t.field(i).type) for i in range(t.num_fields)

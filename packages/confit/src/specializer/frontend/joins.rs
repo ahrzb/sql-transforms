@@ -206,6 +206,31 @@ pub(super) fn bind_residual(
         let named = fold(named?);
         let (mut right, mut left, mut known) = (false, false, true);
         scan_residual(&named, j, &mut right, &mut left, &mut known);
+        // A comparison whose operands each read one side only is a JOIN
+        // CONDITION on DuckDB: each operand is evaluated over its whole
+        // table (the static one at build, the row one per probe row),
+        // matched or not, so a trap in it fires for rows no key matches
+        // (measured, 1.5.5 optimizer off: `t.k = s.k AND t.v < s.w * 2`
+        // traps on an overflowing `s.w` with no key match, INNER and LEFT;
+        // nightly seed 4291817). The hit-guarded lowering evaluates a
+        // residual per matched pair only. An operand reading both sides,
+        // or a comparison under OR, is evaluated per pair on DuckDB too.
+        if let SKind::Cmp { a, b, .. } = &named.kind {
+            let side = |x: &SExpr| {
+                let (mut r, mut l, mut k) = (false, false, true);
+                scan_residual(x, j, &mut r, &mut l, &mut k);
+                (r, l, k)
+            };
+            let ((ra, la, ka), (rb, lb, kb)) = (side(a), side(b));
+            let split = ka && kb && ((ra && !la && lb && !rb) || (la && !ra && rb && !lb));
+            if split && (can_trap(a) || can_trap(b)) {
+                return Err(unsup(format!(
+                    "JOIN ON condition '{c}' (a comparison between the two sides \
+                     with trapping ops: DuckDB evaluates each side over its whole \
+                     table, matched or not)"
+                )));
+            }
+        }
         let total = !may_trap(&bound);
         if !(total || (left && right && known)) {
             // Two different refusals wear one condition, and the message
