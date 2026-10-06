@@ -8,16 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **One CASE per tree** (#412). Build each tree's nested CASE once, and
-   read that object in every output field of the tree. On the default
-   forest (2,286 output fields) it serves 118 us a row against 202 us for
-   the paths, and builds in 1.28 s against 1.84 s (the confit loop's
-   measurement, release build of 4865d9f). Then fit the trees cap again on
-   the new spelling: reading 4 measured 0.25 ms a path step at 1,173 steps
-   and 0.44 ms at 21,353 (finding 56), where `trees.py` assumes 0.28 ms.
-   Its build grew faster than the trees here (the board's T22 has the
-   measurements), so it may need its own cap, with the paths past it.
-2. **The kernel probe draws random significands**
+1. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
    The registered bounds hold on 2,000,000 random-significand draws in each
@@ -25,7 +16,7 @@ Easiest first; each is one family, one PR.
    1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
    that reads 0 makes a bounded function bit-exact on that platform: it
    serves by default, is checked at 0 and composes, as `sin` and `cos`.
-3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+2. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
@@ -68,6 +59,18 @@ that request, `to_native(step, allow_bound=True)`. In order:
 
 ## Needs from confit
 
+- **One CASE per tree that builds about linearly in the output fields.**
+  `trees.py` spells a forest as one nested CASE per tree, which every
+  output field of the tree reads, where its build is estimated within
+  7 s: about 3,100 output fields. Past that it spells the paths, which
+  serve a row 1.5-2x slower. The build of this spelling grows with the
+  square of the output fields, and confit's #417 (a whole struct as one
+  output value) slowed it: 100 trees of depth 5 (2,286 output fields), a
+  list return, built in 0.67 s before #417 and in 2.7 s after; a struct
+  return builds in 3.8 s (release build, a7cd5aa and d36e64a). A
+  reproduction is in the message sent to the confit loop, 2026-10-06.
+  The confit loop answers there if it changes the build; then fit
+  `trees._case_seconds` again.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
@@ -127,9 +130,10 @@ object, binds once and is computed once per row where it cannot trap. The
 spline's recurrence no longer doubles per degree in the build: degree 5, 7
 knots, 32 features with `continue` passed the token cap, and now builds in
 1.9-2.1 s, and 21 features in 1.1 s against 5.2 s. A tree's CASE built once
-and read by every output field of its tree serves the default
-`RandomTreesEmbedding` in 118 us a row, against 202 us for the shipped
-paths (the confit loop's measurements, release build of 4865d9f).
+and read by every output field of its tree: `trees.py` spells forests so
+since T22, and the default `RandomTreesEmbedding` serves a row in 253 us
+against 528 us for the paths (a struct return, release build, master
+dc3ed3b).
 
 ## Left Python
 
@@ -249,12 +253,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
 - `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
-  output (decisions/closed/sparse-outputs.md). Past 25,000 path steps (a
-  leaf's depth, summed over the leaves) per estimator, an estimated 7 s
-  build (`trees.MAX_PATH_STEPS`): 250 trees of depth 5 (7.8 s), and
-  one unbounded tree over 2,000 rows has 33,688 steps. Where the twin
-  raises (±inf, a value past float32's range) the entry answers a leaf
-  (goal.md, "Tolerated differences").
+  output (decisions/closed/sparse-outputs.md). A forest whose build is
+  estimated past 7 s in both spellings, one CASE per tree and the paths
+  (`trees._spelling`): 200 trees of depth 5 (4,657 output fields, 7.9 s
+  for the paths), and one unbounded tree over 4,000 rows (8.3 s for one
+  CASE per tree). One unbounded tree over 2,000 rows, refused before T22,
+  is served. Where the twin raises (±inf, a value past float32's range)
+  the entry answers a leaf (goal.md, "Tolerated differences").
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
