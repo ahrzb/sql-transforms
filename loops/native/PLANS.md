@@ -125,11 +125,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   the Python step does not serve either (it reads a row with `float()`,
   and a sparse row is not a float). A note for the step, not the catalog.
 - `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
-  for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
-  twin rounds x to float32 before it bins it, which the entry does not
-  spell (a cast to FLOAT would have to round as numpy does, unproven).
-  Bin edges that are not sorted numbers (searchsorted's answer is then
-  its search order's), which no strategy fits on finite data.
+  for `OneHotEncoder` above. Bin edges that are not sorted numbers
+  (searchsorted's answer is then its search order's), which no strategy
+  fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
   features, where builds reach 6-8 s (`quantile.MAX_QUANTILES`).

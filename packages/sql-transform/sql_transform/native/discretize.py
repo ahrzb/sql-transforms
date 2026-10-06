@@ -13,6 +13,15 @@ only shape `bin_edges_`, so the entry reads the edges and nothing else.
 
 Comparisons and constants only, so the entry is bit-exact: `x < e` is
 IEEE's on both sides, and -0.0 equals 0.0 in numpy as in SQL.
+
+With `dtype=np.float32` validation narrows X to float32 first (rounding
+to nearest, ties to even; NaN and a value that rounds to infinity raise)
+and the edges stay float64, so searchsorted counts the edges `e` with
+`e <= float32(x)`, compared as doubles. Rounding is monotone, so each
+such test is one comparison of the double `x` against a moved cutpoint
+(`_f32_cut`), computed at build: the lanes are the float64 ones over the
+moved edges, and the codes and 0/1 lanes, float32 in the twin, are exact
+as doubles.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ import pyarrow as pa
 from confit import sql as S
 from sklearn.preprocessing import KBinsDiscretizer
 
+from sql_transform._trees import _f32_grid_threshold
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import NotNative, translates
 
@@ -40,6 +50,29 @@ def _inner(est: Any, j: int) -> list[float]:
             f"KBinsDiscretizer: feature {j}'s bin edges are not sorted numbers"
         )
     return [float(e) for e in edges]
+
+
+def _f32_cut(edges: np.ndarray) -> np.ndarray:
+    """The doubles `c` for which `x < c` answers `float32(x) < e`, per edge
+    `e`, for every double `x` but NaN; the complement of the twin's
+    `e <= float32(x)`.
+
+    `float32(x)` is a float32, so `float32(x) < e` holds exactly when
+    `float32(x) <= g`, `g` the largest float32 below `e` (-inf below
+    -FLT_MAX), and `_f32_grid_threshold(g)` is the largest double `t` with
+    `float32(x) <= g` for every `x <= t`, ties-to-even and the overflow to
+    ±inf included. So `c` is the double after it: `x <= t` iff `x < c`.
+    `e -> c` is monotone, so sorted edges stay sorted (two edges with no
+    float32 between them move to one cutpoint, as the twin cannot land
+    between them). An infinite edge stays: it differs from its cutpoint
+    only on `x` that rounds to infinity, where the twin raises."""
+    e = np.asarray(edges, dtype=np.float64)
+    with np.errstate(over="ignore"):  # an edge past FLT_MAX rounds to inf
+        g = e.astype(np.float32)
+        down = np.nextafter(g, np.float32(-np.inf))
+    g = np.where(g.astype(np.float64) >= e, down, g)
+    cut = np.nextafter(_f32_grid_threshold(g.astype(np.float64)), np.inf)
+    return np.where(np.isfinite(e), cut, e)
 
 
 def _bin(x: S.Expr, edges: list[float]) -> S.Expr:
@@ -79,12 +112,15 @@ def _kbins(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
         raise NotNative(
             f"KBinsDiscretizer(encode={est.encode!r}): the output is sparse"
         )
-    if est.dtype is not None and np.dtype(est.dtype) != np.float64:
-        # The twin rounds x to float32 before it bins it.
+    narrow = est.dtype is not None and np.dtype(est.dtype) == np.float32
+    if est.dtype is not None and not narrow and np.dtype(est.dtype) != np.float64:
         raise NotNative(f"KBinsDiscretizer(dtype={np.dtype(est.dtype).name})")
     out: list[S.Expr] = []
     for j, xj in enumerate(x):
         edges = _inner(est, j)
+        if narrow:
+            # The twin bins float32(x): each edge moves to its cutpoint.
+            edges = [float(c) for c in _f32_cut(np.array(edges))]
         if est.encode == "ordinal":
             out.append(_bin(xj, edges))
         else:
