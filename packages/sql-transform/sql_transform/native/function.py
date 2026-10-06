@@ -254,10 +254,6 @@ def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         raise NotNative(f"{what} over a string feature: not a numeric row")
     if func is None:
         return list(x)
-    if any(t == pa.bool_() for t in types):
-        # numpy keeps a boolean row boolean (`negative` raises, `sqrt`
-        # answers float16): not the float64 the entry spells.
-        raise NotNative(f"{what} over a boolean feature")
     try:
         spell = _SERVED.get(func)
     except TypeError:  # an unhashable callable
@@ -275,4 +271,27 @@ def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
                 f"{what}: this platform's numpy kernel is {d} ulps from"
                 f" confit's on the probe, past the entry's bound of {b}"
             )
+    if all(t == pa.bool_() for t in types):
+        why = _on_booleans(func)
+        if why:
+            raise NotNative(f"{what} over boolean features only: {why}")
     return [spell(xi) for xi in x]
+
+
+def _on_booleans(func: Any) -> str | None:
+    """Why `func` over a boolean array does not answer the doubles it
+    answers over 0.0 and 1.0, or None when it does. A row of boolean
+    features none NULL reaches `func` as a boolean array (any number or
+    NULL in the row makes it float64), which numpy keeps boolean or
+    computes in a narrower dtype: `np.negative` raises, `np.sin` answers
+    float16, whose sin(1) is not the double's; `np.abs` and `np.sqrt`
+    answer 0 and 1 either way. The step reads the answer with `float()`."""
+    with np.errstate(all="ignore"):
+        want = func(np.array([0.0, 1.0]))
+        try:
+            got = np.asarray(func(np.array([False, True])))
+        except Exception as e:  # noqa: BLE001 — the twin raises it too
+            return f"numpy raises {type(e).__name__}"
+    if got.astype(np.float64).tobytes() != want.tobytes():
+        return f"it answers {got.dtype} {got.tolist()}, not {want.tolist()}"
+    return None
