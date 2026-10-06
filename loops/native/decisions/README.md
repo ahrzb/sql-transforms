@@ -1,15 +1,23 @@
 # Decisions for the native catalog
 
-One record per question of contract or scope ([goal.md](../goal.md)):
-the question, the options, the provisional choice the loop works under, and
-the ground. A ruled question moves from `open/` to `closed/`.
+Each record holds one question of contract or scope ([goal.md](../goal.md)).
+It gives the question, the options, the provisional choice of the loop, and
+the ground. When the owner rules, the record moves from `open/` to `closed/`.
 
-- [open/](open/): [tolerated differences](open/tolerated-differences.md),
-  [how close a matvec entry must be](open/matvec-parity-bound.md),
-  [how close a power transform must be](open/power-parity-bound.md),
-  [how close an additive chi2 sampler must be](open/additive-chi2-parity-bound.md),
-  [should the Python step densify a sparse output](open/sparse-outputs.md).
-- [research/](research/2026-10-06/README.md): the measurements and derivations
-  behind each open record's Methodology and Recommendation (2026-10-06).
-- [closed/](closed/): the parity bound is ruled in confit's record,
-  `packages/confit/docs/decisions/closed/native-transform-parity-bounds.md`.
+- [open/](open/): [may a step with a parity bound sit in a
+  composition](open/bounded-steps-in-compositions.md).
+- [closed/](closed/): the owner rulings of 2026-10-06.
+  - [Where the twin raises](closed/tolerated-differences.md): the entry
+    traps too, through an input guard.
+  - [How close a matvec entry must be](closed/matvec-parity-bound.md): the
+    parity bound and its general form.
+  - [How close a power transform must be](closed/power-parity-bound.md).
+  - [How close an additive chi2 sampler must
+    be](closed/additive-chi2-parity-bound.md).
+  - [The Python step densifies a sparse output](closed/sparse-outputs.md).
+  - The first parity ruling is in confit's record,
+    `loops/confit/decisions/closed/native-transform-parity-bounds.md`. Its
+    amendment of 2026-10-06 introduces the parity bound.
+- [research/](research/2026-10-06/README.md): the measurements and the
+  derivations behind the Methodology and Recommendation of each closed
+  record.

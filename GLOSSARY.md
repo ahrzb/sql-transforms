@@ -103,10 +103,28 @@ A group of sklearn transformers in one catalog module, for example
 The error that a catalog entry raises for a configuration that it does not
 serve.
 
-**Ulp bound**:
-The maximum distance, in units in the last place, that a family allows
-between a catalog entry and its twin. A bound of 0 is bit-exact.
+**Parity bound**:
+The maximum distance that a family allows between a catalog entry and its
+twin, for each output field. The distance is K·eps·S + τ, with these terms:
+S is the error scale of the field. K is a constant that the family derives.
+eps is 2^-52. τ is a small floor for underflow. A bound with K = 0 is
+bit-exact.
 _Avoid_: tolerance
+
+**Error scale**:
+The quantity S in a parity bound. It is a formula over the fitted state and
+the input row, and the family declares it. It adds the sizes of the
+operations whose rounding can differ between the entry and its twin.
+
+**Ulp bound**:
+A parity bound whose error scale is the size of the result itself. The
+family states it in units in the last place (ulps). A bound of 0 is
+bit-exact.
+_Avoid_: tolerance
+
+**Input guard**:
+A test on the input row that a catalog entry runs, so that the entry traps
+where the validation of its twin raises an error.
 
 ## Correctness
 

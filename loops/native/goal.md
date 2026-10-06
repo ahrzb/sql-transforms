@@ -15,10 +15,12 @@ it was made from:
   features, by position. The same return type: a scalar, a struct with
   the same field names, or a list of the same width.
 - **Same answer.** Bit-exact wherever the entry performs the twin's
-  operations in the twin's order, and within a declared per-family ulp
-  bound otherwise (owner ruling:
-  `packages/confit/docs/decisions/closed/native-transform-parity-bounds.md`).
-  NaN equals NaN; NULL equals NULL; with bound 0, -0.0 is not 0.0.
+  operations in the twin's order. Otherwise, each output field is within the
+  family's parity bound, K·eps·S + τ. S is the error scale that the family
+  declares, and K is derived, not measured. The owner rulings are in
+  `loops/confit/decisions/closed/native-transform-parity-bounds.md` and
+  [decisions/closed/matvec-parity-bound.md](decisions/closed/matvec-parity-bound.md).
+  NaN equals NaN, and NULL equals NULL. With bound 0, -0.0 is not 0.0.
 - **Same inputs.** A feature reaches the translation as `PythonTransform`
   hands it to `transform`: a number (or boolean) as a DOUBLE with NULL read
   as NaN, a string as is.
@@ -32,13 +34,16 @@ it was made from:
 which is always correct to serve. `to_native(step, strict=True)` raises
 instead.
 
-## Tolerated differences
+## Where the twin raises
 
-Provisional, with the condition that ends it; see [decisions/](decisions/).
+If the validation of the twin raises on an input, the entry must trap on
+that input too. An input guard in the entry does this. The owner ruling is
+in [decisions/closed/tolerated-differences.md](decisions/closed/tolerated-differences.md).
 
-- **Where the twin raises,** on input sklearn's validation rejects (an
-  infinite value for most estimators), the entry may answer. Never the
-  reverse: an entry may not raise where the twin answers.
+- Until an entry has its input guard, it may answer where the twin raises.
+- An entry may never trap where the twin answers.
+- A twin error that is not validation, for example an sklearn bug, is not
+  covered. The ruling record lists each such error.
 
 ## Scope
 

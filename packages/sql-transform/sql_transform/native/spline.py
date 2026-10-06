@@ -470,8 +470,9 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
 def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     if est.sparse_output:
         raise NotNative(
-            "SplineTransformer(sparse_output=True): the output is sparse"
-            " (decisions/open/sparse-outputs.md)"
+            "SplineTransformer(sparse_output=True): the output is sparse,"
+            " and the Python step does not densify it yet"
+            " (decisions/closed/sparse-outputs.md)"
         )
     if not bspline_is_scipys():
         raise NotNative(
