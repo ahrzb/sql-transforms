@@ -46,7 +46,7 @@ def all_scenarios():
 
 def arrow_schema(schema: dict[str, str] | pa.Schema) -> pa.Schema:
     # A scenario may declare ROW_SCHEMA as a pa.Schema outright: the
-    # dict[str, str] shorthand cannot spell a struct column (TASK-114).
+    # dict[str, str] shorthand cannot spell a struct column.
     if isinstance(schema, pa.Schema):
         return schema
     return pa.schema(
@@ -117,7 +117,7 @@ def verify_parity(mod, n: int = 300) -> list[str]:
         problems.append(f"{mod.NAME}: backend is {fn.backend}, not cranelift")
 
     # The columnar boundary is the same engine behind a second entry point,
-    # so it agrees POSITIONALLY with infer_rows or it is a defect (TASK-114).
+    # so it agrees POSITIONALLY with infer_rows or it is a defect.
     got_arrow = fn.infer_arrow(rows_table(mod, rows)).to_pylist()
     if got_arrow != got_spec:
         first = next(
@@ -133,9 +133,6 @@ def verify_parity(mod, n: int = 300) -> list[str]:
             f"{len(got_spec)} rows, first difference at {first}: "
             f"{got_arrow[first : first + 1]} != {got_spec[first : first + 1]}"
         )
-
-    # No more output='dict' vs typed-mode differential: dict-out is the only
-    # mode the arrow schema surface has (output= was deleted).
 
     # `multiset` and `sequence` canonicalize each row by SORTING its items, so
     # neither leg below can see a column reorder. Output column order is part

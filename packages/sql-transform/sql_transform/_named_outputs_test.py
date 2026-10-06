@@ -69,6 +69,7 @@ def test_pca_generated_names_mid_expression():
 
 
 def clone_ref(proto, table):
+    """Fit a fresh estimator on age/fare and return its training-row outputs."""
     from sklearn.base import clone
 
     feats = np.array(
@@ -98,6 +99,8 @@ def test_mixed_feature_types():
     )
 
     class Widths:
+        """Expose mixed string/numeric conversion through a scalar output."""
+
         def fit(self, X):
             return self
 
@@ -199,8 +202,7 @@ def test_field_access_under_partition_unseen_group_is_null():
 
 
 def test_bare_call_serves_width1_struct():
-    # A call is a struct value at EVERY width (slice 5): a width-1 bare
-    # item serves a one-field struct, same boundary as width-k.
+    # Width one retains the same struct boundary as wider outputs.
     p = SQLProjection.marginalize(
         "SELECT sc(struct_pack(a := age)) AS z, name FROM __THIS__",
         captured={"sc": StandardScaler()},
@@ -301,8 +303,7 @@ def test_unseen_group_nulls_every_field_read():
     out = p.compile().infer_rows(
         [{"color": "red", "country": "JP", "age": 1.0, "fare": 1.0, "name": "q"}]
     )[0]
-    # Field reads of a NULL struct: an unseen group is k NULL columns
-    # (the struct-level NULL returns with DRAFT-25's nested outputs).
+    # Reading fields of a NULL struct yields NULL for each selected field.
     assert out["e_pca0"] is None and out["e_pca1"] is None
 
 
@@ -315,7 +316,7 @@ def test_unknown_field_name_refuses_at_fit():
         p.fit(TRAIN)
 
 
-# --- Named(...): the author's declaration wins (DRAFT-24 loop 2) ---------------
+# --- Named(...): the author's declaration wins ------------------------------
 
 
 def test_named_override_replaces_generated_names():

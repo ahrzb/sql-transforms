@@ -29,12 +29,13 @@ GROUPS = ["us", "de", "fr", "jp", "br", None]
 
 
 def make_table(n: int, seed: int = SEED) -> pa.Table:
+    """Build a reproducible mixed-key fixture with six independent numeric columns."""
     rng = random.Random(seed)
     cols: dict[str, list] = {
         "grp": [rng.choice(GROUPS) for _ in range(n)],
         "name": [f"r{i}" for i in range(n)],
     }
-    for c in "abcdef":  # NOT 'g' — that would shadow the group column
+    for c in "abcdef":
         cols[c] = [rng.uniform(-50, 50) for _ in range(n)]
     return pa.table(cols)
 
@@ -65,6 +66,7 @@ QUERIES = {
 
 
 def registry() -> dict:
+    """Return fresh scalar-UDF and estimator captures for each fitted benchmark."""
     return {
         "half": PythonUDF(
             "half",
@@ -84,12 +86,13 @@ def _prepared(sql: str):
 
 
 def bench(sql: str, sizes=(1, 64), repeats: int = 200) -> dict[int, float]:
+    """Median Confit infer_rows duration per row, in ns, keyed by batch size."""
     _, function, train = _prepared(sql)
     rows = train.to_pylist()
     out: dict[int, float] = {}
     for n in sizes:
         batch = rows[:n]
-        for _ in range(20):  # warmup
+        for _ in range(20):  # exclude warmup calls from the timed samples
             function.infer_rows(batch)
         samples = []
         for i in range(repeats):

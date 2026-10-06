@@ -62,7 +62,7 @@ def test_the_relation_is_not_executed_until_it_is_consumed():
     assert calls == []  # bound and planned, but nothing has run
     assert lazy.columns == ["z"]  # binding is eager; execution is not
     assert lazy.to_arrow_table().num_rows == 2
-    assert calls == [2]  # ... and now it has
+    assert calls == [2]
 
 
 def test_column_names_come_free_without_executing():
@@ -115,7 +115,7 @@ def test_a_shared_connection_does_not_let_one_stage_read_anothers_params():
     big.fit(BIG)  # mean 100
 
     first = small.transform(LIVE)
-    second = big.transform(LIVE)  # registers its own __param_0 and __THIS__
+    second = big.transform(LIVE)
 
     assert approx(first.to_arrow_table()) == [(5.0,), (10.0,)]  # 10/2, 20/2
     assert approx(second.to_arrow_table()) == [(0.1,), (0.2,)]  # 10/100, 20/100

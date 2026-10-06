@@ -94,9 +94,8 @@ class UDF:
     argument, one type for the result:
 
     ``takes`` is a ``pa.Schema``: names and types together, in call order.
-    Arguments bind by POSITION; the names are the *struct* half of the type
-    (DRAFT-24), a fitted transform being a function ``S -> T`` between named
-    structs.
+    Arguments bind by POSITION; the names are the *struct* half of the type,
+    a fitted transform being a function ``S -> T`` between named structs.
 
     ``returns`` is the SQL return TYPE, which also says how wide the call is
     and whether its lanes are addressable:
@@ -106,9 +105,8 @@ class UDF:
     ``pa.struct([...])``         width-k with addressable field names;
                                  struct-valued at EVERY width, so
                                  ``f(x).a`` reads a lane off ONE call
-    ``pa.list_(t, k)``           width-k unnamed (the DRAFT-22 list
-                                 boundary); fixed size because the width
-                                 is part of the declaration
+    ``pa.list_(t, k)``           width-k unnamed; fixed size because the
+                                 width is part of the declaration
     ===========================  =======================================
 
     Names are matched name-keyed, never positionally, so a refit that
@@ -326,7 +324,7 @@ class PythonTransform(UDF):
 
 
 class Named:
-    """An estimator with author-declared output field names (DRAFT-24).
+    """An estimator with author-declared output field names.
 
     >>> transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))}
     >>> "SELECT pca(struct_pack(a := age, f := fare)).size AS x ..."
@@ -461,7 +459,7 @@ def _flatten_row(row: Any) -> list:
 def output_names(
     est: Any, take_names: tuple[str, ...], width: int, label: str = ""
 ) -> tuple[str, ...]:
-    """The fitted output field names (T), by DRAFT-24's source order: an
+    """The fitted output field names (T), in this precedence order: an
     author declaration (``Named``) — authoritative, so a width disagreement
     refuses; else sklearn's ``get_feature_names_out`` — advisory, ignored
     when it disagrees; else canonical ``f0..``."""

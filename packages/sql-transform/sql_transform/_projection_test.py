@@ -1,7 +1,6 @@
 """SQLProjection: one output row per ``__THIS__`` row, from that row and params.
 
-The refusal cases are a table (`REFUSED`), and `test_every_reason_is_exercised`
-walks `REASONS` looking for gaps, the way `_correlate_test` does for its own —
+The refusal table (`REFUSED`) exercises the named reasons in `REASONS`;
 a reason nothing exercises is a refusal nobody has named.
 
 Executable row-local cases from `packages/sql-transform/docs/contract.md`.
@@ -86,7 +85,7 @@ def test_cross_join_to_a_one_row_params_table():
 def test_params_are_inspectable_and_fit_is_gone_from_the_text():
     fitted = SQLProjection(KEYED).fit(F)
     assert all(isinstance(t, pa.Table) for t in fitted.params.values())
-    assert {len(t) for t in fitted.params.values()} == {2}  # two stores
+    assert {len(t) for t in fitted.params.values()} == {2}
     assert "__FIT__" not in fitted.sql
 
 
@@ -400,7 +399,7 @@ def test_a_foreign_leaf_serves_in_batch_but_refuses_to_compile_by_name():
              (SELECT sc_fit(struct_pack(v := price)) AS theta FROM __FIT__) f
     """)
     fitted = p.fit(F)
-    assert fitted.transform(X).num_rows == X.num_rows  # the batch path works
+    assert fitted.transform(X).num_rows == X.num_rows
     with pytest.raises(TransformError, match="row path"):
         fitted.compile()
 

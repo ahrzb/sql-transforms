@@ -1,4 +1,4 @@
-"""Slice 1 gates: the two parameters, freezing, ``fit``/``transform``.
+"""The two parameters, freezing, and ``fit``/``transform``.
 
 These cases exercise the current authoring contract's freezing and execution
 rules (`packages/sql-transform/docs/contract.md`). The
@@ -45,6 +45,7 @@ def rows(table: pa.Table) -> list[tuple]:
 
 
 def approx(table: pa.Table, places: int = 9) -> list[tuple]:
+    """Keep row order and non-floats; round floats to decimal places for comparison."""
     return [
         tuple(round(v, places) if isinstance(v, float) else v for v in r)
         for r in rows(table)

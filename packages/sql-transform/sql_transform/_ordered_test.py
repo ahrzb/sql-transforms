@@ -203,8 +203,7 @@ def test_collate_key_is_honored(key):
 
 
 def test_named_wrapping_order_sensitive_still_requires_order():
-    """Review round: Named had no attribute forwarding, so it silently
-    cancelled the inner order-sensitivity declaration."""
+    """Named wrappers must preserve the inner order-sensitivity declaration."""
     from sql_transform import Named
 
     with pytest.raises(TransformError, match="OrderSensitive|ORDER BY"):
@@ -215,8 +214,8 @@ def test_named_wrapping_order_sensitive_still_requires_order():
 
 
 def test_wrapper_survives_pickle_roundtrip():
-    """Review round: __getattr__ raised KeyError (not AttributeError) on
-    empty instance state, crashing pickle/copy protocols."""
+    """Missing attributes in empty wrapper state must raise AttributeError,
+    as required by pickle and copy protocols."""
     import pickle
 
     # S301: test-local roundtrip of our own object, no untrusted data.
@@ -256,7 +255,7 @@ REFUSALS = [
         ".age AS z FROM __THIS__",
         "nests.*estimator",
     ),
-    # Review round: collation edges refuse by name at construction.
+    # Invalid collation names refuse at construction.
     (
         "SELECT sm_transform(sm_fit(age ORDER BY name COLLATE nosuch)"
         " OVER (), age).age AS z FROM __THIS__",

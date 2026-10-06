@@ -46,6 +46,7 @@ class AstNode(BaseModel):
 
     @classmethod
     def shape_key(cls) -> str:
+        """Return the discriminator key shared by parsing and shape manifests."""
         return f"{cls.tag}/{cls.kind}"
 
 
@@ -68,6 +69,8 @@ class Subquery(AstNode):
 
 
 class CteValue(AstNode):
+    """A CTE body and its serialized column aliases and materialization hint."""
+
     aliases: list[str]
     query: Subquery
     materialized: str
@@ -80,6 +83,8 @@ class CteEntry(AstNode):
 
 
 class CteMap(AstNode):
+    """CTE definitions in author order; later bodies may read earlier entries."""
+
     map: list[CteEntry]
 
 
@@ -96,6 +101,8 @@ class Document(AstNode):
 
 
 class Select(AstNode):
+    """An oracle SELECT, including clauses carried without interpretation."""
+
     tag: ClassVar[str] = "SELECT_NODE"
     kind: ClassVar[str] = "query"
 
@@ -114,6 +121,8 @@ class Select(AstNode):
 
 
 class SetOperation(AstNode):
+    """A binary set operation with each operand's lexical query scope intact."""
+
     tag: ClassVar[str] = "SET_OPERATION_NODE"
     kind: ClassVar[str] = "query"
 
@@ -127,6 +136,8 @@ class SetOperation(AstNode):
 
 
 class RecursiveCte(AstNode):
+    """A recursive body whose self-reference belongs to its enclosing CTE entry."""
+
     tag: ClassVar[str] = "RECURSIVE_CTE_NODE"
     kind: ClassVar[str] = "query"
 
@@ -146,6 +157,8 @@ class RecursiveCte(AstNode):
 
 
 class BaseTable(AstNode):
+    """A relation name and its qualification, alias, and source modifiers."""
+
     tag: ClassVar[str] = "BASE_TABLE"
     kind: ClassVar[str] = "ref"
 
@@ -161,6 +174,8 @@ class BaseTable(AstNode):
 
 
 class SubqueryRef(AstNode):
+    """A FROM subquery wrapper, distinct from SUBQUERY expression nodes."""
+
     tag: ClassVar[str] = "SUBQUERY"
     kind: ClassVar[str] = "ref"
 
@@ -173,6 +188,8 @@ class SubqueryRef(AstNode):
 
 
 class Join(AstNode):
+    """Both relation operands and the oracle's join and duplicate-elimination state."""
+
     tag: ClassVar[str] = "JOIN"
     kind: ClassVar[str] = "ref"
 
@@ -191,6 +208,8 @@ class Join(AstNode):
 
 
 class TableFunction(AstNode):
+    """A FROM function call, not a scalar expression or captured SQL member."""
+
     tag: ClassVar[str] = "TABLE_FUNCTION"
     kind: ClassVar[str] = "ref"
 
@@ -220,6 +239,8 @@ class EmptyTable(AstNode):
 
 
 class ColumnRef(AstNode):
+    """An identifier path; qualification and nested field access remain unresolved."""
+
     tag: ClassVar[str] = "COLUMN_REF"
     kind: ClassVar[str] = "expr"
 
@@ -231,6 +252,8 @@ class ColumnRef(AstNode):
 
 
 class Function(AstNode):
+    """A scalar or aggregate call with named arguments and aggregate modifiers."""
+
     tag: ClassVar[str] = "FUNCTION"
     kind: ClassVar[str] = "expr"
 
@@ -250,6 +273,8 @@ class Function(AstNode):
 
 
 class SubqueryExpr(AstNode):
+    """A scalar, EXISTS, or quantified subquery expression with its comparison state."""
+
     tag: ClassVar[str] = "SUBQUERY"
     kind: ClassVar[str] = "expr"
 

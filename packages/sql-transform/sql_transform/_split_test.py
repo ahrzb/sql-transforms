@@ -13,6 +13,8 @@ from ._transformers_test import TRAIN, _by_name, _reference
 
 
 class CountingScaler(StandardScaler):
+    """Count fit invocations across clones without changing scaler semantics."""
+
     fits = 0
 
     def fit(self, X, y=None, sample_weight=None):
@@ -36,7 +38,7 @@ def test_split_spelling_fits_per_partition():
 
 
 def test_fit_here_apply_there():
-    """fit on age, apply to fare: previously unspellable (DRAFT-25)."""
+    """The learned fit features and application features need not be the same."""
     sc = StandardScaler()
     p = SQLProjection.marginalize(
         "SELECT sc_transform(sc_fit(struct_pack(v := age)) OVER (),"
@@ -181,9 +183,7 @@ def test_split_refusals(sql, match):
 
 
 def test_reserved_fit_name_collision_on_bare_spelling_refuses():
-    """Review round (2026-08-05): the bare x_fit(...).field spelling used to
-    silently serve the x_fit registry object instead of refusing the
-    reservation — the one spelling the struct-value hint points users at."""
+    """A captured x_fit must not shadow the generated fit half of captured x."""
     with pytest.raises(TransformError, match="reserve"):
         SQLProjection.marginalize(
             "SELECT x_fit(age).age AS z FROM __THIS__",
@@ -192,10 +192,8 @@ def test_reserved_fit_name_collision_on_bare_spelling_refuses():
 
 
 def test_distinct_bundle_names_mint_distinct_fits():
-    """Review round (2026-08-05): fit-step identity must include the bundle
-    FIELD NAMES (S's names are the type, P16a) — _stripped erases aliases,
-    so two fits differing only in struct_pack names used to collide into
-    one step and serve the wrong fit's lanes."""
+    """Bundle field names belong to fit identity: dropping them merges schemas
+    and can serve another fit's lanes despite identical feature expressions."""
     CountingScaler.fits = 0
     sc = CountingScaler()
     p = SQLProjection.marginalize(
@@ -219,7 +217,7 @@ def test_distinct_bundle_names_mint_distinct_fits():
 
 def test_field_read_is_case_insensitive():
     """DuckDB struct reads are ASCII-case-insensitive and so is the confit
-    binder; the fit-time field check must match (review round 2026-08-05)."""
+    binder; the fit-time field check must match."""
     sc = StandardScaler()
     p = SQLProjection.marginalize(
         "SELECT sc(struct_pack(V := age)).v AS z, name FROM __THIS__",

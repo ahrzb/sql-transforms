@@ -504,7 +504,7 @@ pub(crate) fn dec_text(v: i128, scale: u8) -> String {
 /// A python `decimal.Decimal` as `(unscaled, scale)` at ITS OWN exponent,
 /// exactly — no f64 anywhere on the path. `as_tuple()` rather than
 /// `scaleb`/`int()`: the decimal context's 28-digit precision would round a
-/// 38-digit payload, which is the whole class this task exists to serve.
+/// 38-digit payload.
 fn decimal_parts(v: &Bound<'_, PyAny>, what: &str) -> PyResult<(i128, u8)> {
     let bad = || build_err(format!("unsupported: {what} holds a DECIMAL this build cannot serve: {v}"));
     let t = v.call_method0("as_tuple").map_err(|_| bad())?;

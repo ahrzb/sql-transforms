@@ -22,6 +22,8 @@ from sql_transform import (
 
 
 class Codes:
+    """Assign first-occurrence codes at fit; unseen values transform to -1."""
+
     def fit(self, rows):
         self.codes = {value: i for i, value in enumerate(dict.fromkeys(rows[:, 0]))}
         return self
@@ -31,6 +33,8 @@ class Codes:
 
 
 class Mixed:
+    """Expose numeric NULL conversion and string fit order in separate outputs."""
+
     def fit(self, rows):
         self.codes = {value: i for i, value in enumerate(dict.fromkeys(rows[:, 1]))}
         self.seen = rows.copy()
@@ -49,6 +53,8 @@ class Mixed:
 
 
 class Counting:
+    """Count fits across clones and expose each fit's mean through centering."""
+
     fits = 0
 
     def fit(self, rows):
@@ -61,6 +67,8 @@ class Counting:
 
 
 class IntegerIdentity(UDF):
+    """Non-dataclass scalar UDF preserving int64 values and SQL NULLs."""
+
     name = "ident"
     takes = pa.schema([("v", pa.int64())])
     returns = pa.int64()
@@ -79,6 +87,7 @@ EXPLICIT = """
 
 
 def public_paths(fitted, request, expected):
+    """Require batch and both reconstructed public Confit interfaces to agree."""
     from confit import DuckDBInferFn
 
     public = DuckDBInferFn(

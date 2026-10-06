@@ -58,9 +58,8 @@ type Params = dict[str, pa.Table]
 type Bindings = dict[str, Relation]
 
 
-# Everything a transform resolved from the caller's frame, by name: lookup
-# relations, foreign transforms, and members. One map so `clone` can carry
-# the lot; the two views above are derived from it.
+# Caller-resolved objects, retained by identity so `clone` can replay the SQL
+# outside its original frame. Relation/member/UDF views are derived from this map.
 type Captured = dict[str, Any]
 
 
@@ -95,8 +94,7 @@ def _template(sql: str) -> Node:
     """A node shape cut from the oracle's own serialization, so a grafted node
     always carries every field the deserializer expects.
 
-    Shared, not copied: the models are frozen, so the old ``json.loads`` of a
-    cached string per call bought nothing but garbage.
+    Shared, not copied: frozen models keep cached templates safe to reuse.
     """
     return _parse(sql).statements[0].node
 

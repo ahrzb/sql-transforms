@@ -97,7 +97,7 @@ from sql_transform._nodes import field as node_field
 from sql_transform._plan import _plan, _referenced
 from sql_transform._udf import UDF
 
-MAX_DEPTH = 8
+MAX_DEPTH = 8  # maximum composed member-call depth, inclusive
 
 
 def _surface() -> type:
@@ -665,9 +665,6 @@ def _splice(
 
     body = _bind_parameters(body, bound)
 
-    # Returned rather than smuggled back on the node: the old version parked
-    # `_depth` on the ref dict for the caller to pop, which a typed node has
-    # nowhere to put and nothing should have relied on anyway.
     return _subquery_ref(body, node_field(call, "alias", "") or ""), depth + 1
 
 
@@ -690,18 +687,10 @@ RESERVED = "__"
 
 
 def _reserve(name: str, what: str) -> None:
-    """Refuse a name under the model's own prefix.
+    """Reserve ``__`` names for generated relations, functions and ordinals.
 
-    P8, finally implemented for this model: everything synthesized lives under
-    ``__`` — ``__param_0``, ``__param_fit``, ``{name}__x{token}`` — so an
-    authored name there can silently mean the model's relation instead of the
-    author's. It did: a captured binding called ``__param_0`` lost to the
-    frozen parameter with no error at all.
-
-    The whole prefix rather than ``__param_`` alone, so nothing has to be kept
-    in step as more names get synthesized. ``__FIT__`` and ``__THIS__`` are
-    the exception — they are the two parameters, and are the only ``__`` names
-    an author may write.
+    ``__FIT__`` and ``__THIS__`` are the only authored exceptions. Reserving
+    the whole prefix prevents collisions as new internal names are introduced.
     """
     if name.startswith(RESERVED) and name.upper() not in (FIT, THIS):
         raise TransformError(
@@ -787,9 +776,8 @@ def _resolve(
         stem, _, half = name.rpartition("_")
         member = _call_member(scope, stem) if half in ("fit", "transform") else None
         if isinstance(member, _projection_type()):
-            # A projection leaf is spliced, never registered (D2): both
-            # halves become ordinary SQL, and θ carries the parameters. The
-            # author's alias survives the rewrite — it names their column.
+            # A projection leaf's theta carries SQL parameters, not a registry
+            # handle; both halves must stay ordinary SQL.
             from sql_transform import _leaf  # noqa: PLC0415
 
             _capture(captured, stem, member)
@@ -820,11 +808,8 @@ def _resolve(
         nonlocal depth
         rewritten = []
         for entry in cte_entries(node):
-            # DuckDB would let such a CTE win, and we would go on rewriting the
-            # reference to the training set — two meanings for one name, and
-            # the row count changed with no error. Refused where it is
-            # defined, so `__FIT__` means the parameter everywhere or the text
-            # does not compile.
+            # A CTE must not shadow either parameter: DuckDB binding and the
+            # transform's parameter rewrites must agree on its meaning.
             if entry.key.upper() in (FIT, THIS):
                 raise TransformError(
                     f"a CTE may not be named {entry.key!r}: {FIT} and "
@@ -852,9 +837,7 @@ def _resolve(
                     }
                 )
             )
-            # Folded, because DuckDB's binder is case-insensitive: `WITH Sales`
-            # then `FROM sales` resolves for the oracle, and comparing exact
-            # strings refused valid SQL as an unknown free name.
+            # DuckDB binds CTE names case-insensitively.
             ctes = ctes | {entry.key.lower()}
         node = with_cte_entries(node, rewritten)
 
@@ -869,9 +852,7 @@ def _resolve(
                 named = node_field(v, "table_name")
                 if named and named.lower() not in ctes:
                     _reserve(named, "a relation named")
-        # Output columns too: an authored `AS __cf_row` would collide with the
-        # ordinal a projection threads through the spine, silently — the same
-        # P8 hole `_reserve` already closes for relations and aliases.
+        # Output aliases must not collide with the projection's private ordinal.
         for item in node_field(node, "select_list") or []:
             if alias := node_field(item, "alias"):
                 _reserve(alias, "an output column named")
@@ -957,9 +938,8 @@ def _resolve(
                     )
                     alias = str(v.fields.get("alias") or "")
                     return _aliased(out, alias) if alias else out
-                # `p(x) OVER w` — the deleted sugar (fit-transform-split
-                # spec: no oracle reading). Refused here by name, not left
-                # for DuckDB to reject as an unknown aggregate at fit.
+                # A projection's OVER clause belongs on its fit half, so the
+                # fit scope remains distinct from the row-local application.
                 if isinstance(scope.get(name), _projection_type()):
                     raise TransformError(
                         f"{name} is a projection, and a fit scope is spelled "
@@ -1010,22 +990,20 @@ def _give_back(leases: list[Callable[[], None]]) -> None:
 
 @dataclass(slots=True, eq=False, repr=False, weakref_slot=True)
 class Fitted:
-    """``T -> R``, with the captured environment reified as data.
+    """A fitted ``T -> R`` query with inspectable learned state.
 
-    A plain closure would be type-correct and unshippable — it could retain
-    the whole training set and nothing outside could tell. ``params`` makes
-    that a measurement instead of a rule.
+    ``params`` holds materialized fit results. General transforms retain live
+    captured ``bindings`` separately; projections snapshot them into params.
+    Keep params, opaque-ID instances and UDFs from the same artifact together.
     """
 
     node: Node  # the RESIDUAL, not the resolved text `Program.node` holds
-    params: Params  # each fit step's evaluated table, under its parameter name
-    bindings: Bindings
-    foreign: Foreign
-    # A leaf's fitted state, keyed by the θ id its params row carries. Two
-    # fits mint two id spaces, so mixing an artifact's params with another's
-    # instances is caught rather than silently scored.
+    params: Params  # learned tables; projection artifacts also hold captured statics
+    bindings: Bindings  # live captured relations for general transforms
+    foreign: Foreign  # relation-batch callbacks, shared with their fitted instances
+    # Opaque IDs are local to this artifact; params and instances belong together.
     instances: dict[int, Any]
-    connection: Connection | None = None
+    connection: Connection | None = None  # borrowed; None uses owned connections
     # Scalar UDFs the residual calls, under the names it calls them by. Runtime
     # views only: a shared connection registers each under a leased alias.
     udfs: dict[str, UDF] = field(default_factory=dict)
@@ -1087,38 +1065,24 @@ class Fitted:
             yield con, render, registry
 
     def transform(self, data: Relation) -> pa.Table:
+        """Evaluate eagerly as Arrow; release registrations before returning."""
         with self._leased({THIS: data}) as (con, render, registry):
             return _execute(con, render(self.node), registry)
 
     __call__ = transform
 
     def relation(self, data: Relation) -> LazyRelation:
-        """The residual as an unexecuted ``DuckDBPyRelation``.
+        """Return an unexecuted relation whose registrations this artifact owns.
 
-        Nothing is materialised: bind, plan, hand it back. DuckDB still
-        *binds* eagerly, so an unknown column refuses here; a foreign
-        transform's refusal only surfaces when the relation is consumed, which
-        is the price of not materialising.
+        DuckDB binds columns eagerly; callback failures surface only when the
+        relation is consumed. Keep this artifact alive until all relations
+        derived from the result have been consumed, then call ``release()``.
+        Derived relations need the registrations but do not retain their parent.
 
-        This is the one path that cannot release at the end of the call — the
-        tables have to outlive it or there would be nothing left to execute.
-
-        The lease therefore lives on *this artifact*, not on the relation.
-        Tying it to the relation was wrong and crashed: a relation derived
-        from this one still needs the tables but holds no reference to its
-        parent, so ``t.transform(D).limit(2)`` lost them the moment the parent
-        was collected.
-
-        The cost is real and bounded rather than free — one registration per
-        outstanding relation until this artifact is released, refit or
-        dropped. ``release()`` is the deterministic way out; the eager
-        ``transform`` path never accumulates at all, and is the right tool for
-        serving in a loop.
-
-        A relation belongs to the connection that built it and cannot be
-        handed to another one, not even to a cursor of the same connection.
-        Chaining lazily therefore means giving both transforms the same
-        ``connection=``.
+        Each lazy call retains registrations until release or artifact
+        collection. Use eager ``transform`` when that lifetime is unnecessary.
+        Lazy chaining requires both transforms to share ``connection=``:
+        DuckDB relations cannot move between connections, including cursors.
         """
         con, own = _connection(self.connection)
         render, _, release = self._lease_on(con, own, {THIS: data})
@@ -1126,7 +1090,7 @@ class Fitted:
         return con.sql(render(self.node))
 
     def release(self) -> None:
-        """Give back every table this artifact still has registered.
+        """Give back every table and function registered for lazy outputs.
 
         Only lazy output leaves anything to give back. Idempotent, so a caller
         can put it in a ``finally`` without checking.
@@ -1290,19 +1254,12 @@ def _lease(
     """Register one execution's tables and functions, and say how to give
     them back.
 
-    Two rules, both learned the hard way. **Renamed**, because two transforms
-    sharing a connection both bind ``__THIS__`` and both call a parameter
-    ``__param_0``; eagerly that is harmless, but a lazy relation is not
-    executed yet, so one stage would read the other's tables — same shape,
-    different numbers, no error. **Released**, because the rename alone turned
-    that correctness bug into a resource one: every execution added names
-    nobody ever took away, so a serving loop pinned every batch it had seen,
-    and the leftovers were visible to ``_catalog``, which made the *next*
-    transform bind to them instead of capturing from its caller's frame.
+    Shared connections need unique names so overlapping lazy executions cannot
+    read each other's bindings. Releasing them also prevents retained batches
+    and internal names from leaking into subsequent catalog resolution.
 
-    Returned rather than a context manager because the lazy path cannot
-    release at the end of the call — it releases when the relation it handed
-    back is collected.
+    The caller owns the release callback. Eager executions release on exit;
+    lazy executions retain it on the fitted artifact (see ``Fitted.relation``).
 
     ``names`` maps each table to its registered name; ``renames`` maps each
     call name — a UDF's whole name, a ``Transform`` stem's ``_fit`` and
@@ -1429,14 +1386,14 @@ class Program:
     node: Node  # resolved text, both parameters live
     depth: int  # member-call nesting, bounded by MAX_DEPTH
     steps: list[tuple[str, Node]]  # the fit DAG, in dependency order
-    residual: Node
-    shadowable: set[str]
-    bindings: Bindings
-    foreign: Foreign
-    captured: Captured
+    residual: Node  # fitted query, with fit dependencies replaced by params
+    shadowable: set[str]  # outer qualifiers requiring a fit-schema shadow check
+    bindings: Bindings  # captured relations; snapshotted only for projections
+    foreign: Foreign  # declared relation-batch callbacks
+    captured: Captured  # adopted author mapping, completed for source replay
     source: str  # the exact object given, so clone's identity check passes
     sql: str  # the resolved text, printed
-    connection: Connection | None
+    connection: Connection | None  # borrowed; None uses owned connections
     # Runtime-only views; authored captures never acquire generated bindings.
     udfs: dict[str, UDF] = field(default_factory=dict)
     estimators: dict[str, _Estimator] = field(default_factory=dict)
@@ -1454,12 +1411,12 @@ class Program:
         captured: Captured | None = None,
         row_udfs: bool = False,
     ) -> Self:
-        """Parse, splice, resolve and plan; every refusal fires here.
+        """Compile authored SQL using ``scope`` for unresolved Python names.
 
-        ``captured`` is *adopted*, not copied, and completed in place with
-        whatever ``scope`` supplied: sklearn's ``clone`` demands that
-        ``get_params`` hand back the very object the constructor was given,
-        and carrying the completed set is the whole point.
+        Explicit ``captured`` entries win over ``scope``. The mapping is adopted
+        and completed in place for source replay and sklearn clone identity.
+        ``row_udfs`` admits projection-only Python members; schema-dependent
+        binding and cardinality checks still wait for fit.
         """
         doc = _parse(sql)
         if len(doc.statements) != 1:
@@ -1488,8 +1445,6 @@ class Program:
             estimators=estimators,
             udfs=udfs,
         )
-        # Two runtime views. A member or a projection leaf is spliced away,
-        # so it is neither.
         foreign: Foreign = {
             k: v for k, v in captured.items() if isinstance(v, Transform)
         }
@@ -1522,10 +1477,8 @@ class Program:
     def fit(self, data: Relation) -> Fitted:
         """Partial application: evaluate the fit DAG, return the artifact.
 
-        Every step runs under leased names and they are all given back, so a
-        shared connection is the caller's again when this returns — including
-        ``__FIT__``, which used to stay bound to the whole training relation
-        for the life of the connection.
+        Every step runs under leased names, all released before returning,
+        including the training relation registered as ``__FIT__``.
 
         A projection's captured relations are read once, before any step, into
         a local ``Program`` value with the same author captures; the artifact
@@ -1613,19 +1566,12 @@ class Program:
                         con, _rendered(executable, names, renames), registry
                     )
                 except duckdb.Error as exc:
-                    # A leaf's own refusal comes back through here wearing
-                    # DuckDB's coat: a Python exception raised inside a UDF is
-                    # rewrapped as InvalidInputException. `_Registry` kept the
-                    # original precisely so a refusal keeps its name, and
-                    # dressing it up as a correlation problem was both wrong
-                    # and unactionable.
+                    # Preserve the callback's original refusal rather than
+                    # misclassifying DuckDB's wrapper as a correlation error.
                     if registry.error is not None:
                         raise registry.error from exc
-                    # Whether an *unqualified* name resolves inward or outward
-                    # cannot be known at construction — `__FIT__` has no schema
-                    # until there is data — so this is the one refusal that
-                    # cannot be hoisted to P7's construction time. It can at
-                    # least carry our name rather than DuckDB's.
+                    # Unqualified inward/outward binding needs the FIT schema;
+                    # construction cannot settle it without data.
                     raise TransformError(
                         f"{param}: this {FIT} subquery does not stand on its "
                         f"own, so it cannot be evaluated once into a table "
@@ -1682,6 +1628,9 @@ class Program:
 
         The reference side of "freezing is faithful". It is a *binding*, not a
         rewrite, which is what keeps that law from restating the implementation.
+
+        Raw estimator programs refuse: their reference requires independent
+        estimator execution rather than this SQL binding path.
         """
         if self.estimators:
             raise TransformError(

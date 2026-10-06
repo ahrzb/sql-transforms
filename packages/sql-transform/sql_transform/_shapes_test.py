@@ -1,9 +1,8 @@
 """Does the AST walk survive SQL shapes the design examples never used?
 
 Nothing here parses SQL. DuckDB's ``json_serialize_sql`` produces the tree and
-``json_deserialize_sql`` prints it back; in between the walk swaps nodes in an
-untyped JSON dict. That middle step rests on two structural facts, and these
-tests are what keeps them facts:
+``json_deserialize_sql`` prints it back; the typed walk rewrites in between.
+The raw serialization rests on two structural facts checked independently here:
 
 - a **query node** is exactly a dict carrying ``cte_map``
 - a **TableRef** is exactly a dict carrying ``sample`` and no ``cte_map``

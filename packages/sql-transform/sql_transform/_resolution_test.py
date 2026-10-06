@@ -108,8 +108,8 @@ def test_the_qualified_form_is_lifted_because_we_can_see_it():
 
 
 def test_an_ordinary_unqualified_column_is_untouched():
-    """The canonical example in the guide is unqualified. Refusing on the mere
-    presence of an unqualified name would refuse almost everything."""
+    """An unqualified column can bind inward normally; its presence alone
+    is not evidence of a correlation."""
     t = SQLTransform(
         "SELECT t.price / s.m AS z FROM __THIS__ t, "
         "(SELECT avg(price) m FROM __FIT__) s"

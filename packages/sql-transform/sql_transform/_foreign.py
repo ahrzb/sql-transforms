@@ -38,35 +38,26 @@ def _struct_sql(fields: tuple[str, ...]) -> str:
 class _Registry:
     """The fitted instances a run mints, and the first error it hit.
 
-    Ids come from a monotone counter under a lock, never from
-    ``len(instances)``. Measured with the length form, fitting two categories:
-    both θ rows carried ``id 0`` and only one instance was stored, so every
-    row of one category was served by the other's estimator — silently, with
-    plausible numbers. DuckDB fits groups on several threads, and the window
-    is not one bytecode: ``iid = len(instances)`` is read, ``fit()`` runs, and
-    only then is the instance stored, so the whole fit sits between the read
-    and the write. ``ids_are_unique_under_concurrency`` reproduces exactly
-    that shape.
+    IDs are allocated under a lock, independently of instance insertion, so
+    overlapping fit callbacks cannot mint the same ID. Registry access does
+    not rely on the GIL, including on free-threaded Python builds.
 
-    Nothing here leans on the GIL, and it must not: 3.14 supports
-    free-threaded builds, where every window widens and a dict update is no
-    longer atomic either.
-
-    The lock also carries the first exception out, because DuckDB rewraps a
-    Python exception as ``InvalidInputException`` and a refusal has to keep
-    its name.
+    The first exception is preserved across DuckDB's ``InvalidInputException``
+    wrapping so callers receive the callback's original refusal.
 
     ponytail: one lock for the whole registry. Per-instance locks only if fit
     ever becomes a throughput problem, which it is not — fit runs once.
     """
 
     def __init__(self, instances: dict[int, Any] | None = None) -> None:
-        self.instances = dict(instances or {})
-        self.error: Exception | None = None
+        self.instances = dict(instances or {})  # private mapping; values are shared
+        self.error: Exception | None = None  # first callback failure, never replaced
+        # Next unused artifact-local ID.
         self._next = max(self.instances, default=-1) + 1
         self._lock = threading.Lock()
 
     def add(self, instance: Any) -> int:
+        """Store an instance and return a unique ID within this registry."""
         with self._lock:
             iid = self._next
             self._next += 1
@@ -80,6 +71,7 @@ class _Registry:
                 self.error = exc
 
     def fail(self, exc: Exception) -> None:
+        """Preserve the first callback failure, then raise this exception."""
         with self._lock:
             if self.error is None:
                 self.error = exc
@@ -107,15 +99,17 @@ class _Estimator:
     NULLs as NaN and strings that stay strings.
     """
 
-    prototype: Any
-    feature_names: tuple[str, ...]
-    fit_name: str
-    udf_name: str
-    _takes: pa.Schema | None = field(default=None, init=False)
-    _returns: tuple[str, ...] | None = field(default=None, init=False)
+    prototype: Any  # cloned for each nonempty aggregate group
+    feature_names: tuple[str, ...]  # authoritative bundle field order
+    fit_name: str  # generated fit function, before execution leasing
+    udf_name: str  # learned application function used in the residual
+    _takes: pa.Schema | None = field(default=None, init=False)  # normalized fit types
+    _returns: tuple[str, ...] | None = field(default=None, init=False)  # learned labels
+    # Learned instances owned by this estimator scope.
     _instances: dict[int, Any] = field(default_factory=dict, init=False)
 
     def fresh(self) -> "_Estimator":
+        """Return an unfitted scope sharing the prototype, with no learned state."""
         return _Estimator(
             self.prototype, self.feature_names, self.fit_name, self.udf_name
         )
@@ -240,6 +234,7 @@ class _Estimator:
     def register(
         self, con: Connection, leased_fit_name: str, registry: _Registry
     ) -> None:
+        """Bind the Arrow list-bundle fitter; empty groups return NULL IDs."""
         con.create_function(
             leased_fit_name,
             lambda groups: self._fit_batch(groups, registry),
@@ -251,6 +246,7 @@ class _Estimator:
         )
 
     def publish(self) -> PythonTransform:
+        """Expose this scope's instances as a typed UDF; refuse unlearned shape."""
         if not self._instances or self._takes is None or self._returns is None:
             raise TransformError(
                 f"{self.fit_name}: cannot fit on empty or entirely filtered training "
@@ -272,10 +268,9 @@ class Transform:
     relations. Fit receives a complete aggregate group; transform receives
     one instance's subset of a single Arrow invocation, not the whole request.
 
-    In SQL the pair splits: ``x_fit`` is the UDAF half and ``x_transform`` the
-    UDF half, joined by θ, an opaque ``Struct<type, id>`` handle into a
-    registry of fitted instances. An SQL leaf gives an inspectable, shippable
-    params table; a fitted RandomForest gives a pointer.
+    SQL calls ``x_fit`` to obtain an opaque ``Struct<type, id>`` handle and
+    ``x_transform`` to apply its instance. The handle and registry must come
+    from the same fitted artifact.
 
     ``takes``/``returns`` name the input and output struct fields, and are
     author-declared rather than inferred: DuckDB has no ``ANY`` type, so the
@@ -283,20 +278,18 @@ class Transform:
     declaration is authoritative — a transform whose output width disagrees
     refuses rather than mislabelling lanes.
 
-    Everything is DOUBLE. Widening the vocabulary is a later problem; nothing
-    in the design turns on it.
+    Input and output fields are DOUBLE. These relation-batch callbacks cannot
+    compile to row-local Confit serving.
     """
 
-    fit: Callable[[pa.Table], Any]
-    transform: Callable[[Any, pa.Table], pa.Table]
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
+    fit: Callable[[pa.Table], Any]  # receives one complete aggregate group
+    transform: Callable[[Any, pa.Table], pa.Table]  # invocation-local, same row count
+    takes: tuple[str, ...]  # ordered input fields, all DOUBLE
+    returns: tuple[str, ...]  # ordered output fields, all DOUBLE
 
     def __post_init__(self) -> None:
         _struct_sql(self.takes)  # a bad field name refuses here, not at fit
         _struct_sql(self.returns)
-
-    # -- the two SQL halves ----------------------------------------------------
 
     def _fit_batch(self, groups: Any, stem: str, registry: _Registry) -> pa.Array:
         thetas = []
@@ -310,10 +303,8 @@ class Transform:
                     for field in self.takes
                 }
             )
-            # DuckDB rewraps a Python exception from a UDF, so a leaf's own
-            # named refusal reaches fit() unrecognisable. The registry is
-            # where the first real error is kept — put it there before it is
-            # buried.
+            # See _Registry: DuckDB wraps callback failures, so retain the
+            # original exception before it crosses the UDF boundary.
             try:
                 fitted = self.fit(relation)
             except Exception as exc:
@@ -329,8 +320,7 @@ class Transform:
         out: list[Any] = [None] * len(thetas)
         rows_by_instance: dict[int, list[int]] = {}
         for i, handle in enumerate(thetas):
-            # P14, the one NULL story: a NULL θ is a LEFT JOIN miss, which is
-            # an unseen group. The row stays, its output is NULL.
+            # A NULL theta from a LEFT JOIN miss leaves the output row NULL.
             if handle is not None:
                 rows_by_instance.setdefault(handle["id"], []).append(i)
 

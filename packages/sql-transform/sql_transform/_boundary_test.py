@@ -7,9 +7,9 @@ which mints a fresh ``RangeIndex``. sklearn's own transformers carry the
 caller's index through, so in a ``FeatureUnion`` pandas aligned on index and
 NaN-padded the mismatch: four rows in, seven out, no error.
 
-The other two are loud but they close doors the guide says are open —
-``clone`` is how every meta-estimator copies its steps, and it deep-copied a
-live connection.
+The other failures concern sklearn's copying and serialization conventions:
+``clone`` is how every meta-estimator copies its steps, and it must not
+deep-copy a live connection.
 """
 
 import pickle

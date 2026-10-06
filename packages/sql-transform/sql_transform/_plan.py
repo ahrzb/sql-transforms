@@ -3,8 +3,8 @@
 > Every maximal subquery whose leaves are all ``__FIT__`` and constants is
 > evaluated once at fit and replaced by a table.
 
-All the analysis — and every refusal freezing can raise — happens here, at
-construction, before any data exists.
+Planning is structural and happens before data exists. Schema-dependent
+correlation binding checks are deferred to fit.
 
 Nothing is mutated: each step returns a new subtree, so a node handed to
 ``_reads`` is the node that was analysed rather than whatever a later pass
@@ -43,14 +43,10 @@ from sql_transform._nodes import (
 def _pin_derived_names[N](node: N) -> N:
     """Freeze the output column names before the expressions move.
 
-    DuckDB names an unaliased select item after its own printed text, so
-    replacing a frozen subquery with ``SELECT * FROM __param_0`` renamed the
-    column to that — ``get_feature_names_out()`` handed back an internal
-    parameter name, and the schema stopped matching ``run``'s.
-
-    Written as an explicit alias first, so the name survives the rewrite. Only
-    items that contain a query node are touched; a plain column reference is
-    named after its last path part and is unaffected by any of this.
+    DuckDB derives unaliased expression names from printed SQL. Pinning names
+    before freezing preserves the authored schema instead of exposing internal
+    parameter names. Only expressions containing a query node need pinning;
+    plain columns retain their last path part as the name.
     """
     items = field(node, "select_list")
     if not items:
@@ -68,9 +64,6 @@ def _pin_derived_names[N](node: N) -> N:
     return node.model_copy(update={"select_list": pinned})
 
 
-# The one edit that turns a refused retention into an allowed one, and the
-# reason it is worth asking for: a subquery names the rows *and* drops the
-# columns, so the artifact is smaller as well as legible.
 _RETAIN_HINT = (
     "Wrap the __FIT__ reference in a subquery selecting the rows and columns "
     "you need — `(SELECT ... FROM __FIT__) f` — so the artifact's size is "
@@ -79,13 +72,10 @@ _RETAIN_HINT = (
 
 
 def _refuse_whole_fit(node: Node, why: str, *, deep: bool) -> None:
-    """A bare ``FROM __FIT__`` that no rewrite reached.
+    """Refuse a bare FIT reference left outside a frozen subquery.
 
-    It used to become a parameter holding every row and every column of the
-    training set — correct, and reported by ``len(params)``, but the artifact's
-    size was then a fact about freezing rather than about the text. Refused
-    instead. Retention is still available and takes one edit: name the rows you
-    want in a subquery, and the query's value *is* those rows.
+    Retaining training rows requires an explicit subquery selecting the rows
+    and columns to keep, so artifact size remains visible in the authored SQL.
     """
     for v in descendants(node, deep=deep):
         if isinstance(v, BaseTable) and v.table_name == FIT:
@@ -98,8 +88,8 @@ def _refuse_whole_fit(node: Node, why: str, *, deep: bool) -> None:
 def _frozen_pick(sub: Node, ctes: list[CteEntry], params: set[str]) -> bool:
     """A flat ``SELECT DISTINCT`` of one frozen CTE's columns, and nothing else.
 
-    The one query that reads no parameter and still freezes. Window
-    marginalization emits it: a carrier CTE over ``__FIT__`` is frozen whole,
+    This pick reads a previously frozen parameter rather than FIT directly.
+    Window marginalization emits it: a carrier CTE over ``__FIT__`` is frozen whole,
     and each scope's lookup table is a distinct pick of its key and value
     columns. Left live, serving would ship the whole carrier — every fit row —
     to recompute a pick whose answer was fixed at fit.
@@ -206,8 +196,8 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node, set[str]]:
 
     A step is ``(param_name, node)``, in dependency order: running them against
     a connection with ``__FIT__`` bound, registering each result as it lands,
-    produces every table the residual needs. All the analysis — and every
-    refusal — happens here, at construction, before any data exists.
+    produces every table the residual needs. Structural refusals happen at
+    construction; schema-dependent binding is checked during fit.
 
     The third return is the set of qualifiers a lifted correlation read as
     *outer*. Whether one of those is instead a nested column of ``__FIT__``,
@@ -253,16 +243,9 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node, set[str]]:
         reading: dict[str, set[str]],
     ) -> Node:
         reads = _reads(sub, reading)
-        # A recursive CTE's self-reference is bound by the enclosing entry key,
-        # not by anything inside the body, so hoisting the body into a
-        # standalone statement leaves that name unbound. Left live instead: the
-        # training set becomes the parameter, which costs params size and is
-        # correct. Freezing it properly means reconstructing the WITH RECURSIVE
-        # wrapper, which is worth doing only if it ever matters.
-        #
-        # Nothing inside may be frozen, not just the body as a whole: the
-        # self-reference is visible to every arm but bound by none of them, so
-        # hoisting any part of it out leaves that name dangling.
+        # A recursive CTE binds its own name outside its body. Hoisting any
+        # part of that body would leave self-references unbound, so it stays
+        # live; bare FIT retention still requires an explicit subquery.
         if _is_recursive_cte(sub):
             _refuse_whole_fit(sub, "a recursive CTE reading __FIT__", deep=True)
             return sub
@@ -279,11 +262,6 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node, set[str]]:
                     # a CTE definition, or an arm of a set operation. There is
                     # nowhere to put a lookup, because there is no subquery
                     # body to replace.
-                    #
-                    # Which side the correlation reaches no longer separates two
-                    # outcomes: reaching a `__FIT__`-only relation used to fall
-                    # through and ship the training set, and that is not an
-                    # outcome any more.
                     raise CorrelatedFit(
                         f"{FIT} subtree references {reference} from the outer "
                         "query and is not a subquery — a CTE definition or a "

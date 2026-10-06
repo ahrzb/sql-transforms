@@ -56,9 +56,7 @@ from sql_transform._nodes import (
 from sql_transform._program import Fitted, Program, _arrow
 from sql_transform._udf import PythonTransform, UDFError
 
-# One reason per refused shape. The projection test walks this dict looking
-# for gaps, the way the decorrelation test walks its REASONS — a reason
-# nothing exercises is a refusal nobody has named.
+# Stable diagnostic keys for the row-local admission refusals.
 REASONS: dict[str, str] = {
     "aggregate": "{expr} folds the batch's rows into one value",
     "window": "{expr} reads the batch's other rows through its frame",
@@ -601,8 +599,7 @@ def _constant_text(v: Node) -> str | None:
     return None
 
 
-# The threaded ordinal: harvested from the oracle's own serialization, so the
-# grafted nodes carry every field the deserializer expects (P9).
+# Build ordinal nodes through the oracle so every serialized AST field is present.
 def _row_item() -> Node:
     # ROW is the module's own constant, never user text.
     return _template(f"SELECT {ROW} FROM t").select_list[0]  # noqa: S608
@@ -722,16 +719,13 @@ def _free_tables(node: Node, defined: frozenset[str] = frozenset()) -> set[str]:
 class FittedProjection:
     """``T -> R``, one row out per row in — and the artifact you ship.
 
-    ``sql``, ``schema``, ``params`` and ``udfs`` are the whole public serving
-    artifact: Confit built from those four fields alone is what ``compile``
-    returns. ``params`` is one stored mapping — the captured statics,
-    normalized to Arrow once at fit, and the learned tables — and batch,
-    probes and ``compile`` all read that same dict.
+    For Confit-servable projections, ``sql``, ``schema``, ``params`` and ``udfs``
+    are the complete public serving artifact. ``params`` is one stored mapping:
+    captured statics normalized to Arrow once at fit, plus learned tables.
+    Batch, probes and ``compile`` all read that same dict. Arrow buffers remain
+    caller-owned and must not be mutated.
 
-    ``transform`` numbers the input, runs a private ordered copy of the
-    residual, and drops the ordinal: SQL results are unordered and a params
-    LEFT JOIN really does emit unmatched rows last, so input order is threaded
-    through the text, never assumed.
+    ``transform`` returns Arrow in input order; the public ``sql`` is unordered.
 
     ``compile`` hands back Confit's own serving function, unwrapped — its
     surface is not re-exported here, and a fresh object per call means no
@@ -747,14 +741,17 @@ class FittedProjection:
 
     @property
     def params(self) -> dict[str, pa.Table]:
+        """The stored static-table mapping, shared by batch and serving."""
         return self._fitted.params
 
     @property
     def instances(self) -> dict[int, Any]:
+        """Opaque-ID instance state belonging to this artifact's params and UDFs."""
         return self._fitted.instances
 
     @property
     def udfs(self) -> dict[str, Any]:
+        """Runtime UDF views under the unleased names used by public serving SQL."""
         return self._fitted.udfs
 
     @property
@@ -769,6 +766,9 @@ class FittedProjection:
         return self._row_schema
 
     def transform(self, data: Any) -> pa.Table:
+        """Apply eagerly in request order; ``__cf_row`` input names are reserved."""
+        # LEFT joins need not preserve input order. The private query threads
+        # an ordinal through the spine; it is removed from the returned table.
         table = _arrow(data)
         if any(c.lower() == ROW for c in table.column_names):
             raise TransformError(f"input column {ROW} is reserved for the model")
@@ -816,11 +816,16 @@ class FittedProjection:
 
 
 class SQLProjection:
-    """``F -> FittedProjection``: the row-wise sibling of ``SQLTransform``.
+    """Compile authored FIT/THIS SQL into a row-local fitted transform.
 
-    Same two-parameter text, same freezing, same refusals — plus the gate.
-    Not a subclass: both classes hold a ``Program``, and neither wants what
-    the other adds on top of it.
+    Construction checks the residual's structural row locality; fit checks
+    params cardinality. Confit compilation remains a separate admission check.
+    Use ``marginalize`` only for the bounded THIS-only window convenience.
+
+    ``source`` with ``captured`` is the replay input; ``sql`` is resolved
+    diagnostic SQL. Explicit captures override caller-frame names and retain
+    their mapping identity (see ``Program.compile``). ``connection`` is borrowed
+    for fit, probes and batch, not exported to Confit serving.
     """
 
     def __init__(
@@ -831,9 +836,8 @@ class SQLProjection:
         *,
         _scope: dict[str, Any] | None = None,
     ) -> None:
-        # The frame is read *here*, not inside `compile` — one level deeper
-        # would capture from the wrong caller. `marginalize` passes the scope
-        # it already read instead.
+        # See _program's module contract: read this caller's scope, or reuse
+        # the original scope supplied by marginalize.
         if _scope is None:
             frame = sys._getframe(1)
             _scope = frame.f_globals | frame.f_locals
@@ -844,10 +848,11 @@ class SQLProjection:
         )
         _refuse_not_row_wise(program.residual)
         self._program = program
-        self.connection = program.connection
-        self.captured = program.captured
+        self.connection = program.connection  # borrowed; None uses owned connections
+        self.captured = program.captured  # adopted author mapping for source replay
+        # Authored explicit SQL, including derived marginal SQL.
         self.source = program.source
-        self.sql = program.sql
+        self.sql = program.sql  # resolved diagnostics, not replay input
         self._ordered = _threaded(program.residual)
         self._probes = _key_probes(program.residual)
 
@@ -858,11 +863,12 @@ class SQLProjection:
         connection: Connection | None = None,
         captured: Captured | None = None,
     ) -> "SQLProjection":
-        """The projection a ``__THIS__``-only text means: every fit scope
-        (a window aggregate over the spine) frozen over ``__FIT__`` per
-        partition and joined back NULL-safe. A rewrite in front of the
-        ordinary constructor — one code path below the derived text
-        (`packages/sql-transform/docs/contract.md`)."""
+        """Derive explicit fit/request SQL from one admitted THIS-only SELECT.
+
+        Admitted window values are frozen over FIT and joined back NULL-safe.
+        Unsupported shapes raise ``TransformError``; write their fit/request
+        stages explicitly instead. See the authoring contract for admission.
+        """
         frame = sys._getframe(1)
         scope = frame.f_globals | frame.f_locals
         del frame
@@ -879,9 +885,11 @@ class SQLProjection:
         return f"SQLProjection({self.sql!r})"
 
     def fit(self, data: Any) -> FittedProjection:
-        """Partial application: the params materialize, the measurement runs,
-        the artifact serves. `KeyNotUnique` fires here — uniqueness is a fact
-        about data, the one check construction cannot hoist."""
+        """Learn params and UDF schemas, then check join cardinality.
+
+        Raises ``KeyNotUnique`` for fan-out or an empty CROSS side. Binding and
+        learned-estimator schema refusals also depend on fit data.
+        """
         table = _arrow(data)
         fitted = self._program.fit(table)
         for value in (
