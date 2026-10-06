@@ -13,6 +13,7 @@ wheels/
 .claude/*
 !.claude/settings.json
 !.claude/skills/
+!.claude/hooks/
 
 .worktrees/
 
