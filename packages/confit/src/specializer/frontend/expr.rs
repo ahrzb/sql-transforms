@@ -436,32 +436,15 @@ impl Binder<'_> {
                 // `- -9223372036854775808` is 9223372036854775808 again,
                 // HUGEINT. Below i64's edge folding and computing agree, so
                 // only a literal past it is folded here.
-                let mut lit = e;
-                let mut minuses = 0u32;
-                loop {
-                    match lit {
-                        SqlExpr::Nested(i) => lit = i,
-                        SqlExpr::UnaryOp {
-                            op: UnaryOperator::Minus,
-                            expr: inner,
-                        } => {
-                            minuses += 1;
-                            lit = inner;
-                        }
-                        _ => break,
-                    }
-                }
-                if let SqlExpr::Value(v) = lit {
-                    if let SqlValue::Number(text, _) = &v.value {
-                        let integral = text.bytes().all(|c| c.is_ascii_digit());
-                        if integral && text.parse::<i64>().is_err() {
-                            let signed = if minuses % 2 == 1 {
-                                format!("-{text}")
-                            } else {
-                                text.clone()
-                            };
-                            return integer_text_literal(&signed);
-                        }
+                if let Some((minuses, text)) = ast_signed_number(e) {
+                    let integral = text.bytes().all(|c| c.is_ascii_digit());
+                    if integral && text.parse::<i64>().is_err() {
+                        let signed = if minuses % 2 == 1 {
+                            format!("-{text}")
+                        } else {
+                            text
+                        };
+                        return integer_text_literal(&signed);
                     }
                 }
                 // A DOUBLE negates with Fneg, a sign-bit flip; no

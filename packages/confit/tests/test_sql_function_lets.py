@@ -163,21 +163,32 @@ def test_a_long_recurrence_read_outside_the_projection_refuses_at_the_cap():
     )
 
 
-def test_an_unaliased_read_is_named_after_its_text_spelled_out():
+def test_an_unaliased_read_is_named_after_the_call():
+    # DuckDB names an item after its text as written, before the call in it
+    # expands, so neither form's body shows in the name.
     fn = doubling(3)
     sql = "SELECT dbl(x), dbl(x) + 1 FROM __THIS__"
-    names = [
-        DuckDBInferFn(sql, row_tables={"__THIS__": X}, static_tables={}, udfs=[f])
-        .infer_arrow(ROWS)
-        .column_names
-        for f in (fn, _SpelledOut(fn))
-    ]
-    assert names[0] == names[1]
-    assert "__cf_let" not in names[0][0]
+    for f in (fn, _SpelledOut(fn)):
+        names = (
+            DuckDBInferFn(sql, row_tables={"__THIS__": X}, static_tables={}, udfs=[f])
+            .infer_arrow(ROWS)
+            .column_names
+        )
+        assert names == ["dbl(x)", "(dbl(x) + 1)"]
+    assert_parity(sql, ROWS, udfs=[fn])
 
 
-def test_an_unaliased_read_named_past_the_cap_asks_for_an_alias():
-    _refuses("SELECT dbl(x) FROM __THIS__", doubling(40), "give it an alias")
+def test_an_unaliased_read_of_a_long_recurrence_serves():
+    # Spelled out, each read is 2^40 reads of `x`; its name is the call.
+    t0 = time.perf_counter()
+    out = DuckDBInferFn(
+        "SELECT dbl(x), dbl(x) + 1 FROM __THIS__",
+        row_tables={"__THIS__": X},
+        static_tables={},
+        udfs=[doubling(40)],
+    ).infer_arrow(ROWS)
+    assert out.column_names == ["dbl(x)", "(dbl(x) + 1)"]
+    assert time.perf_counter() - t0 < 10
 
 
 def test_reads_outside_the_projection_count_toward_one_cap():
@@ -188,19 +199,6 @@ def test_reads_outside_the_projection_count_toward_one_cap():
         doubling(19),
         "spells out past",
     )
-
-
-def test_unaliased_reads_count_toward_one_cap():
-    # One name spelled out is 2.6M tokens, under the cap; two pass it, as
-    # their text does in the expansion of the spelled-out body.
-    fn = doubling(16)
-    DuckDBInferFn(
-        "SELECT dbl(x) FROM __THIS__",
-        row_tables={"__THIS__": X},
-        static_tables={},
-        udfs=[fn],
-    )
-    _refuses("SELECT dbl(x), dbl(x) + 1 FROM __THIS__", fn, "give it an alias")
 
 
 def test_a_let_read_in_a_join_residual():
@@ -253,6 +251,34 @@ def test_lanes_that_share_a_value_agree_with_the_oracle():
         fn = _struct_fn("per", lanes, null_when=null_when)
         assert fn.sql_lets
         assert_parity(_reads(fn), ROWS, udfs=[fn])
+
+
+def test_a_field_read_of_a_constant_call_over_a_long_recurrence_builds_fast():
+    # Whether DuckDB folds the struct to NULL is checked over the text of
+    # the call, each let walked once: walked at each read, the 40 steps of
+    # this recurrence would be 2^40 walks.
+    def lanes(x):
+        h = x
+        for _ in range(40):
+            h = h * S.lit(0.5) + h * S.lit(0.25)
+        return [h, h + S.lit(1.0)]
+
+    fn = _struct_fn("rec", lanes, null_when=lambda x: x.isnull())
+    t0 = time.perf_counter()
+    f = DuckDBInferFn(
+        _reads(fn, "CAST(2.0 AS DOUBLE)"),
+        row_tables={"__THIS__": X},
+        static_tables={},
+        udfs=[fn],
+    )
+    took = time.perf_counter() - t0
+    want = 2.0
+    for _ in range(40):
+        want = want * 0.5 + want * 0.25
+    assert f.infer_arrow(ROWS).to_pylist() == [{"y0": want, "y1": want + 1.0}] * len(
+        ROWS
+    )
+    assert took < 10, took
 
 
 def test_a_let_that_can_trap_traps_where_it_is_read():
@@ -395,3 +421,56 @@ def test_a_let_read_deeper_refuses_as_the_spelled_out_text_does(deep):
         return True
 
     assert builds(fn) == builds(_SpelledOut(fn))
+
+
+class _OneLet:
+    """A protocol object whose one let, `let`, is read where `@L` stands in
+    `read`. A `SqlFunction` never declares a let this small, but the
+    protocol allows any text."""
+
+    name = "f"
+    takes = pa.schema([("p", pa.int64())])
+    returns = pa.string()
+
+    def __init__(self, read: str, let: str):
+        self.sql_body = f"CAST(({read.replace('@L', f'({let})')}) AS VARCHAR)"
+        self.sql_lets = [let]
+        self.sql_let_body = f"CAST(({read.replace('@L', '__cf_let(0)')}) AS VARCHAR)"
+
+
+P = pa.table({"x": pa.array([0, 50, 100, 127, -128, None], pa.int64())})
+
+
+@pytest.mark.parametrize(
+    ("read", "let", "expect", "detail"),
+    [
+        # An integer literal takes the width of the other side: the sum is
+        # TINYINT, and 100 + 48 overflows it (campaign seed 5441549).
+        ("TRY_CAST(p AS TINYINT) + @L", "48", "AGREE_TRAP", "TINYINT|INT8"),
+        ("@L + TRY_CAST(p AS TINYINT)", "(- 48)", "AGREE_TRAP", "TINYINT|INT8"),
+        # Literal arithmetic is INTEGER arithmetic, refused at bind.
+        ("@L + 1", "2147483647", "REFUSED", "integer literal arithmetic"),
+        # DuckDB's grammar folds both minuses into the literal: HUGEINT
+        # 9223372036854775808, where computing `0 - i64::MIN` would trap.
+        ("- @L", "-9223372036854775808", "AGREE", ""),
+        # A string literal casts to the other side; another VARCHAR, even a
+        # constant one, does not under BETWEEN.
+        ("TRY_CAST(p AS INTEGER) = @L", "'5'", "AGREE", ""),
+        (
+            "TRY_CAST(p AS TINYINT) BETWEEN @L AND 100",
+            "upper('5')",
+            "REFUSED",
+            "BETWEEN",
+        ),
+        ("TRY_CAST(p AS INTEGER) = @L", "lower('A')", "AGREE_TRAP", "Conversion"),
+        ("CAST(p AS DECIMAL(4,1)) + @L", "1.5", "AGREE", ""),
+    ],
+)
+def test_a_let_read_types_as_its_text_spelled_out(read, let, expect, detail):
+    sql = "SELECT f(x) AS r FROM __THIS__"
+    fn = _OneLet(read, let)
+    if expect == "AGREE_TRAP":
+        assert_parity(sql, P, udfs=[fn], trap=detail)
+        return
+    v = assert_parity(sql, P, udfs=[fn], expect=expect)
+    assert detail in v.klass

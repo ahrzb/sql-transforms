@@ -901,3 +901,224 @@ impl Binder<'_> {
         Err(PrepareError::Bind(format!("unknown table '{table}'")))
     }
 }
+
+impl Binder<'_> {
+    /// DuckDB qualifies the column names of a SELECT list item before it
+    /// expands the SQL function calls in it, so a column in an argument
+    /// that a body never reads must not be ambiguous either (measured: with
+    /// `CREATE MACRO f(a, b) AS a`, `SELECT f(1, x)` over two tables with
+    /// an `x` refuses, in any level's SELECT list but not in WHERE or ON).
+    /// A name that does not resolve passes there, so only an ambiguous one
+    /// refuses here. `e` is the item as written.
+    pub(super) fn qualify_written(&self, e: &SqlExpr) -> Result<(), PrepareError> {
+        self.walk_expr(e, &mut |x| match x {
+            SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => match self.ref_res(x) {
+                Err(PrepareError::Bind(m)) if m.starts_with("ambiguous") => {
+                    Err(PrepareError::Bind(m))
+                }
+                _ => Ok(Walk::Over),
+            },
+            _ => Ok(Walk::Into),
+        })
+        .map(|_| ())
+    }
+
+    /// What column reference `r` (a bare or a dotted name) resolves to.
+    pub(super) fn ref_res(&self, r: &SqlExpr) -> Result<Resolved, PrepareError> {
+        match r {
+            SqlExpr::CompoundIdentifier(parts) => self.compound_res(parts),
+            SqlExpr::Identifier(id) => self.column_res(&id.value),
+            other => Err(PrepareError::Internal(format!("not a column reference: {other}"))),
+        }
+    }
+
+    /// Walk `e` in order, asking `f` at each node whether to go into it,
+    /// over it, or to stop; false when `f` stopped. The expansion of a SQL
+    /// function call and the text of a let are walked where they stand,
+    /// each once: one walked before answered "go on", and would again (a
+    /// recurrence reads the let before it twice, so walking each read would
+    /// take exponential time). A field name, an argument's name and a
+    /// subquery are not walked: none is a column of this scope.
+    pub(super) fn walk_expr(
+        &self,
+        e: &SqlExpr,
+        f: &mut dyn FnMut(&SqlExpr) -> Result<Walk, PrepareError>,
+    ) -> Result<bool, PrepareError> {
+        self.walk_in(e, f, &mut Walked::default())
+    }
+
+    fn walk_in(
+        &self,
+        e: &SqlExpr,
+        f: &mut dyn FnMut(&SqlExpr) -> Result<Walk, PrepareError>,
+        walked: &mut Walked,
+    ) -> Result<bool, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments, Subscript};
+        let all = |xs: &mut dyn Iterator<Item = &SqlExpr>,
+                   f: &mut dyn FnMut(&SqlExpr) -> Result<Walk, PrepareError>,
+                   walked: &mut Walked|
+         -> Result<bool, PrepareError> {
+            for x in xs {
+                if !self.walk_in(x, f, walked)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        match f(e)? {
+            Walk::Stop => return Ok(false),
+            Walk::Over => return Ok(true),
+            Walk::Into => {}
+        }
+        if let Some((id, lets)) = lets::marker_let(e) {
+            if !walked.lets.insert(id) {
+                return Ok(true);
+            }
+            return self.walk_in(&lets[id].ast, f, walked);
+        }
+        if let Some((id, calls)) = calls::marker_call(e) {
+            if walked.calls.insert(id) && !self.walk_in(&calls[id].1, f, walked)? {
+                return Ok(false);
+            }
+        }
+        match e {
+            SqlExpr::CompoundFieldAccess { root, access_chain } => {
+                let mut parts: Vec<&SqlExpr> = vec![root];
+                for a in access_chain {
+                    match a {
+                        AccessExpr::Subscript(Subscript::Index { index }) => parts.push(index),
+                        AccessExpr::Subscript(Subscript::Slice {
+                            lower_bound,
+                            upper_bound,
+                            stride,
+                        }) => parts.extend([lower_bound, upper_bound, stride].into_iter().flatten()),
+                        AccessExpr::Dot(_) => {}
+                    }
+                }
+                all(&mut parts.into_iter(), f, walked)
+            }
+            SqlExpr::Function(func) => {
+                let FunctionArguments::List(list) = &func.args else {
+                    return Ok(true);
+                };
+                all(
+                    &mut list.args.iter().filter_map(|a| match a {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(x))
+                        | FunctionArg::Named {
+                            arg: FunctionArgExpr::Expr(x),
+                            ..
+                        }
+                        | FunctionArg::ExprNamed {
+                            arg: FunctionArgExpr::Expr(x),
+                            ..
+                        } => Some(x),
+                        _ => None,
+                    }),
+                    f,
+                    walked,
+                )
+            }
+            SqlExpr::Nested(x)
+            | SqlExpr::UnaryOp { expr: x, .. }
+            | SqlExpr::Cast { expr: x, .. }
+            | SqlExpr::IsNull(x)
+            | SqlExpr::IsNotNull(x)
+            | SqlExpr::IsTrue(x)
+            | SqlExpr::IsNotTrue(x)
+            | SqlExpr::IsFalse(x)
+            | SqlExpr::IsNotFalse(x)
+            | SqlExpr::IsUnknown(x)
+            | SqlExpr::IsNotUnknown(x)
+            | SqlExpr::Extract { expr: x, .. }
+            | SqlExpr::Ceil { expr: x, .. }
+            | SqlExpr::Floor { expr: x, .. }
+            | SqlExpr::Collate { expr: x, .. } => self.walk_in(x, f, walked),
+            SqlExpr::BinaryOp { left, right, .. }
+            | SqlExpr::IsDistinctFrom(left, right)
+            | SqlExpr::IsNotDistinctFrom(left, right)
+            | SqlExpr::Position {
+                expr: left,
+                r#in: right,
+            }
+            | SqlExpr::Like {
+                expr: left,
+                pattern: right,
+                ..
+            }
+            | SqlExpr::ILike {
+                expr: left,
+                pattern: right,
+                ..
+            }
+            | SqlExpr::SimilarTo {
+                expr: left,
+                pattern: right,
+                ..
+            } => all(&mut [&**left, &**right].into_iter(), f, walked),
+            SqlExpr::Between { expr, low, high, .. } => {
+                all(&mut [&**expr, &**low, &**high].into_iter(), f, walked)
+            }
+            SqlExpr::InList { expr, list, .. } => {
+                all(&mut std::iter::once(&**expr).chain(list), f, walked)
+            }
+            SqlExpr::Case {
+                operand,
+                conditions,
+                else_result,
+                ..
+            } => all(
+                &mut operand
+                    .as_deref()
+                    .into_iter()
+                    .chain(conditions.iter().flat_map(|w| [&w.condition, &w.result]))
+                    .chain(else_result.as_deref()),
+                f,
+                walked,
+            ),
+            SqlExpr::Substring {
+                expr,
+                substring_from,
+                substring_for,
+                ..
+            } => all(
+                &mut std::iter::once(&**expr)
+                    .chain(substring_from.as_deref())
+                    .chain(substring_for.as_deref()),
+                f,
+                walked,
+            ),
+            SqlExpr::Trim {
+                expr,
+                trim_what,
+                trim_characters,
+                ..
+            } => all(
+                &mut std::iter::once(&**expr)
+                    .chain(trim_what.as_deref())
+                    .chain(trim_characters.iter().flatten()),
+                f,
+                walked,
+            ),
+            SqlExpr::Dictionary(fields) => all(&mut fields.iter().map(|d| &*d.value), f, walked),
+            SqlExpr::Array(a) => all(&mut a.elem.iter(), f, walked),
+            SqlExpr::Tuple(xs) => all(&mut xs.iter(), f, walked),
+            // A name was asked about above; a subquery resolves in its own
+            // scope; the rest holds no expression.
+            _ => Ok(true),
+        }
+    }
+}
+
+/// What [`Binder::walk_expr`] does at a node.
+pub(super) enum Walk {
+    Into,
+    Over,
+    Stop,
+}
+
+/// The lets and calls one walk has walked.
+#[derive(Default)]
+struct Walked {
+    lets: std::collections::HashSet<usize>,
+    calls: std::collections::HashSet<usize>,
+}

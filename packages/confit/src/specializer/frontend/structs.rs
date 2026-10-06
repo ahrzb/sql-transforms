@@ -115,6 +115,8 @@ impl Binder<'_> {
             base = i;
         }
         let field: Option<SqlExpr> = match base {
+            // A read of a struct DuckDB folds to NULL is a bare NULL.
+            SqlExpr::Case { .. } if self.struct_folds_to_null(base) => return Ok(Some(null_literal())),
             // The whole chain moves into each arm: `(CASE .. END).q.r`.
             SqlExpr::Case { .. } => return Ok(Some(case_field(base, access_chain))),
             // The rest of the chain reads into the picked field.
@@ -255,6 +257,7 @@ impl Binder<'_> {
             base = i;
         }
         match base {
+            SqlExpr::Case { .. } if self.struct_folds_to_null(base) => Ok(Some(null_literal())),
             SqlExpr::Case { .. } => Ok(Some(case_field(
                 base,
                 &[AccessExpr::Dot(SqlExpr::Identifier(Ident::new(field.clone())))],
@@ -485,6 +488,11 @@ fn field_read(
         .map(|e| FunctionArg::Unnamed(FunctionArgExpr::Expr(e)))
         .collect();
     SqlExpr::Function(seq)
+}
+
+/// The literal `NULL`.
+pub(super) fn null_literal() -> SqlExpr {
+    SqlExpr::Value(SqlValue::Null.into())
 }
 
 /// A field read over a CASE, as the CASE of the field reads:

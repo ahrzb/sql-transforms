@@ -22,7 +22,8 @@ from confit.oracle import Oracle
 sys.path.insert(0, str(Path(__file__).parents[1]))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fuzz.parity import assert_parity, table  # noqa: E402
+from fuzz import oracle  # noqa: E402
+from fuzz.parity import assert_parity, case, table  # noqa: E402
 from test_sql_builder import _tree  # noqa: E402
 
 ROWS = table(
@@ -95,6 +96,9 @@ MAYBE = SqlFunction(
     lambda n: {"v": n * 2, "w": n / S.lit(4)},
     null_when=lambda n: n.isnull(),
 )
+PAIRS = SqlFunction(
+    "pairs", _schema(v=F64), pa.list_(F64, 2), lambda v: [v, v * S.lit(3.0)]
+)
 
 
 @pytest.mark.parametrize(
@@ -152,6 +156,76 @@ MAYBE = SqlFunction(
 )
 def test_a_sql_function_agrees_with_the_oracle(sql, fns):
     assert_parity(sql, ROWS, udfs=fns)
+
+
+@pytest.mark.parametrize(
+    "sql, fns",
+    [
+        ("SELECT scale(x) FROM __THIS__", [SCALE]),
+        ("SELECT SCALE(x) + scale(y), scale(scale(x)) FROM __THIS__", [SCALE]),
+        ("SELECT scale(x) IS NULL, -scale(x), scale(1.5) FROM __THIS__", [SCALE]),
+        ("SELECT twice(y) FROM __THIS__", [SCALE, TWICE]),
+        (
+            "SELECT stats(a, b), stats(a, b).lo, (stats(b, a)).mean FROM __THIS__",
+            [STATS],
+        ),
+        ("SELECT maybe(b), pairs(x), pairs(y)[2] FROM __THIS__", [MAYBE, PAIRS]),
+        ("SELECT CASE WHEN a > 0 THEN scale(x) END FROM __THIS__", [SCALE]),
+        ("SELECT * FROM (SELECT scale(x), incr(b) FROM __THIS__) AS d", [SCALE, INCR]),
+        (
+            'SELECT "scale(x)" * 2 AS o FROM (SELECT scale(x) FROM __THIS__) AS d',
+            [SCALE],
+        ),
+        (
+            "WITH c AS (SELECT affine(x, y, 1.0) FROM __THIS__) SELECT * FROM c",
+            [AFFINE],
+        ),
+    ],
+)
+def test_an_unaliased_call_is_named_after_the_call(sql, fns):
+    # DuckDB names an item after its text as written, before the calls in
+    # it expand: `scale(x)`, not the body.
+    assert_parity(sql, ROWS, udfs=fns)
+
+
+FIRST = SqlFunction("first_of", _schema(p=F64, q=F64), F64, lambda p, q: p)
+# A static table that shares the column x with ROWS.
+SHARED = table({"k": "int", "x": "float?"}, [{"k": 0, "x": 5.0}, {"k": 3, "x": None}])
+ON_K = "FROM __THIS__ JOIN u ON __THIS__.a = u.k"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT first_of(1.0, x) AS o {ON_K}",
+        f"SELECT first_of(1.0, abs(x)) AS o {ON_K}",
+        f"SELECT first_of(1.0, first_of(2.0, x)) AS o {ON_K}",
+        f"SELECT a AS o, first_of(1.0, x.f) AS p {ON_K}",
+    ],
+)
+def test_an_argument_the_body_never_reads_still_names_its_columns(sql):
+    # DuckDB qualifies the columns of a SELECT list before it expands the
+    # calls, so a name that two tables share refuses, even where the body
+    # drops the argument.
+    v = assert_parity(sql, ROWS, statics={"u": SHARED}, udfs=[FIRST], expect="REFUSED")
+    assert "ambiguous column 'x'" in v.detail
+    duck = case(sql, ROWS, statics={"u": SHARED}, udfs=[FIRST])
+    assert oracle.refusal_outcome(duck) == "rejects"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A name no table has, a qualified name, a name one table has, and
+        # a WHERE clause, which DuckDB does not qualify before expanding.
+        f"SELECT first_of(1.0, nope) AS o {ON_K}",
+        f"SELECT first_of(1.0, u.x) AS o {ON_K}",
+        f"SELECT first_of(1.0, y) AS o {ON_K}",
+        f"SELECT a AS o {ON_K} WHERE first_of(1.0, x) > 0",
+    ],
+)
+def test_an_unread_argument_that_names_no_shared_column_serves(sql):
+    assert_parity(sql, ROWS, statics={"u": SHARED}, udfs=[FIRST])
 
 
 def test_a_sql_function_over_a_join_key_and_a_static():
@@ -254,6 +328,18 @@ def _build(sql, fns):
 def test_the_wrong_argument_count_refuses():
     with pytest.raises(ValueError, match="takes 1 arguments, got 2"):
         _build("SELECT scale(x, y) AS o FROM __THIS__", [SCALE])
+
+
+class _NotOneExpression:
+    """A function object whose body text closes the call's parentheses."""
+
+    name, takes, returns = "f", _schema(v=F64), F64
+    sql_body = "1), (2"
+
+
+def test_a_body_that_is_not_one_expression_refuses():
+    with pytest.raises(ValueError, match="not one expression"):
+        _build("SELECT f(x) AS o FROM __THIS__", [_NotOneExpression()])
 
 
 def test_a_recursive_body_refuses():

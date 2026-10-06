@@ -341,6 +341,7 @@ pub(super) fn null_of(ty: Ty) -> SExpr {
 /// which is DOUBLE there) — 64-bit semantics apply and nothing refuses.
 /// `Fine(None)` is a NULL-valued but trap-free subtree (INTEGER % 0 is NULL
 /// on DuckDB, measured in the pins).
+#[derive(Clone)]
 pub(super) enum I32Fold {
     NotShaped,
     Traps,
@@ -361,6 +362,10 @@ pub(super) fn eval_i32_literal(e: &SqlExpr) -> I32Fold {
             _ => NotShaped,
         },
         SqlExpr::Nested(inner) => eval_i32_literal(inner),
+        // A let read is its text, spelled out.
+        SqlExpr::Function(_) => {
+            super::lets::through(e, |s| &s.i32_fold, eval_i32_literal).unwrap_or(NotShaped)
+        }
         SqlExpr::UnaryOp {
             op: UnaryOperator::Plus,
             expr,
@@ -729,6 +734,10 @@ pub(super) fn ast_decimal_literal(e: &SqlExpr) -> bool {
             op: UnaryOperator::Minus,
             expr,
         } => ast_decimal_literal(expr),
+        // A let read is its text, spelled out.
+        SqlExpr::Function(_) => {
+            super::lets::through(e, |s| &s.decimal_literal, ast_decimal_literal).unwrap_or(false)
+        }
         // DuckDB types a CASE over DECIMAL arms DECIMAL, so the
         // SQLNULL collapse follows it through -- every RESULT arm (ELSE
         // included, when present) must be decimal-spelled.
@@ -757,6 +766,9 @@ pub(super) fn ast_decimal_typed(e: &SqlExpr) -> bool {
             op: UnaryOperator::Minus,
             expr,
         } => ast_decimal_typed(expr),
+        SqlExpr::Function(_) => {
+            super::lets::through(e, |s| &s.decimal_typed, ast_decimal_typed).unwrap_or(false)
+        }
         SqlExpr::BinaryOp { left, op, right }
             if matches!(
                 op,
@@ -771,7 +783,8 @@ pub(super) fn ast_decimal_typed(e: &SqlExpr) -> bool {
 }
 
 /// The value of a SYNTACTIC integer literal, from the SQL AST: a bare
-/// Number, optionally under parentheses or unary MINUS. Never unary plus
+/// Number, optionally under parentheses or unary MINUS, or a let read whose
+/// text is one (DuckDB reads the text spelled out). Never unary plus
 /// (DuckDB's `+` is a real function that erases literal-ness), never a
 /// function call, never a cast, never anything bound — every SExpr-shape
 /// heuristic leaks (verbatim
@@ -789,6 +802,30 @@ pub(super) fn ast_int_literal(e: &SqlExpr) -> Option<i128> {
             op: UnaryOperator::Minus,
             expr,
         } => ast_int_literal(expr).and_then(i128::checked_neg),
+        // A let read is its text, spelled out.
+        SqlExpr::Function(_) => {
+            super::lets::through(e, |s| &s.int_literal, ast_int_literal).flatten()
+        }
+        _ => None,
+    }
+}
+
+/// The number literal a spelling of minuses and parentheses ends in, with
+/// the count of minuses before it (a let read is its text, spelled out).
+pub(super) fn ast_signed_number(e: &SqlExpr) -> Option<(u32, String)> {
+    match e {
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(text, _) => Some((0, text.clone())),
+            _ => None,
+        },
+        SqlExpr::Nested(inner) => ast_signed_number(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => ast_signed_number(expr).map(|(m, t)| (m + 1, t)),
+        SqlExpr::Function(_) => {
+            super::lets::through(e, |s| &s.signed_number, ast_signed_number).flatten()
+        }
         _ => None,
     }
 }

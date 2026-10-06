@@ -501,6 +501,13 @@ class UdfSpec:
     takes: list[tuple[str, str]]  # (name, ty)
     ret: tuple  # ("scalar", ty) | ("struct", [(name, ty)]) | ("list", ty, k)
     instances: int = 0  # 0 = plain udf; k = instance-bearing, ids 0..k-1
+    # A SQL function rather than a callable (`confit.SqlFunction`'s protocol):
+    # its body over the parameters, as DuckDB reads it, and, when it declares
+    # a value it reads more than once, that body reading `__cf_let(0)` and
+    # the value's text (`sql_let_body`, `sql_lets`), as confit reads it.
+    body: str | None = None
+    let_body: str | None = None
+    lets: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1288,6 +1295,95 @@ def _struct_values(srng, query, row_schema, statics, env, tags) -> None:
     tags.append("struct-value")
 
 
+def _sql_functions(frng, query, statics, env, udfs, tags) -> None:
+    """Declare one or two SQL functions and call each in an item of its own
+    in the outer query (one of them maybe twice), from a generator of its
+    own so no other seed's draws move. Each body is the expression grammar's
+    over the function's parameters; it may call the case's UDFs and the SQL
+    functions declared before it, and one in three reads a value it declares
+    once, as a let. Every function is called, so a body DuckDB refuses to
+    create is a body confit binds too."""
+    b = query.body
+    if b.frm != "__THIS__" or b.sub is not None:
+        return
+    joined = [j.table for j in b.joins if j.table in statics]
+    qenv = Env(
+        env.cols + [(t, c, ty) for t in joined for c, ty, _ in leaves(statics[t][0])],
+        udfs,
+        env.tree,
+    )
+    fns = []
+    for i in range(frng.randrange(1, 3)):
+        fns.append(_sql_function(frng, f"sqlf{i}", udfs, env.tree))
+        udfs.append(fns[-1])
+    for u in [*fns, *(frng.choice(fns) for _ in range(frng.randrange(0, 2)))]:
+        call = Call(u.name, _udf_args(frng, qenv, u))
+        r = frng.random()
+        if u.ret[0] == "struct":
+            item = LaneRead(call, frng.choice(u.ret[1])[0]) if r < 0.5 else call
+        elif r < 0.25:
+            item = IsNull(call, neg=frng.random() < 0.5)
+        elif r < 0.45 and u.ret[1] in ("int", "float"):
+            ops = ARITH_I if u.ret[1] == "int" else ARITH_F
+            item = Bin(frng.choice(ops), call, expr(frng, qenv, u.ret[1], 1))
+        else:
+            item = call
+        b.items.append((item, f"sf{len(b.items)}"))
+    tags.append("sql-function")
+
+
+# What a generated body reads for its let: a column of the body's own scope,
+# which the rendering replaces by the let's read or by its text.
+_LET_READ = "let_0_read"
+
+
+def _sql_function(frng, name, udfs, tree) -> UdfSpec:
+    """One SQL function: 1-3 parameters, a scalar or a struct return (one
+    in three of those NULL under a condition, as `null_when` builds it).
+    Each parameter read is cast to its type, as `confit.SqlFunction` spells
+    it."""
+    takes = [(f"p{j}", frng.choice(TYPES)) for j in range(frng.randrange(1, 4))]
+    penv = Env([(None, n, t) for n, t in takes], list(udfs), tree)
+    let = None
+    if frng.random() < 0.35:
+        lty = frng.choice(TYPES)
+        let = rexpr(_cast_params(expr(frng, penv, lty, 2), takes))
+        penv = Env([*penv.cols, (None, _LET_READ, lty)], penv.udfs, tree)
+    if frng.random() < 0.6:
+        ty = frng.choice(TYPES)
+        ret: tuple = ("scalar", ty)
+        body: Node = Cast(expr(frng, penv, ty, 3), ty)
+    else:
+        fields = [(f"f{k}", frng.choice(TYPES)) for k in range(frng.randrange(1, 4))]
+        ret = ("struct", fields)
+        body = StructPack([(n, Cast(expr(frng, penv, t, 2), t)) for n, t in fields])
+        if frng.random() < 0.33:
+            body = CaseW([(expr(frng, penv, "bool", 1), Lit(None, "int"))], body)
+    text = rexpr(_cast_params(body, takes))
+    if let is None or _LET_READ not in text:
+        return UdfSpec(name, takes, ret, body=text)
+    return UdfSpec(
+        name,
+        takes,
+        ret,
+        body=text.replace(_LET_READ, f"({let})"),
+        let_body=text.replace(_LET_READ, "__cf_let(0)"),
+        lets=[let],
+    )
+
+
+def _cast_params(e: Node, takes) -> Node:
+    """`e` with each read of a parameter in `takes` cast to its type."""
+    types = dict(takes)
+    if isinstance(e, Col) and e.table is None and e.name in types:
+        return Cast(e, types[e.name])
+    for i, k in enumerate(e.kids()):
+        new = _cast_params(k, takes)
+        if new is not k:
+            e.swap(i, new)
+    return e
+
+
 def _skel(spec):
     """A column's type without its nullability: two struct values share a
     CASE without DuckDB unifying them exactly when these are equal."""
@@ -1476,6 +1572,10 @@ def gen(seed: int) -> Case:
     if seed % 13 == 5:
         wrng = random.Random(seed * 7919 + 3)  # noqa: S311
         _wide(wrng, query, row_schema, rows, statics, tags)
+    # 19 and 6 keep every seed a test replays out of this gate.
+    if seed % 19 == 6:
+        frng = random.Random(seed * 7919 + 5)  # noqa: S311
+        _sql_functions(frng, query, statics, env, udfs, tags)
     # Last of the post-passes, so the casts it adds keep their types. 17 and
     # 2 keep every seed a test replays out of this gate.
     if seed % 17 == 2:

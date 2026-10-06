@@ -111,7 +111,7 @@ pub(super) fn marker_call(e: &SqlExpr) -> Option<(usize, Rc<Vec<(String, SqlExpr
     (id < calls.len()).then_some((id, calls))
 }
 
-/// The marker's arguments as the call spelled them, for its name.
+/// The marker's arguments as the call spelled them.
 pub(super) fn marker_args(f: &sqlparser::ast::Function) -> Vec<SqlExpr> {
     use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
     let FunctionArguments::List(list) = &f.args else {
@@ -125,6 +125,18 @@ pub(super) fn marker_args(f: &sqlparser::ast::Function) -> Vec<SqlExpr> {
             _ => None,
         })
         .collect()
+}
+
+/// Whether the marker has arguments ([`marker_args`] is not empty).
+fn has_args(f: &sqlparser::ast::Function) -> bool {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+    let FunctionArguments::List(list) = &f.args else {
+        return false;
+    };
+    list.args
+        .iter()
+        .skip(1)
+        .any(|a| matches!(a, FunctionArg::Unnamed(FunctionArgExpr::Expr(_))))
 }
 
 /// The marker `base` (with its arguments) standing for call `id` instead.
@@ -160,46 +172,65 @@ impl Binder<'_> {
         // the marker, which carries the arguments, not from the expansion,
         // whose struct field names are often the output aliases
         // (`f(x)."f0" AS "f0"`).
-        let args = match marker {
-            SqlExpr::Function(f) => marker_args(f),
-            _ => Vec::new(),
-        };
-        let words = if args.is_empty() {
-            Rc::default()
-        } else {
-            self.call_words
-                .borrow_mut()
-                .entry(id)
-                .or_insert_with(|| {
-                    Rc::new(
-                        args.iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                            .filter(|w| !w.is_empty())
-                            .map(str::to_ascii_lowercase)
-                            .collect(),
-                    )
-                })
-                .clone()
-        };
-        // A marker without arguments (a split CASE arm bound bare) counts
-        // every alias.
-        let aliases = self
-            .bound_aliases
-            .borrow()
-            .iter()
-            .filter(|(a, _)| words.is_empty() || words.contains(&a.to_ascii_lowercase()))
-            .count();
         (
             id,
             self.joins.len(),
-            aliases,
+            self.aliases_named(id, marker),
             self.in_guarded.get(),
             self.classify_keys.get(),
             self.beside.borrow().len(),
         )
+    }
+
+    /// How many of the aliases bound so far the arguments of call `id`
+    /// name. Aliases are only added, so the count goes on from where the
+    /// last read of the call left it: counting from the first alias at each
+    /// read would take n^2 steps over n items that each read the call.
+    fn aliases_named(&self, id: usize, marker: &SqlExpr) -> usize {
+        let bound = self.bound_aliases.borrow();
+        let words = match marker {
+            SqlExpr::Function(f) if has_args(f) => self.arg_words(id, f),
+            _ => Rc::default(),
+        };
+        // A marker without arguments (a split CASE arm bound bare) counts
+        // every alias.
+        if words.is_empty() {
+            return bound.len();
+        }
+        let mut counts = self.call_aliases.borrow_mut();
+        let (from, n) = counts.entry(id).or_default();
+        *n += bound[*from..]
+            .iter()
+            .filter(|(a, _)| words.contains(&a.to_ascii_lowercase()))
+            .count();
+        *from = bound.len();
+        *n
+    }
+
+    /// The identifier words of the arguments of call `id`, as `f` spells
+    /// them, taken once.
+    fn arg_words(
+        &self,
+        id: usize,
+        f: &sqlparser::ast::Function,
+    ) -> Rc<std::collections::HashSet<String>> {
+        self.call_words
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| {
+                Rc::new(
+                    marker_args(f)
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .filter(|w| !w.is_empty())
+                        .map(str::to_ascii_lowercase)
+                        .collect(),
+                )
+            })
+            .clone()
     }
 
     /// A field read whose root is a call marker: `Ok(None)` when `e` is not
@@ -236,6 +267,17 @@ impl Binder<'_> {
             body = i;
         }
         if let SqlExpr::Case { .. } = body {
+            // A read of a struct DuckDB folds to NULL is a bare NULL.
+            let key = self.scope_key(id, base);
+            let cached = self.call_null.borrow().get(&key).copied();
+            let folds = cached.unwrap_or_else(|| {
+                let folds = self.struct_folds_to_null(body);
+                self.call_null.borrow_mut().insert(key, folds);
+                folds
+            });
+            if folds {
+                return Ok(Some(None));
+            }
             // Its struct_pack arms were split into calls of their own
             // (`split_case_arms`): each arm reads as that call, spelled with
             // this call's arguments, so it shares their scope key.

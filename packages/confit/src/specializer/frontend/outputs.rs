@@ -666,3 +666,166 @@ impl Binder<'_> {
         Ok(Some(pairs))
     }
 }
+
+impl Binder<'_> {
+    /// Whether DuckDB's binder folds struct `e` to NULL, which makes a
+    /// field read over it a bare NULL. A read is `struct_extract`, and
+    /// DuckDB's default NULL handling replaces a call whose argument is
+    /// foldable and evaluates to NULL by an untyped NULL, which a context
+    /// adopts as it adopts a NULL literal (measured:
+    /// `(CASE WHEN TRUE THEN NULL ELSE struct_pack(f := 'x') END).f` is
+    /// INTEGER, and so is that `|| 'y'`). Foldable means that no part reads
+    /// a column or calls an extern, an arm the CASE does not take included:
+    /// with `g := x` beside `f`, the read stays VARCHAR. A part that does
+    /// not bind answers no, and the read reports the error itself.
+    pub(super) fn struct_folds_to_null(&self, e: &SqlExpr) -> bool {
+        use super::resolve::Walk;
+        // As in a CASE arm: a constant that traps is a trap of its row,
+        // which DuckDB's fold skips, not a refusal.
+        self.in_guarded.set(self.in_guarded.get() + 1);
+        let _guard = GuardScope(&self.in_guarded);
+        // Each name in the text counts, also where our binder drops it for
+        // a value that cannot matter (`coalesce(2.0, c)` binds as 2.0), and
+        // a lateral alias stands for its expression. Only a call that
+        // DuckDB's binder makes a NULL constant (`c + NULL`) drops its own.
+        let closed = || {
+            self.walk_expr(e, &mut |x| {
+                Ok(match x {
+                    SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => {
+                        match self.ref_res(x) {
+                            Ok(Resolved::Lane(v)) if self.duck_foldable(&v) => Walk::Over,
+                            _ => Walk::Stop,
+                        }
+                    }
+                    SqlExpr::Function(_) | SqlExpr::BinaryOp { .. } | SqlExpr::UnaryOp { .. }
+                        if self.binds_to_null(x) =>
+                    {
+                        Walk::Over
+                    }
+                    _ => Walk::Into,
+                })
+            })
+        };
+        // Cheapest first: most structs are not NULL on the path taken, and
+        // that binds only the conditions on it.
+        matches!(self.closed_null(e), Ok(Some(true)))
+            && matches!(self.foldable(e), Ok(true))
+            && matches!(closed(), Ok(true))
+    }
+
+    /// Whether `e` binds to a NULL constant.
+    fn binds_to_null(&self, e: &SqlExpr) -> bool {
+        match self.expr_or_null(e) {
+            Ok(None) => true,
+            Ok(Some(v)) => matches!(v.kind, SKind::NullOf),
+            Err(_) => false,
+        }
+    }
+
+    /// DuckDB's `IsFoldable` over `e`, a struct value or a scalar.
+    fn foldable(&self, e: &SqlExpr) -> Result<bool, PrepareError> {
+        let e = unnest(e);
+        if let Some((id, calls)) = calls::marker_call(e) {
+            return self.foldable(&calls[id].1);
+        }
+        if let SqlExpr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } = e
+        {
+            if !self
+                .case_conditions(operand.as_deref(), conditions)?
+                .iter()
+                .all(|c| self.duck_foldable(c))
+            {
+                return Ok(false);
+            }
+            for r in conditions.iter().map(|w| &w.result).chain(else_result.as_deref()) {
+                if !self.foldable(r)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        if let Some(pairs) = self.pack_fields(e)? {
+            for (_, v) in pairs {
+                if !self.foldable(v)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        // A struct column, a relation's row or an extern's output.
+        if self.struct_value(e)?.is_some() {
+            return Ok(false);
+        }
+        Ok(self.expr_or_null(e)?.as_ref().is_none_or(|x| self.duck_foldable(x)))
+    }
+
+    /// DuckDB's `IsFoldable` of a bound value: [`bind_foldable`], except
+    /// that a call of a pure extern or of a tree model is foldable when its
+    /// arguments are, since DuckDB registers both without side effects, and
+    /// a let is foldable when its value is.
+    fn duck_foldable(&self, e: &SExpr) -> bool {
+        match &e.kind {
+            SKind::Col(_)
+            | SKind::Slot(_)
+            | SKind::StaticCol { .. }
+            | SKind::JoinHit(_)
+            | SKind::Shared(_)
+            | SKind::Raise(_) => false,
+            SKind::ExternCall { ext, .. }
+                if self.udfs.get(*ext as usize).is_none_or(|u| u.side_effects) =>
+            {
+                false
+            }
+            SKind::Let(i) => {
+                let value = self.lets.borrow().get(*i as usize).cloned();
+                value.is_some_and(|v| self.duck_foldable(&v))
+            }
+            _ => e.clone().children_mut().into_iter().all(|c| self.duck_foldable(c)),
+        }
+    }
+
+    /// Whether struct `e` evaluates to NULL, following the arms DuckDB's
+    /// evaluation takes. `None` when a condition on that path is not
+    /// foldable, traps or is not evaluable here: DuckDB's binder then leaves
+    /// the read to run per row.
+    fn closed_null(&self, e: &SqlExpr) -> Result<Option<bool>, PrepareError> {
+        let e = unnest(e);
+        if is_null_literal(e) {
+            return Ok(Some(true));
+        }
+        if let Some((id, calls)) = calls::marker_call(e) {
+            return self.closed_null(&calls[id].1);
+        }
+        let SqlExpr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } = e
+        else {
+            // A struct_pack or a struct literal is never NULL.
+            return Ok(Some(false));
+        };
+        let conds = self.case_conditions(operand.as_deref(), conditions)?;
+        for (c, w) in conds.iter().zip(conditions) {
+            if !self.duck_foldable(c) {
+                return Ok(None);
+            }
+            match self.eval_closed(c) {
+                None => return Ok(None),
+                Some(Some(ScalarVal::I1(true))) => return self.closed_null(&w.result),
+                // FALSE or NULL: the next arm.
+                Some(_) => {}
+            }
+        }
+        match else_result {
+            Some(r) => self.closed_null(r),
+            None => Ok(Some(true)),
+        }
+    }
+}

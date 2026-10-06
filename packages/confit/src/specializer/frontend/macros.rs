@@ -135,9 +135,8 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, PrepareError> {
 /// distinct call (see [`Expanded`]). The name is reserved.
 pub const CALL_MARKER: &str = "__cf_call";
 
-/// One distinct SQL function call read by field: the function's name (an
-/// unaliased read is named after the call, as DuckDB names it) and its
-/// expansion, `(body)` with the arguments substituted.
+/// One distinct SQL function call read by field: the function's name, for
+/// messages, and its expansion, `(body)` with the arguments substituted.
 #[derive(Clone, Debug)]
 pub struct Call {
     pub name: String,

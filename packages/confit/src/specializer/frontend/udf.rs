@@ -111,7 +111,7 @@ impl Binder<'_> {
         Some((eval.fun)(&vals))
     }
 
-    fn eval_closed(&self, e: &SExpr) -> Option<Option<ScalarVal>> {
+    pub(super) fn eval_closed(&self, e: &SExpr) -> Option<Option<ScalarVal>> {
         eval_closed(e, self.regexes.borrow().clone())
     }
 

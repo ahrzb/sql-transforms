@@ -25,12 +25,18 @@
 //! step reads the step before twice doubles per step), and expansion
 //! refuses a query past [`MAX_TOKENS`] tokens. What still spells a let out
 //! here counts against one more budget of that size for the whole query
-//! ([`spend`]): binding a let again (its tokens), a value read in place
-//! (its nodes), and an unaliased item, which is named after its text with
-//! the lets in it spelled out (`naming.rs`; their tokens spelled out).
+//! ([`spend`]): binding a let again (its tokens) and a value read in place
+//! (its nodes). An unaliased item spells out nothing: it is named after its
+//! text as written, which reads the call (`sc(x)`), not its lets.
 //!
 //! A read past DuckDB's depth limit refuses as the spelled-out text does:
 //! each kept value carries the depth its binding reached.
+//!
+//! A read is its text for the checks that type a value by its spelling,
+//! too: DuckDB types `tinyint + (48)` TINYINT, as it types `tinyint + 48`
+//! ([`through`]). And a kept value is folded only as far as its spelling
+//! allows: a VARCHAR constant that is not a string literal stays a VARCHAR
+//! ([`fold_kept`]).
 
 use std::cell::OnceCell;
 use std::collections::HashSet;
@@ -53,11 +59,23 @@ pub(super) struct LetText {
     /// The identifiers in its text and in the lets it reads: the lateral
     /// aliases among them are what its binding can depend on ([`LetKey`]).
     words: Rc<HashSet<String>>,
-    /// Its text as an output name prints it, the lets it reads spelled out:
-    /// `None` past the cap, or a form the printer does not model.
-    printed: OnceCell<Option<Rc<str>>>,
     /// Its SQL text, the lets it reads spelled out (`None` past the cap).
     shown: OnceCell<Option<Rc<str>>>,
+    /// What the checks of its spelling answer, each once.
+    spelling: Spelling,
+}
+
+/// What the checks of a spelling (`typing::ast_int_literal` and its kin)
+/// answer for a let's text, each computed once: a recurrence reads the let
+/// before it twice, so walking the text again at every read would take
+/// exponential time.
+#[derive(Default)]
+pub(super) struct Spelling {
+    pub(super) int_literal: OnceCell<Option<i128>>,
+    pub(super) signed_number: OnceCell<Option<(u32, String)>>,
+    pub(super) decimal_literal: OnceCell<bool>,
+    pub(super) decimal_typed: OnceCell<bool>,
+    pub(super) i32_fold: OnceCell<I32Fold>,
 }
 
 /// The lets of a query, each `(function name, tokens, parsed text)` in
@@ -95,25 +113,14 @@ pub(super) fn table(lets: Vec<(String, Vec<Token>, SqlExpr)>) -> Vec<LetText> {
             tokens: tokens.len(),
             spelled,
             words: Rc::new(words),
-            printed: OnceCell::new(),
             shown: OnceCell::new(),
+            spelling: Spelling::default(),
         });
     }
     out
 }
 
 impl LetText {
-    /// Its text as `print` gives it, every let read in it printed in turn.
-    pub(super) fn printed(&self, print: impl Fn(&SqlExpr) -> Option<String>) -> Option<Rc<str>> {
-        self.printed
-            .get_or_init(|| {
-                print(&self.ast)
-                    .filter(|s| s.len() <= MAX_TOKENS)
-                    .map(Rc::from)
-            })
-            .clone()
-    }
-
     fn shown(&self, lets: &[LetText]) -> Option<Rc<str>> {
         self.shown
             .get_or_init(|| {
@@ -157,10 +164,9 @@ fn spell_out(text: &str, lets: &[LetText]) -> Option<String> {
     (out.len() <= MAX_TOKENS).then_some(out)
 }
 
-/// An output name or a message with every let read in it spelled out, as
-/// it reads for the text spelled out: `None` when it reads none, or one
-/// past the cap (left a marker, which [`named_let`] finds).
-pub(super) fn spell_out_text(text: &str) -> Option<String> {
+/// A message with every let read in it spelled out, as it reads for the
+/// text spelled out: `None` when it reads none, or one past the cap.
+fn spell_out_text(text: &str) -> Option<String> {
     if !text.to_ascii_lowercase().contains(LET_MARKER) {
         return None;
     }
@@ -219,43 +225,6 @@ fn spend(n: usize) -> bool {
     })
 }
 
-/// The refusal of an unaliased read of function `f` whose name, its text
-/// spelled out, passes the cap.
-pub(super) fn unaliased_past_cap(f: &str) -> PrepareError {
-    unsup(format!(
-        "an unaliased read of sql function '{f}', named after its text spelled out, \
-         passes the cap of {MAX_TOKENS} (give it an alias)"
-    ))
-}
-
-/// Count what naming an unaliased item spells out: every let it reads, at
-/// its tokens spelled out. Refuses once the query's names, rebindings and
-/// values read in place together pass the cap.
-pub(super) fn spend_name(e: &SqlExpr) -> Result<(), PrepareError> {
-    let lets = LETS.with(|c| c.borrow().clone());
-    if lets.is_empty() {
-        return Ok(());
-    }
-    let text = e.to_string();
-    let lower = text.to_ascii_lowercase();
-    let mut at = 0;
-    while let Some(k) = lower[at..].find(LET_MARKER) {
-        at += k + LET_MARKER.len();
-        let digits: String = text[at..]
-            .chars()
-            .skip_while(|c| *c == '(' || c.is_whitespace())
-            .take_while(char::is_ascii_digit)
-            .collect();
-        let Some(l) = digits.parse::<usize>().ok().and_then(|i| lets.get(i)) else {
-            continue;
-        };
-        if !spend(l.spelled) {
-            return Err(unaliased_past_cap(&l.name));
-        }
-    }
-    Ok(())
-}
-
 /// The let a `__cf_let(i)` marker reads: its number and the table.
 pub(super) fn marker_let(e: &SqlExpr) -> Option<(usize, Rc<Vec<LetText>>)> {
     let SqlExpr::Function(f) = e else {
@@ -281,17 +250,44 @@ pub(super) fn marker_let(e: &SqlExpr) -> Option<(usize, Rc<Vec<LetText>>)> {
     (id < lets.len()).then_some((id, lets))
 }
 
-/// The function of the first let read in an output name: an unaliased
-/// item whose text, spelled out, did not print within the cap.
-pub(super) fn named_let(name: &str) -> Option<String> {
-    let at = name.to_ascii_lowercase().find(LET_MARKER)?;
-    let digits: String = name[at + LET_MARKER.len()..]
-        .chars()
-        .skip_while(|c| *c == '(' || c.is_whitespace())
-        .take_while(char::is_ascii_digit)
-        .collect();
-    let id: usize = digits.parse().ok()?;
-    LETS.with(|c| c.borrow().get(id).map(|l| l.name.clone()))
+/// A check of a spelling (an integer or decimal literal, see
+/// `typing::ast_int_literal`) of the text a let read stands for, as DuckDB
+/// reads it spelled out: `check` of the let's text, kept in its `cell`.
+/// `None` when `e` is not a let read.
+pub(super) fn through<T: Clone>(
+    e: &SqlExpr,
+    cell: fn(&Spelling) -> &OnceCell<T>,
+    check: fn(&SqlExpr) -> T,
+) -> Option<T> {
+    let (id, lets) = marker_let(e)?;
+    let text = &lets[id];
+    let answer = cell(&text.spelling).get_or_init(|| {
+        stacker::maybe_grow(RED_ZONE, STACK_SEGMENT, || check(&text.ast))
+    });
+    Some(answer.clone())
+}
+
+/// A let's value folded as the projection is, keeping the one mark a read's
+/// context takes from the bound value: it reads as a string literal only
+/// when its text is one. Folded, `upper('5')` is the constant `'5'`, but
+/// to DuckDB it is a VARCHAR, which casts to a number in fewer places than
+/// a literal does.
+fn fold_kept(e: SExpr) -> SExpr {
+    let literal = matches!(e.kind, SKind::Lit(Lit::Str(_)));
+    let e = fold(e);
+    if literal || !matches!(e.kind, SKind::Lit(Lit::Str(_))) {
+        return e;
+    }
+    // The node a string literal cast to VARCHAR stays (`Binder::cast`).
+    let nullable = e.nullable;
+    SExpr {
+        kind: SKind::Cast {
+            inner: Box::new(e),
+            trying: false,
+        },
+        ty: Ty::Str,
+        nullable,
+    }
 }
 
 /// The fewest nodes a let read through [`SKind::Let`] has; a smaller value
@@ -377,12 +373,12 @@ impl Binder<'_> {
             }
             Some(LetVal::Rebind) => {
                 self.spell_again(text)?;
-                return Ok((self.expr_or_null(&text.ast)?.map(fold), false));
+                return Ok((self.expr_or_null(&text.ast)?.map(fold_kept), false));
             }
             None => {}
         }
         let (bound, height) = expr::measure_depth(|| self.expr_or_null(&text.ast));
-        let Some(mut e) = bound?.map(fold) else {
+        let Some(mut e) = bound?.map(fold_kept) else {
             self.let_vals
                 .borrow_mut()
                 .insert(key, LetVal::Kept { e: None, height });
