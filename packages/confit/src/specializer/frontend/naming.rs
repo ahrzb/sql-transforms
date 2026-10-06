@@ -365,6 +365,11 @@ fn function(f: &sqlparser::ast::Function) -> Option<String> {
             args.join(", ")
         ));
     }
+    // A let read prints as its text, which is what DuckDB reads there.
+    if lower == super::macros::LET_MARKER {
+        let (id, lets) = super::lets::marker_let(&SqlExpr::Function(f.clone()))?;
+        return lets[id].printed(print).map(|s| s.to_string());
+    }
     let args = args_of(f)?;
     Some(match lower.as_str() {
         "coalesce" | "ifnull" => format!("COALESCE({args})"),

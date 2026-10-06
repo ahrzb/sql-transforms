@@ -26,6 +26,7 @@ boundary".
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Callable
 from typing import Any
@@ -154,6 +155,15 @@ class SqlFunction(Function):
     both engines bind one expression. That the engine inlines a call is how
     it is served today, not part of the contract.
 
+    A value the body uses in several places (the same `confit.sql` object,
+    built once) is spelled out at each use in `sql_body`, so a recurrence
+    whose steps each read the one before twice doubles in text per step.
+    The engine reads the body with each such value declared once instead
+    (`sql_lets`, read by `sql_let_body`), binds it once, and computes it
+    once per row where it cannot trap: the same definition, linear in the
+    expression. `sql_body` is then written out only when it is read (by
+    `register`, for DuckDB).
+
     Unlike a declared extern, a parameter or field may have any type the
     engine serves, since the body is ordinary SQL. A body reads only its
     parameters; another column, which DuckDB would bind against the calling
@@ -184,6 +194,8 @@ class SqlFunction(Function):
         self.name, self.takes, self.returns = name, takes, returns
         params = [S.col(f.name).cast(_type_name(name, f.type)) for f in takes]
         out = body(*params)
+        # The body is assembled around its parts' texts: `roots` are the
+        # parts, `assemble` puts their texts in place.
         if pa.types.is_struct(returns):
             fields = [returns.field(i) for i in range(returns.num_fields)]
             if not isinstance(out, dict) or [k.lower() for k in out] != [
@@ -194,11 +206,18 @@ class SqlFunction(Function):
                     f" {[f.name for f in fields]}, in order"
                 )
             exprs = [S._wrap(out[k]) for k in out]
-            rendered = ", ".join(
-                f"{S._quote_ident(f.name)} := {e.cast(_type_name(name, f.type)).sql()}"
+            roots = [
+                e.cast(_type_name(name, f.type))
                 for f, e in zip(fields, exprs, strict=True)
-            )
-            text = f"struct_pack({rendered})"
+            ]
+            keys = [S._quote_ident(f.name) for f in fields]
+
+            def assemble(texts: list[str]) -> str:
+                pairs = ", ".join(
+                    f"{k} := {t}" for k, t in zip(keys, texts, strict=False)
+                )
+                return f"struct_pack({pairs})"
+
         elif pa.types.is_fixed_size_list(returns):
             _lanes(name, returns)  # a width of at least 2
             k, t = returns.list_size, _type_name(name, returns.value_type)
@@ -208,7 +227,11 @@ class SqlFunction(Function):
                     f" {k} expressions"
                 )
             exprs = [S._wrap(x) for x in out]
-            text = "[" + ", ".join(e.cast(t).sql() for e in exprs) + "]"
+            roots = [e.cast(t) for e in exprs]
+
+            def assemble(texts: list[str]) -> str:
+                return "[" + ", ".join(texts[:k]) + "]"
+
         elif pa.types.is_list(returns) or pa.types.is_large_list(returns):
             raise FunctionError(
                 f"function {name}: a list return declares its width,"
@@ -220,7 +243,11 @@ class SqlFunction(Function):
                     f"function {name}: a scalar return's body is one expression"
                 )
             exprs = [S._wrap(out)]
-            text = exprs[0].cast(_type_name(name, returns)).sql()
+            roots = [exprs[0].cast(_type_name(name, returns))]
+
+            def assemble(texts: list[str]) -> str:
+                return texts[0]
+
         if null_when is not None:
             if not (
                 pa.types.is_struct(returns) or pa.types.is_fixed_size_list(returns)
@@ -230,18 +257,38 @@ class SqlFunction(Function):
                 )
             cond = S._wrap(null_when(*params))
             exprs.append(cond)
-            text = f"CASE WHEN {cond.sql()} THEN NULL ELSE {text} END"
+            roots.append(cond)
+            whole = assemble
+
+            def assemble(texts: list[str]) -> str:
+                return f"CASE WHEN {texts[-1]} THEN NULL ELSE {whole(texts[:-1])} END"
+
         allowed = set(takes.names)
-        for e in exprs:
-            for node in e.walk():
-                if isinstance(node, S.Column) and (
-                    len(node.path) != 1 or node.path[0] not in allowed
-                ):
-                    raise FunctionError(
-                        f"function {name}: the body reads {node.sql()}, which is not a"
-                        " parameter"
-                    )
-        self.sql_body = text
+        for node in S._post_order(exprs):
+            if isinstance(node, S.Column) and (
+                len(node.path) != 1 or node.path[0] not in allowed
+            ):
+                raise FunctionError(
+                    f"function {name}: the body reads {node.sql()}, which is not a"
+                    " parameter"
+                )
+        try:
+            lets, texts = S.shared_texts(roots)
+        except ValueError as e:
+            raise FunctionError(f"function {name}: {e}") from None
+        if lets:
+            self.sql_lets: tuple[str, ...] = tuple(lets)
+            self.sql_let_body = assemble(texts)
+        else:
+            self.__dict__["sql_body"] = assemble(texts)
+
+    @functools.cached_property
+    def sql_body(self) -> str:
+        """The definition DuckDB registers: the body with every let spelled
+        out at each read."""
+        from confit import sql as S
+
+        return S.spell_out(self.sql_let_body, list(self.sql_lets))
 
     def register(self, con: Any) -> None:
         from confit import sql as S

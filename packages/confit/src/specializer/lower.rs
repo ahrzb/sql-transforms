@@ -186,6 +186,8 @@ pub fn lower(
                 "a subquery under a shape='many' join".to_string(),
             ));
         };
+        // The loop does not share: the binder read every let's value in
+        // place (`frontend/lets.rs`).
         fb.lower_many_loop(&stage.project, stage.pred.as_ref(), &out_cols)?;
         let statics = vec![if joins[0].batch {
             StaticTy::BatchMap {
@@ -230,7 +232,7 @@ pub fn lower(
         // trap, and items are evaluated in order at the top level, so the
         // value is ready wherever it is read.
         let exprs: Vec<SExpr> = stage.project.iter().map(|(_, e)| e.clone()).collect();
-        let (defs, mut items) = match super::share::share(&exprs) {
+        let (defs, mut items) = match super::share::share(&exprs, &stage.lets) {
             Some(sh) => {
                 fb.shared_at = vec![None; sh.defs.len()];
                 (sh.defs, sh.items)
@@ -1031,6 +1033,10 @@ impl<'a> FB<'a> {
                     "shared value {k} read where it is not live"
                 ))),
             },
+            // `share.rs` reads every let in its place before lowering.
+            SKind::Let(n) => Err(PrepareError::Internal(format!(
+                "let {n} read where share did not place it"
+            ))),
             SKind::Slot(i) => Err(PrepareError::Internal(format!(
                 "slot {i} read outside the previous stage's {} columns",
                 self.n_slots

@@ -135,6 +135,7 @@ pub(super) fn eval_closed(
             joins: vec![],
             pred: None,
             project: vec![("v".to_string(), e.clone())],
+            lets: Vec::new(),
         }],
     };
     let out = vec![Col {

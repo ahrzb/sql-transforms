@@ -10,6 +10,14 @@ const MAX_EXPRESSION_DEPTH: u32 = 1000;
 
 thread_local! {
     static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The deepest level reached since [`measure_depth`] last reset it.
+    static PEAK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn too_deep() -> PrepareError {
+    PrepareError::Parse(format!(
+        "Max expression depth limit of {MAX_EXPRESSION_DEPTH} exceeded"
+    ))
 }
 
 /// One level of [`Binder::expr_or_null`]'s recursion, released on drop.
@@ -21,14 +29,33 @@ impl DepthGuard {
             c.set(c.get() + 1);
             c.get()
         });
+        PEAK.with(|p| p.set(p.get().max(d)));
         let g = DepthGuard;
         if d > MAX_EXPRESSION_DEPTH {
-            return Err(PrepareError::Parse(format!(
-                "Max expression depth limit of {MAX_EXPRESSION_DEPTH} exceeded"
-            )));
+            return Err(too_deep());
         }
         Ok(g)
     }
+}
+
+/// `bind`, and how many levels below the current one it reached.
+pub(super) fn measure_depth<T>(bind: impl FnOnce() -> T) -> (T, u32) {
+    let base = DEPTH.with(|c| c.get());
+    let saved = PEAK.with(|p| p.replace(base));
+    let out = bind();
+    let peak = PEAK.with(|p| p.get());
+    PEAK.with(|p| p.set(saved.max(peak)));
+    (out, peak.saturating_sub(base))
+}
+
+/// Refuse as a binding `height` levels below the current one would.
+pub(super) fn check_depth(height: u32) -> Result<(), PrepareError> {
+    let d = DEPTH.with(|c| c.get()).saturating_add(height);
+    PEAK.with(|p| p.set(p.get().max(d)));
+    if d > MAX_EXPRESSION_DEPTH {
+        return Err(too_deep());
+    }
+    Ok(())
 }
 
 impl Drop for DepthGuard {
@@ -104,6 +131,10 @@ impl Binder<'_> {
     }
 
     fn expr_or_null_here(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        // A let read stands where its text would: it is not a level.
+        if let Some((id, lets)) = lets::marker_let(e) {
+            return self.let_read(id, &lets[id]);
+        }
         if let Some(balanced) = rebalance_chain(e) {
             return self.expr_or_null_here(&balanced);
         }

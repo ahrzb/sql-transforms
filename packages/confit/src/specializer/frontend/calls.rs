@@ -210,6 +210,15 @@ impl Binder<'_> {
         let SqlExpr::CompoundFieldAccess { root, access_chain } = e else {
             return Ok(None);
         };
+        // A field read over a let read reads the let's text.
+        if let Some((text, lets, id)) = lets::spelled(root) {
+            self.spell_again(&lets[id])?;
+            let read = SqlExpr::CompoundFieldAccess {
+                root: Box::new(text),
+                access_chain: access_chain.clone(),
+            };
+            return self.expr_or_null(&read).map(Some);
+        }
         let Some((AccessExpr::Dot(SqlExpr::Identifier(field)), rest)) =
             access_chain.split_first()
         else {

@@ -24,6 +24,9 @@ pub struct Stage {
     pub joins: Vec<u32>,
     pub pred: Option<SExpr>,
     pub project: Vec<(String, SExpr)>,
+    /// The values the projection reads through [`SKind::Let`], each
+    /// reading only earlier ones. The other clauses never read one.
+    pub lets: Vec<SExpr>,
 }
 
 /// A static (prepare-time-known) table's schema, as given to `prepare`.
@@ -749,6 +752,12 @@ pub enum SKind {
     /// before the first item, and read here (`share.rs`). Exists only
     /// between that pass and lowering; its value cannot trap.
     Shared(u32),
+    /// A SQL function's subexpression that its body reads more than once,
+    /// bound once per call: entry `n` of the stage's [`Stage::lets`]. The
+    /// binder makes one only for a value that cannot trap and has no
+    /// effect, so where and how often it is evaluated is invisible
+    /// (`frontend/lets.rs`); `share.rs` reads the entry in its place.
+    Let(u32),
 }
 
 impl SExpr {
@@ -765,7 +774,8 @@ impl SExpr {
             | SKind::NullOf
             | SKind::Raise(_)
             | SKind::JoinHit(_)
-            | SKind::Shared(_) => Vec::new(),
+            | SKind::Shared(_)
+            | SKind::Let(_) => Vec::new(),
             SKind::Seq { items, .. } => items.iter_mut().collect(),
             SKind::Extreme { args, .. } => args.iter_mut().collect(),
             SKind::Arith { a, b, .. }
@@ -855,6 +865,7 @@ pub fn may_trap(e: &SExpr) -> bool {
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
         | SKind::Shared(_)
+        | SKind::Let(_)
         | SKind::Lit(_)
         | SKind::NullOf => false,
         SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
@@ -1080,6 +1091,7 @@ fn can_trap_here(e: &SExpr) -> bool {
         | SKind::StaticCol { .. }
         | SKind::JoinHit(_)
         | SKind::Shared(_)
+        | SKind::Let(_)
         | SKind::Lit(_)
         | SKind::NullOf => false,
         SKind::Arith { a, b, .. } if e.ty.lane() == Ty::F64 => can_trap(a) || can_trap(b),
@@ -1225,7 +1237,12 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         // A slot never folds: constants do not fold across a query level
         // (DuckDB: `k + MAX` over `SELECT 1 AS k` errors per row, and not at
         // all on zero rows).
-        SKind::Col(_) | SKind::Slot(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) | SKind::Shared(_) => false,
+        SKind::Col(_)
+        | SKind::Slot(_)
+        | SKind::StaticCol { .. }
+        | SKind::JoinHit(_)
+        | SKind::Shared(_)
+        | SKind::Let(_) => false,
         // `error()` is never folded at bind: it raises when a row reaches it.
         SKind::ExternCall { .. } | SKind::TreePredict { .. } | SKind::Raise(_) => false,
         SKind::Seq { items, .. } => items.iter().all(bind_foldable),

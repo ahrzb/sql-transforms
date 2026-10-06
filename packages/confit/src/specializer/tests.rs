@@ -4316,6 +4316,7 @@ mod staged {
                 .enumerate()
                 .map(|(i, x)| (format!("c{i}"), x))
                 .collect(),
+            lets: Vec::new(),
         }
     }
 
