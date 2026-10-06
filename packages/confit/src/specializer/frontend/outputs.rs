@@ -683,38 +683,15 @@ impl Binder<'_> {
     /// with `g := x` beside `f`, the read stays VARCHAR. A part that does
     /// not bind answers no, and the read reports the error itself.
     pub(super) fn struct_folds_to_null(&self, e: &SqlExpr) -> bool {
-        use super::resolve::Walk;
         // As in a CASE arm: a constant that traps is a trap of its row,
         // which DuckDB's fold skips, not a refusal.
         self.in_guarded.set(self.in_guarded.get() + 1);
         let _guard = GuardScope(&self.in_guarded);
-        // Each name in the text counts, also where our binder drops it for
-        // a value that cannot matter (`coalesce(2.0, c)` binds as 2.0), and
-        // a lateral alias stands for its expression. Only a call that
-        // DuckDB's binder makes a NULL constant (`c + NULL`) drops its own.
-        let closed = || {
-            self.walk_expr(e, &mut |x| {
-                Ok(match x {
-                    SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => {
-                        match self.ref_res(x) {
-                            Ok(Resolved::Lane(v)) if self.duck_foldable(&v) => Walk::Over,
-                            _ => Walk::Stop,
-                        }
-                    }
-                    SqlExpr::Function(_) | SqlExpr::BinaryOp { .. } | SqlExpr::UnaryOp { .. }
-                        if self.binds_to_null(x) =>
-                    {
-                        Walk::Over
-                    }
-                    _ => Walk::Into,
-                })
-            })
-        };
         // Cheapest first: most structs are not NULL on the path taken, and
         // that binds only the conditions on it.
         matches!(self.closed_null(e), Ok(Some(true)))
             && matches!(self.foldable(e), Ok(true))
-            && matches!(closed(), Ok(true))
+            && matches!(DuckNulls::new(self).closed(e), Ok(true))
     }
 
     /// Whether `e` binds to a NULL constant.
@@ -820,7 +797,10 @@ impl Binder<'_> {
             if !self.duck_foldable(c) {
                 return Ok(None);
             }
-            match self.eval_closed(c) {
+            let Some(c) = self.baked(c) else {
+                return Ok(None);
+            };
+            match self.eval_closed(&c) {
                 None => return Ok(None),
                 Some(Some(ScalarVal::I1(true))) => return self.closed_null(&w.result),
                 // FALSE or NULL: the next arm.
@@ -832,4 +812,175 @@ impl Binder<'_> {
             None => Ok(Some(true)),
         }
     }
+
+    /// `e` with each let spelled out and each pure extern call replaced by
+    /// the value DuckDB's binder folds it to, which [`eval_closed`] can run:
+    /// it runs neither (a UDF in the condition of a SQL function's struct
+    /// panicked it; nightly seed 4704064). `None` when a call does not fold
+    /// here: it raises, or an argument is not constant.
+    fn baked(&self, e: &SExpr) -> Option<SExpr> {
+        let mut e = e.clone();
+        self.bake(&mut e).then_some(e)
+    }
+
+    fn bake(&self, e: &mut SExpr) -> bool {
+        let rep = match &e.kind {
+            SKind::ExternCall {
+                site,
+                ext,
+                args,
+                ret,
+                whole,
+            } => {
+                let Some(spec) = self.udfs.get(*ext as usize).filter(|_| !*whole) else {
+                    return false;
+                };
+                match self.site_bind_fold(*site, *ext as usize, spec, args) {
+                    Some(Ok(Some(lanes))) => match lanes.into_iter().nth(*ret as usize).flatten() {
+                        Some(v) => scalar_lit(v, e.ty),
+                        None => null_of(e.ty),
+                    },
+                    Some(Ok(None)) => null_of(e.ty),
+                    _ => return false,
+                }
+            }
+            SKind::Let(i) => match self.lets.borrow().get(*i as usize).cloned() {
+                Some(v) => v,
+                None => return false,
+            },
+            SKind::TreePredict { .. } => return false,
+            _ => return e.children_mut().into_iter().all(|c| self.bake(c)),
+        };
+        *e = rep;
+        // A let's value may read calls and lets of its own.
+        self.bake(e)
+    }
+}
+
+/// DuckDB's bind-time NULL folding, over the text of a struct value: which
+/// calls its binder makes NULL constants, and so whether a part of the text
+/// is foldable. Each call's answer is kept for one
+/// [`Binder::struct_folds_to_null`], since a chain of calls asks about each
+/// link twice and would otherwise take time exponential in its length.
+struct DuckNulls<'b, 'a> {
+    b: &'b Binder<'a>,
+    memo: std::cell::RefCell<std::collections::HashMap<*const SqlExpr, bool>>,
+}
+
+impl<'b, 'a> DuckNulls<'b, 'a> {
+    fn new(b: &'b Binder<'a>) -> Self {
+        DuckNulls {
+            b,
+            memo: Default::default(),
+        }
+    }
+
+    /// Whether `e` is foldable to DuckDB: no name in its text reads a
+    /// column. Each name counts, also where our binder drops it for a value
+    /// that cannot matter (`coalesce(2.0, c)` binds as 2.0), and a lateral
+    /// alias stands for its expression. Only a call that DuckDB's binder
+    /// makes a NULL constant (`c + NULL`) drops its own.
+    fn closed(&self, e: &SqlExpr) -> Result<bool, PrepareError> {
+        use super::resolve::Walk;
+        self.b.walk_expr(e, &mut |x| {
+            Ok(match x {
+                SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => match self.b.ref_res(x) {
+                    Ok(Resolved::Lane(v)) if self.b.duck_foldable(&v) => Walk::Over,
+                    _ => Walk::Stop,
+                },
+                _ if self.null_call(x) => Walk::Over,
+                _ => Walk::Into,
+            })
+        })
+    }
+
+    /// Whether DuckDB's binder makes call `x` a NULL constant. A call with
+    /// the default NULL handling becomes one when an argument has type
+    /// SQLNULL, or is foldable and evaluates to NULL (measured, 1.5.5:
+    /// `levenshtein('a', CASE WHEN c THEN NULL ELSE NULL END)` and
+    /// `levenshtein(c, CAST(NULL AS VARCHAR))` fold, while
+    /// `levenshtein('a', CAST(CASE WHEN c THEN NULL ELSE NULL END AS
+    /// VARCHAR))` stays a call: that cast is VARCHAR and reads `c`; nightly
+    /// seed 4848122). Our binder folds all three, so that `x` binds to NULL
+    /// here says only that its NULL handling is the default.
+    fn null_call(&self, x: &SqlExpr) -> bool {
+        let key = x as *const SqlExpr;
+        if let Some(&hit) = self.memo.borrow().get(&key) {
+            return hit;
+        }
+        let args: Vec<&SqlExpr> = match x {
+            SqlExpr::Function(_) if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() => {
+                Vec::new()
+            }
+            // Their NULL handling is their own: `nullif(NULL, a)` reads `a`
+            // (measured: a field read beside it stays VARCHAR).
+            SqlExpr::Function(f)
+                if ["nullif", "coalesce", "ifnull", "concat", "concat_ws", "greatest", "least"]
+                    .iter()
+                    .any(|n| f.name.to_string().eq_ignore_ascii_case(n)) =>
+            {
+                Vec::new()
+            }
+            SqlExpr::Function(f) => call_args(f),
+            SqlExpr::BinaryOp { left, right, .. } => vec![left, right],
+            SqlExpr::UnaryOp { expr, .. } => vec![expr],
+            _ => Vec::new(),
+        };
+        let hit = !args.is_empty()
+            && self.b.binds_to_null(x)
+            && args.into_iter().any(|a| {
+                self.sqlnull(a) || (self.b.binds_to_null(a) && matches!(self.closed(a), Ok(true)))
+            });
+        self.memo.borrow_mut().insert(key, hit);
+        hit
+    }
+
+    /// Whether DuckDB types `e` SQLNULL: a NULL literal, a CASE whose every
+    /// result is one, or a call that its binder makes a NULL constant.
+    fn sqlnull(&self, e: &SqlExpr) -> bool {
+        let e = unnest(e);
+        if is_null_literal(e) {
+            return true;
+        }
+        if let Some((id, lets)) = lets::marker_let(e) {
+            return self.sqlnull(&lets[id].ast);
+        }
+        if let Some((id, calls)) = calls::marker_call(e) {
+            return self.sqlnull(&calls[id].1);
+        }
+        match e {
+            SqlExpr::Case {
+                conditions,
+                else_result,
+                ..
+            } => {
+                conditions.iter().all(|w| self.sqlnull(&w.result))
+                    && else_result.as_deref().is_none_or(|r| self.sqlnull(r))
+            }
+            _ => self.null_call(e),
+        }
+    }
+}
+
+/// A call's argument expressions, in order.
+fn call_args(f: &sqlparser::ast::Function) -> Vec<&SqlExpr> {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+    let FunctionArguments::List(list) = &f.args else {
+        return Vec::new();
+    };
+    list.args
+        .iter()
+        .filter_map(|a| match a {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(x))
+            | FunctionArg::Named {
+                arg: FunctionArgExpr::Expr(x),
+                ..
+            }
+            | FunctionArg::ExprNamed {
+                arg: FunctionArgExpr::Expr(x),
+                ..
+            } => Some(x),
+            _ => None,
+        })
+        .collect()
 }

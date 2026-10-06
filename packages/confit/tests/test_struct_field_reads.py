@@ -134,6 +134,25 @@ def test_a_field_read_agrees_with_the_oracle(expr):
         "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := TRUE OR x > 0) END).p",
         "(CASE WHEN 1 = 1 THEN NULL WHEN a > 0 THEN struct_pack(p := 'x') END).p",
         "(CASE WHEN FALSE THEN NULL ELSE struct_pack(p := 'x') END).p",
+        # A call is a NULL constant to DuckDB's binder when an argument has
+        # type SQLNULL, or names no column and is NULL; then its columns do
+        # not count. A cast to VARCHAR is no longer SQLNULL, so the column
+        # under it counts (nightly seed 4848122).
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := levenshtein('a', CASE WHEN a > 0 THEN NULL ELSE NULL END)) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := levenshtein(s, CAST(NULL AS VARCHAR))) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := ((a + NULL) * a) - a) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := nullif(NULL, a)) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x', q := nullif(a + NULL, a))"
+        " END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x', q := levenshtein('a',"
+        " CAST(CASE WHEN a > 0 THEN NULL ELSE NULL END AS VARCHAR))) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := 1 >= levenshtein('a', CAST(CASE WHEN a > 0 THEN NULL END AS VARCHAR)))"
+        " END).p",
     ],
 )
 def test_a_read_of_a_struct_that_folds_to_null(expr):
@@ -160,6 +179,44 @@ def test_a_pure_extern_over_constants_folds_with_the_struct():
     for p in ("one(1.5)", "one(x)"):
         sql = q(f"(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := {p}) END).p")
         assert_parity(sql, ROWS, udfs=[one])
+
+
+def test_a_pure_extern_in_the_condition_folds_with_the_struct():
+    # DuckDB evaluates the condition at bind time, the call included: a
+    # call that raises leaves the read to run, and trap, per row. Ours
+    # panicked running the call (nightly seed 4704064).
+    one = ExternFunction(
+        "one",
+        pa.schema([("v", pa.float64())]),
+        pa.float64(),
+        lambda v: None if v is None else (v,),
+    )
+
+    def raises(v):
+        raise ValueError("boom")
+
+    boom = ExternFunction(
+        "boom", pa.schema([("v", pa.float64())]), pa.float64(), raises
+    )
+    g = SqlFunction(
+        "g",
+        pa.schema([("v", pa.float64())]),
+        pa.struct([("p", pa.float64())]),
+        lambda v: {"p": v},
+        null_when=lambda v: v > S.lit(1.0),
+    )
+    for cond in ("one(1.5) > 1", "one(1.5) < 1", "one(NULL) IS NULL", "one(x) > 1"):
+        sql = q(f"(CASE WHEN {cond} THEN NULL ELSE struct_pack(p := 'x') END).p")
+        assert_parity(sql, ROWS, udfs=[one])
+    for expr in (
+        "(g(one(1.5))).p",
+        "(g(one(0.5))).p",
+        "g(one(1.5)).p",
+        "(g(one(1.5))).p || 'y'",
+    ):
+        assert_parity(q(expr), ROWS, udfs=[one, g])
+    sql = q("(CASE WHEN boom(1.5) > 1 THEN NULL ELSE struct_pack(p := 'x') END).p")
+    assert_parity(sql, ROWS, udfs=[boom], trap="boom")
 
 
 def test_a_null_struct_from_a_sql_function_over_constants():

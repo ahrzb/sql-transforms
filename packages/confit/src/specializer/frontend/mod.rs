@@ -296,8 +296,14 @@ struct BoundQuery {
     out_cols: Vec<Col>,
     /// Per output column: a constant NULL. DuckDB keeps a bare NULL typed
     /// SQLNULL through a query level, and a consumer binds against that
-    /// type; confit does not model it, so an outer expression over such a
-    /// column refuses (see [`bind_query`]).
+    /// type; confit does not model it, so the level above binds such a
+    /// column only as a whole projection item and refuses it anywhere else
+    /// ([`Binder::null_col`]). The refusal comes where the column binds,
+    /// before any fold: a fold drops the arms a constant CASE condition
+    /// does not take, and with them the column, while the type the column
+    /// gave the CASE stays (nightly seed 4824388:
+    /// `CASE WHEN TRUE THEN -87.375 ELSE i0 END` typed DECIMAL(13,3), where
+    /// DuckDB answers DECIMAL(5,3)).
     null_cols: Vec<bool>,
     wide_outs: Vec<super::WideOut>,
     ctx: QueryCtx,
@@ -439,7 +445,10 @@ fn bind_query<'q>(
         &cols,
         &[],
         &[],
-        Driving::Derived { name },
+        Driving::Derived {
+            name,
+            null_cols: inner.null_cols.clone(),
+        },
         inner.ctx,
     )?;
     // This level references the subquery only through its columns; its
@@ -447,7 +456,8 @@ fn bind_query<'q>(
     // the query-wide list (storage identity; this stage owns them).
     let off = inner.joins.len() as u32;
     let over_null = |e: &mut SExpr| refs_col(e, &|i| inner.null_cols[i as usize]);
-    let null_refusal = || unsup("an expression over a bare NULL subquery column");
+    // A backstop: every read of such a column refused where it bound.
+    let null_refusal = null_col_refusal;
     for (_, e) in b.project.iter_mut() {
         if !matches!(e.kind, SKind::Col(_)) && over_null(e) {
             return Err(null_refusal());
@@ -538,6 +548,25 @@ struct CteDef<'q> {
     as_written: Option<&'q sqlparser::ast::Query>,
     scope: Vec<CteDef<'q>>,
     reads: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+/// The refusal of a bare NULL column of the level below read anywhere but
+/// as a whole projection item (see [`BoundQuery::null_cols`]).
+fn null_col_refusal() -> PrepareError {
+    unsup("an expression over a bare NULL subquery column")
+}
+
+/// Whether a projection item is one column reference, parenthesized or
+/// not.
+fn is_column_ref(item: &SelectItem) -> bool {
+    let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else {
+        return false;
+    };
+    let mut e = e;
+    while let SqlExpr::Nested(x) = e {
+        e = x;
+    }
+    matches!(e, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_))
 }
 
 /// Whether `e` references an input column `pick` selects.
@@ -710,6 +739,7 @@ fn bind_select(
     // A projection `share.rs` lowers reads lets as `SKind::Let`.
     binder.let_reads.set(!env.many);
     for (item, written) in select.projection.iter().zip(written) {
+        binder.whole_item.set(is_column_ref(item));
         // An unaliased item is named after its text as written, once.
         let written = match written {
             SelectItem::UnnamedExpr(w) => Some(w),
@@ -830,6 +860,7 @@ fn bind_select(
         };
     }
     binder.let_reads.set(false);
+    binder.whole_item.set(false);
     if exprs.is_empty() {
         // Pinned text: an EXCLUDE-all star that empties the projection.
         return Err(PrepareError::Bind(
@@ -1033,6 +1064,12 @@ struct Binder<'a> {
     let_reads: std::cell::Cell<bool>,
     /// The values of `lets`, inlined, for the reads outside the projection.
     let_inlined: std::cell::RefCell<lets::Inlined>,
+    /// Per input column: a bare NULL of the level below (see
+    /// [`BoundQuery::null_cols`]). Empty over the request table.
+    null_cols: Vec<bool>,
+    /// Set while a projection item that is one column reference binds:
+    /// the one place a column of `null_cols` binds.
+    whole_item: std::cell::Cell<bool>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.
@@ -1054,8 +1091,9 @@ enum Driving {
     /// The request table (FROM names it, maybe aliased).
     Request,
     /// A derived table in scope as `name`; the binder's `in_cols` are its
-    /// output columns, and a column reference binds to a slot.
-    Derived { name: String },
+    /// output columns, and a column reference binds to a slot. `null_cols`
+    /// marks those that are a bare NULL (see [`BoundQuery::null_cols`]).
+    Derived { name: String, null_cols: Vec<bool> },
 }
 
 impl Binder<'_> {

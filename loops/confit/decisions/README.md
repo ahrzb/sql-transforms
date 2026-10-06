@@ -6,6 +6,7 @@ and the ground.
 - [open/](open) holds records that wait for a ruling:
   - [Empty-static witness: trap order](open/empty-static-witness-trap-order.md)
   - [the oracle times out where confit traps first](open/oracle-timeout-before-a-trap.md)
+  - [an INNER join whose static keys are all NULL](open/all-null-key-static.md)
 - [closed/](closed) holds rulings in force:
   - [Oracle policy](closed/oracle-policy.md)
   - [static-only queries](closed/static-only-queries.md)

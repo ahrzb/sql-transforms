@@ -38,6 +38,11 @@ NO_MATCH = pa.table(
         "t.k = s.k AND t.v < s.w * 2",
         "t.k = s.k AND t.v * 2 < s.w",
         "t.v < s.w * 2",
+        # DuckDB's transformer makes NOT over a comparison the negated
+        # comparison before anything binds, so these are join conditions
+        # too; confit served them per matched pair (seed 4873273).
+        "t.k = s.k AND NOT (t.v >= s.w * 2)",
+        "t.k = s.k AND NOT (NOT (t.v < s.w * 2))",
     ],
 )
 def test_a_trapping_join_condition_between_the_sides_refuses(on):

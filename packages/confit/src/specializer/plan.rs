@@ -59,6 +59,9 @@ pub struct StaticTable {
     /// NULL struct from a struct of NULLs. Like a leaf, it is reachable
     /// only through its path ([`StaticTable::is_leaf_lane`]).
     pub presence: Vec<(Vec<String>, u32)>,
+    /// Its row count, when the caller knows it. The engine always does:
+    /// the tables are frozen at construction.
+    pub rows: Option<usize>,
 }
 
 /// One declared column of a [`StaticTable`], as star expansion sees it.
@@ -85,6 +88,7 @@ impl StaticTable {
             star,
             structs: Vec::new(),
             presence: Vec::new(),
+            rows: None,
         }
     }
 

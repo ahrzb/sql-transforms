@@ -200,6 +200,26 @@ def test_cross_join_to_empty_static_annihilates():
     )
 
 
+@pytest.mark.parametrize(
+    "on",
+    [
+        "s = e.k",
+        "lid = e.id AND CAST(s AS DOUBLE) = e.k",
+        "lid = e.id AND lid / 0 > e.k",
+    ],
+)
+def test_a_left_join_to_an_empty_static_never_reads_its_on(on):
+    # DuckDB answers every row unmatched and never evaluates the ON clause,
+    # so the cast that fails on 'One' never runs (nightly seed 4712724).
+    empty = static({"id": "int", "k": "float"}, [])
+    duck_check(
+        f"SELECT lid, e.k FROM __THIS__ LEFT JOIN empty e ON {on}",
+        {"lid": "int?", "s": "str?"},
+        [{"lid": 1, "s": "One"}, {"lid": None, "s": "2.5"}],
+        {"empty": empty},
+    )
+
+
 def test_cross_join_to_multirow_static_rejects_cleanly():
     two = static({"base": "int"}, [{"base": 1}, {"base": 2}])
     with pytest.raises(ValueError, match="has no equality key"):
