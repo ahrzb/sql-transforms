@@ -664,8 +664,8 @@ FIXTURES[RandomTreesEmbedding] = [
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]
 UNSEEN = ["zz", "", "A"]
-# Serving values beyond the fit's range: signed zeros, extremes.
-EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324]
+# Serving values beyond the fit's range: signed zeros, extremes, infinities.
+EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324, math.inf, -math.inf]
 # A row of only these has a norm under sklearn's zero-scale threshold.
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 # The widest step drawn, in output lanes: a wider fixture checks the same
@@ -954,7 +954,7 @@ def _rows(step: PythonTransform, seed: int, positive: bool = False) -> pa.Table:
             vals = [None if v is None else abs(v) for v in vals]
         if f.type == pa.int64():
             vals = [
-                None if v is None else max(-(2**62), min(2**62, round(v))) for v in vals
+                None if v is None else round(max(-(2**62), min(2**62, v))) for v in vals
             ]
         cols[f.name] = pa.array(vals, f.type)
     return pa.table(cols)
@@ -985,8 +985,7 @@ def test_an_entry_matches_its_twin(cls, j, seed):
         if len(step.takes) <= 4 and not any(r in str(e) for r in REFUSED):
             raise
         pytest.skip(f"stays Python: {e}")
-    rows = _rows(step, seed, getattr(make, "positive", False))
-    assert check(step, native, rows) > 0
+    check(step, native, _rows(step, seed, getattr(make, "positive", False)))
 
 
 # ------------------------------------------------------------------ framework
@@ -2132,8 +2131,10 @@ def test_trees_at_the_cutpoints():
     native = to_native(step, strict=True)
     answered = [r for r in rows if finite(r)]
     assert check(step, native, table(answered)) == len(answered)
-    # Where the twin raises, the entry answers (check serves every row).
-    assert check(step, native, table([r for r in rows if not finite(r)])) == 0
+    # Where the twin raises, the entry answers (check serves every row),
+    # and check compares none.
+    with pytest.raises(ParityError, match="compares no row"):
+        check(step, native, table([r for r in rows if not finite(r)]))
 
 
 def test_trees_answer_where_the_twin_raises():
