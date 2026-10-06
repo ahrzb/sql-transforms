@@ -2125,7 +2125,20 @@ TREE_SPECIALS = [
 ]
 
 
-def test_trees_at_the_cutpoints():
+@pytest.fixture(params=["case", "paths"])
+def spelling(request, monkeypatch) -> str:
+    """Each spelling of trees.py in turn: "paths" makes one CASE per tree
+    look too slow to build."""
+    from sql_transform.native import trees
+
+    if request.param == "paths":
+        monkeypatch.setattr(trees, "_case_seconds", lambda lanes: math.inf)
+    return request.param
+
+
+def test_trees_at_the_cutpoints(spelling):
+    from sql_transform.native.trees import _spelling
+
     # Four features: spread values, float32 subnormals, values near
     # float32's largest, and few integers with holes (so some nodes saw
     # NaN and some did not). Every feature of a row is a training row's
@@ -2145,6 +2158,7 @@ def test_trees_at_the_cutpoints():
         n_estimators=12, max_depth=5, sparse_output=False, random_state=0
     ).fit(X)
     assert any(t.tree_.missing_go_to_left[t.tree_.feature >= 0].any() for t in est)
+    assert _spelling(est) == spelling
     by_feature: dict[int, set[float]] = {j: set(TREE_SPECIALS) for j in range(4)}
     for tree in est.estimators_:
         t = tree.tree_
@@ -2206,11 +2220,14 @@ def _tree_step(est: RandomTreesEmbedding, n_features: int) -> PythonTransform:
     )
 
 
-def test_trees_serve_the_default_forest():
+def test_trees_serve_the_default_forest(spelling):
+    from sql_transform.native.trees import _spelling
+
     # n_estimators=100, max_depth=5: up to 3,200 lanes, past MAX_LANES,
-    # so the generator never draws it (2.7 s to build, trees.py).
+    # so the generator never draws it (trees.py has its builds).
     X = np.random.default_rng(3).normal(size=(500, 6))
     est = RandomTreesEmbedding(sparse_output=False, random_state=0).fit(X)
+    assert _spelling(est) == spelling
     step = _tree_step(est, 6)
     # Rows the twin answers, NULLs among them, so it serves them at once.
     R = np.random.default_rng(4).normal(size=(40, 6))
@@ -2219,13 +2236,32 @@ def test_trees_serve_the_default_forest():
     assert check(step, to_native(step, strict=True), rows) == 40
 
 
-def test_trees_refuse_a_build_past_the_cap():
-    from sql_transform.native.trees import MAX_PATH_STEPS, _steps
-
-    X = np.random.default_rng(0).normal(size=(2000, 8))
-    est = RandomTreesEmbedding(
-        n_estimators=1, max_depth=None, sparse_output=False, random_state=0
+def _forest(
+    n_estimators: int, max_depth: int | None, rows: int
+) -> RandomTreesEmbedding:
+    X = np.random.default_rng(0).normal(size=(rows, 8))
+    return RandomTreesEmbedding(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        sparse_output=False,
+        random_state=0,
     ).fit(X)
-    assert _steps(est) > MAX_PATH_STEPS
-    with pytest.raises(NotNative, match=r"path steps, past 25,000"):
+
+
+def test_trees_spell_by_the_estimated_build():
+    from sql_transform.native.trees import _spelling
+
+    # One CASE per tree where its build is estimated within 7 s, else the
+    # paths: the default forest, one unbounded tree over 2,000 rows (refused
+    # before one CASE per tree), and 160 trees of depth 5 (3,700 lanes).
+    assert _spelling(_forest(100, 5, 2000)) == "case"
+    assert _spelling(_forest(1, None, 2000)) == "case"
+    assert _spelling(_forest(160, 5, 2000)) == "paths"
+
+
+def test_trees_refuse_a_build_past_the_cap():
+    # One unbounded tree over 4,000 rows: 4,000 lanes, estimated at 11 s
+    # for one CASE per tree and 9 s for the paths (8.3 and 8.5 s measured).
+    est = _forest(1, None, 4000)
+    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
         to_native(_tree_step(est, 8), strict=True)
