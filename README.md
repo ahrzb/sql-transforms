@@ -27,10 +27,10 @@ cd sql-transforms
 mise run install        # uv sync — installs both packages, builds Confit's extension
 ```
 
-Confit ships a Rust/PyO3 extension (`confit._engine`) built by
-[maturin](https://www.maturin.rs/); sql-transform is pure Python. After changing
-Rust code, rebuild with `uv run maturin develop` from `packages/confit`; the test
-suite also rebuilds automatically when a `.rs` file is newer than the built
+Confit ships a Rust/PyO3 extension (`confit._engine`) that
+[maturin](https://www.maturin.rs/) builds. sql-transform is pure Python. After
+you change Rust code, run `uv run maturin develop` in `packages/confit`. The
+tests also rebuild the extension when a `.rs` file is newer than the built
 module.
 
 Run the whole gate from the repository root:
@@ -61,9 +61,9 @@ fn.infer_rows([Row(age=40.0)])          # row objects in, row objects out
 fn.infer_arrow(pa.table({"age": [40.0]}))  # pa.Table in, pa.Table out
 ```
 
-`sql_transform.SQLProjection` is the authoring layer on top of it — write SQL
-with window aggregates, `fit()` to freeze them. The fit half works today; see
-[packages/sql-transform](packages/sql-transform).
+`sql_transform.SQLProjection` is the authoring layer on top of Confit. You
+write SQL with window aggregates, and `fit()` computes them once. The fit half
+works today. See [packages/sql-transform](packages/sql-transform).
 
 ```python
 from sql_transform import SQLProjection
@@ -98,26 +98,29 @@ SQL over __THIS__
  infer(row) / infer_batch(rows)
 ```
 
-Confit's contract: SQL plus frozen tables either specialize into a function
-bit-exact with DuckDB (the optimizer-off reading — `PRAGMA
-disable_optimizer`, and [why](packages/confit/docs/known-limitations.md)), or construction
-raises and names the construct it will not serve — see
-[Confit's known limitations](packages/confit/docs/known-limitations.md).
+Confit's contract has two outcomes. In the first, the SQL and its static
+tables become a function that is bit-exact with DuckDB. In the second, the
+build stops with an error that names the construct that Confit does not
+serve. The reference is
+DuckDB with `PRAGMA disable_optimizer` (the optimizer-off reading).
+[Confit's known limitations](packages/confit/docs/known-limitations.md) says
+why, and lists the refusals.
 
 ## What Confit supports
 
-The expression surface, joins to static tables, the row-shape contract
-(`map`/`filter`/`many`) and the Arrow boundary are documented in
-[`packages/confit`](packages/confit) and
-[packages/confit/docs/known-limitations.md](packages/confit/docs/known-limitations.md): **543 of 678** statements
-(as of 2026-10-05, [recorded here](packages/confit/docs/reports/corpus-counts.json))
-mined from DuckDB's own test suite replay bit-exact, with the remainder clean,
-named build-time rejections.
+[`packages/confit`](packages/confit) documents what Confit serves:
+expressions, joins to static tables, row shapes (`map`/`filter`/`many`), and
+Arrow input and output.
+[known-limitations.md](packages/confit/docs/known-limitations.md) lists what it
+refuses. The corpus is 678 SQL
+statements from DuckDB's own test suite. Confit serves **543 of 678**
+bit-exact, and refuses the others with a named error (2026-10-05,
+[counts](packages/confit/docs/reports/corpus-counts.json)).
 
-The authoring layer's window-aggregate `fit` (marginalization) works; typed
-I/O, serving through Confit, static tables in authored SQL, and the broader
-DRAFT-20 program (fitted model artifacts as params tables) are the named next
-loops.
+In the authoring layer, `fit` of window aggregates (marginalization) works.
+The next work is typed input and output, serving through Confit, and static
+tables in authored SQL. After that comes the DRAFT-20 program, which stores
+fitted models as params tables.
 
 ## Reports
 
