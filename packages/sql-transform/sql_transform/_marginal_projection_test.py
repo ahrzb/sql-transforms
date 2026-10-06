@@ -14,7 +14,7 @@ import pyarrow as pa
 import pytest
 
 from sql_transform import FittedProjection, SQLProjection, TransformError
-from sql_transform.model._ast import (
+from sql_transform._ast import (
     FIT,
     THIS,
     _base_table,
@@ -23,8 +23,8 @@ from sql_transform.model._ast import (
     _statement,
     _subquery_ref,
 )
-from sql_transform.model._marginal import derive
-from sql_transform.model._nodes import (
+from sql_transform._marginal import derive
+from sql_transform._nodes import (
     BaseTable,
     ColumnRef,
     CteMap,
