@@ -241,18 +241,19 @@ pub(super) fn opaque_static_refusal(
     name: &str,
     table: &str,
 ) -> Option<PrepareError> {
-    // This engine serves a struct's LEAVES, so the struct name refuses for
-    // a different reason than a timestamp does: the fields are right there,
-    // only the whole value is unserved. Struct heads live in `structs`,
-    // everything else unservable in `opaque`.
+    // A struct refuses for a different reason than a timestamp does: its
+    // fields are right there, and its whole value serves only where a value
+    // of its own does (an output, a struct field, a CASE result, IS NULL).
+    // Struct heads live in `structs`, everything else unservable in
+    // `opaque`.
     if let Some(sc) = st
         .structs
         .iter()
         .find(|s| s.name.eq_ignore_ascii_case(name))
     {
         return Some(PrepareError::Unsupported(format!(
-            "static table '{table}' column '{}' is a struct — \
-             project its fields instead",
+            "static table '{table}' column '{}' is a struct where a scalar \
+             is needed (read one of its fields)",
             sc.name
         )));
     }

@@ -134,7 +134,8 @@ def test_a_struct_is_null_where_the_struct_is(sql):
     "sql",
     [
         "SELECT struct_pack(a := k, b := s) AS p FROM __THIS__",
-        "SELECT struct_pack(a := k, b := struct_pack(c := s.a, d := 'z')) AS p FROM __THIS__",
+        "SELECT struct_pack(a := k, b := struct_pack(c := s.a, d := 'z')) AS p "
+        "FROM __THIS__",
         "SELECT struct_pack(r := v, k := k) AS p FROM __THIS__ LEFT JOIN d ON k = id",
         "SELECT {'a': k, 'b': s.n} AS p FROM __THIS__",
         # unaliased literals are named `main.struct_pack(...)`
@@ -154,10 +155,12 @@ def test_a_built_struct_matches_duckdb(sql):
     "sql",
     [
         "SELECT CASE WHEN k > 1 THEN s END AS o FROM __THIS__",
-        "SELECT CASE WHEN k > 1 THEN w ELSE dw END AS o FROM __THIS__ LEFT JOIN d ON k = id",
+        "SELECT CASE WHEN k > 1 THEN w ELSE dw END AS o "
+        "FROM __THIS__ LEFT JOIN d ON k = id",
         "SELECT CASE WHEN k > 2 THEN w WHEN k = 2 THEN NULL ELSE dw END AS o "
         "FROM __THIS__ LEFT JOIN d ON k = id",
-        "SELECT CASE k WHEN 1 THEN {'a': x} WHEN 3 THEN {'a': x + 1} END AS o FROM __THIS__",
+        "SELECT CASE k WHEN 1 THEN {'a': x} WHEN 3 THEN {'a': x + 1} END AS o "
+        "FROM __THIS__",
         "SELECT CASE WHEN s IS NULL THEN NULL ELSE {'a': s.a} END AS o FROM __THIS__",
         "SELECT CASE WHEN k > 1 THEN {'a': {'b': s}} END AS o FROM __THIS__",
         "SELECT (CASE WHEN k > 1 THEN s END).a AS o FROM __THIS__",
@@ -240,7 +243,8 @@ TYPED_D = pa.table(
         "SELECT struct_pack(c := c, e := e) AS p FROM __THIS__ LEFT JOIN d ON k = id",
         "SELECT c, c.d * 2 AS dd FROM __THIS__",
         # HUGEINT leaves as decimal128(38, 0), past 38 digits too
-        "SELECT struct_pack(h := CAST(170141183460469231731687303715884105727 AS HUGEINT),"
+        "SELECT struct_pack("
+        "h := CAST(170141183460469231731687303715884105727 AS HUGEINT),"
         " i := CAST(2 AS UTINYINT)) AS p FROM __THIS__",
         "SELECT struct_pack(h := CAST(k AS HUGEINT) * 10, u := c.u) AS p FROM __THIS__",
     ],
@@ -321,9 +325,7 @@ _K = pa.table(
     ],
 )
 def test_a_using_key_under_a_star(sql):
-    assert_parity(
-        sql, T.select(["k", "w"]), statics={"d": _K}, expect="AGREE"
-    )
+    assert_parity(sql, T.select(["k", "w"]), statics={"d": _K}, expect="AGREE")
 
 
 @pytest.mark.parametrize(
@@ -397,11 +399,15 @@ def test_both_boundaries_carry_the_struct(monkeypatch, generic):
     assert s.is_null().to_pylist() == [False, True, False]
     assert s.field("a").is_null().to_pylist() == [False, True, True]
     assert s.field("n").is_null().to_pylist() == [False, True, True]
-    assert fn.infer_rows(T.to_pylist()) == out.to_pylist() == [
-        {"s": {"a": 1, "B": "q", "n": {"x": 1.5}}, "t": {"p": {"x": 1.5}, "q": 1}},
-        {"s": None, "t": {"p": None, "q": 2}},
-        {"s": {"a": None, "B": None, "n": None}, "t": {"p": None, "q": 3}},
-    ]
+    assert (
+        fn.infer_rows(T.to_pylist())
+        == out.to_pylist()
+        == [
+            {"s": {"a": 1, "B": "q", "n": {"x": 1.5}}, "t": {"p": {"x": 1.5}, "q": 1}},
+            {"s": None, "t": {"p": None, "q": 2}},
+            {"s": {"a": None, "B": None, "n": None}, "t": {"p": None, "q": 3}},
+        ]
+    )
 
 
 def test_a_struct_without_fields_refuses_whole():

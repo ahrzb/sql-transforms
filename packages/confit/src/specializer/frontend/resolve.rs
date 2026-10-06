@@ -414,8 +414,8 @@ impl Binder<'_> {
                     src: NodeSrc::Static(j),
                     path: declared_path(sc, &fields[..=at]),
                     refusal: format!(
-                        "static table '{table}' column '{}' is a struct — \
-                         project its fields instead",
+                        "static table '{table}' column '{}' is a struct where a \
+                         scalar is needed (read one of its fields)",
                         display.join(".")
                     ),
                 }))
@@ -553,7 +553,7 @@ impl Binder<'_> {
                 src: NodeSrc::Row,
                 path: vec![sc.name.clone()],
                 refusal: format!(
-                    "struct column '{}' as a whole value (project its fields instead)",
+                    "struct column '{}' where a scalar is needed (read one of its fields)",
                     sc.name
                 ),
             }));
@@ -583,8 +583,8 @@ impl Binder<'_> {
                 src: NodeSrc::Row,
                 path: declared_path(sc, &fields[..=at]),
                 refusal: format!(
-                    "struct field '{field}' as a whole value (project its \
-                     scalar leaves instead)"
+                    "struct field '{field}' where a scalar is needed (read one \
+                     of its fields)"
                 ),
             })),
         }
@@ -720,8 +720,8 @@ impl Binder<'_> {
                 src: NodeSrc::Static(j),
                 path: vec![cname.clone()],
                 refusal: format!(
-                    "static table '{tname}' column '{cname}' is a struct — \
-                     project its fields instead"
+                    "static table '{tname}' column '{cname}' is a struct where a \
+                     scalar is needed (read one of its fields)"
                 ),
             }));
         }
@@ -881,13 +881,11 @@ impl Binder<'_> {
             if let Some(e) = opaque_static_refusal(&sj.table, name, table) {
                 // A static struct's whole value: its node. A USING/NATURAL
                 // struct key's is not served.
-                if let (Some(sc), PrepareError::Unsupported(refusal)) = (
-                    sj.table
-                        .structs
-                        .iter()
-                        .find(|s| !key_struct(sj, &s.name) && s.name.eq_ignore_ascii_case(name)),
-                    &e,
-                ) {
+                let sc = sj.table.structs.iter().find(|s| s.name.eq_ignore_ascii_case(name));
+                if let (Some(sc), PrepareError::Unsupported(refusal)) = (sc, &e) {
+                    if key_struct(sj, &sc.name) {
+                        return Err(self.merged_key(j, &sc.name));
+                    }
                     return Ok(Resolved::Node(NodeRef {
                         src: NodeSrc::Static(j),
                         path: vec![sc.name.clone()],

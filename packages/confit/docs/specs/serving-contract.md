@@ -109,7 +109,8 @@ DuckDB 1.5.5.
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
 | More than one join under `shape='many'` | 2 inside, refused | named rejection |
 | Casts into DECIMAL from DOUBLE/VARCHAR/BOOLEAN, DECIMAL join key expressions against a non-DOUBLE key, `IN`/`BETWEEN` capped at 38 digits | 2 inside, refused | named rejection; decimal expressions otherwise serve exactly |
-| `f32` row columns, lists, whole-struct output, bracket field access, `HUGEINT`/unsigned | 2 inside, refused | type not served |
+| `f32` row columns, lists, `UHUGEINT` | 2 inside, refused | type not served |
+| A struct value in a derived table or a CTE, a CASE over structs of different types, `IS NULL` over a struct that the query builds | 2 inside, refused | DuckDB serves them. A derived table carries scalar columns only. Confit does not convert struct types to a common type, and does not build the fields only to test the struct. |
 | `decimal256` static columns | 4 invalid | DuckDB refuses them at Arrow registration |
 | All-NULL `CASE`/`COALESCE`/`least`/`greatest`, bare `NULL` as `repeat`'s string (BLOB) | 2 inside, refused | DuckDB binds them; the engine has no BLOB type |
 | `^`, prefix `~`, `#`, `NOT GLOB`; `COLUMNS(...)` in expressions; `* EXCLUDE (t.key)` on `USING`; mixed string/number `BETWEEN`/`IN` | 2 inside, refused | parser precedence or binding not reproduced; refused rather than served wrong |

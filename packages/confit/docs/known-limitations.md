@@ -154,16 +154,49 @@ consequences:
   `decimal.Decimal` or an `int`, exactly representable at the column's
   (p, s) — a float, or a value with more than `s` decimal places, refuses
   rather than rounding (`tests/test_decimal_rows.py`).
-- **Structs of scalars SERVE**: struct row and static columns are
-  flattened to scalar lanes at build time — field access in every spelling
-  (`a.i`, deep `t.t.t.t` paths, `a['i']`, `(a).i`, `struct_extract(a, 'i')`
-  and chains mixing them, output names as DuckDB prints them) and
-  struct-star (`a.*` incl. EXCLUDE/REPLACE) are bit-identical to DuckDB. A
-  field name may contain a dot (`a."x.y"`). What rejects, by name: the
-  struct as a WHOLE value (`SELECT a`, `a['n']` of a nested struct —
-  non-scalar output), struct fields whose own types are non-scalar, and
-  `a['i']` when `a` also names a relation in scope (there `a.i` would be
-  the relation's column, so the two spellings differ).
+- **Struct fields SERVE.** Confit holds each scalar field of a struct
+  column in a lane, in the request table and in a static table. Each
+  spelling of a field read serves: `a.i`, deep paths such as `t.t.t.t`,
+  `a['i']`, `(a).i`, `struct_extract(a, 'i')`, and chains that mix them. A
+  struct star (`a.*`, with EXCLUDE or REPLACE) also serves. A field name
+  can contain a dot (`a."x.y"`). The output names are the names that the
+  oracle gives.
+- **A whole struct is one output value** (`tests/test_struct_outputs.py`).
+  These struct values serve:
+  - a struct column or a nested struct field, in each spelling above;
+  - a struct column of a static table. It is NULL where a LEFT join finds
+    no row;
+  - the row of a relation (`SELECT t FROM t`). It is never NULL. Where a
+    LEFT join finds no row, it is a struct of NULLs;
+  - a call of a UDF (`ExternFunction`) or a SQL function (`SqlFunction`)
+    that returns a struct;
+  - `struct_pack(k := v, ...)` and the struct literal `{'k': v, ...}`, over
+    these values and over scalars;
+  - a CASE whose results are struct values of one type, or NULL.
+
+  `s IS NULL` tests the struct itself, not its fields. The Arrow entry
+  point (`infer_arrow`) returns a nested Arrow `struct` column. The Python
+  entry point (`infer_rows`) returns a nested dict. Each field keeps its
+  type, for example DECIMAL, the unsigned widths, and HUGEINT as
+  `decimal128(38, 0)`.
+- **These struct forms refuse by name:**
+  - a derived table or a CTE that carries a struct column;
+  - a CASE whose results are structs of different types, or a struct and
+    another value. The oracle converts struct types to a common type, and
+    confit does not;
+  - `struct_pack(...) IS NULL`, and `IS NULL` over a CASE of structs. The
+    oracle builds each field first, so a field can trap;
+  - a struct with a field of a type that confit does not compute in, for
+    example a timestamp or a list;
+  - a struct without fields;
+  - `row(...)`, and `struct_pack` with an argument that has no name;
+  - a whole struct where a scalar is necessary: an operand, a function
+    argument, or a comparison (`s = s`);
+  - the static side of a struct join key that USING or NATURAL merges
+    (`d.w`, or `d.*`). The merged key `w` serves, with the values of the
+    request table;
+  - `a['i']` when `a` also names a relation in scope. There `a.i` reads the
+    column of the relation, so the two spellings differ.
 - **Lists reject** (`row column 'x' has a non-scalar type`) — list types
   are out of the row-schema vocabulary and are opaque: unreferenced
   (star expansion included) they cost nothing to declare, an

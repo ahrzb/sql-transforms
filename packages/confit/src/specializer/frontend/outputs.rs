@@ -294,7 +294,7 @@ impl Binder<'_> {
             // A USING/NATURAL struct key is merged into the request side;
             // its own whole value is not served.
             if key_struct(&self.joins[j], &node.path[0]) {
-                return Err(unsup(node.refusal.clone()));
+                return Err(self.merged_key(j, &node.path[0]));
             }
         }
         self.node_fields(node, &node.path, fields)
@@ -445,10 +445,20 @@ impl Binder<'_> {
         };
         if let NodeSrc::Static(j) = n.src {
             if key_struct(&self.joins[j], &n.path[0]) {
-                return Err(unsup(n.refusal));
+                return Err(self.merged_key(j, &n.path[0]));
             }
         }
         self.node_valid(&n, &n.path).map(Some)
+    }
+
+    /// The refusal for a static struct key that USING or NATURAL merged,
+    /// read whole on its own side.
+    pub(super) fn merged_key(&self, j: usize, column: &str) -> PrepareError {
+        unsup(format!(
+            "static table '{}' column '{column}' as a whole value: USING or \
+             NATURAL merges this struct key (read it unqualified)",
+            self.joins[j].name
+        ))
     }
 
     /// A field value inside a struct: a struct value, or a scalar.
