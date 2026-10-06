@@ -119,6 +119,26 @@ The report ends with the section **Needs the owner** from
 [`../reporting.md`](../reporting.md). It lists every open decision record,
 with the one line of evidence that the owner needs to rule.
 
+## Decisions stay in their records
+
+A report gives measurements and facts. A decision record holds the
+question for the owner, the options, the loop's recommendation and the
+ruling ([decisions/README.md](decisions/README.md)). Do not copy that
+content into a report.
+
+- **Needs the owner** lists the files in `decisions/open/` on the master
+  commit that the report names. It lists each file once, and nothing else.
+  Each item gives the path of the record and one line of evidence. It gives
+  no option, no proposal and no recommendation.
+- No other section lists questions for the owner.
+- If a question has no record, write the record before a report lists it
+  ([AGENTS.md](../../AGENTS.md), rule 3).
+- If the owner ruled since the last report, link the closed record. Say
+  what the ruling changed in the catalog. Do not restate the ruling.
+- Before you merge a report, list the files in `decisions/open/`. Check
+  that **Needs the owner** and the key `needs_owner` name each of them, and
+  only them.
+
 ## Style
 
 - **Give facts, not adjectives.** "Bit-exact over 200 seeds" says
