@@ -15,9 +15,19 @@
 //! Evaluating such a value earlier than its occurrence, or where its CASE
 //! arm is not taken, is invisible: it cannot trap and has no effect. A
 //! subexpression that can trap is never named, so every trap stays where
-//! the query put it, evaluated as often as before.
+//! the query put it.
+//!
+//! One kind of trap is evaluated less often: a check, an item of a
+//! [`SKind::Seq`] kept only for its traps (a sibling field of a struct
+//! that a field read still evaluates), that an earlier item of the
+//! projection already ran on every row that reaches this one. The same
+//! expression on the same row traps again exactly where it trapped before,
+//! and there the row stopped, so the later check is dropped
+//! ([`repeated_checks`]). Every field read of a struct whose first field
+//! guards the inputs carried that guard: W reads of a guard over T inputs
+//! built and ran W copies of it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use super::ir::{CmpPred, Lit};
@@ -44,6 +54,7 @@ pub fn share(items: &[SExpr], lets: &[SExpr]) -> Option<Shared> {
     }
     let roots: Vec<u32> = items.iter().map(|e| dag.intern(e.clone())).collect();
     let n = dag.nodes.len();
+    let dropped = repeated_checks(&dag, &roots);
 
     // Where each node is evaluated. An occurrence is GATED by the CASE
     // positions on its path: a CASE evaluates its first condition on every
@@ -82,6 +93,9 @@ pub fn share(items: &[SExpr], lets: &[SExpr]) -> Option<Shared> {
             here.into_iter().collect()
         };
         for (i, &c) in node.children.iter().enumerate() {
+            if dropped.contains(&(id as u32, i)) {
+                continue;
+            }
             let step = dag.gate(node, i);
             for (g, k) in &here {
                 let mut g = g.clone();
@@ -93,7 +107,7 @@ pub fn share(items: &[SExpr], lets: &[SExpr]) -> Option<Shared> {
             }
         }
     }
-    if !shared.iter().any(|s| *s) && lets.is_empty() {
+    if !shared.iter().any(|s| *s) && lets.is_empty() && dropped.is_empty() {
         return None;
     }
 
@@ -109,6 +123,7 @@ pub fn share(items: &[SExpr], lets: &[SExpr]) -> Option<Shared> {
     let build = Build {
         dag: &dag,
         def_of: &def_of,
+        dropped: &dropped,
     };
     let defs: Vec<SExpr> = order.iter().map(|&id| build.expr(id, true)).collect();
     let items: Vec<SExpr> = roots.iter().map(|&r| build.expr(r, false)).collect();
@@ -282,6 +297,8 @@ fn shallow_hash(e: &SExpr, children: &[u32]) -> u64 {
 struct Build<'a> {
     dag: &'a Dag,
     def_of: &'a [u32],
+    /// The checks [`repeated_checks`] drops.
+    dropped: &'a HashSet<(u32, usize)>,
 }
 
 impl Build<'_> {
@@ -305,10 +322,220 @@ impl Build<'_> {
                 nullable: node.shallow.nullable,
             };
         }
+        if let SKind::Seq { pick, .. } = node.shallow.kind {
+            if (0..node.children.len()).any(|i| self.dropped.contains(&(id, i))) {
+                let mut items = Vec::new();
+                let mut at = 0;
+                for (i, &cid) in node.children.iter().enumerate() {
+                    if self.dropped.contains(&(id, i)) {
+                        continue;
+                    }
+                    if i == pick {
+                        at = items.len();
+                    }
+                    items.push(self.expr(cid, false));
+                }
+                if items.len() == 1 {
+                    return items.pop().expect("the picked item");
+                }
+                return SExpr {
+                    kind: SKind::Seq { items, pick: at },
+                    ty: node.shallow.ty,
+                    nullable: node.shallow.nullable,
+                };
+            }
+        }
         let mut e = node.shallow.clone();
         for (c, &cid) in e.children_mut().into_iter().zip(&node.children) {
             *c = self.expr(cid, false);
         }
         e
+    }
+}
+
+/// The checks to drop, as (Seq node, item index): each check an earlier
+/// run of the same expression already covers on every row that reaches it
+/// (see the module doc). Items run in order, and so does each item's tree,
+/// so a walk in that order meets the earlier run first. A run counts only
+/// where it is certain: reached from its item through Seq items and CASE
+/// positions ([`Gates`]) behind conditions that call no UDF, never through
+/// an operator that may skip an operand (AND and OR in a condition skip
+/// their right one). A later check is redundant where an earlier certain
+/// run's CASE positions are a prefix of its own: every row that reaches it
+/// reached that run.
+///
+/// Only a Seq node that stands in one place drops a check, so that the
+/// decision, which holds for the node, holds for its one occurrence; and a
+/// check that calls a UDF stays, since a second call may answer otherwise.
+fn repeated_checks(dag: &Dag, roots: &[u32]) -> HashSet<(u32, usize)> {
+    let mut w = Walk {
+        dag,
+        gates: Gates::default(),
+        seqs: HashMap::new(),
+        ran: HashMap::new(),
+        dropped: HashSet::new(),
+        calls: HashMap::new(),
+    };
+    for &r in roots {
+        w.count(r);
+    }
+    let mut gate = Vec::new();
+    for &r in roots {
+        w.walk(r, &mut gate, true);
+    }
+    w.dropped
+}
+
+/// The CASE positions on a path, each named exactly (not by a hash), as
+/// `Dag::gate` names them: by the conditions before it, and by whether it
+/// is a later condition, the result of the last of them, or the default.
+#[derive(Default)]
+struct Gates {
+    /// Per sequence of conditions, by (the sequence one shorter, its last
+    /// condition): its number, from 1 (0 is the empty sequence).
+    prefixes: HashMap<(u32, u32), u32>,
+    /// Per (role, sequence of conditions): the position's number.
+    ids: HashMap<(u8, u32), u32>,
+}
+
+impl Gates {
+    fn longer(&mut self, prefix: u32, cond: u32) -> u32 {
+        let next = self.prefixes.len() as u32 + 1;
+        *self.prefixes.entry((prefix, cond)).or_insert(next)
+    }
+
+    fn id(&mut self, role: u8, prefix: u32) -> u32 {
+        let next = self.ids.len() as u32;
+        *self.ids.entry((role, prefix)).or_insert(next)
+    }
+}
+
+struct Walk<'a> {
+    dag: &'a Dag,
+    gates: Gates,
+    /// Per Seq node that can trap: in how many places it stands.
+    seqs: HashMap<u32, u32>,
+    /// Per check node: the CASE positions of each certain run of it.
+    ran: HashMap<u32, Vec<Vec<u32>>>,
+    dropped: HashSet<(u32, usize)>,
+    /// Per node: whether its tree calls a UDF.
+    calls: HashMap<u32, bool>,
+}
+
+impl Walk<'_> {
+    /// Count the places of each Seq node under `id` that can trap.
+    fn count(&mut self, id: u32) {
+        stacker::maybe_grow(
+            super::frontend::RED_ZONE,
+            super::frontend::STACK_SEGMENT,
+            || {
+                let node = &self.dag.nodes[id as usize];
+                if node.free {
+                    return;
+                }
+                if let SKind::Seq { .. } = node.shallow.kind {
+                    *self.seqs.entry(id).or_default() += 1;
+                }
+                for &c in &node.children {
+                    self.count(c);
+                }
+            },
+        )
+    }
+
+    fn walk(&mut self, id: u32, gate: &mut Vec<u32>, certain: bool) {
+        stacker::maybe_grow(
+            super::frontend::RED_ZONE,
+            super::frontend::STACK_SEGMENT,
+            || self.walk_here(id, gate, certain),
+        )
+    }
+
+    fn walk_here(&mut self, id: u32, gate: &mut Vec<u32>, certain: bool) {
+        let dag = self.dag;
+        let node = &dag.nodes[id as usize];
+        if node.free {
+            // Nothing in it traps.
+            return;
+        }
+        match &node.shallow.kind {
+            SKind::Seq { pick, .. } => {
+                let once = self.seqs.get(&id) == Some(&1);
+                for (i, &c) in node.children.iter().enumerate() {
+                    if i == *pick {
+                        self.walk(c, gate, certain);
+                        continue;
+                    }
+                    if once && self.ran_before(c, gate) && !self.calls_udf(c) {
+                        self.dropped.insert((id, i));
+                        continue;
+                    }
+                    self.walk(c, gate, certain);
+                    if certain {
+                        self.ran.entry(c).or_default().push(gate.clone());
+                    }
+                }
+            }
+            SKind::Case { arms, .. } => {
+                let n_arms = arms.len();
+                // The conditions before the child, and whether one calls a
+                // UDF: one that does may answer otherwise the next time, so
+                // a run behind it is not certain to come again.
+                let mut prefix = 0;
+                let mut udf = false;
+                for (i, &c) in node.children.iter().enumerate() {
+                    if i == 0 {
+                        // The first condition runs wherever the CASE does.
+                        self.walk(c, gate, certain);
+                        continue;
+                    }
+                    let role = if i >= 2 * n_arms {
+                        2
+                    } else if i % 2 == 1 {
+                        let cond = node.children[i - 1];
+                        prefix = self.gates.longer(prefix, cond);
+                        udf = udf || self.calls_udf(cond);
+                        1
+                    } else {
+                        0
+                    };
+                    gate.push(self.gates.id(role, prefix));
+                    self.walk(c, gate, certain && !udf);
+                    gate.pop();
+                }
+            }
+            _ => {
+                for &c in &node.children {
+                    self.walk(c, gate, false);
+                }
+            }
+        }
+    }
+
+    /// Whether a certain run of `check` came before, under a prefix of
+    /// `gate`.
+    fn ran_before(&self, check: u32, gate: &[u32]) -> bool {
+        self.ran
+            .get(&check)
+            .is_some_and(|runs| runs.iter().any(|g| gate.starts_with(g)))
+    }
+
+    fn calls_udf(&mut self, id: u32) -> bool {
+        stacker::maybe_grow(
+            super::frontend::RED_ZONE,
+            super::frontend::STACK_SEGMENT,
+            || {
+                if let Some(&b) = self.calls.get(&id) {
+                    return b;
+                }
+                let node = &self.dag.nodes[id as usize];
+                let mut b = matches!(node.shallow.kind, SKind::ExternCall { .. });
+                for &c in &node.children {
+                    b = b || self.calls_udf(c);
+                }
+                self.calls.insert(id, b);
+                b
+            },
+        )
     }
 }

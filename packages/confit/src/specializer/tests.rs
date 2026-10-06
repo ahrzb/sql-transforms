@@ -509,6 +509,143 @@ fn a_shared_value_beside_a_trap_keeps_the_trap() {
     assert!(trap.contains("Overflow"), "{trap}");
 }
 
+// A field read still runs its siblings' checks (share.rs
+// `repeated_checks`): a copy that an earlier item ran on every row that
+// reaches it is dropped, and every other copy stays.
+
+/// A struct whose field p checks the inputs, as the native catalog's first
+/// field guards its inputs.
+const GUARDED: &str = "struct_pack(p := CASE WHEN abs(x) > 1e300 OR abs(y) > 1e300 \
+                       THEN error('rejected') ELSE x END, q := x * 2, r := y * 3)";
+
+/// The copies of [`GUARDED`]'s check in the program.
+fn checks(p: &super::ir::Program) -> usize {
+    print(p).matches("rejected\"").count()
+}
+
+#[test]
+fn a_check_an_earlier_item_ran_on_every_row_is_dropped() {
+    let schema = cols(&[("k", Ty::I64, true), ("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let n = |items: &str| {
+        let sql = format!("SELECT {} FROM __THIS__", items.replace('@', GUARDED));
+        checks(&prep(&sql, &schema).unwrap())
+    };
+    // Every row that reads r has read q.
+    assert_eq!(n("(@).q AS q, (@).r AS r"), 1);
+    assert_eq!(n("(@).q AS q, CASE WHEN k > 0 THEN (@).r END AS r"), 1);
+    assert_eq!(
+        n("CASE WHEN k > 0 THEN (@).q END AS q, CASE WHEN k > 0 THEN (@).r END AS r"),
+        1
+    );
+    // Some rows that read r have not: behind an arm, the other arm, or an
+    // operand AND may skip.
+    assert_eq!(n("CASE WHEN k > 0 THEN (@).q END AS q, (@).r AS r"), 2);
+    assert_eq!(
+        n("CASE WHEN k > 0 THEN (@).q END AS q, CASE WHEN k > 0 THEN 0 ELSE (@).r END AS r"),
+        2
+    );
+    assert_eq!(n("k > 0 AND (@).q > 0 AS q, (@).r AS r"), 2);
+    // A read that stands twice keeps its check in both places: the first
+    // is the run that would cover the second.
+    assert_eq!(n("(@).q AS q, (@).q AS r"), 2);
+}
+
+#[test]
+fn a_dropped_check_still_traps_where_the_first_did() {
+    let schema = cols(&[("k", Ty::I64, true), ("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let input = |k: i64, x: f64| {
+        batch(1, vec![c_i64(&[Some(k)]), c_f64(&[Some(x)]), c_f64(&[Some(1.0)])])
+    };
+    for items in [
+        "(@).q AS q, (@).r AS r",
+        "CASE WHEN k > 0 THEN (@).q END AS q, (@).r AS r",
+        "k > 0 AND (@).q > 0 AS q, (@).r AS r",
+        "(@).q AS q, (@).q AS r",
+    ] {
+        let sql = format!("SELECT {} FROM __THIS__", items.replace('@', GUARDED));
+        // k = 0 skips the guarded read of q, not the read of r.
+        let err = run_sql(&sql, &schema, input(0, 1e301)).unwrap_err();
+        assert!(err.contains("rejected"), "{err}\n{sql}");
+        let err = run_sql(&sql, &schema, input(1, -1e301)).unwrap_err();
+        assert!(err.contains("rejected"), "{err}\n{sql}");
+        assert!(run_sql(&sql, &schema, input(0, 2.0)).is_ok(), "{sql}");
+    }
+}
+
+#[test]
+fn a_check_behind_a_udf_condition_runs_again() {
+    // A lateral alias reads its bound value, the UDF's call site included,
+    // and each read may call the UDF again: a condition TRUE at the second
+    // read may have been FALSE at the first, so the check runs again.
+    let schema = cols(&[("k", Ty::I64, true), ("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let n = |cond: &str| {
+        let sql = format!(
+            "SELECT {cond} AS c, CASE WHEN c THEN (@).q END AS q, \
+             CASE WHEN c THEN (@).r END AS r FROM __THIS__"
+        )
+        .replace('@', GUARDED);
+        let udfs = [udf("u", &[Ty::F64], &[Ty::F64])];
+        checks(&prep_udfs(&sql, &schema, &[], &udfs).unwrap().program)
+    };
+    assert_eq!(n("k > 0"), 1);
+    assert_eq!(n("u(x) > 0"), 2);
+}
+
+#[test]
+fn a_check_that_calls_a_udf_runs_at_every_read() {
+    // A SQL function's field reads share the binding of its siblings'
+    // checks (calls.rs): a second call of a UDF may answer otherwise, so a
+    // check that calls one runs at every read.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let g = |check: &str| super::frontend::macros::SqlMacro {
+        name: "g".into(),
+        params: vec!["v".into()],
+        body: format!(
+            "struct_pack(p := CASE WHEN {check} THEN error('rejected') ELSE v END, \
+             q := v * 2, r := v * 3)"
+        ),
+        lets: vec![],
+    };
+    let n = |check: &str| {
+        let sql = "SELECT g(x).q AS q, g(x).r AS r FROM __THIS__";
+        let udfs = [udf("u", &[Ty::F64], &[Ty::F64])];
+        let p = super::prepare_full(
+            sql, "__THIS__", &schema, &[], &[], &[], false, &udfs, &[], &[], &[g(check)], false,
+        )
+        .unwrap()
+        .program;
+        checks(&p)
+    };
+    assert_eq!(n("abs(v) > 1e300"), 1);
+    assert_eq!(n("u(v) > 1e300"), 2);
+}
+
+#[test]
+fn a_siblings_parts_kept_as_lets_are_folded() {
+    // A sibling's parts that cannot trap are lets of the projection
+    // (`lets.rs` `let_parts`), outside the fold of the item that reads
+    // them: folded before, a constant cast in the guard is a constant there
+    // too, as in the field that holds it.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let g = super::frontend::macros::SqlMacro {
+        name: "g".into(),
+        params: vec!["v".into()],
+        body: "struct_pack(p := CASE WHEN coalesce(v, CAST('nan' AS DOUBLE)) * 2 + 1 > 1e300 \
+               THEN error('rejected') ELSE v END, q := v * 2, r := v * 3)"
+            .into(),
+        lets: vec![],
+    };
+    let sql = "SELECT g(x).q AS q, g(x).r AS r FROM __THIS__";
+    let p = super::prepare_full(
+        sql, "__THIS__", &schema, &[], &[], &[], false, &[], &[], &[], &[g], false,
+    )
+    .unwrap()
+    .program;
+    let text = print(&p);
+    assert!(!text.contains("stof"), "{text}");
+    assert_eq!(checks(&p), 1, "{text}");
+}
+
 #[test]
 fn column_cache_loads_once_per_block() {
     let schema = cols(&[("a", Ty::I64, false)]);

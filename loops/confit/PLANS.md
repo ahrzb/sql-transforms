@@ -91,16 +91,62 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-Open, low priority (the catalog caps it meanwhile):
+Open, low priority (the catalog builds within its caps):
 
-- **A trap in one field of a SQL function's struct costs each field read**
-  (asked by the native loop 2026-10-06; repro
-  `/mnt/project-files/transforms-loop/confit-trap-field-reads.py`). At 800
-  fields, reading every field builds in 0.21 s without a trap and 0.53 s
-  with the catalog's id trap and a trap on the parameters (the whole struct:
-  0.05 s either way; release build, f72214b plus this triage). Message the
-  Transforms Loop thread when it changes, so it can measure the catalog
-  again.
+- **A struct output read field by field still costs more than the struct
+  read whole** (the native loop's need "A struct output read field by
+  field, built once for the call"; the part a trap added is closed below).
+  Release build of that change, 2026-10-06:
+  - 2,000 fields over 64 inputs build in 1.1 to 1.4 s read field by field
+    and 0.09 s read whole. RandomTreesEmbedding of 100 trees of depth 5
+    over 8 features builds in 1.7 s, and in 0.8 s as a list. Each field
+    read under `null_when` is a branch of its own: see "Branches that need
+    not be branches" under Performance.
+  - OneHotEncoder over 8 string features of 50 categories (400 fields)
+    builds in 28 s, and in 2.4 s without its input guard (master refused
+    it at Cranelift's size limit). The guard's `IN` lists share prefixes
+    with the `IN` lists of the fields, so `share.rs` computes each prefix
+    at field 0 and carries it to the last field that reads it: about 190
+    values ride every block (650,000 block params at 100 fields, 24,000
+    without the guard). The native loop plans to spell the guard as one
+    substring search a feature (its PLANS "Next" 1), which avoids it. In
+    confit, a shared value that would ride many blocks could be computed
+    again where it is read.
+  - A guard of 64 tests in the `null_when` condition still builds in 3.2 s
+    at 2,000 fields, against 1.2 s without a guard
+    (`confit-trap-where.py`). In field 0 or in the unknown-id arm it costs
+    about nothing, and the catalog keeps its guard in field 0.
+  - OrdinalEncoder over 32 string features of 125 categories builds in
+    2.8 s. A first version of `compute_once`, which stored every value a
+    block passes on, built it in 1.7 to 1.9 s from Python
+    (`DuckDBInferFn`). The same rule in a Rust test (the program dumped
+    from Python) built it in 2.7 s, like the final rule, so the gap is not
+    the store rule; not explained. Its `to_native` takes 25 to 29 s,
+    nearly all outside the trial build.
+
+- **Closed 2026-10-06: a trap in one field of a SQL function's struct
+  costs each field read** (repros in `/mnt/project-files/transforms-loop/`).
+  Every field read carried its own copy of field 0's input guard, and
+  Cranelift computed a value the IR passes on again in each CASE arm that
+  reads it, so W reads of a guard over T inputs built in W * T. Now a read
+  drops a sibling's check that an earlier item ran on every row that
+  reaches it (`share.rs` `repeated_checks`), Cranelift computes once, where
+  the IR does, a value read in places none of which dominates the others
+  (`exec/cranelift.rs` `compute_once`), and a sibling's trap-free parts
+  are lets of the projection (`lets.rs` `let_parts`). Builds, master
+  24674cd against the change (release, one machine): 2,000 fields with a
+  guard over 64 inputs 5.4 s to 1.1 s (1.1 to 1.4 s for any guard of 0 to
+  64 inputs), the guard in the unknown-id arm 6.4 s to 1.4 s, in every
+  field 6.6 s to 1.7 s; RandomTreesEmbedding, 100 trees of depth 5, 13 s
+  to 2.4 s at 64 features and 7 s to 1.7 s at 8; SplineTransformer at 64
+  features 5.3 s to 2.1 s, and at 128 features it builds (4.6 to 12 s
+  for degree 3 to 5), where master stops at Cranelift's size limit after
+  11 to 20 s; OrdinalEncoder over 32 string features of 125 categories
+  30 s to 2.8 s; StandardScaler at 256 features 1.3 s to 0.4 s;
+  PolynomialFeatures of degree 2 over 64 features 5.0 s to 1.7 s. A
+  64-row call of RandomTreesEmbedding and OneHotEncoder serves about 30%
+  faster, seven other classes within noise. The Transforms Loop was told,
+  to refit its build estimates (native T26).
 
 - **Closed 2026-10-05: two CASE trees in one expression.** The catalog now
   spells each QuantileTransformer feature as one search tree (native #391;

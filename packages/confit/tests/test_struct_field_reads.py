@@ -331,6 +331,48 @@ def test_a_null_struct_keeps_its_sibling_traps():
         assert_parity(sql, SAFE, udfs=[f])
 
 
+GUARDS = table(
+    {"a": "int?", "x": "float?", "y": "float?"},
+    [
+        {"a": 1, "x": 1.5, "y": 2.0},
+        {"a": None, "x": float("inf"), "y": 1.0},
+        {"a": 0, "x": -1.0, "y": float("-inf")},
+    ],
+)
+
+
+def test_a_guard_every_field_read_carries_traps_where_duckdb_does():
+    # The native catalog's shape: field p guards the inputs, so every
+    # field read carries the guard. A read on a row that an earlier item
+    # already guarded drops its copy (share.rs `repeated_checks`); the
+    # rows here guard q only where x > 0, so r's guard still runs.
+    def body(iid, v, w):
+        bad = (S.fn("abs", v) > S.lit(1e300)) | (S.fn("abs", w) > S.lit(1e300))
+        return {
+            "p": S.case(bad, S.fn("error", S.lit("rejected"))).otherwise(v),
+            "q": v * S.lit(2.0),
+            "r": w * S.lit(3.0),
+        }
+
+    f = SqlFunction(
+        "g",
+        pa.schema([("iid", pa.int64()), ("v", pa.float64()), ("w", pa.float64())]),
+        pa.struct([("p", pa.float64()), ("q", pa.float64()), ("r", pa.float64())]),
+        body,
+        null_when=lambda iid, v, w: iid.isnull(),
+    )
+    for items in (
+        "g(a, x, y).q AS q, g(a, x, y).r AS r",
+        "g(a, x, y).r AS r, CASE WHEN x > 0 THEN g(a, x, y).q END AS q",
+        "CASE WHEN x > 0 THEN g(a, x, y).q END AS q, g(a, x, y).r AS r",
+        "CASE WHEN x > 0 THEN g(a, x, y).q ELSE g(a, x, y).r END AS o",
+        "x > 0 AND g(a, x, y).q > 0 AS q, g(a, x, y).r AS r",
+    ):
+        sql = f"SELECT {items} FROM __THIS__"
+        assert_parity(sql, GUARDS, udfs=[f], trap="rejected")
+        assert_parity(sql, GUARDS.slice(0, 2), udfs=[f])
+
+
 @pytest.mark.parametrize(
     "expr, why",
     [

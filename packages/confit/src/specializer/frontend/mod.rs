@@ -761,6 +761,7 @@ fn bind_select(
     }
     // A projection `share.rs` lowers reads lets as `SKind::Let`.
     binder.let_reads.set(!env.many);
+    binder.projection_lets.set(!env.many);
     // The entries of `exprs` that bind DuckDB's SQLNULL.
     let mut sqlnull_at: Vec<usize> = Vec::new();
     for (item, written) in select.projection.iter().zip(written) {
@@ -894,6 +895,7 @@ fn bind_select(
         };
     }
     binder.let_reads.set(false);
+    binder.projection_lets.set(false);
     binder.whole_item.set(false);
     if exprs.is_empty() {
         // Pinned text: an EXCLUDE-all star that empties the projection.
@@ -1101,6 +1103,10 @@ struct Binder<'a> {
     /// projection of a stage `share.rs` lowers. Anywhere else it answers
     /// the value.
     let_reads: std::cell::Cell<bool>,
+    /// Whether that projection is binding, a let read in it included
+    /// (`let_reads` is set inside every let read): where a call's siblings
+    /// keep their parts as lets (`calls.rs`).
+    projection_lets: std::cell::Cell<bool>,
     /// The values of `lets`, inlined, for the reads outside the projection.
     let_inlined: std::cell::RefCell<lets::Inlined>,
     /// Per input column: a bare NULL of the level below (see

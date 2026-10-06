@@ -399,6 +399,7 @@ pub(super) fn bind_from<'a>(
         lets: std::cell::RefCell::new(Vec::new()),
         let_vals: std::cell::RefCell::new(std::collections::HashMap::new()),
         let_reads: std::cell::Cell::new(false),
+        projection_lets: std::cell::Cell::new(false),
         let_inlined: std::cell::RefCell::new(lets::Inlined::default()),
         null_cols: match &driving {
             Driving::Derived { null_cols, .. } => null_cols.clone(),
