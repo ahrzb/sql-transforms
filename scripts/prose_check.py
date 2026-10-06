@@ -39,6 +39,12 @@ SCOPE = [
     "loops/confit/decisions/README.md",
     "loops/confit/decisions/open/*.md",
     "loops/confit/reports/*.md",
+    "loops/native/README.md",
+    "loops/native/goal.md",
+    "loops/native/report-format.md",
+    "loops/native/decisions/README.md",
+    "loops/native/decisions/open/worker-environment.md",
+    "loops/native/reports/*.md",
 ]
 
 
