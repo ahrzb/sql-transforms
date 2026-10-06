@@ -23,10 +23,13 @@ list as one comparison a value, so the guard sets the cost of a wide
 encoder. Past SEARCH_PAST strings, an encoder with one output field a
 feature (an ordinal one) tests a string by one substring search instead
 (`_among`), which confit builds in a size that does not grow with the
-strings. The search serves 15 times as slowly as the IN list at 10
-strings, 2.8 times at 50 and 1.1 times at 125. A one-hot encoder keeps the
-IN list: each of its fields runs the guard, and over 8 features of 125
-categories the search served a row in 11.9 ms, against the twin's 2.8 ms.
+strings. A row costs more by the search than by a short IN list: with the
+search past 4 strings, a one-hot encoder over 8 features served a row 15
+times as slowly at 10 categories and 2.8 times at 50, and an ordinal one
+over 32 features of 125 categories 1.1 times as slowly. A one-hot encoder
+keeps the IN list: each of its fields runs the guard, and over 8 features
+of 125 categories the search served a row in 11.9 ms, against the twin's
+2.8 ms.
 Warm builds of `to_native`'s trial build and us a row over 2,000-row
 batches, string features unless the row says, struct returns (release
 build, master e1f15b9; the twin over 1,000 rows):

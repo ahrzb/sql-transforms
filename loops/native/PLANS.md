@@ -93,7 +93,7 @@ that request, `to_native(step, allow_bound=True)`. In order:
     after 8.2 s and 4.8 s. Past 100 strings an ordinal encoder's guard is
     one substring search (`contains`), which builds smaller:
     `OrdinalEncoder` over 32 features of 125 categories builds in 1.2 s
-    (26 s with the IN lists) and serves a row in 1,127 us (1,033), and
+    (24 s with the IN lists) and serves a row in 1,127 us (1,033), and
     over 32 of 500 in 3.3 s (refused after 235 s) and 3,208 us. A
     one-hot encoder keeps the IN lists: each of its fields runs the guard,
     and over 8 features of 125 categories the search served a row in
