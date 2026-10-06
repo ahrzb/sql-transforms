@@ -1,42 +1,52 @@
 # Loops
 
 A loop is an agent session that turns a goal into merged PRs on its own, one
-verified change at a time, and stops only when what is left needs the owner.
-This directory holds what drives the loops: their goals, plans, ticket boards,
-the owner's decision inbox, and their reports. What a loop *produces* for the
-product (contracts, specs, pins, technical write-ups, and any file code or
-tests read) stays with its package.
+verified change at a time. It stops only when the remaining work needs the
+owner.
+
+This directory holds the files that drive the loops. These are their goals,
+their plans, their ticket boards, the owner's decision records and their
+reports.
+
+A loop also produces files for the product. These are contracts, specs,
+pins, technical write-ups, and any file that code or tests read. Those files
+stay with the package of the loop.
 
 ## The loops
 
 | loop | works on | folder | start it with |
 |---|---|---|---|
-| `confit` | the confit SQL specializer (`packages/confit`) | [`confit/`](confit/) | `/loop` Work the confit loop: follow loops/confit/README.md. |
-| `native` | the native sklearn catalog (`packages/sql-transform`, `sql_transform.native`) | [`native/`](native/) | `/loop` Work the native-transform loop: follow loops/native/README.md. |
+| `confit` | the confit serving engine (`packages/confit`) | [`confit/`](confit/) | `/loop` Work the confit loop: follow loops/confit/README.md. |
+| `native` | the native catalog of sklearn transformers (`packages/sql-transform`, `sql_transform.native`) | [`native/`](native/) | `/loop` Work the native-transform loop: follow loops/native/README.md. |
 
 The folder name is the `loop:` key of the KPI block in
-[`reporting.md`](reporting.md), so a report maps to its folder without a
-lookup table.
+[`reporting.md`](reporting.md). The KPI block is the front matter of a
+report, and it holds fixed keys that the owner's tracker reads. With this
+key, a report maps to its folder without a lookup table.
 
 > **Migration (2026-10-05).** Each loop moved its own files here from its old
-> place. The native loop has moved: `packages/sql-transform/docs/native/`
-> keeps only a pointer to [`native/`](native/README.md). The confit loop has
-> moved: `packages/confit/docs/loop/README.md` keeps only a pointer to
-> [`confit/`](confit/README.md).
+> place. The native loop has moved. The folder `packages/sql-transform/docs/native/`
+> now keeps only a pointer to [`native/`](native/README.md). The confit loop
+> has moved. The file `packages/confit/docs/loop/README.md` now keeps only a
+> pointer to [`confit/`](confit/README.md).
 
 ## Shared rules
 
-- [`reporting.md`](reporting.md): when a loop reports, the KPI block, and how
-  a report reaches the owner.
-- [`workers.md`](workers.md): inline and worker modes, tickets and the board,
-  launching workers, review and merge.
-- [`worker-brief.md`](worker-brief.md): the part of every worker's opening
-  prompt that both loops share.
+- [`../AGENTS.md`](../AGENTS.md) tells every agent how to write. It also
+  gives the rules for [`../GLOSSARY.md`](../GLOSSARY.md), which lists the
+  terms of this project.
+- [`reporting.md`](reporting.md) says when a loop writes a report, what the
+  KPI block holds, and how a report reaches the owner.
+- [`workers.md`](workers.md) describes the inline mode and the
+  worker-driven mode. It also describes tickets, the board, how to start
+  workers, review and merge.
+- [`worker-brief.md`](worker-brief.md) is the part of the opening prompt of
+  every worker that both loops share.
 
-## The shape of a loop folder
+## The files of a loop folder
 
-Every loop folder has the same files, so an agent or the owner who knows one
-knows both:
+Every loop folder has the same files. An agent or the owner who knows one
+folder then knows both.
 
 ```
 <loop>/
@@ -49,13 +59,19 @@ knows both:
   reports/         YYYY-MM-DD-<slug>.md, per reporting.md
 ```
 
-A loop adds files it alone needs (the native loop's generated `coverage.md`,
-its `report-format.md`).
+A loop adds the files that only it needs. The native loop adds `coverage.md`,
+which a script generates, and `report-format.md`.
 
 ## Between the loops
 
-Each loop owns its folder and its package. A loop never edits the other's
-folder or package; it asks. Needs go to the other loop's session by message
-and are recorded in the asking loop's PLANS ("Needs from confit" in native;
-confit takes them as its second ticket source). When a need is served, the
-serving loop tells the asking loop.
+Each loop owns its folder and its package. A loop never edits the folder or
+the package of the other loop. It asks the other loop instead.
+
+A need is a capability that one loop asks the other loop to make. The asking
+loop sends each need to the session of the other loop by message. The asking
+loop also records the need in its own PLANS.
+
+- The native loop records its needs under "Needs from confit".
+- The confit loop takes the needs as its second source of tickets.
+
+When the serving loop serves a need, it tells the asking loop.

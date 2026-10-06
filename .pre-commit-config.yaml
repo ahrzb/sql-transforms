@@ -12,3 +12,13 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+
+  # The writing rules of AGENTS.md §1, on the files in the checker's SCOPE.
+  - repo: local
+    hooks:
+      - id: prose-check
+        name: prose check (AGENTS.md)
+        entry: python scripts/prose_check.py
+        language: system
+        pass_filenames: false
+        files: \.md$|^scripts/prose_check\.py$
