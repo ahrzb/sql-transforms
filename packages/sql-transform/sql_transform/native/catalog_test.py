@@ -233,14 +233,6 @@ FIXTURES[QuantileTransformer] = [
 ]
 
 
-def narrow(factory: Callable[[], Any], n: int) -> Callable[[], Any]:
-    """`factory`'s steps take at most `n` features: a translation whose
-    build time grows faster than its width (a family's measured widths
-    are in its module) is checked the same on fewer of them."""
-    factory.max_features = n  # type: ignore[attr-defined]
-    return factory
-
-
 def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
     """A SplineTransformer given an array of knots, the same for each of
     however many features its fit sees (the step draws its width)."""
@@ -262,17 +254,12 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 
 # SplineTransformer: degrees 0 to 4, 2 to 8 knots of each kind, the five
 # extrapolations, both biases and both missing modes (degree 5 is in
-# test_spline_at_the_knots: its expression doubles per degree, and 32
-# features of it build in minutes, spline.py). Constant columns
-# make equal knots (all of them under "uniform", runs under "quantile",
-# where few-valued columns do too, and a zero period under "periodic"); a
-# column only missing makes NaN knots under "quantile". Rows at and beside
-# the knots are in test_spline_at_the_knots. From degree 2 the steps take
-# at most SPLINE_FEATURES features: the entry refuses past an estimated 7 s
-# build per estimator, but a step's instances compound it (1, 2, 3
-# instances of one 25-feature fit: 7.8, 16.7, 33.1 s), and the family's
-# gate share is about 120 s on 4 workers without the limit, 50 s with it.
-SPLINE_FEATURES = 8
+# test_spline_at_the_knots). Constant columns make equal knots (all of them
+# under "uniform", runs under "quantile", where few-valued columns do too,
+# and a zero period under "periodic"); a column only missing makes NaN
+# knots under "quantile". Rows at and beside the knots are in
+# test_spline_at_the_knots. Every width the generator draws builds in a few
+# seconds since confit #387 (spline.py, `_build_estimate`).
 FIXTURES[SplineTransformer] = [
     SplineTransformer,
     lambda: SplineTransformer(degree=0, n_knots=2, extrapolation="continue"),
@@ -282,36 +269,31 @@ FIXTURES[SplineTransformer] = [
         degree=1, n_knots=3, extrapolation="linear", include_bias=False
     ),
     lambda: SplineTransformer(degree=1, n_knots=2, extrapolation="periodic"),
-    *(
-        narrow(f, SPLINE_FEATURES)
-        for f in [
-            lambda: SplineTransformer(
-                degree=2, n_knots=6, knots="quantile", extrapolation="periodic"
-            ),
-            lambda: SplineTransformer(
-                degree=2,
-                n_knots=4,
-                knots="quantile",
-                extrapolation="constant",
-                order="F",
-            ),
-            lambda: SplineTransformer(degree=3, n_knots=8, extrapolation="error"),
-            lambda: SplineTransformer(
-                degree=3, n_knots=4, extrapolation="continue", handle_missing="error"
-            ),
-            lambda: SplineTransformer(
-                degree=4, n_knots=5, extrapolation="periodic", include_bias=False
-            ),
-            lambda: SplineTransformer(
-                degree=4, n_knots=4, knots="quantile", extrapolation="continue"
-            ),
-            lambda: SplineTransformer(
-                degree=4, n_knots=3, extrapolation="linear", handle_missing="error"
-            ),
-            _spline_with_knots(degree=2, extrapolation="continue"),
-            _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
-        ]
+    lambda: SplineTransformer(
+        degree=2, n_knots=6, knots="quantile", extrapolation="periodic"
     ),
+    lambda: SplineTransformer(
+        degree=2,
+        n_knots=4,
+        knots="quantile",
+        extrapolation="constant",
+        order="F",
+    ),
+    lambda: SplineTransformer(degree=3, n_knots=8, extrapolation="error"),
+    lambda: SplineTransformer(
+        degree=3, n_knots=4, extrapolation="continue", handle_missing="error"
+    ),
+    lambda: SplineTransformer(
+        degree=4, n_knots=5, extrapolation="periodic", include_bias=False
+    ),
+    lambda: SplineTransformer(
+        degree=4, n_knots=4, knots="quantile", extrapolation="continue"
+    ),
+    lambda: SplineTransformer(
+        degree=4, n_knots=3, extrapolation="linear", handle_missing="error"
+    ),
+    _spline_with_knots(degree=2, extrapolation="continue"),
+    _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
 ]
 
 
@@ -709,7 +691,6 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # Mostly narrow; sometimes wide enough for a row reduction's blocks.
     wide = rng.random() < 0.3
     n_features = int(rng.integers(5, 33) if wide else rng.integers(1, 5))
-    n_features = min(n_features, getattr(cls_factory, "max_features", n_features))
     types = [
         pa.float64() if rng.random() < 0.7 else pa.int64() for _ in range(n_features)
     ]
@@ -1251,11 +1232,12 @@ def test_spline_refuses(params, reason):
 
 
 def test_spline_refuses_a_build_past_the_cap():
-    # 24 features of degree 3, 8 knots, "continue": built in 21 s; the
-    # estimate puts it past MAX_BUILD_S before confit is asked.
-    X = np.random.default_rng(0).normal(size=(50, 24)) * 10
-    est = SplineTransformer(n_knots=8, extrapolation="continue").fit(X)
-    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(24)])
+    # 32 features of degree 5, 7 knots, "continue": estimated at 9.4 s, and
+    # past confit's 4,000,000-token expansion cap too. The estimate refuses
+    # it before confit is asked, with its own reason.
+    X = np.random.default_rng(0).normal(size=(50, 32)) * 10
+    est = SplineTransformer(degree=5, n_knots=7, extrapolation="continue").fit(X)
+    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(32)])
     returns = pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)])
     step = PythonTransform("tf", {0: est}, takes, returns)
     with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):

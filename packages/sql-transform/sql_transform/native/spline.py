@@ -64,19 +64,21 @@ Widths. The recurrence reads each round's values twice, and a SQL
 function body is substituted as text, so a lane's expression doubles per
 degree (about 3 KB of SQL per lane at degree 3, 8 knots, 33 KB at degree
 5); `continue` keeps three times that (its outer sums), `periodic` repeats
-its mapped `x` at every read. confit's build grows with the features
-times the body (PLANS, Needs from confit). Release build, master 8a67154,
-32 features at degree 3 and 8 knots (320 lanes; `periodic` 224), one
-instance, 10,000-row batches: `constant`, `linear`, `error` build in
-21-23 s and serve 108-111 us per row; `continue` 45 s and 111 us;
-`periodic` 37 s and 59 us; the twin serves the `continue` step in 1,212
-us per row. At degree 1, 32 features: 4.2 s and 67 us; at degree 5, 8
-features of `continue`: 5.6 s and 24 us. One feature at degree 3, 5
-knots: 0.08 s and 0.67 us, against the twin's 205 us (2026-10-05). The
-entry refuses a step whose estimated build passes MAX_BUILD_S
-(`_build_estimate`), as quantile.py and isotonic.py cap theirs: of the
-widths above, the 32-feature ones at degree 3 and beyond stay Python, and
-16 features of degree 3, 8 knots, are served.
+its mapped `x` at every read (PLANS, Needs from confit). Release build,
+master dae7552 (confit #387), one instance, 10,000-row batches, 32
+features at degree 3 and 8 knots (320 lanes; `periodic` 224): `constant`,
+`linear`, `error` build in 1.1-1.2 s and serve 135-142 us per row;
+`continue` 2.4 s and 116 us; `periodic` 2.3 s and 51 us; the twin serves
+the `continue` step in 1,212 us per row. 64 features of `continue`: 5.3 s
+and 255 us; 16 features of degree 5, 7 knots, `continue`: 4.3 s and 65
+us. One feature at degree 3, 5 knots: 0.04 s and 0.53 us, against the
+twin's 205 us (2026-10-06). The entry refuses a step whose estimated
+build passes MAX_BUILD_S (`_build_estimate`), as quantile.py and
+isotonic.py cap theirs. Up to 64 features (1,000 lanes) that is degree 5
+at 7 knots from 32 features (`continue`, `periodic`) or at 64 (the
+others), and degree 4 at 5 knots, 64 features of `continue`, all
+estimated at 7.1 to 21 s; it includes every step confit's expansion cap
+refuses.
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 15
@@ -109,16 +111,20 @@ MAX_BUILD_S = 7.0
 def _build_estimate(lanes: list[S.Expr], params: int) -> float:
     """The seconds confit takes to build these lanes (warm, release build).
     confit substitutes a body as text, so its work grows with the tree the
-    lanes spell (`tree`, every shared node counted where it is read) times
-    the parameters, plus the distinct nodes times the lanes. Fitted on 78
-    warm builds of one instance, 1 to 32 features, degrees 1 to 5, 5 to 8
-    knots, the five extrapolations, 0.5 to 43 s: each within a factor of 2
-    (0.50 to 1.93 times the estimate; master 8a67154, 2026-10-05). Of
-    them, the cap took on none slower than 9.8 s and refused none faster
-    than 7.0 s. It puts 16 features of degree 3, 8 knots, `continue` at
-    5.2 s, where the supervisor measured 5.3-6.1 s. The estimate is one
-    estimator's: a step's instances compound it (1, 2, 3 instances of a
-    25-feature fit built in 7.8, 16.7, 33.1 s, cold)."""
+    lanes spell (`tree`, every shared node counted where it is read), plus
+    the distinct nodes times the parameters. Fitted on 139 warm builds of
+    one instance over 0.3 s (1 to 64 features, degrees 1 to 5, 5 to 8
+    knots, the five extrapolations, up to 1,000 lanes; 0.3 to 10.2 s):
+    each within 0.73 to 1.40 times the estimate (master dae7552, with
+    confit #387, 2026-10-06). Of them, the cap took on none slower than
+    8.7 s and refused none faster than 7.2 s; every step confit's
+    4,000,000-token expansion cap refuses (32 and more features at degree
+    5, 7 knots, `continue`; 48 and more, `periodic`) is estimated past it,
+    9 to 21 s. Before #387 (master 8a67154) the build grew with the tree
+    times the parameters, 4 to 10 times longer at 32 features. The
+    estimate is one estimator's: a step's instances compound it
+    linearly: 1, 2, 3 instances of a 25-feature fit build in 0.37, 0.72,
+    1.14 s, where they took 7.8, 16.7, 33.1 s before #387)."""
     memo: dict[int, int] = {}
 
     def size(e: S.Expr) -> int:
@@ -128,7 +134,7 @@ def _build_estimate(lanes: list[S.Expr], params: int) -> float:
         return memo[k]
 
     tree = sum(size(e) for e in lanes)
-    return 2.40e-6 * tree * params + 1.27e-6 * len(memo) * len(lanes)
+    return 1.31e-5 * tree + 6.95e-7 * len(memo) * params
 
 
 # A knot gap under this, but not zero, could overflow `1 / gap` in the

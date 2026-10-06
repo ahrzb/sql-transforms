@@ -58,25 +58,22 @@ Easiest first; each is one family, one PR.
   meanwhile (about 7 s at most); Next, item 2, is the entry-side
   alternative.
 
-- **A value bound once in a SQL function body, and a build linear in the
-  parameters.** A function body is substituted as text, so an expression
-  read twice is spelled twice, and a recurrence whose every step reads
-  the previous one twice doubles per step. `SplineTransformer`'s de Boor
-  recurrence does (scipy's order, which the entry must keep): one lane of
-  one feature at degree 3, 5 knots, is about 7 KB of SQL, at degree 5
-  about 33 KB, and 32 features of degree 5 expand past the 4,000,000-token
-  cap; `periodic` repeats its mapped `x` (a remainder) at every read.
-  Apart from size, the build grows with the parameters times the body:
-  a confit-only function of 320 struct lanes, each a 9-arm CASE of
-  polynomial arithmetic over one of its DOUBLE parameters, builds in 2.7 s
-  over 4 parameters and 7.3 s over 32 (0.25, 0.63, 1.9, 7.3 s at 4, 8,
-  16, 32 parameters of 10 lanes each; release build, master 8a67154,
-  2026-10-05); the reproduction is in #384's description. 32 features
-  of degree 3, 8 knots, build in about 22 s (`error`) and 44 s
-  (`continue`); the spline entry refuses past an estimated 7 s build
-  meanwhile (spline.py, `_build_estimate`). A binding (a `let`, or a
-  nested function whose arguments are evaluated once) would make the
-  recurrence linear in the degree.
+- **A value bound once in a SQL function body.** A function body is
+  substituted as text, so an expression read twice is spelled twice, and
+  a recurrence whose every step reads the previous one twice doubles per
+  step. `SplineTransformer`'s de Boor recurrence does (scipy's order,
+  which the entry must keep): one lane of one feature at degree 3, 5
+  knots, is about 7 KB of SQL, at degree 5 about 33 KB, and 32 features
+  of degree 5 expand past the 4,000,000-token cap; `periodic` repeats its
+  mapped `x` (a remainder) at every read. #387 (a shared value computed
+  just before its first reader) took the build from growing with the
+  parameters times that text to about linear in it: 32 features of degree
+  3, 8 knots, build in 1.1-2.4 s (21-46 s before), and the entry's 7 s
+  cap now refuses only degree 5 at 7 knots from 32 features, and degree 4
+  or 5 at 64 (spline.py, `_build_estimate`). The size still doubles per
+  degree, so the need stands: a binding (a `let`, or a nested function
+  whose arguments are evaluated once) would make the recurrence linear in
+  the degree, and serve the steps past the token cap.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377): a constant CASE
@@ -176,8 +173,10 @@ Configurations a translator declines (`NotNative`), each with its ground:
   on, and writes a row above the knots into the previous feature's lane.
   Knots that are not sorted, partly NaN, or span past a double, and a
   spline whose `c` is not sklearn's shape (no fit makes these). A step
-  past an estimated 7 s build, per estimator (32 features of degree 3,
-  8 knots, and wider; Needs from confit, "A value bound once"), and any
+  past an estimated 7 s build, per estimator: degree 5 at 7 knots from
+  32 features (`continue`, `periodic`) or 64 (the others), degree 4 at 5
+  knots and 64 features of `continue`, and everything past confit's
+  token cap (Needs from confit, "A value bound once"); and any
   step where scipy's `BSpline` does not round as the unfused recurrence
   (`spline.bspline_is_scipys`, an FMA build). Where the twin raises the
   entry answers: NaN past the knots under `extrapolation="error"`, 0.0
