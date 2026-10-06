@@ -3,7 +3,8 @@
 The terms of this project. Each entry says what a thing is. The words under
 _Avoid_ are other names for the same thing. Do not use them for that thing.
 They are not forbidden in other meanings. The rules for this file are in
-[`AGENTS.md`](AGENTS.md) §2.
+the `simple-english` skill
+(`.claude/skills/simple-english/SKILL.md`).
 
 ## Product
 

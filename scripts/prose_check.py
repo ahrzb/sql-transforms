@@ -1,13 +1,13 @@
-"""Check prose against the writing rules in AGENTS.md §1.
+"""Check prose against the writing rules of the simple-english skill.
 
-The checker reads its word list from AGENTS.md: the fenced block after the
+The checker reads its word list from .claude/skills/simple-english/SKILL.md: the fenced block after the
 line "<!-- prose-check: words -->". It does not read the _Avoid_ lists in
 GLOSSARY.md. Those words are wrong only for one concept, so a reader checks
-them, not a regular expression (the fresh-reader skill).
+them, not a regular expression (the fresh-reader test in the simple-english skill).
 
 It checks these rules:
 
-- avoid:      a word in the AGENTS.md list;
+- avoid:      a word in the list of the simple-english skill;
 - length:     a sentence of more than 25 words;
 - semicolon:  a semicolon that joins two sentences.
 
@@ -50,7 +50,7 @@ SCOPE = [
 
 def _avoid_words() -> list[str]:
     words = []
-    agents = (ROOT / "AGENTS.md").read_text()
+    agents = (ROOT / ".claude/skills/simple-english/SKILL.md").read_text()
     block = re.search(r"<!-- prose-check: words -->\s*```\w*\n(.*?)```", agents, re.S)
     if block:
         words += [w.strip() for w in block.group(1).splitlines() if w.strip()]
@@ -121,7 +121,7 @@ def check(text: str, name: str, words: list[str]) -> list[str]:
         used = re.sub(r'"[^"]*"', "QUOTE", s)  # a quoted word is an example, not a use
         for w in words:
             if re.search(rf"(?<![\w-]){re.escape(w)}(?![\w-])", used, re.I):
-                problems.append(f'{name}:{i}: avoid: "{w}" (AGENTS.md §1)')
+                problems.append(f'{name}:{i}: avoid: "{w}" (simple-english skill)')
         if re.search(r";\s+\w", s):
             problems.append(f"{name}:{i}: semicolon: write two sentences")
     for i, sent in _sentences(prose):
@@ -148,7 +148,9 @@ def main(argv: list[str]) -> int:
     for p in problems:
         print(p)
     if problems:
-        print(f"prose_check: {len(problems)} problems. The rules are in AGENTS.md §1.")
+        print(
+            f"prose_check: {len(problems)} problems. The rules are in .claude/skills/simple-english/SKILL.md."
+        )
     return 1 if problems else 0
 
 

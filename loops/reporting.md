@@ -95,9 +95,9 @@ needs_from_other_loop: [cse-within-call]
   three paragraphs), "Needs the owner" and "Next". Do not measure speed
   again, unless a family or a fix changed the speed.
 
-Both forms follow the writing rules in [`AGENTS.md`](../AGENTS.md) §1 and
+Both forms follow the `simple-english` skill and
 use the terms in [`GLOSSARY.md`](../GLOSSARY.md). Before you merge a report, use the
-`fresh-reader` skill (`AGENTS.md` §3).
+fresh-reader test of that skill.
 
 Both forms end with a section called **Needs the owner**. It lists every open
 decision record. For each record, it gives the one line of evidence that the

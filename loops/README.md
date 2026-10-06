@@ -32,9 +32,9 @@ key, a report maps to its folder without a lookup table.
 
 ## Shared rules
 
-- [`../AGENTS.md`](../AGENTS.md) tells every agent how to write. It also
-  gives the rules for [`../GLOSSARY.md`](../GLOSSARY.md), which lists the
-  terms of this project.
+- [`../AGENTS.md`](../AGENTS.md) gives the rules for every agent. Text for
+  the owner follows the `simple-english` skill. The terms of the project are
+  in [`../GLOSSARY.md`](../GLOSSARY.md).
 - [`reporting.md`](reporting.md) says when a loop writes a report, what the
   KPI block holds, and how a report reaches the owner.
 - [`workers.md`](workers.md) describes the inline mode and the
