@@ -1,0 +1,4 @@
+k=    10: return_types per call        7.9 us  (788 ns/lane)
+k=  1000: return_types per call      595.8 us  (596 ns/lane)
+k= 10000: return_types per call     6102.4 us  (610 ns/lane)
+k=100000: return_types per call    70626.3 us  (706 ns/lane)

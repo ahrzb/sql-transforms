@@ -1,0 +1,4 @@
+(a) n= 4: lanes 16000, differ 1; K with S=2sum|xc| max 2.45e+03; K2 with S2 max 1.053
+(a) n=16: lanes 16000, differ 0; K with S=2sum|xc| max 0; K2 with S2 max 0.000
+(a) n=64: lanes 16000, differ 0; K with S=2sum|xc| max 0; K2 with S2 max 0.000
+(b) centres dtype float32; twin output dtype float64; equals float64-upcast path: True

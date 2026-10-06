@@ -24,34 +24,48 @@ Easiest first; each is one family, one PR.
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
-4. **The five open decision records in simple English** (#401), after #404
-   lands, with the errors #404 found: the chi2 record's (s, j) list is off
-   by one, and the matvec record's counts did not reproduce. Write two new
-   records from #404's `critique.md` §2: "same-host or cross-host?" and
-   "may a bounded step sit in a composition?".
 
-## Waiting on the owner
+## Ruled 2026-10-06, to build
 
-- **`AdditiveChi2Sampler`:** its lanes are `factor * cos(j * (s *
-  log(x)))` and the same with `sin`, and numpy's `log`, up to 1 ulp from
-  DuckDB's `ln`, reaches `cos` and `sin` unchanged in absolute terms, so
-  near a zero the result parts by any number of ulps (8,192 over 400,000
-  draws), while within 0.91 eps of the lane's term scale
-  (decisions/open/additive-chi2-parity-bound.md).
-- **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
-  `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
-  `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
-  (x scores), `LinearDiscriminantAnalysis`: a BLAS matvec whose order the
-  entry cannot follow, and whose error is not small in ulps of the result
-  (decisions/open/matvec-parity-bound.md).
-- **`PowerTransformer`'s Yeo-Johnson, and either method with
-  `standardize=True`:** no small bound in ulps of the result, as for the
-  matvec families (decisions/open/power-parity-bound.md, measured).
-  Box-Cox with `standardize=False` is native, within 4 ulps.
-- **Distances to fitted centres:** `KMeans`, `MiniBatchKMeans`,
-  `BisectingKMeans`, `Birch` (`transform` = distances, through BLAS), and
-  the samplers that project through a matrix: `RBFSampler`,
-  `SkewedChi2Sampler`, `PolynomialCountSketch`. The same ruling.
+The owner approved every recommendation in `decisions/closed/` (records
+and research in `decisions/research/2026-10-06/`), amended: bit-exact is the
+default, and a bound above 0 serves only on the caller's request (it can
+flip HistGradientBoosting labels on repeated training values). In order:
+
+0. **`to_native(step, allow_bound=False)`:** refuse (return the step, or
+   `NotNative` under `strict`) any configuration whose bound is above 0
+   unless `allow_bound=True`. Today that moves served Box-Cox (ulps 4) and
+   FunctionTransformer's exp/log/log2/log10/tan/cbrt behind the flag where
+   `kernel_distance` is not 0; where it reads 0 they stay default. Docs and
+   the coverage page say why (the HGB finding, matvec-parity-bound.md).
+1. **The parity bound in `native.check`:** per output field
+   `|g(entry) - g(twin)| <= K*eps*S + tau`, with S and K declared per
+   family, S computed overflow-safely, and the one-sided-infinity rule on
+   the output (matvec-parity-bound.md, Recommendation 1 and 6). Next,
+   item 1 makes `check` fail when it compares no row.
+2. **The input guard** (tolerated-differences.md): probe each leaf for the
+   values its twin rejects, trap in the first output field, check "raises
+   iff the twin raises" on every row (needs Next, item 1: +-inf in the row
+   generator). The periodic spline breach at +-inf is fixed (#406).
+3. **Densify sparse outputs** (sparse-outputs.md): one helper at
+   `_udf.py:314`, `_projection.py:352`, `model/_foreign.py:128` and
+   `native/encode.py:110`; then drop the sparse guards of OneHotEncoder,
+   KBinsDiscretizer, MissingIndicator and SplineTransformer (not degree 0).
+4. **Families on the parity bound:**
+   - Linear projections (`PCA` and kin): S_full, K = n + 3, summed pairwise;
+     refuse whitened components whose scale was clipped.
+   - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
+     restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
+   - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
+     probes read 0; ship `sample_steps=1` (bit-exact) first. The probe's
+     draws are Next, item 2.
+   - Distances to fitted centres (`KMeans` and kin): compare squares,
+     K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
+     max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
+     not served until a normwise S is derived.
+5. **Still open for the owner:** a bounded step inside a composition
+   (decisions/open/bounded-steps-in-compositions.md). `compose.py` keeps
+   refusing one meanwhile.
 
 ## Needs from confit
 
@@ -202,7 +216,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   the next step). A `set_output` container between steps is not examined
   yet.
 - `SplineTransformer(sparse_output=True)`: a sparse output
-  (decisions/open/sparse-outputs.md). `extrapolation="linear"` at
+  (decisions/closed/sparse-outputs.md). `extrapolation="linear"` at
   `degree=0, n_knots=2` over two or more features: the twin's running
   `degree` (spline.py) continues two lanes of one from the second feature
   on, and writes a row above the knots into the previous feature's lane.
@@ -254,7 +268,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
 - `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
-  output (decisions/open/sparse-outputs.md). Past 25,000 path steps (a
+  output (decisions/closed/sparse-outputs.md). Past 25,000 path steps (a
   leaf's depth, summed over the leaves) per estimator, an estimated 7 s
   build (`trees.MAX_PATH_STEPS`): 250 trees of depth 5 (7.8 s), and
   one unbounded tree over 2,000 rows has 33,688 steps. Where the twin

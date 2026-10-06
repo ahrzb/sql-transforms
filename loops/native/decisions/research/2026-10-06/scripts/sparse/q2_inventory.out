@@ -1,0 +1,38 @@
+transformer                    config                                        type                         sparse shape
+CCA                            defaults                                      ERR ValueError: `n_components` upper bound is 1. Got 2 instead. Reduce `n_co None   None
+FeatureUnion                   defaults                                      csr_matrix                   True   (1, 190)
+GaussianRandomProjection       defaults                                      ERR ValueError: eps=0.100000 and n_samples=60 lead to a target dimension of  None   None
+IsotonicRegression             defaults                                      ERR ValueError: Isotonic regression input X should be a 1d array or 2d array None   None
+KBinsDiscretizer               defaults                                      csr_matrix                   True   (1, 19)
+KNeighborsTransformer          defaults                                      csr_matrix                   True   (1, 60)
+OneHotEncoder                  defaults                                      csr_matrix                   True   (1, 186)
+PLSCanonical                   defaults                                      ERR ValueError: `n_components` upper bound is 1. Got 2 instead. Reduce `n_co None   None
+PLSSVD                         defaults                                      ERR ValueError: `n_components` upper bound is 1. Got 2 instead. Reduce `n_co None   None
+RadiusNeighborsTransformer     defaults                                      csr_matrix                   True   (1, 60)
+RandomTreesEmbedding           defaults                                      csr_matrix                   True   (1, 1795)
+SparseRandomProjection         defaults                                      ERR ValueError: eps=0.100000 and n_samples=60 lead to a target dimension of  None   None
+OneHotEncoder                  sparse_output=True (default)                  csr_matrix                   True   (1, 186)
+OneHotEncoder                  sparse_output=False                           ndarray                      False  (1, 186)
+KBinsDiscretizer               encode='onehot' (default)                     csr_matrix                   True   (1, 19)
+KBinsDiscretizer               encode='onehot-dense'                         ndarray                      False  (1, 19)
+KBinsDiscretizer               encode='ordinal'                              ndarray                      False  (1, 4)
+SplineTransformer              sparse_output=True                            csr_matrix                   True   (1, 28)
+PolynomialFeatures             dense input (no sparse param)                 ndarray                      False  (1, 15)
+MissingIndicator               sparse='auto' (default), dense in             ndarray                      False  (1, 1)
+MissingIndicator               sparse=True                                   csc_matrix                   True   (1, 1)
+SimpleImputer                  add_indicator=True, dense in                  ndarray                      False  (1, 5)
+RandomTreesEmbedding           sparse_output=True (default)                  csr_matrix                   True   (1, 102)
+RandomTreesEmbedding           sparse_output=False                           ndarray                      False  (1, 102)
+KNeighborsTransformer          defaults (mode='distance')                    csr_matrix                   True   (1, 60)
+KNeighborsTransformer          mode='connectivity'                           csr_matrix                   True   (1, 60)
+RadiusNeighborsTransformer     defaults                                      csr_matrix                   True   (1, 60)
+SparseRandomProjection         dense_output=False (default), dense in        ndarray                      False  (1, 3)
+FunctionTransformer            func=sp.csr_matrix                            csr_matrix                   True   (1, 4)
+ColumnTransformer              OHE part, sparse_threshold=0.3 (default)      ndarray sparse_output_=False False  (1, 9)
+ColumnTransformer              OHE part only, sparse_threshold=0.3           csr_matrix sparse_output_=True True   (1, 6)
+ColumnTransformer              OHE part, sparse_threshold=0                  ndarray sparse_output_=False False  (1, 6)
+FeatureUnion                   StandardScaler + OHE                          csr_matrix                   True   (1, 190)
+Pipeline                       OHE -> MaxAbsScaler                           csr_matrix                   True   (1, 186)
+Pipeline                       OHE -> StandardScaler(with_mean=False)        csr_matrix                   True   (1, 186)
+
+defaults swept: 71; sparse at defaults: ['FeatureUnion', 'KBinsDiscretizer', 'KNeighborsTransformer', 'OneHotEncoder', 'RadiusNeighborsTransformer', 'RandomTreesEmbedding', 'RadiusNeighborsTransformer']; errors: ['CCA', 'GaussianRandomProjection', 'IsotonicRegression', 'PLSCanonical', 'PLSSVD', 'SparseRandomProjection']

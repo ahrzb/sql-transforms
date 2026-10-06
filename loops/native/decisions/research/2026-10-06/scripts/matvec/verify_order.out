@@ -1,0 +1,5 @@
+SkylakeX {'haswell+fmatail': '2317/2376', 'haswell+plaintail': '2287/2376', 'generic': '1135/2376', 'ltr': '593/2376'}
+Haswell {'haswell+fmatail': '2314/2376', 'haswell+plaintail': '2288/2376', 'generic': '1136/2376', 'ltr': '595/2376'}
+Sandybridge {'haswell+fmatail': '1139/2376', 'haswell+plaintail': '1173/2376', 'generic': '2352/2376', 'ltr': '675/2376'}
+Nehalem {'haswell+fmatail': '1140/2376', 'haswell+plaintail': '1174/2376', 'generic': '2353/2376', 'ltr': '675/2376'}
+Katmai {'haswell+fmatail': '1142/2376', 'haswell+plaintail': '1175/2376', 'generic': '2354/2376', 'ltr': '667/2376'}

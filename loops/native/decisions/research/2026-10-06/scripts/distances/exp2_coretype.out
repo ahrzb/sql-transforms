@@ -1,0 +1,21 @@
+SkylakeX -> ['SkylakeX']
+Haswell -> ['Haswell']
+Sandybridge -> ['Sandybridge']
+Prescott -> ['Katmai']
+Zen -> ['Haswell']
+Cooperlake -> ['SkylakeX']
+SkylakeX vs Haswell      nf= 8: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 15616/60000, max 7.41e+04 ulps, K max 1.208
+SkylakeX vs Haswell      nf=32: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 25435/60000, max 7.41e+04 ulps, K max 1.137
+SkylakeX vs Haswell      nf=64: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 29492/60000, max 1.48e+05 ulps, K max 0.928
+SkylakeX vs Sandybridge  nf= 8: KMeans lanes differ 1299/4800, max 4.52e+18 ulps, K2 max 0.977 | RBF lanes differ 19284/60000, max 7.41e+04 ulps, K max 1.326
+SkylakeX vs Sandybridge  nf=32: KMeans lanes differ 2008/4800, max 4.53e+18 ulps, K2 max 0.864 | RBF lanes differ 36275/60000, max 7.41e+04 ulps, K max 1.712
+SkylakeX vs Sandybridge  nf=64: KMeans lanes differ 2436/4800, max 4.53e+18 ulps, K2 max 1.267 | RBF lanes differ 43222/60000, max 2.37e+06 ulps, K max 2.350
+SkylakeX vs Prescott     nf= 8: KMeans lanes differ 1299/4800, max 4.52e+18 ulps, K2 max 0.977 | RBF lanes differ 19284/60000, max 7.41e+04 ulps, K max 1.326
+SkylakeX vs Prescott     nf=32: KMeans lanes differ 2008/4800, max 4.53e+18 ulps, K2 max 0.864 | RBF lanes differ 36275/60000, max 7.41e+04 ulps, K max 1.712
+SkylakeX vs Prescott     nf=64: KMeans lanes differ 2436/4800, max 4.53e+18 ulps, K2 max 1.267 | RBF lanes differ 43222/60000, max 2.37e+06 ulps, K max 2.350
+SkylakeX vs Zen          nf= 8: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 15616/60000, max 7.41e+04 ulps, K max 1.208
+SkylakeX vs Zen          nf=32: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 25435/60000, max 7.41e+04 ulps, K max 1.137
+SkylakeX vs Zen          nf=64: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 29492/60000, max 1.48e+05 ulps, K max 0.928
+SkylakeX vs Cooperlake   nf= 8: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 0/60000, max 0 ulps, K max 0.000
+SkylakeX vs Cooperlake   nf=32: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 0/60000, max 0 ulps, K max 0.000
+SkylakeX vs Cooperlake   nf=64: KMeans lanes differ 0/4800, max 0 ulps, K2 max 0.000 | RBF lanes differ 0/60000, max 0 ulps, K max 0.000

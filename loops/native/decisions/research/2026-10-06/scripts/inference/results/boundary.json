@@ -1,0 +1,182 @@
+[
+ {
+  "case": "pca_95/breast",
+  "target": "logreg",
+  "n": 2000,
+  "N": 392,
+  "default/batch": 427,
+  "haswell/row": 213,
+  "sandybridge/row": 392,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 213
+ },
+ {
+  "case": "pca_95/breast",
+  "target": "dtree_root",
+  "n": 2000,
+  "N": 259,
+  "default/batch": 241,
+  "haswell/row": 170,
+  "sandybridge/row": 259,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 170
+ },
+ {
+  "case": "pca_95/breast",
+  "target": "hgb_root",
+  "n": 2000,
+  "N": 221,
+  "default/batch": 217,
+  "haswell/row": 166,
+  "sandybridge/row": 221,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 166
+ },
+ {
+  "case": "pca_all/synth_redund",
+  "target": "logreg",
+  "n": 2000,
+  "N": 599,
+  "default/batch": 675,
+  "haswell/row": 441,
+  "sandybridge/row": 599,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 441
+ },
+ {
+  "case": "pca_all/synth_redund",
+  "target": "dtree_root",
+  "n": 2000,
+  "N": 314,
+  "default/batch": 338,
+  "haswell/row": 226,
+  "sandybridge/row": 314,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 226
+ },
+ {
+  "case": "pca_all/synth_redund",
+  "target": "hgb_root",
+  "n": 2000,
+  "N": 336,
+  "default/batch": 360,
+  "haswell/row": 223,
+  "sandybridge/row": 336,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 223
+ },
+ {
+  "case": "kmeans8/breast",
+  "target": "logreg",
+  "n": 2000,
+  "N": 435,
+  "N_direct": 653,
+  "default/batch": 374,
+  "haswell/row": 0,
+  "sandybridge/row": 214,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "kmeans8/breast",
+  "target": "dtree_root",
+  "n": 2000,
+  "N": 267,
+  "N_direct": 734,
+  "default/batch": 189,
+  "haswell/row": 0,
+  "sandybridge/row": 135,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "kmeans8/breast",
+  "target": "hgb_root",
+  "n": 2000,
+  "N": 242,
+  "N_direct": 705,
+  "default/batch": 179,
+  "haswell/row": 0,
+  "sandybridge/row": 127,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "kmeans8/breast",
+  "target": "argmin",
+  "n": 2000,
+  "N": 614,
+  "N_direct": 512,
+  "default/batch": 614,
+  "haswell/row": 0,
+  "sandybridge/row": 311,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "yj_std/breast",
+  "target": "logreg",
+  "n": 2000,
+  "N": 623,
+  "default/batch": 0,
+  "haswell/row": 0,
+  "sandybridge/row": 0,
+  "npy_noavx512/row": 540,
+  "avx2_box/row": 540
+ },
+ {
+  "case": "yj_std/breast",
+  "target": "dtree_root",
+  "n": 2000,
+  "N": 0,
+  "default/batch": 0,
+  "haswell/row": 0,
+  "sandybridge/row": 0,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "yj_std/breast",
+  "target": "hgb_root",
+  "n": 2000,
+  "N": 0,
+  "default/batch": 0,
+  "haswell/row": 0,
+  "sandybridge/row": 0,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "chi2/breast",
+  "target": "logreg",
+  "n": 2000,
+  "N": 0,
+  "default/batch": 0,
+  "haswell/row": 0,
+  "sandybridge/row": 0,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "chi2/breast",
+  "target": "dtree_root",
+  "n": 2000,
+  "N": 0,
+  "default/batch": 0,
+  "haswell/row": 0,
+  "sandybridge/row": 0,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ },
+ {
+  "case": "chi2/breast",
+  "target": "hgb_root",
+  "n": 2000,
+  "N": 0,
+  "default/batch": 0,
+  "haswell/row": 0,
+  "sandybridge/row": 0,
+  "npy_noavx512/row": 0,
+  "avx2_box/row": 0
+ }
+]

@@ -21,3 +21,25 @@ twin's (the scaler and tree tiers, and any SQL-defined transform against
 DuckDB), and within a small per-family ulp bound otherwise (matvec tiers,
 whose sums sklearn orders through NumPy/BLAS). Each family declares its bound
 with the measurement that fixed it, gated by swap-the-entry.
+
+**Amended (owner, 2026-10-06).** A small ulp bound cannot hold where the
+order of operations differs. The twin itself moves by 9,877,709,850 ulps
+between a call with one row and a call with a batch. So a family whose
+order cannot be the twin's declares a parity bound instead:
+
+- For each output field, the entry is within K·eps·S + τ of the twin.
+- S is the error scale of the field, a formula over the fitted state and
+  the input row.
+- K is derived from the error bounds of each operation. A measurement is
+  evidence, not K.
+- A ulp bound stays valid. It is a parity bound whose error scale is the
+  size of the result.
+
+A parity bound above 0 is not the default. An entry with such a bound
+serves only when the caller asks for it. A bound above 0 can change a
+prediction: on repeated training values, HistGradientBoosting flipped labels
+for the entry where the twin flipped none.
+
+The rulings that apply this amendment are in
+`loops/native/decisions/closed/`: the matvec, power and additive chi2
+records. Each of them gives its S and K.

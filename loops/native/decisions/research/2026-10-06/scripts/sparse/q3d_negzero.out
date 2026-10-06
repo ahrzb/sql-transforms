@@ -1,0 +1,21 @@
+csr_matrix(dense) nnz: 2 data: [1.0, nan] -> toarray signbits: [[False, False, False, False]]
+sparse.hstack([sparse, dense]) toarray: [[1.0, 0.0, 0.0, 1.0, nan]] signbit: [[False, False, False, False, False]]
+DuckDB -0.0 + 0.0 = 0.0 signbit=False
+DuckDB 0.0 + 0.0 = 0.0 signbit=False
+DuckDB 2.5 + 0.0 = 2.5 signbit=False
+DuckDB nan + 0.0 = nan signbit=nan
+DuckDB -5e-324 + 0.0 = -5e-324 signbit=True
+DuckDB VALUES(-0.0)+0.0 -> 0.0
+┌───────────────────────────┐
+│         PROJECTION        │
+│    ────────────────────   │
+│         (x + 0.0)         │
+│                           │
+│           ~1 row          │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      COLUMN_DATA_SCAN     │
+│    ────────────────────   │
+│           ~1 row          │
+└───────────────────────────┘
+

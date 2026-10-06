@@ -1,0 +1,6 @@
+pca_95 breast done 188.1s
+pca_95 wine done 453.1s
+pca_95 digits done 1824.0s
+pca_95 diabetes done 180.2s
+pca_95 synth done 705.9s
+pca_95 synth_redund done 205.6s

@@ -1,0 +1,8 @@
+csr_matrix: stored [-0.0, 1.0] signbit(data) [True, False] -> toarray [[0.0, 0.0, 1.0]] signbit [[False, False, False]]
+   todense signbit [[False, False, False]]
+csr_array: stored [-0.0, 1.0] signbit(data) [True, False] -> toarray [[0.0, 0.0, 1.0]] signbit [[False, False, False]]
+   todense signbit [[False, False, False]]
+csc_matrix(via csr): stored [-0.0, 1.0] signbit(data) [True, False] -> toarray [[0.0, 0.0, 1.0]] signbit [[False, False, False]]
+   todense signbit [[False, False, False]]
+1-D coo_array stored -0.0 -> toarray [0.0, 0.0, 0.0] [False, False, False]
+non-canonical CSR duplicates [0.1, 0.2] at col 1 -> toarray [[0.0, 0.30000000000000004, 0.0]] (0.1+0.2 = 0.30000000000000004 )

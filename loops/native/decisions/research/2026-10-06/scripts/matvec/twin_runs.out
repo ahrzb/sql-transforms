@@ -1,0 +1,14 @@
+fixtures200 SkylakeX:1 -> SkylakeX threads 1 lanes 25348 25348
+fixtures200 SkylakeX:4 -> SkylakeX threads 4 lanes 25348 25348
+fixtures200 Haswell:1 -> Haswell threads 1 lanes 25348 25348
+fixtures200 Haswell:4 -> Haswell threads 4 lanes 25348 25348
+fixtures200 Sandybridge:1 -> Sandybridge threads 1 lanes 25348 25348
+fixtures200 Nehalem:1 -> Nehalem threads 1 lanes 25348 25348
+fixtures200 Prescott:1 -> Katmai threads 1 lanes 25348 25348
+fixtures200_b851298 SkylakeX:1 -> SkylakeX threads 1 lanes 27850 27850
+fixtures200_b851298 SkylakeX:4 -> SkylakeX threads 4 lanes 27850 27850
+fixtures200_b851298 Haswell:1 -> Haswell threads 1 lanes 27850 27850
+fixtures200_b851298 Haswell:4 -> Haswell threads 4 lanes 27850 27850
+fixtures200_b851298 Sandybridge:1 -> Sandybridge threads 1 lanes 27850 27850
+fixtures200_b851298 Nehalem:1 -> Nehalem threads 1 lanes 27850 27850
+fixtures200_b851298 Prescott:1 -> Katmai threads 1 lanes 27850 27850

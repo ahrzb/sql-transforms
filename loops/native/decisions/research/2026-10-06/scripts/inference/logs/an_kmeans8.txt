@@ -1,0 +1,5 @@
+kmeans8 breast done 82.0s
+kmeans8 wine done 185.1s
+kmeans8 digits done 1947.7s
+kmeans8 diabetes done 309.2s
+kmeans8 synth done 731.1s

@@ -15,12 +15,20 @@ made from. The entry gives:
 - **The same call.** It has the same name. It takes the instance id first,
   then the declared features, by position. It returns the same type: a
   scalar, a struct with the same field names, or a list of the same width.
-- **The same answer.** The answer is bit-exact where the entry does the
-  twin's operations in the twin's order. Otherwise it is within a declared
-  ulp bound for each family. The owner ruled this in
-  [native-transform-parity-bounds.md](../confit/decisions/closed/native-transform-parity-bounds.md).
-  NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
-  are different answers.
+- **The same answer.** By default, an entry serves only where it is
+  bit-exact. It is bit-exact where it does the twin's operations in the
+  twin's order, or where a kernel probe reads 0.
+  - An entry with a parity bound above 0 serves only when the caller asks
+    for it, with `to_native(step, allow_bound=True)`. Such an entry can
+    change a prediction: HistGradientBoosting flips labels on repeated
+    training values.
+  - A parity bound is K·eps·S + τ for each output field. S is the error
+    scale that the family declares, and K is derived, not measured.
+  - The owner ruled this in
+    [native-transform-parity-bounds.md](../confit/decisions/closed/native-transform-parity-bounds.md)
+    and [matvec-parity-bound.md](decisions/closed/matvec-parity-bound.md).
+  - NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
+    are different answers.
 - **The same inputs.** A feature reaches the translation as
   `PythonTransform` hands it to `transform`. A number or a boolean is a
   DOUBLE, with NULL read as NaN. A string stays a string.
@@ -36,16 +44,16 @@ made from. The entry gives:
 unchanged, and that step is always correct to serve.
 `to_native(step, strict=True)` raises an error instead.
 
-## Tolerated differences
+## Where the twin raises
 
-This rule is provisional. Its decision record
-([tolerated-differences.md](decisions/open/tolerated-differences.md)) names
-the condition that ends the rule.
+If the validation of the twin raises on an input, the entry must trap on
+that input too. An input guard in the entry does this. The owner ruled this
+in [tolerated-differences.md](decisions/closed/tolerated-differences.md).
 
-- **Where the twin raises an error, the entry may answer.** This applies to
-  input that sklearn's validation rejects, such as an infinite value for
-  most estimators. The reverse is not allowed: an entry may not raise where
-  the twin answers.
+- Until an entry has its input guard, it may answer where the twin raises.
+- An entry may never trap where the twin answers.
+- A twin error that is not validation, for example an sklearn bug, is not
+  covered. The ruling record lists each such error.
 
 ## Scope
 

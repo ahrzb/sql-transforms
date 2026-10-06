@@ -1,0 +1,47 @@
+producer -> consumer                                    rows lanes diff_rows diff_lanes max_ulps
+OHE -> MaxAbsScaler                                      200   1600      0        0 0
+OHE -> StandardScaler(with_mean=False)                   200   1600      0        0 0
+OHE -> RobustScaler(with_centering=False)                200   1600      0        0 0
+OHE -> Normalizer(l2)                                    200   1600      0        0 0
+OHE -> Normalizer(l1)                                    200   1600      0        0 0
+OHE -> Normalizer(max)                                   200   1600      0        0 0
+OHE -> PolynomialFeatures(2)                             200   9000      0        0 0
+OHE -> Binarizer(0.3)                                    200   1600      0        0 0
+OHE -> VarianceThreshold                                 200   1600      0        0 0
+OHE -> SimpleImputer                                     200   1600      0        0 0
+KBins(onehot) -> MaxAbsScaler                            200   2000      0        0 0
+KBins(onehot) -> StandardScaler(with_mean=False)         200   2000      0        0 0
+KBins(onehot) -> RobustScaler(with_centering=False)      200   2000      0        0 0
+KBins(onehot) -> Normalizer(l2)                          200   2000      0        0 0
+KBins(onehot) -> Normalizer(l1)                          200   2000      0        0 0
+KBins(onehot) -> Normalizer(max)                         200   2000      0        0 0
+KBins(onehot) -> PolynomialFeatures(2)                   200  13200      0        0 0
+KBins(onehot) -> Binarizer(0.3)                          200   2000      0        0 0
+KBins(onehot) -> VarianceThreshold                       200   2000      0        0 0
+KBins(onehot) -> SimpleImputer                           200   2000      0        0 0
+Spline(d3, sparse) -> MaxAbsScaler                       200   2800    186      505 1
+Spline(d3, sparse) -> StandardScaler(with_mean=False)    200   2800    200      671 1
+Spline(d3, sparse) -> RobustScaler(with_centering=False)  200   2800    175      352 1
+Spline(d3, sparse) -> Normalizer(l2)                     200   2800     47      263 1
+Spline(d3, sparse) -> Normalizer(l1)                     200   2800     24      188 3
+Spline(d3, sparse) -> Normalizer(max)                    200   2800      0        0 0
+Spline(d3, sparse) -> PolynomialFeatures(2)              200  24000      0        0 0
+Spline(d3, sparse) -> Binarizer(0.3)                     200   2800      0        0 0
+Spline(d3, sparse) -> VarianceThreshold                  200   2800      0        0 0
+Spline(d3, sparse) -> SimpleImputer                      200   2800      0        0 0
+RTE -> MaxAbsScaler                                      200  28200      0        0 0
+RTE -> StandardScaler(with_mean=False)                   200  28200      0        0 0
+RTE -> RobustScaler(with_centering=False)                200  28200      0        0 0
+RTE -> Normalizer(l2)                                    200  28200      0        0 0
+RTE -> Normalizer(l1)                                    200  28200      0        0 0
+RTE -> Normalizer(max)                                   200  28200      0        0 0
+RTE -> PolynomialFeatures(2)                             200 2030600      0        0 0
+RTE -> Binarizer(0.3)                                    200  28200      0        0 0
+RTE -> VarianceThreshold                                 200  28200      0        0 0
+RTE -> SimpleImputer                                     200  28200      0        0 0
+
+KNeighborsTransformer(mode='distance', n_neighbors=3): shape (1, 50), nnz 4, stored data [0.0, 0.6707, 1.0807, 1.1603]
+  stored zeros: 1 -> dense row has 47 zeros of 50 (structure lost)
+
+RadiusNeighborsTransformer(radius=1.0): shape (1, 50), nnz 2, stored data [0.0, 0.6707]
+  stored zeros: 1 -> dense row has 49 zeros of 50 (structure lost)

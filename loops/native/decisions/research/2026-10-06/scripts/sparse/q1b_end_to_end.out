@@ -1,0 +1,24 @@
+== OHE() whole struct [sparse_interface=spmatrix]
+  fit OK; declared returns: struct<f0: double>
+  transform raises: InvalidInputException Invalid Input Error: Python exception occurred while executing the UDF: TypeError: float() argument must be a string or a real number, not 'csr_matrix'  At:   /home/user/sql-transforms/packages/sql-transform/sql_transform/_udf.py(315): <genexpr>   /home/user/sql-transforms/packages/sql-transform/sql
+  infer raises: ValueError udf '__cf_tf0' raised: TypeError: float() argument must be a string or a real number, not 'csr_matrix'
+== OHE() field read .c_red [sparse_interface=spmatrix]
+  FIT raises: MarginalizeError transformer t has no output field 'c_red'; it fits to ['f0']
+== KBins(onehot) whole struct [sparse_interface=spmatrix]
+  fit OK; declared returns: struct<f0: double>
+  transform raises: InvalidInputException Invalid Input Error: Python exception occurred while executing the UDF: TypeError: float() argument must be a string or a real number, not 'csr_matrix'  At:   /home/user/sql-transforms/packages/sql-transform/sql_transform/_udf.py(315): <genexpr>   /home/user/sql-transforms/packages/sql-transform/sql
+  infer raises: ValueError udf '__cf_tf0' raised: TypeError: float() argument must be a string or a real number, not 'csr_matrix'
+== OHE() whole struct [sparse_interface=sparray]
+  fit OK; declared returns: struct<f0: double>
+  transform raises: InvalidInputException Invalid Input Error: Python exception occurred while executing the UDF: UDFError: UDF __cf_tf0 produced 3 values, declared 1  At:   /home/user/sql-transforms/packages/sql-transform/sql_transform/_udf.py(318): __call__   /home/user/sql-transforms/packages/sql-transform/sql_transform/_udf.py(181): _sc
+  infer raises: ValueError udf '__cf_tf0' raised: UDFError: UDF __cf_tf0 produced 3 values, declared 1
+== OHE() field read .c_red [sparse_interface=sparray]
+  FIT raises: MarginalizeError transformer t has no output field 'c_red'; it fits to ['f0']
+== KBins(onehot) whole struct [sparse_interface=sparray]
+  fit OK; declared returns: struct<f0: double>
+  transform raises: InvalidInputException Invalid Input Error: Python exception occurred while executing the UDF: UDFError: UDF __cf_tf0 produced 2 values, declared 1  At:   /home/user/sql-transforms/packages/sql-transform/sql_transform/_udf.py(318): __call__   /home/user/sql-transforms/packages/sql-transform/sql_transform/_udf.py(181): _sc
+  infer raises: ValueError udf '__cf_tf0' raised: UDFError: UDF __cf_tf0 produced 2 values, declared 1
+== OHE(sparse_output=False) control [sparse_interface=spmatrix]
+  fit OK; declared returns: struct<c_blue: double, c_green: double, c_red: double>
+  transform (DuckDB batch) -> [{'o': {'c_blue': 0.0, 'c_green': 0.0, 'c_red': 1.0}, 'name': 'x'}, {'o': {'c_blue': 1.0, 'c_green': 0.0, 'c_red': 0.0}, 'name': 'y'}]
+  infer (confit row) -> {'o': {'c_blue': 0.0, 'c_green': 0.0, 'c_red': 1.0}, 'name': 'x'}

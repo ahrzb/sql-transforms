@@ -1,0 +1,27 @@
+{'degree': 0, 'n_knots': 2, 'extrapolation': 'constant'} t = [0. 1.]
+   sparse batch: [[0.0], [1.0], [1.0], [1.0], [1.0]]
+   dense  batch: [[0.0], [1.0], [1.0], [1.0], [0.0]]
+   sparse rows : [[0.0], [1.0], [1.0], [1.0], [1.0]]
+{'degree': 0, 'n_knots': 2, 'extrapolation': 'linear'} t = [0. 1.]
+   sparse batch: [[1.0], [1.0], [1.0], [1.0], [1.0]]
+   dense  batch: [[1.0], [1.0], [1.0], [1.0], [1.0]]
+   sparse rows : [[1.0], [1.0], [1.0], [1.0], [1.0]]
+{'degree': 0, 'n_knots': 3, 'extrapolation': 'constant'} t = [0.  0.5 1. ]
+   sparse batch: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]]
+Traceback (most recent call last):
+  File "/tmp/claude-0/-home-user-sql-transforms/903b9aef-c7e3-5c91-bc7f-b02f0b9c62f5/scratchpad/research/sparse/q3c_spline_deg0.py", line 18, in <module>
+    print("   dense  batch:", d.transform(probe).tolist())
+                              ~~~~~~~~~~~^^^^^^^
+  File "/home/user/sql-transforms/.venv/lib/python3.14/site-packages/sklearn/utils/_set_output.py", line 319, in wrapped
+    data_to_wrap = f(self, X, *args, **kwargs)
+  File "/home/user/sql-transforms/.venv/lib/python3.14/site-packages/sklearn/preprocessing/_polynomial.py", line 1182, in transform
+    XBS[
+    ~~~^
+        above_xmax_mask,
+        ^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        ),
+        ^^
+    ] = f_max[-degree:]
+    ^
+ValueError: shape mismatch: value array of shape (2,) could not be broadcast to indexing result of shape (1,0)

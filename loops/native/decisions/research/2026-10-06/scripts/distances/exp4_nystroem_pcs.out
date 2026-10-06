@@ -1,0 +1,11 @@
+Nystroem rbf nf=4 std n_comp=50   lanes= 20000 ulp max=8.68e+05 p99=2.44e+03 | K(S incl. kernel) max=0.519 p99=0.256 | K(S matvec only) max=7.65 | np.exp!=glibc 889 | max|N|=10.6
+Nystroem rbf nf=16 std n_comp=100  lanes= 40000 ulp max=1.05e+05 p99=716 | K(S incl. kernel) max=0.718 p99=0.340 | K(S matvec only) max=3.75 | np.exp!=glibc 1884 | max|N|=2.04
+Nystroem rbf nf=16 offset10 n_comp=100  lanes= 40000 ulp max=9.02e+07 p99=8.6e+04 | K(S incl. kernel) max=0.540 p99=0.284 | K(S matvec only) max=216 | np.exp!=glibc 1896 | max|N|=2.6
+Nystroem rbf nf=64 std n_comp=100  lanes= 40000 ulp max=1.06e+05 p99=284 | K(S incl. kernel) max=0.827 p99=0.366 | K(S matvec only) max=4.46 | np.exp!=glibc 1864 | max|N|=1.41
+PolyCountSketch nf=4 D=100 deg=2 coef0=0 lanes= 20000 ulp max=4.39e+18 p99=4.38e+18 | K_term max=inf | K_fft max=1.266 p99=0.533 | lanes with S_term=0: 16800, twin!=0 there: 16200 | twin-vs-exact: K_term max=inf, K_fft max=1.265
+PolyCountSketch nf=32 D=100 deg=2 coef0=0 lanes= 20000 ulp max=4.76e+04 p99=136 | K_term max=7.91e+03 | K_fft max=1.036 p99=0.516 | lanes with S_term=0: 0, twin!=0 there: 0 | twin-vs-exact: K_term max=83.3, K_fft max=0.743
+PolyCountSketch nf=32 D=128 deg=2 coef0=1 lanes= 25600 ulp max=1.64e+04 p99=144 | K_term max=80.8 | K_fft max=0.896 p99=0.426 | lanes with S_term=0: 0, twin!=0 there: 0 | twin-vs-exact: K_term max=66.3, K_fft max=0.779
+PolyCountSketch nf=32 D=97 deg=2 coef0=0 lanes= 19400 ulp max=5.05e+05 p99=140 | K_term max=211 | K_fft max=1.040 p99=0.541 | lanes with S_term=0: 0, twin!=0 there: 0 | twin-vs-exact: K_term max=212, K_fft max=0.821
+PolyCountSketch nf=16 D=64 deg=3 coef0=0 lanes=  6400 ulp max=1.11e+05 p99=124 | K_term max=2.94 | K_fft max=1.172 p99=0.718 | lanes with S_term=0: 0, twin!=0 there: 0
+PolyCountSketch nf=200 D=100 deg=2 coef0=0 lanes= 10000 ulp max=1.82e+04 p99=136 | K_term max=1.89 | K_fft max=1.315 p99=0.731 | lanes with S_term=0: 0, twin!=0 there: 0 | twin-vs-exact: K_term max=1, K_fft max=0.794
+elapsed 7.3s

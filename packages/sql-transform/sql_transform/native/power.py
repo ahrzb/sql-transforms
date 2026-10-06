@@ -4,9 +4,10 @@
 DuckDB 1.5.5 has `ln` and `exp` (glibc's, as confit's are) but neither
 `log1p` nor `expm1`, and confit cannot add a function, as the definition
 must run on DuckDB. So `expm1` is spelled from `exp` and `ln`, within a
-few ulps of glibc's. Yeo-Johnson and `standardize=True` stay Python: their
-distance to the twin has no small bound in ulps of the result
-(decisions/open/power-parity-bound.md).
+few ulps of glibc's. Yeo-Johnson and `standardize=True` stay Python for
+now: their distance to the twin has no small bound in ulps of the result,
+and the parity bound the owner ruled for them
+(decisions/closed/power-parity-bound.md) is not in `native.check` yet.
 """
 
 from __future__ import annotations
@@ -83,13 +84,13 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
         raise NotNative(
             f"PowerTransformer(method={est.method!r}): numpy's SIMD log1p and"
             " expm1 have no SQL spelling, and a rounding apart is amplified"
-            " by lambda * log1p(x), past any small bound"
-            " (decisions/open/power-parity-bound.md)"
+            " by lambda * log1p(x), past any small ulp bound; it waits on"
+            " the parity bound (decisions/closed/power-parity-bound.md)"
         )
     if est.standardize:
         raise NotNative(
             "PowerTransformer(standardize=True): `x - mean_` cancels the"
-            " rounding expm1 is apart by into any number of ulps"
-            " (decisions/open/power-parity-bound.md)"
+            " rounding expm1 is apart by into any number of ulps; it waits"
+            " on the parity bound (decisions/closed/power-parity-bound.md)"
         )
     return [_box_cox(xi, float(lam)) for xi, lam in zip(x, est.lambdas_, strict=True)]

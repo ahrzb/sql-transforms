@@ -1,0 +1,2 @@
+sparse_output=False: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
+sparse_output=True: [None, None, None]

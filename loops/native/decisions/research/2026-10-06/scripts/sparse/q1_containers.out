@@ -1,0 +1,68 @@
+== OneHotEncoder() numeric
+  transform([row]) type: scipy.sparse._csr.csr_matrix format csr shape (1, 10) dtype float64 nnz 2 issparse True isspmatrix True
+  np.asarray(out): ndim 0 shape () dtype object -> step width 1
+  out[0] type: csr_matrix shape (1, 10) format csr
+  list(out[0]): ['csr_matrix'] len 1
+  float() raises: TypeError float() argument must be a string or a real number, not 'csr_matrix'
+  toarray(): ndarray shape (1, 10) dtype float64
+  todense(): matrix shape (1, 10) dtype float64
+  np.asarray(todense()): ndarray shape (1, 10) dtype float64
+  out[0].toarray(): ndarray shape (1, 10) dtype float64
+== OneHotEncoder() strings
+  transform([row]) type: scipy.sparse._csr.csr_matrix format csr shape (1, 6) dtype float64 nnz 2 issparse True isspmatrix True
+  np.asarray(out): ndim 0 shape () dtype object -> step width 1
+  out[0] type: csr_matrix shape (1, 6) format csr
+  list(out[0]): ['csr_matrix'] len 1
+  float() raises: TypeError float() argument must be a string or a real number, not 'csr_matrix'
+  toarray(): ndarray shape (1, 6) dtype float64
+  todense(): matrix shape (1, 6) dtype float64
+  np.asarray(todense()): ndarray shape (1, 6) dtype float64
+  out[0].toarray(): ndarray shape (1, 6) dtype float64
+== KBinsDiscretizer(encode='onehot')
+  transform([row]) type: scipy.sparse._csr.csr_matrix format csr shape (1, 10) dtype float64 nnz 2 issparse True isspmatrix True
+  np.asarray(out): ndim 0 shape () dtype object -> step width 1
+  out[0] type: csr_matrix shape (1, 10) format csr
+  list(out[0]): ['csr_matrix'] len 1
+  float() raises: TypeError float() argument must be a string or a real number, not 'csr_matrix'
+  toarray(): ndarray shape (1, 10) dtype float64
+  todense(): matrix shape (1, 10) dtype float64
+  np.asarray(todense()): ndarray shape (1, 10) dtype float64
+  out[0].toarray(): ndarray shape (1, 10) dtype float64
+== SplineTransformer(sparse_output=True)
+  transform([row]) type: scipy.sparse._csr.csr_matrix format csr shape (1, 14) dtype float64 nnz 8 issparse True isspmatrix True
+  np.asarray(out): ndim 0 shape () dtype object -> step width 1
+  out[0] type: csr_matrix shape (1, 14) format csr
+  list(out[0]): ['csr_matrix'] len 1
+  float() raises: TypeError float() argument must be a string or a real number, not 'csr_matrix'
+  toarray(): ndarray shape (1, 14) dtype float64
+  todense(): matrix shape (1, 14) dtype float64
+  np.asarray(todense()): ndarray shape (1, 14) dtype float64
+  out[0].toarray(): ndarray shape (1, 14) dtype float64
+== MissingIndicator(sparse=True)
+  transform([row]) type: scipy.sparse._csc.csc_matrix format csc shape (1, 2) dtype bool nnz 1 issparse True isspmatrix True
+  np.asarray(out): ndim 0 shape () dtype object -> step width 1
+  out[0] type: csc_matrix shape (1, 2) format csc
+  list(out[0]): ['csr_matrix'] len 1
+  float() raises: TypeError float() argument must be a string or a real number, not 'csr_matrix'
+  toarray(): ndarray shape (1, 2) dtype bool
+  todense(): matrix shape (1, 2) dtype bool
+  np.asarray(todense()): ndarray shape (1, 2) dtype bool
+  out[0].toarray(): ndarray shape (1, 2) dtype bool
+
+== width-1 sparse: OneHotEncoder(drop='if_binary') on a binary feature
+  type csr_matrix shape (1, 1)
+  fit probe ndim 0 -> width 1
+  list(row) -> [<Compressed Sparse Row sparse matrix of dtype 'float64'
+	with 1 stored elements and shape (1, 1)>]
+  float(row) raises TypeError: float() argument must be a string or a real number, not 'csr_matrix'
+  float(list(row)[0]) raises TypeError: float() argument must be a string or a real number, not 'csr_matrix'
+
+== scipy csr_array (the sparse-array API)
+  csr_array[0]: coo_array shape (3,) ndim 1
+  list(csr_array[0]): [np.float64(0.0), np.float64(1.0), np.float64(0.0)]
+  [float(v) for v in csr_array[0]]: [0.0, 1.0, 0.0]
+  np.asarray(csr_array): 0 object
+  csr_array.toarray(): [[0. 1. 0.]] float64
+  csr_array.todense(): ndarray
+  csr_matrix.todense(): matrix
+  sklearn.get_config keys with 'sparse': {'array_api_dispatch': False, 'sparse_interface': 'spmatrix'}

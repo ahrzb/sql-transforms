@@ -1,0 +1,4 @@
+spmatrix declared struct<c_b: double>
+   transform raises InvalidInputException Invalid Input Error: Python exception occurred while executing the UDF: TypeError: float() argument must be a string or a real number, not 'csr_matrix'
+sparray declared struct<c_b: double>
+   transform -> [{'o': {'c_b': 0.0}, 'name': 'w'}, {'o': {'c_b': 1.0}, 'name': 'x'}, {'o': {'c_b': 0.0}, 'name': 'y'}, {'o': {'c_b': 1.0}, 'name': 'z'}]
