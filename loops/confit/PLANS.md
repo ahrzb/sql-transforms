@@ -8,6 +8,11 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
 
 ## Next
 
+Paused by the owner on 2026-10-06 at 16:11Z: take no new item until the
+owner resumes the loops. On resume, first write the milestone report for
+the struct field-read delivery (#430; trigger "cross-loop delivery" in
+[../reporting.md](../reporting.md)).
+
 1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
    runs `fuzz.nightly` (400k fresh seeds in four parallel shards, plus the
    metamorphic suite) and files red runs as a "Nightly campaign findings"
