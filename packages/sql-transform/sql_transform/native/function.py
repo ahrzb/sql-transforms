@@ -23,7 +23,9 @@ kernels for these are its own SIMD code on x86-64 with AVX-512, 1 to 3
 ulps from glibc's, which DuckDB and confit call; numpy picks its kernels
 by CPU, so each is served only where `kernel_distance` finds this
 platform's numpy within the function's bound of confit, as `sin` and
-`cos` within 0.
+`cos` within 0. Where the probe reads 0, the function is bit-exact on
+this platform and serves by default; elsewhere `to_native` serves it only
+with `allow_bound=True`.
 
 Refused: `log1p` and `expm1` (DuckDB has neither), and every other
 function (confit has no inverse or hyperbolic trigonometry).
@@ -235,11 +237,15 @@ def kernel_distance(func: Any) -> int | None:
 
 
 def _bound(est: Any) -> int:
-    """The estimator's own bound: its function's, 0 for the rest."""
+    """The estimator's own bound: its function's, 0 for the rest. A bounded
+    function whose kernel probe reads 0 on this platform is bit-exact here
+    (loops/native/goal.md, "The contract"), so its bound is 0 and
+    `to_native` serves it by default."""
     try:
-        return _BOUNDS.get(est.func, 0)
+        b = _BOUNDS.get(est.func, 0)
     except TypeError:  # an unhashable callable, which the entry refuses
         return 0
+    return 0 if b and kernel_distance(est.func) == 0 else b
 
 
 @translates(FunctionTransformer, ulps=max(_BOUNDS.values()), bound=_bound)

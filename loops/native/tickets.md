@@ -9,36 +9,31 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
-| T19 | `to_native(step, allow_bound=False)`: a bound above 0 serves only on request | `claude/project-thread-2pg6vk` | reading 4 | `_registry.py`, `__init__.py`, `function.py`, `power.py`, coverage | inline | | next |
+| T20 | ±inf in the fixture generator's edge values, and `check` fails when it compares no row | `claude/project-thread-2pg6vk` | T19 | `catalog_test.py`, `_check.py`, every class's draws | inline | | next |
 
-T16 (#403), T17 (#402) and T18 (#406) merged on 2026-10-06, and coverage
-is 31 of 68. The loop runs from the "Transforms Loop" project thread.
-Reading 4 covers waves 4 to 6 and merges before T19, because its
-measurements predate T19.
+T19 merged on 2026-10-06: a configuration within a bound above 0 serves
+only with `to_native(step, allow_bound=True)`. Coverage is 31 of 68, and
+reading 4 (#411) covers waves 4 to 6. The loop runs from the "Transforms
+Loop" project thread.
 
-After T19 comes ±inf in the row generator (PLANS "Next", item 1). It
-changes every class's draws, so it runs alone. Then the parity bound in
-`native.check` and the families on it (PLANS "Ruled 2026-10-06, to
-build"). `decisions/open/bounded-steps-in-compositions.md` waits on the
+T20 changes every class's draws, so it runs alone. Then the parity bound
+in `native.check` and the families on it (PLANS "Ruled 2026-10-06, to
+build"), beside the spline and the trees on confit's binding of a value
+once (#412; PLANS "Next", items 2 and 3). `decisions/open/bounded-steps-in-compositions.md` waits on the
 owner; `compose.py` keeps refusing bounded steps meanwhile.
 
-## T19: `to_native(step, allow_bound=False)`
+## T20: ±inf in the fixture generator, and a `check` that compares rows
 
-**Why.** The owner's amendment in
-`decisions/closed/matvec-parity-bound.md`: bit-exact is the default, and a
-configuration with a bound above 0 serves only when the caller asks. Today
-`to_native` serves Box-Cox (4 ulps) and `FunctionTransformer`'s `exp`,
-`log`, `log2`, `log10`, `tan` and `cbrt` by default.
+**Why.** Finding 52: the fixture generator's edge values (`EDGES` in
+`catalog_test.py`) hold no ±inf, so the parity test never sends one. The
+periodic spline breach that #406 fixed hid there. And `check` skips each
+row where the twin raises (4.9% of the rows at reading 4), so a step whose
+twin raises on every row compares nothing. The parity test asserts that it
+compares a row, but other callers of `check` do not (PLANS "Next", item 1).
 
 **Do.**
-- Add `allow_bound: bool = False` to `to_native`. Where the step's bound is
-  above 0 and `allow_bound` is false, decline: return the step, or raise
-  `NotNative` under `strict`, with a message that names the bound and the
-  argument.
-- A bounded function whose `kernel_distance` reads 0 on this platform is
-  bit-exact here, so it serves by default.
-- Say why in the docs and on the coverage page: the HistGradientBoosting
-  labels that flipped under the Box-Cox entry (the amendment's evidence).
-- Test the refusal by default, the serve with `allow_bound=True`, and the
-  0-distance case. Keep the parity tests on the bounded configurations
-  (they pass `allow_bound=True`).
+- Add `inf` and `-inf` to `EDGES`.
+- Make `check` raise `ParityError` when it compares no row.
+- Run the 200-seed parity run. A failure is a finding: fix the entry or
+  decline the configuration by name, and say which in the PR.
+- Every class's draws change, so measure nothing else in this PR.

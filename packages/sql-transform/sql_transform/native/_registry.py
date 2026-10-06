@@ -21,6 +21,12 @@ answers NULL (a NULL struct or list, for a struct or list return) and an
 id the step does not know raises. Before it is returned, confit builds it into the query
 reading every lane (`query`): a translation confit refuses leaves the step
 Python.
+
+Bit-exact is the default: a translation whose parity bound is above 0
+serves only with `to_native(step, allow_bound=True)`. Such an entry can
+change a prediction: on repeated training values, HistGradientBoosting
+flipped labels under the Box-Cox entry, where the twin of an elementwise
+family flips none (loops/native/decisions/closed/matvec-parity-bound.md).
 """
 
 from __future__ import annotations
@@ -47,7 +53,8 @@ class Entry:
     `ulps` is the class's ceiling. An entry whose bound depends on the
     configuration also has `per_estimator`, which answers one fitted
     estimator's own bound, from 0 to the ceiling; without it, every
-    estimator's bound is the ceiling."""
+    estimator's bound is the ceiling. A step whose bound is above 0 serves
+    only with `to_native(step, allow_bound=True)`."""
 
     translate: Translator
     ulps: int
@@ -138,7 +145,7 @@ def _lanes(step: PythonTransform) -> list[tuple[str | None, pa.DataType]]:
     return [(None, r)]
 
 
-def _translate(step: Any) -> SqlFunction:
+def _translate(step: Any, allow_bound: bool) -> SqlFunction:
     if not isinstance(step, PythonTransform):
         raise NotNative(f"{type(step).__name__} is not a PythonTransform")
     if not step.instances:
@@ -162,6 +169,11 @@ def _translate(step: Any) -> SqlFunction:
                     f" {len(out)} lanes, the step declares {len(lanes)}"
                 )
             per_id.append((k, out))
+        # After the translators, so that a configuration they refuse says
+        # why; `SqlFunction` calls this body before confit builds anything.
+        why = None if allow_bound else _bounded(step)
+        if why:
+            raise NotNative(why)
 
         def select(j: int) -> S.Expr:
             # Instances whose lane is the same SQL (a stateless estimator,
@@ -253,28 +265,51 @@ def bound(step: Any) -> int:
     return max(bound_of(e) for e in step.instances.values())
 
 
-def to_native(step: Any, *, strict: bool = False) -> Function | Any:
+def _bounded(step: PythonTransform) -> str | None:
+    """Why `to_native` serves `step` only with `allow_bound`: its loosest
+    instance (the first by id) is within a bound above 0. None when every
+    instance is bit-exact."""
+    k, est = max(sorted(step.instances.items()), key=lambda ke: bound_of(ke[1]))
+    b = bound_of(est)
+    if not b:
+        return None
+    return (
+        f"instance {k}: {type(est).__name__} is within {b} ulps of its twin,"
+        " not bit-exact; to_native serves a bound above 0 only with"
+        " allow_bound=True"
+    )
+
+
+def to_native(
+    step: Any, *, strict: bool = False, allow_bound: bool = False
+) -> Function | Any:
     """The native twin of `step`, or `step` itself when there is none.
 
-    With `strict`, a step without a translation raises `NotNative` instead.
-    Idempotent: a step that is already native comes back unchanged."""
+    Bit-exact only, unless `allow_bound`: then a translation within its
+    parity bound above 0 of the twin serves too (the module's docstring
+    says why that is not the default). With `strict`, a step without a
+    translation raises `NotNative` instead. Idempotent: a step that is
+    already native comes back unchanged."""
     if isinstance(step, Function):
         return step
     try:
-        return _translate(step)
+        return _translate(step, allow_bound)
     except NotNative:
         if strict:
             raise
         return step
 
 
-def explain_native(step: Any) -> str:
-    """What `to_native(step)` returns, or why it returns the step."""
+def explain_native(step: Any, *, allow_bound: bool = False) -> str:
+    """What `to_native(step, allow_bound=...)` returns, or why it returns
+    the step."""
     if isinstance(step, Function):
         return f"{step!r} is already a confit function"
     try:
-        fn = _translate(step)
+        fn = _translate(step, allow_bound)
     except NotNative as e:
         return f"{getattr(step, 'name', step)!r} stays Python: {e}"
     kinds = sorted({type(e).__name__ for e in step.instances.values()})
-    return f"{fn.name!r}: {', '.join(kinds)} -> SqlFunction"
+    b = bound(step)
+    within = f", within {b} ulps" if b else ""
+    return f"{fn.name!r}: {', '.join(kinds)} -> SqlFunction{within}"
