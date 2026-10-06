@@ -18,7 +18,9 @@ from sklearn.utils._array_api import _modify_in_place_if_numpy
 from sklearn.utils.extmath import row_norms
 
 from sql_transform.native._helpers import (
+    SameTree,
     clip,
+    f64,
     isnan,
     row_max,
     row_sum,
@@ -133,3 +135,53 @@ def test_isnan_is_numpys():
     x = np.array([VALUES]).T
     got = _oracle(lambda c: S.case(isnan(c[0]), 1.0).otherwise(0.0), x)
     assert got == [float(v) for v in np.isnan(x[:, 0])]
+
+
+def _doubling(rounds: int, leaf: float) -> S.Expr:
+    """A recurrence that reads each value twice: its text doubles per round
+    (2**60 reads of `x` at 60 rounds), its nodes grow by one."""
+    v = S.col("x") + f64(leaf)
+    for _ in range(rounds):
+        v = v * v
+    return v
+
+
+def test_same_tree_keys_a_tree_not_its_objects():
+    same = SameTree()
+    a = _doubling(60, 1.0)
+    assert same.key(a) == same.key(_doubling(60, 1.0))
+    assert same.key(a) != same.key(_doubling(60, 2.0))
+    assert same.key(a) != same.key(_doubling(59, 1.0))
+
+
+def test_same_tree_agrees_with_the_sql():
+    x, y = S.col("x"), S.col("y")
+    makers = [
+        lambda: x,
+        lambda: y,
+        lambda: f64(0.0),
+        lambda: f64(-0.0),
+        lambda: f64(math.nan),
+        lambda: S.lit(1),
+        lambda: x + y,
+        lambda: y + x,
+        lambda: x + f64(0.0),
+        lambda: x + f64(-0.0),
+        lambda: x - y,
+        lambda: S.case(x < f64(1.0), x).otherwise(y),
+        lambda: S.case(x < f64(1.0), x),
+        lambda: S.case(x < f64(1.0), x).when(y < f64(1.0), y),
+        lambda: x.isin(1, 2),
+        lambda: x.isin(2, 1),
+        lambda: S.fn("least", x, y),
+        lambda: S.fn("greatest", x, y),
+        lambda: ~(x < y),
+        lambda: x.isnull(),
+    ]
+    same = SameTree()
+    # Each built twice, from new objects: one key per maker, as one text.
+    keys = [{same.key(m()) for _ in range(2)} for m in makers]
+    texts = [m().sql() for m in makers]
+    assert len(set(texts)) == len(makers)
+    assert all(len(k) == 1 for k in keys)
+    assert len(set().union(*keys)) == len(makers)

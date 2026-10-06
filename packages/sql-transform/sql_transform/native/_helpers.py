@@ -9,6 +9,7 @@ which `_helpers_test.py` checks against numpy itself.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import math
 from typing import Any
@@ -163,3 +164,48 @@ def row_sumsq_is_numpys() -> bool:
             if got != float(row_norms(x, squared=True)[0]):
                 return False
     return True
+
+
+class SameTree:
+    """Keys equal exactly when two expressions are the same tree: the same
+    node classes and fields, children in order, however many objects spell
+    it. `.sql()` answers this too, but writes a node out at every read,
+    which doubles per round of a recurrence that reads each value twice
+    (`spline.py`); a key is computed once per node object, so keying a set
+    of expressions is linear in their distinct nodes. The memo holds the
+    nodes it keyed, so no id in it is reused while it lives."""
+
+    def __init__(self) -> None:
+        self._memo: dict[int, tuple[int, S.Expr]] = {}
+        self._keys: dict[tuple, int] = {}
+
+    def key(self, e: S.Expr) -> int:
+        memo = self._memo
+        stack = [e]
+        while stack:  # no recursion: a recurrence can be deep
+            node = stack[-1]
+            if id(node) in memo:
+                stack.pop()
+                continue
+            kids = [c for c in node.children if id(c) not in memo]
+            if kids:
+                stack.extend(kids)
+                continue
+            stack.pop()
+            cls = type(node)
+            sig = (cls, *(self._part(getattr(node, f)) for f in _fields(cls)))
+            memo[id(node)] = (self._keys.setdefault(sig, len(self._keys)), node)
+        return memo[id(e)][0]
+
+    def _part(self, v: Any) -> Any:
+        if isinstance(v, S.Expr):
+            return self._memo[id(v)][0]
+        if isinstance(v, tuple):
+            return tuple(map(self._part, v))
+        # repr, not the value: 0.0 == -0.0, and two NaN are not equal.
+        return type(v).__name__, repr(v)
+
+
+@functools.cache
+def _fields(cls: type) -> tuple[str, ...]:
+    return tuple(f.name for f in dataclasses.fields(cls))
