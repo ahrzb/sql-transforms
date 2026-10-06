@@ -32,7 +32,7 @@ from sklearn.preprocessing import (
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import Entry, NotNative, ParityError, check, to_native
-from sql_transform.native._check import _serve
+from sql_transform.native._check import TRAP_QUERIES, _definition, _serve
 from sql_transform.native._helpers import F32_INF, f64
 from sql_transform.native._registry import query, rejects
 
@@ -350,6 +350,37 @@ def test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else(
     else:
         with pytest.raises(ParityError, match=why):
             check(step, native, rows)
+
+
+# DuckDB runs each of the first TRAP_QUERIES rows confit traps on alone,
+# and the rest together. Here confit's answers are marked as traps on rows
+# it answers (`fake`), where DuckDB answers too.
+INF = math.inf
+
+
+@pytest.mark.parametrize(
+    "values, fake, why",
+    [
+        ([0.5, 0.7] + [INF] * TRAP_QUERIES, [0], r"row 0: confit traps"),
+        (
+            [INF] * TRAP_QUERIES + [0.5, 0.7],
+            [TRAP_QUERIES, TRAP_QUERIES + 1],
+            rf"rows \[{TRAP_QUERIES}, {TRAP_QUERIES + 1}\]: confit traps on each",
+        ),
+    ],
+    ids=["alone", "together"],
+)
+def test_check_holds_each_trap_of_confit_to_duckdb(values, fake, why):
+    est = StandardScaler().fit(np.random.default_rng(0).normal(size=(20, 1)))
+    step = _step(est, [pa.float64()], 1)
+    native = to_native(step, strict=True)
+    rows = _rows(step, [(v,) for v in values])
+    got = _serve(query(step), rows, native)
+    assert [isinstance(g, Exception) for g in got] == [v == INF for v in values]
+    _definition(step, native, rows, got, "__iid")
+    said = [ValueError("a trap") if i in fake else g for i, g in enumerate(got)]
+    with pytest.raises(ParityError, match=why):
+        _definition(step, native, rows, said, "__iid")
 
 
 class _Never(_Positive):

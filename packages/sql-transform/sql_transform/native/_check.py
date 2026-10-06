@@ -152,14 +152,23 @@ def _one(f: DuckDBInferFn, row: pa.Table) -> Any:
         return e
 
 
+# How many of the rows confit traps on `_definition` runs alone in DuckDB.
+# A trap fails the whole query, so each is a query of its own, and DuckDB
+# runs a large definition in 0.1-0.3 s a query however few its rows (a
+# spline of 160 output fields, the optimizer off): the rest run together.
+TRAP_QUERIES = 3
+
+
 def _definition(
     step: PythonTransform, native: Any, rows: pa.Table, got: list[Any], id_col: str
 ) -> None:
     """Raise `ParityError` unless DuckDB, running the native twin's own
     definition, answers exactly what confit served: the rows confit
-    answers in one query, and each row it traps on alone, which DuckDB
-    must trap on too (a trap fails the whole query)."""
+    answers, in one query; the first `TRAP_QUERIES` rows it traps on, each
+    alone, which DuckDB must trap on too; and the rest of those in one
+    query, which DuckDB must trap on."""
     answered = [i for i, g in enumerate(got) if not isinstance(g, Exception)]
+    trapped = [i for i, g in enumerate(got) if isinstance(g, Exception)]
     with Oracle() as o:
         native.register(o)
         o.load("__ALL__", rows.append_column("__row", pa.array(range(rows.num_rows))))
@@ -179,12 +188,18 @@ def _definition(
             compare.assert_rows(
                 [got[i] for i in answered], want.to_pylist(), ctx=_once(step, id_col)
             )
-        for i in range(len(got)):
-            if i not in answered and isinstance(answer([i]), pa.Table):
+        for i in trapped[:TRAP_QUERIES]:
+            if isinstance(answer([i]), pa.Table):
                 raise ParityError(
                     f"row {i}: confit traps ({got[i]}) where DuckDB answers the"
                     f" native definition; input {_input(rows, i)}"
                 )
+        rest = trapped[TRAP_QUERIES:]
+        if rest and isinstance(answer(rest), pa.Table):
+            raise ParityError(
+                f"rows {rest}: confit traps on each where DuckDB answers the"
+                " native definition on all of them"
+            )
 
 
 def _tolerated(est: Any, error: Exception) -> bool:
