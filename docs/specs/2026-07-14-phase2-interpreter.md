@@ -8,24 +8,15 @@ This is Phase 2 of the SQL Transform system. Phase 1 (Python) produces a reduced
 
 ## Architecture
 
-```
-Python                          Rust
-──────                          ────
-
-InferFn(sql,
-        row_tables,      ──►   parse SQL (DataFusion)
-        static_tables)         walk plan
-                               optimize:
-                                 static tables → lookup indices
-                                 JOIN detection + validation
-                               store execution plan
-
-fn.infer(tables)        ──►    execute plan per row
-                               walk plan tree
-                               eval expressions
-                               return rows
-
-                    ◄──        list[dict]
+```mermaid
+sequenceDiagram
+    participant P as Python
+    participant R as Rust
+    P->>R: InferFn(sql, row_tables, static_tables)
+    Note right of R: parse SQL (DataFusion), walk plan<br/>optimize: static tables → lookup indices,<br/>JOIN detection + validation<br/>store execution plan
+    P->>R: fn.infer(tables)
+    Note right of R: execute plan per row:<br/>walk plan tree, eval expressions
+    R-->>P: list[dict]
 ```
 
 ## Public API
