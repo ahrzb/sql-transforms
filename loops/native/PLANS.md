@@ -8,13 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **±inf in the row generator, and a `check` that fails when it compares
-   no row.** `EDGES` has no ±inf, so the gate never serves one: the
-   periodic spline breach of #406 hid there (#404, `tolerated.md` §5).
-   `check` skips the rows where the twin raises (4.9% of the gate's rows),
-   so a step that raises on every row compares nothing and passes. Every
-   class's draws change: its own ticket, run alone, after T18 (#406).
-2. **The spline on confit's binding (#412).** `_build_estimate` now
+1. **The spline on confit's binding (#412).** `_build_estimate` now
    overstates the build 2 to 6 times: it estimates 5.9 to 9.4 s for steps
    that build in 1.1 to 3.5 s, so the 7 s cap refuses four of the five
    steps that the confit loop measured. Fit it again on builds of master,
@@ -24,14 +18,14 @@ Easiest first; each is one family, one PR.
    out[j].sql(), ...)`) write each value out in full, which still doubles
    per degree. Key them by a memo per node, or by identity where that is
    enough.
-3. **One CASE per tree** (#412). Build each tree's nested CASE once, and
+2. **One CASE per tree** (#412). Build each tree's nested CASE once, and
    read that object in every output field of the tree. On the default
    forest (2,286 output fields) it serves 118 us a row against 202 us for
    the paths, and builds in 1.28 s against 1.84 s (the confit loop's
    measurement, release build of 4865d9f). Then fit the trees cap again on
    the new spelling: reading 4 measured 0.25 ms a path step at 1,173 steps
    and 0.44 ms at 21,353 (finding 56), where `trees.py` assumes 0.28 ms.
-4. **The kernel probe draws random significands**
+3. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
    The registered bounds hold on 2,000,000 random-significand draws in each
@@ -39,7 +33,7 @@ Easiest first; each is one family, one PR.
    1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
    that reads 0 makes a bounded function bit-exact on that platform: it
    serves by default, is checked at 0 and composes, as `sin` and `cos`.
-5. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+4. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
@@ -55,12 +49,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
 1. **The parity bound in `native.check`:** per output field
    `|g(entry) - g(twin)| <= K*eps*S + tau`, with S and K declared per
    family, S computed overflow-safely, and the one-sided-infinity rule on
-   the output (matvec-parity-bound.md, Recommendation 1 and 6). Next,
-   item 1 makes `check` fail when it compares no row.
+   the output (matvec-parity-bound.md, Recommendation 1 and 6).
 2. **The input guard** (tolerated-differences.md): probe each leaf for the
    values its twin rejects, trap in the first output field, check "raises
-   iff the twin raises" on every row (needs Next, item 1: +-inf in the row
-   generator). The periodic spline breach at +-inf is fixed (#406).
+   iff the twin raises" on every row. The row generator draws ±inf since
+   T20, and the periodic spline breach at ±inf is fixed (#406).
 3. **Densify sparse outputs** (sparse-outputs.md): one helper at
    `_udf.py:314`, `_projection.py:352`, `model/_foreign.py:128` and
    `native/encode.py:110`; then drop the sparse guards of OneHotEncoder,
@@ -72,7 +65,7 @@ that request, `to_native(step, allow_bound=True)`. In order:
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
      probes read 0; ship `sample_steps=1` (bit-exact) first. The probe's
-     draws are Next, item 2.
+     draws are in "Next" (the kernel probe).
    - Distances to fitted centres (`KMeans` and kin): compare squares,
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
