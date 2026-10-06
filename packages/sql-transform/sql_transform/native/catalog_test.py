@@ -1819,8 +1819,8 @@ def test_spline_refuses(params, reason):
 
 
 def test_spline_refuses_a_build_past_the_cap():
-    # 128 features of degree 5, 8 knots, "continue": estimated at 16 s, and
-    # built in 15 s (spline.py, `_build_estimate`). The estimate refuses it
+    # 128 features of degree 5, 8 knots, "continue": estimated at 19 s, and
+    # built in 19 s (spline.py, `_build_estimate`). The estimate refuses it
     # before confit is asked.
     X = np.random.default_rng(0).normal(size=(50, 128)) * 10
     est = SplineTransformer(degree=5, n_knots=8, extrapolation="continue").fit(X)
@@ -2111,7 +2111,7 @@ def spelling(request, monkeypatch) -> str:
     from sql_transform.native import trees
 
     if request.param == "paths":
-        monkeypatch.setattr(trees, "_case_seconds", lambda lanes: math.inf)
+        monkeypatch.setattr(trees, "_case_seconds", lambda *_: math.inf)
     return request.param
 
 
@@ -2230,9 +2230,9 @@ def test_trees_serve_the_default_forest(spelling):
 
 
 def _forest(
-    n_estimators: int, max_depth: int | None, rows: int
+    n_estimators: int, max_depth: int | None, rows: int, features: int = 8
 ) -> RandomTreesEmbedding:
-    X = np.random.default_rng(0).normal(size=(rows, 8))
+    X = np.random.default_rng(0).normal(size=(rows, features))
     return RandomTreesEmbedding(
         n_estimators=n_estimators,
         max_depth=max_depth,
@@ -2246,15 +2246,19 @@ def test_trees_spell_by_the_estimated_build():
 
     # One CASE per tree where its build is estimated within 7 s, else the
     # paths: the default forest, one unbounded tree over 2,000 rows (refused
-    # before one CASE per tree), and 160 trees of depth 5 (3,700 lanes).
+    # before one CASE per tree), 130 trees of depth 5 (3,000 lanes), and
+    # the default forest over 32 features, whose input guard is four times
+    # as large (trees.py has the builds).
     assert _spelling(_forest(100, 5, 2000)) == "case"
     assert _spelling(_forest(1, None, 2000)) == "case"
-    assert _spelling(_forest(160, 5, 2000)) == "paths"
+    assert _spelling(_forest(130, 5, 2000)) == "paths"
+    assert _spelling(_forest(100, 5, 2000, features=32)) == "paths"
 
 
 def test_trees_refuse_a_build_past_the_cap():
-    # One unbounded tree over 4,000 rows: 4,000 lanes, estimated at 11 s
-    # for one CASE per tree and 9 s for the paths (8.3 and 8.5 s measured).
+    # One unbounded tree over 4,000 rows: 4,000 lanes, estimated at 16 s
+    # for one CASE per tree and 12 s for the paths (12.1 and 11.8 s
+    # measured).
     est = _forest(1, None, 4000)
-    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
+    with pytest.raises(NotNative, match=r"an estimated 12 s build, past 7 s"):
         to_native(_tree_step(est, 8), strict=True)

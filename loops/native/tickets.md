@@ -10,16 +10,16 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
-T25 merged on 2026-10-06: the input guard. Where the validation of the
-twin raises, the entry traps, and nowhere else: each estimator is probed
-at translation with ±inf, NaN and NULL in each feature, in the container
-its twin is handed, and families add domain tests (`_registry.rejects`).
-The tests trap in the first output field. `native.check` asserts on each
-row that the native twin traps if and only if the step raises; it lets
-through only the sklearn bug the ruling lists. Coverage is 31 of 68. The
-loop runs from the "Transforms Loop" project thread.
+T26 merged on 2026-10-06: the forest and spline build estimates count
+the input guard. confit builds the guard's tests again at each field read
+of a struct output, so a build grows with the fields read times the
+guard's tests; `trees._case_seconds`, `trees._paths_seconds` and
+`spline._build_estimate` have a term for it, refitted on master 6aea15e.
+Coverage is 31 of 68. The loop runs from the "Transforms Loop" project
+thread.
 
-Next up: fit `trees._case_seconds` again on confit #422, then the
+Next up: the encoders' input guard in one test a feature (PLANS "Next"
+item 1: wide encoders build slowly or are refused since T25), then the
 densified sparse outputs and the families on the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.
