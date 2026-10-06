@@ -296,12 +296,14 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 # ±inf, and periodic's remainder of it is NaN, which DuckDB orders into
 # the last interval, where lane f{degree} has no basis from n_knots =
 # degree + 3 (at degree 0 from 2): a "zeros" periodic fixture at each
-# degree holds that shape for EDGES' ±inf. From degree 2 the steps take at most
-# SPLINE_FEATURES features. Every width the generator draws builds in a few
-# seconds since confit #387 (spline.py, `_build_estimate`), but the
+# degree holds that shape for EDGES' ±inf. From degree 2 the steps take at
+# most SPLINE_FEATURES features. Every width the generator draws builds in
+# a few seconds since confit #387 (spline.py, `_build_estimate`), but the
 # family's gate share grows with it: 31 s on 4 workers at 8 features, 49 s
-# at 16, 60 s without the limit (2026-10-06). The 200-seed sweep
-# (NATIVE_SEEDS=200, loops/native/report-format.md) covers every width.
+# at 16, 60 s without the limit (2026-10-06); 34 s with the four "zeros"
+# periodic fixtures of degrees 0, 1, 2 and 4, 27 s before them on the same
+# machine (2026-10-06). The 200-seed sweep (NATIVE_SEEDS=200,
+# loops/native/report-format.md) covers every width.
 SPLINE_FEATURES = 8
 FIXTURES[SplineTransformer] = [
     SplineTransformer,
