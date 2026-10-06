@@ -94,11 +94,10 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             raise NotNative(
                 f"Pipeline step {name!r}: no translation for {type(step).__name__}"
             )
-        ulps = entry.bound(step)
-        if ulps:
+        if not entry.exact(step):
             raise NotNative(
-                f"Pipeline step {name!r}: {type(step).__name__} is within"
-                f" {ulps} ulps, which no later step keeps bounded"
+                f"Pipeline step {name!r}: {type(step).__name__} is"
+                f" {entry.within(step)}, which no later step keeps bounded"
             )
         why = _float64_out(step) if k < len(steps) - 1 else None
         if why:
@@ -292,10 +291,9 @@ def _part(
     entry = catalog().get(type(part))
     if entry is None:
         raise NotNative(f"{where}: no translation for {type(part).__name__}")
-    ulps = entry.bound(part)
-    if ulps:
+    if not entry.exact(part):
         raise NotNative(
-            f"{where}: {type(part).__name__} is within {ulps} ulps;"
+            f"{where}: {type(part).__name__} is {entry.within(part)};"
             " a composition serves bit-exact parts only"
         )
     if _passes(part) and pa.string() in types:

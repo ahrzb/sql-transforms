@@ -29,6 +29,9 @@ serves only with `to_native(step, allow_bound=True)`. Such an entry can
 change a prediction: on repeated training values, HistGradientBoosting
 flipped labels under the Box-Cox entry, where the twin of an elementwise
 family flips none (loops/native/decisions/closed/matvec-parity-bound.md).
+A parity bound is an ulp bound (`ulps`), or an error scale
+(`ErrorScale`) for a family that rounds in an order its twin does not
+follow.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pyarrow as pa
 from confit import DuckDBInferFn, Function, SqlFunction
 from confit import sql as S
@@ -48,20 +52,46 @@ Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
 
 
 @dataclass(frozen=True)
+class ErrorScale:
+    """A parity bound in units of each output field's error scale S:
+    `|g(entry) - g(twin)| <= K*eps*S + tau`, field by field, eps = 2**-52
+    (decisions/closed/matvec-parity-bound.md, the ruling). For a family
+    that rounds in an order its twin does not follow, such as a dot
+    product the twin hands to BLAS; each operand is the family's to derive.
+
+    `k(est)` is K and `tau(est)` the floor for underflow, each a number or
+    one per output field. `s(est, x)` is S for each output field at one
+    row `x`: the features as the twin's `transform` sees them (NaN for
+    NULL, a boolean as 0 or 1), as long doubles, so that a formula kept in
+    numpy's arithmetic does not overflow where the field does not (where a
+    long double is a double, as on macOS on arm64, an S past DBL_MAX
+    bounds nothing). `g` maps both sides before they are compared: the
+    identity unless the family names one (a distance compares its
+    square)."""
+
+    k: Callable[[Any], Any]
+    s: Callable[[Any, np.ndarray], Any]
+    tau: Callable[[Any], Any]
+    g: Callable[[Any], Any] | None = None
+
+
+@dataclass(frozen=True)
 class Entry:
     """A catalog entry: the translator and its declared parity bound, in
-    doubles per lane (0 = bit-exact), fixed by the measurement its module
-    cites.
+    doubles per lane (0 = bit-exact) or in an error scale, fixed by the
+    derivation or the measurement its module cites.
 
     `ulps` is the class's ceiling. An entry whose bound depends on the
     configuration also has `per_estimator`, which answers one fitted
     estimator's own bound, from 0 to the ceiling; without it, every
-    estimator's bound is the ceiling. A step whose bound is above 0 serves
-    only with `to_native(step, allow_bound=True)`."""
+    estimator's bound is the ceiling. An entry with a `scale` is bounded
+    by that error scale instead, never bit-exact. A step whose bound is
+    above 0 serves only with `to_native(step, allow_bound=True)`."""
 
     translate: Translator
     ulps: int
     per_estimator: Callable[[Any], int] | None = None
+    scale: ErrorScale | None = None
 
     @property
     def varies(self) -> bool:
@@ -69,7 +99,11 @@ class Entry:
         return self.per_estimator is not None
 
     def bound(self, est: Any) -> int:
-        """`est`'s own parity bound: what its translation is checked to."""
+        """`est`'s own ulp bound: what its translation is checked to."""
+        if self.scale is not None:
+            raise ValueError(
+                f"{type(est).__name__}: its parity bound is an error scale, not ulps"
+            )
         if self.per_estimator is None:
             return self.ulps
         b = self.per_estimator(est)
@@ -79,6 +113,18 @@ class Entry:
                 f" ceiling of {self.ulps}"
             )
         return b
+
+    def exact(self, est: Any) -> bool:
+        """The translation of `est` is bit-exact."""
+        return self.scale is None and self.bound(est) == 0
+
+    def within(self, est: Any) -> str:
+        """`est`'s parity bound, as a message reads it."""
+        if self.scale is None:
+            return f"within {self.bound(est)} ulps"
+        k = self.scale.k(est)
+        kk = f"{float(k):g}" if np.ndim(k) == 0 else "K"
+        return f"within {kk}·eps·S + τ (S its error scale)"
 
 
 _CATALOG: dict[type, Entry] = {}
@@ -100,22 +146,28 @@ class NotNative(Exception):  # noqa: N818 — a reason, raised and caught
 
 
 def translates(
-    *classes: type, ulps: int = 0, bound: Callable[[Any], int] | None = None
+    *classes: type,
+    ulps: int = 0,
+    bound: Callable[[Any], int] | None = None,
+    scale: ErrorScale | None = None,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
-    unless `ulps` says otherwise. With `bound`, `ulps` is the ceiling and
-    `bound(est)` each fitted estimator's own bound (a class whose
-    configurations differ: `FunctionTransformer` is bit-exact for the
-    identity and within 2 ulps for `np.log10`). A subclass is not covered:
-    it may override what `transform` computes."""
+    unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
+    ceiling and `bound(est)` each fitted estimator's own bound (a class
+    whose configurations differ: `FunctionTransformer` is bit-exact for the
+    identity and within 2 ulps for `np.log10`). With `scale`, the bound is
+    that error scale. A subclass is not covered: it may override what
+    `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
+    if scale is not None and (ulps or bound is not None):
+        raise ValueError("an error scale is the whole bound, without ulps")
 
     def deco(fn: Translator) -> Translator:
         for c in classes:
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
-            _CATALOG[c] = Entry(fn, ulps, bound)
+            _CATALOG[c] = Entry(fn, ulps, bound, scale)
         return fn
 
     return deco
@@ -269,27 +321,40 @@ def _builds(step: PythonTransform, fn: SqlFunction) -> None:
 
 
 def bound_of(est: Any) -> int:
-    """One fitted estimator's parity bound, by its class's entry."""
+    """One fitted estimator's ulp bound, by its class's entry."""
     return _CATALOG[type(est)].bound(est)
 
 
 def bound(step: Any) -> int:
-    """The parity bound of a step's translation: the loosest of its
+    """The ulp bound of a step's translation: the loosest of its
     instances' own bounds."""
     return max(bound_of(e) for e in step.instances.values())
+
+
+def _loosest(step: PythonTransform) -> tuple[int, Any]:
+    """The instance whose bound is the loosest, the first by id: one with
+    an error scale, else the one with the most ulps."""
+
+    def looseness(ke: tuple[int, Any]) -> tuple[bool, int]:
+        entry = _CATALOG[type(ke[1])]
+        if entry.scale is not None:
+            return (True, 0)
+        return (False, entry.bound(ke[1]))
+
+    return max(sorted(step.instances.items()), key=looseness)
 
 
 def _bounded(step: PythonTransform) -> str | None:
     """Why `to_native` serves `step` only with `allow_bound`: its loosest
     instance (the first by id) is within a bound above 0. None when every
     instance is bit-exact."""
-    k, est = max(sorted(step.instances.items()), key=lambda ke: bound_of(ke[1]))
-    b = bound_of(est)
-    if not b:
+    k, est = _loosest(step)
+    entry = _CATALOG[type(est)]
+    if entry.exact(est):
         return None
     return (
-        f"instance {k}: {type(est).__name__} is within {b} ulps of its twin,"
-        " not bit-exact; to_native serves a bound above 0 only with"
+        f"instance {k}: {type(est).__name__} is {entry.within(est)} of its"
+        " twin, not bit-exact; to_native serves a bound above 0 only with"
         " allow_bound=True"
     )
 
@@ -324,6 +389,7 @@ def explain_native(step: Any, *, allow_bound: bool = False) -> str:
     except NotNative as e:
         return f"{getattr(step, 'name', step)!r} stays Python: {e}"
     kinds = sorted({type(e).__name__ for e in step.instances.values()})
-    b = bound(step)
-    within = f", within {b} ulps" if b else ""
+    _, est = _loosest(step)
+    entry = _CATALOG[type(est)]
+    within = "" if entry.exact(est) else f", {entry.within(est)}"
     return f"{fn.name!r}: {', '.join(kinds)} -> SqlFunction{within}"
