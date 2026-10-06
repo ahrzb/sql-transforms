@@ -8,6 +8,28 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
+1. **±inf in the row generator, and a `check` that fails when it compares
+   no row.** `EDGES` has no ±inf, so the gate never serves one: the
+   periodic spline breach of #406 hid there (#404, `tolerated.md` §5).
+   `check` skips the rows where the twin raises (4.9% of the gate's rows),
+   so a step that raises on every row compares nothing and passes. Every
+   class's draws change: its own ticket, run alone, after T18 (#406).
+2. **The kernel probe draws random significands**
+   (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
+   on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
+   The registered bounds hold on 2,000,000 random-significand draws in each
+   of three ranges (numpy 2.5.1 against DuckDB 1.5.5, 2026-10-06): `log`
+   1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3.
+3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+   defines a lane as the machine type that holds a value in a built
+   function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
+   "lanes" as a ticket of its own: every module uses the word.
+4. **The five open decision records in simple English** (#401), after #404
+   lands, with the errors #404 found: the chi2 record's (s, j) list is off
+   by one, and the matvec record's counts did not reproduce. Write two new
+   records from #404's `critique.md` §2: "same-host or cross-host?" and
+   "may a bounded step sit in a composition?".
+
 ## Waiting on the owner
 
 - **`AdditiveChi2Sampler`:** its lanes are `factor * cos(j * (s *
