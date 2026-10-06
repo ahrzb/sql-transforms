@@ -265,16 +265,16 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 
 # SplineTransformer: degrees 0 to 4, 2 to 8 knots of each kind, the five
 # extrapolations, both biases and both missing modes (degree 5 is in
-# test_spline_at_the_knots: its expression doubles per degree, and 32
-# features of it build in minutes, spline.py). Constant columns
-# make equal knots (all of them under "uniform", runs under "quantile",
-# where few-valued columns do too, and a zero period under "periodic"); a
-# column only missing makes NaN knots under "quantile". Rows at and beside
-# the knots are in test_spline_at_the_knots. From degree 2 the steps take
-# at most SPLINE_FEATURES features: the entry refuses past an estimated 7 s
-# build per estimator, but a step's instances compound it (1, 2, 3
-# instances of one 25-feature fit: 7.8, 16.7, 33.1 s), and the family's
-# gate share is about 120 s on 4 workers without the limit, 50 s with it.
+# test_spline_at_the_knots). Constant columns make equal knots (all of them
+# under "uniform", runs under "quantile", where few-valued columns do too,
+# and a zero period under "periodic"); a column only missing makes NaN
+# knots under "quantile". Rows at and beside the knots are in
+# test_spline_at_the_knots. From degree 2 the steps take at most
+# SPLINE_FEATURES features. Every width the generator draws builds in a few
+# seconds since confit #387 (spline.py, `_build_estimate`), but the
+# family's gate share grows with it: 31 s on 4 workers at 8 features, 49 s
+# at 16, 60 s without the limit (2026-10-06). The 200-seed sweep
+# (NATIVE_SEEDS=200, loops/native/report-format.md) covers every width.
 SPLINE_FEATURES = 8
 FIXTURES[SplineTransformer] = [
     SplineTransformer,
@@ -1364,11 +1364,12 @@ def test_spline_refuses(params, reason):
 
 
 def test_spline_refuses_a_build_past_the_cap():
-    # 24 features of degree 3, 8 knots, "continue": built in 21 s; the
-    # estimate puts it past MAX_BUILD_S before confit is asked.
-    X = np.random.default_rng(0).normal(size=(50, 24)) * 10
-    est = SplineTransformer(n_knots=8, extrapolation="continue").fit(X)
-    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(24)])
+    # 32 features of degree 5, 7 knots, "continue": estimated at 9.4 s, and
+    # past confit's 4,000,000-token expansion cap too. The estimate refuses
+    # it before confit is asked, with its own reason.
+    X = np.random.default_rng(0).normal(size=(50, 32)) * 10
+    est = SplineTransformer(degree=5, n_knots=7, extrapolation="continue").fit(X)
+    takes = pa.schema([(f"x{j}", pa.float64()) for j in range(32)])
     returns = pa.struct([(f"f{i}", pa.float64()) for i in range(est.n_features_out_)])
     step = PythonTransform("tf", {0: est}, takes, returns)
     with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
