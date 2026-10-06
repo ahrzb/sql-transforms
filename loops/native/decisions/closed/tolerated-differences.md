@@ -19,25 +19,39 @@ or that it must block the entry instead.
 
 **Methodology (2026-10-06).** The research note is
 [research/2026-10-06/tolerated.md](../research/2026-10-06/tolerated.md). An
-adversarial verifier re-ran it with a different design of the probe
-(item 1). The verifier is a second agent that tried to refute each claim of
+adversarial verifier re-ran the research with a different design of the probe
+(item 1). The verifier is a second agent that tried to refute the claims of
 the note.
 
 The research used this setup and these terms:
 
 - **Environment.** The software is scikit-learn (sklearn) 1.9.0, DuckDB
-  1.5.5 and a release build of confit. The code is master at commit 113fba7.
-- **The provisional rule.** This is the ruling above: the entry may answer
-  where the twin raises, and never the reverse.
-- **check.** `native.check` is the test that serves the same query with the
-  twin and with the entry and compares the results. This record calls it
-  `check`.
-- **EDGES.** `EDGES` (in `catalog_test.py`) is the list of extreme input
-  values that the catalog tests serve to the entries in the gate.
-- **Values.** The value inf means infinity. NaN is the floating-point value
-  "not a number".
+  1.5.5 and a release build of confit. The research measured the master
+  branch at commit 113fba7.
+- **Entry.** A catalog entry is one entry of the native catalog. It
+  translates a fitted sklearn transformer into a transform that confit
+  serves. This record calls it "the entry".
+- **The provisional rule.** This is the ruling above. The entry may answer
+  where the twin raises an error. The entry must never trap where the twin
+  answers.
+- **Feature.** A feature is one input column of a transformer and of its
+  entry.
 - **Field.** A field is one output field of the struct that an entry
   returns. Field 0 is the first output field.
+- **Catalog tests.** The catalog tests are the tests of the native catalog,
+  in `packages/sql-transform/sql_transform/native/catalog_test.py`. The gate
+  runs them.
+- **Fixture configuration.** A fixture configuration (a fixture) is one
+  sklearn configuration that the catalog tests fit for an entry. The list
+  `FIXTURES` in `catalog_test.py` holds them.
+- **EDGES.** `EDGES` is a list in `catalog_test.py`. It holds the extreme
+  input values that the catalog tests serve to the entries.
+- **check.** The test function `native.check`
+  (`packages/sql-transform/sql_transform/native/_check.py`) serves the same
+  query with the twin and with the entry. Then it compares the results. This
+  record calls it `check`.
+- **Values.** The value inf means infinity. NaN is the floating-point value
+  "not a number". A non-finite value is ±inf or NaN.
 
 1. **The probe.**
    - The probe is the experiment of the note. It covers all 160 fixture
@@ -48,13 +62,15 @@ The research used this setup and these terms:
      with the entry. It used the same query that `check` serves.
    - The verifier used its own design, with 4 features and other data. That
      design gave 6,688 rows and the same pattern of results.
-2. **What the entry answers where the twin raises.**
+2. **What the entry answers where the twin raises.** In this item, the bad
+   input is the probe value that the twin rejects.
    - The twin raised an error on 1,396 rows. The entry trapped on none of
      them.
    - On 565 of those rows, every field of the entry was finite:
-     - On 425 rows, a field that reads the bad input is finite.
-     - On 140 rows, no field reads the bad input. An example is a feature
-       selector that drops the column.
+     - On 425 rows, at least one of these finite fields depends on the bad
+       input.
+     - On 140 rows, no field depends on the bad input. For example, a
+       feature selector removes the column that holds the bad input.
    - The twin answered on 3,708 rows. On those rows, the entry differed from
      the twin on 0 rows and trapped on 0 rows.
 3. **NULL, the common case in SQL.**
@@ -81,17 +97,19 @@ The research used this setup and these terms:
    - The probes found a real parity breach where the twin answers. The
      breach is at ±inf, in a SplineTransformer with periodic extrapolation,
      `handle_missing="zeros"` and n_knots ≥ degree + 3. Here n_knots is the
-     number of knots.
+     number of knots of the spline.
    - At those inputs, the twin answers NaN. The entry answers 0.0.
    - To show the breach, the gate needs both ±inf in `EDGES` and a fixture
      with `handle_missing="zeros"`.
 6. **Input guards** (measured).
    - An input guard built from the tags that sklearn declares for each
-     transformer is not exact. It misses 156 rows where the twin raises.
-   - That guard also traps 22–112 times where the twin answers. The record
-     forbids a trap where the twin answers.
-   - A guard for each leaf is possible. A leaf is a transformer that holds
-     no other transformer. These are the steps to build the guard:
+     transformer is not exact.
+   - That guard does not trap on 156 rows where the twin raises.
+   - That guard also traps 22–112 times where the twin answers. This record
+     does not allow the entry to trap where the twin answers.
+   - Some transformers, such as a Pipeline, hold other transformers. A leaf
+     is a transformer that holds no other transformer. It is possible to
+     build an input guard for each leaf. These are the steps:
      1. When the entry translates the fitted transformer, probe which of
         ±inf and NaN each column of the leaf rejects.
      2. Apply each test to the input expressions of the leaf itself.
@@ -100,22 +118,27 @@ The research used this setup and these terms:
    - That trap fires in confit and in DuckDB when the query reads any single
      field.
    - In the cheapest SQL spelling, the guard costs 0–31 ns per feature per
-     row. Other spellings cost up to 108 ns. The twin costs 100–220 µs per
-     row.
-   - The research did not build a prototype of the guard across the catalog.
+     row. Other spellings cost up to 108 ns per feature per row. The twin
+     costs 100–220 µs per row.
+   - The research did not build a prototype of the guard across the native
+     catalog.
    - One case where the twin raises is not validation at all. A
      SplineTransformer of degree 0 with constant extrapolation raises a
-     broadcast error. This error is an sklearn bug.
-7. **A middle option** is the condition "non-finite in, non-finite out". It
-   costs nothing for an entry whose arithmetic already propagates non-finite
-   values. The verifier refuted the claim that it costs as much as the
-   guard. But the condition still turns errors into answers. Also, the NaN
-   order of DuckDB turns a NaN back into a branch downstream. For example,
-   Binarizer on NaN answers 1.
+     broadcast error. In a broadcast error, numpy cannot combine two arrays
+     because their shapes do not fit. This error is an sklearn bug.
+7. **A middle option** is the condition "non-finite in, non-finite out". The
+   condition requires a non-finite output for a non-finite input.
+   - If the arithmetic of an entry already carries non-finite values through
+     to its output, the condition costs nothing for that entry.
+   - The verifier refuted the claim that the condition costs as much as the
+     guard.
+   - But the condition still turns errors into answers.
+   - Also, DuckDB puts NaN above every number. So a comparison downstream
+     turns a NaN back into a branch. For example, Binarizer on NaN answers 1.
 
 **Recommendation.** Do not accept the provisional rule as stated. Do not
-accept it with only the non-finite condition either. Require the entry to
-trap where the validation of the twin raises an error.
+accept it with only the non-finite condition either. Where the validation of
+the twin raises an error, require the entry to trap.
 
 - **What the guard covers.** The guard covers the non-finite checks for each
   column. It also covers these domain checks:
@@ -135,8 +158,8 @@ trap where the validation of the twin raises an error.
   - The gate has ±inf in `EDGES`. It also has a fixture of a
     SplineTransformer with periodic extrapolation and
     `handle_missing="zeros"`.
-  - A prototype shows across the catalog that the guard never traps where
-    the twin answers.
+  - A prototype shows across the native catalog that the guard never traps
+    where the twin answers.
 
 These are the reasons, judged against the goal that inference does not
 change:
@@ -148,7 +171,7 @@ change:
 - **The gate cannot see it.** The gate skips these rows.
 - **The guard is cheap.** It costs under 2% of the cost of the twin.
 - **The obstacle that the record states is smaller than it reads.** The
-  record names a copy of sklearn's validation for each transformer. A probe
+  record names a copy of sklearn's validation for each estimator. A probe
   of each leaf replaces most of that copy.
 
 This recommendation reverses the provisional rule in favour of exactness.

@@ -63,49 +63,71 @@ loop's proposal.
 
 **Methodology (2026-10-06).** The research notes are in
 [research/2026-10-06/](../research/2026-10-06/README.md). This record uses
-five of them:
+five of them. An adversarial verifier re-ran four of the five notes. In this
+record, a verifier is a second agent that tried to refute the key claims of a
+note.
 
-- matvec.md is the note on the matvec (matrix-vector product) families. An
-  adversarial verifier re-ran it. The verifier is a second agent that tried
-  to refute each claim of the note.
-- distances.md is the note on distances to fitted centres and on the kernel
-  samplers. An adversarial verifier re-ran it too.
-- framework.md is the note on the general form of a parity bound. An
-  adversarial verifier re-ran it too.
+- matvec.md is the note on the matvec (matrix-vector product) families. A
+  verifier re-ran it.
+- distances.md is the note on two other groups of families. A verifier
+  re-ran it too.
+  - The first group computes the distance from a row to each fitted centre,
+    for example `KMeans`. A fitted centre is the centre point of one cluster
+    of the fitted model.
+  - The second group is the kernel samplers, for example `RBFSampler`. A
+    kernel sampler is a sklearn transformer that makes new features. The new
+    features approximate a kernel function, which measures the similarity of
+    two rows.
+- framework.md is the note on the general form of a parity bound. A verifier
+  re-ran it too.
 - critique.md is the note that settles the contradictions between the
   notes.
-- inference.md is the note that tests if the entry changes a prediction. An
-  adversarial verifier re-ran it too.
+- inference.md is the note that tests if a prediction changes when the
+  catalog entry replaces its twin. A verifier re-ran it too.
 
 The research used this setup and these terms:
 
+- **Entry.** A catalog entry is one entry of the native catalog. It
+  translates one fitted sklearn transformer into a transform that confit
+  serves. This record calls the catalog entry of a step "the entry".
 - **Environment.** The host is x86-64 with AVX-512 (Advanced Vector
   Extensions, 512-bit). The software is numpy 2.5.1, scikit-learn (sklearn)
-  1.9.0, OpenBLAS 0.3.33 and DuckDB 1.5.5. The code is master at commit
-  113fba7.
+  1.9.0, OpenBLAS 0.3.33 and DuckDB 1.5.5. The code is commit 113fba7 of the
+  master branch.
 - **OpenBLAS.** OpenBLAS is the library of BLAS (Basic Linear Algebra
-  Subprograms) kernels that the twin uses. Its build option `DYNAMIC_ARCH`
-  makes it select a kernel for the CPU at run time. OpenBLAS names its
-  kernels after CPU generations, for example SkylakeX, Haswell and
-  Sandybridge.
+  Subprograms) kernels that the twin uses. An OpenBLAS kernel is the code of
+  one operation for one type of CPU (central processing unit). It is not a
+  kernel function. The build option `DYNAMIC_ARCH` makes OpenBLAS select a
+  kernel for the CPU at run time. OpenBLAS names its kernels after CPU
+  generations, for example SkylakeX, Haswell and Sandybridge.
 - **The twin under other conditions.** The research selected the BLAS
   kernels of other CPUs with the environment variable `OPENBLAS_CORETYPE`.
   Each configuration ran in its own process. All configurations used one
   fitted model, saved with Python's `pickle`, and the same rows.
-- **The term scale.** This record uses the full term scale of an output
-  field k, `S_full = (Σ|x_i·c_ki| + Σ|m_i·c_ki|) / scale_k`. Here x is the
-  input row of n features, c_k is component k and m is the fitted mean
-  `mean_`. `scale_k` is the number by which whitening divides component k.
-- **The record's S.** The term scale above uses |m·c_k| as its second term.
-  S_full uses Σ|m_i·c_ki| in its place.
+- **Fixtures.** The catalog's fixtures are the test cases that the test file
+  of the catalog (`catalog_test.py`) generates. For each seed, a generator in
+  that file draws fitted steps and their input rows.
+- **The term scale.** The term scale is the error scale S that this record
+  proposes for a field of a matvec family. It is the sum of the magnitudes of
+  the terms that the field adds.
+- **S_full.** This record uses the full term scale of an output field k,
+  `S_full = (Σ|x_i·c_ki| + Σ|m_i·c_ki|) / scale_k`. Here x is the input row
+  of n features, c_k is component k and m is the fitted mean `mean_`.
+  `scale_k` is the number by which whitening divides component k.
+- **The record's S.** The record's S is the term scale in the sections
+  above the Methodology. It uses |m·c_k| as its second term. S_full uses Σ|m_i·c_ki| in its
+  place.
 - **K.** For two results a and b of one field, K is
   `|a − b| / (eps·S_full)`, with eps = 2^-52.
 - **check.** `native.check` is the test that serves the same query with the
-  twin and with the entry and compares the results. This record calls it
-  `check`.
+  twin and with the entry and compares the results. It also runs the entry's
+  own definition on the oracle (DuckDB with the optimizer off). It compares
+  that answer with confit's answer for the entry, bit-exact. This record
+  calls the test `check`.
 
 In the counts below, a field is one output field of one row. A sourced claim
-cites the code of a package or a URL. A derived claim gives its derivation.
+cites the code of a package or a web address (URL). A derived claim gives its
+derivation.
 
 1. **What the twin computes** (sourced, then measured). The sources are
    sklearn, numpy's matrix product code `matmul.c.src` v2.5.1 and the
@@ -120,8 +142,9 @@ cites the code of a package or a URL. A derived claim gives its derivation.
      - a call on one row or a call on a batch
      - the thread count, once the matrix of the product has
        m·n ≥ 460,800 elements
-   - The `covariance_eigh` solver of PCA gives `components_` in F-order
-     (column-major). So OpenBLAS uses its kernel `dgemv_n`.
+   - In PCA (principal component analysis), the `covariance_eigh` solver
+     gives `components_` in F-order (column-major). So OpenBLAS uses
+     `dgemv_n`, its gemv kernel for a matrix in F-order.
    - The research emulated the order of `dgemv_t`, the OpenBLAS kernel for
      `components_` in C-order (row-major). The emulation of the SkylakeX and
      Haswell kernels was bit-exact on every field tested.
@@ -160,8 +183,8 @@ cites the code of a package or a URL. A derived claim gives its derivation.
    - If the terms share a sign, K grows roughly as n^0.4. K is about 12 at
      n = 2,048, and 16–17 at n = 8,192.
    - If the signs are mixed, K stays near 1.5–3.
-   - A constructed row reaches a K of about (n − 2)/4, which is 7.25 at
-     n = 32.
+   - At n = 32, a constructed row reaches a K of about 7.25. That is about
+     (n − 2)/4.
 5. **Alternatives measured.**
    - *A correctly rounded dot product.* The research wrote the Dot2
      algorithm of Ogita, Rump and Oishi in DuckDB SQL. It gave the correctly
@@ -196,12 +219,12 @@ cites the code of a package or a URL. A derived claim gives its derivation.
        sampler, and c is its output factor.
      - L_i is x_i for RBF. For SkewedChi2, L_i is ln(x_i + s), where s is
        its `skewedness` parameter.
-   - *Nystroem* needs an S that accounts for its kernel.
+   - *Nystroem* needs an S that accounts for its kernel function.
    - *PolynomialCountSketch* is a convolution through the fast Fourier
      transform (FFT), not a matvec. The S that the research proposed for
      each row can be exactly 0 while the twin returns noise.
-   - So PolynomialCountSketch needs a normwise S, computed from the norms of
-     whole vectors.
+   - So PolynomialCountSketch needs a normwise S. A normwise S uses the
+     norm (the length) of each whole vector, not the size of each term.
 7. **Downstream predictions** (inference.md, verified, and one independent
    measurement of Box-Cox).
    - The research put PCA, KMeans, Yeo-Johnson and chi2 (the additive chi2
@@ -229,9 +252,10 @@ cites the code of a package or a URL. A derived claim gives its derivation.
        label of 7.
      - *KMeans.* The entry was 2–5× worse than every variant of the twin.
        For example, the branch changed for 313 rows, against 161.
-     - *Elementwise families.* On one host, the twin's outputs for a row,
-       for a batch and from `fit_transform` are bit-exact with each other.
-       So the twin never flips a label there.
+     - *Elementwise families* transform each feature on its own, for
+       example Yeo-Johnson. On one host, the twin's outputs for a row, for a
+       batch and from `fit_transform` are bit-exact with each other.
+     - So the twin never flips (changes) a predicted label there.
      - The Box-Cox entry that the catalog serves today has an ulp bound
        of 4. It flipped 53–80 labels per 200,000 new rows with values on a
        grid (the verifier, 4 seeds).
@@ -245,18 +269,22 @@ cites the code of a package or a URL. A derived claim gives its derivation.
    - The thread count does change the twin above m·n = 460,800.
    - The record's S, with |m·c_k|, never fails inside `check`, because one
      process shares M. If another host serves the twin, S_full matters.
-   - Upper limits fitted to measurements, such as "K ≤ 0.7·√n", are false.
-   - One half of `check` compares confit's answer for the entry with the
-     answer of DuckDB, bit-exact. That half cannot find a wrong constant,
-     because both sides share it.
+   - Upper limits on K that come from measurements, such as "K ≤ 0.7·√n",
+     are false.
+   - `check` compares confit's answer for the entry with the answer of the
+     oracle, bit-exact. This comparison cannot find a wrong constant,
+     because both sides share the constant.
 9. **Not reproduced.**
    - The first table of the record counts 3,855 and 23,050 fields. Every
      run gives 4,618 and 25,208.
-   - The record names commit b851298. Its numbers match the fixture
-     generator at the current commit (HEAD), not at b851298.
+   - The text above that table names commit b851298 of the master branch.
+     The record's numbers match the fixture generator at HEAD, the commit
+     that the research had checked out. They do not match the generator at
+     b851298.
 
-**Recommendation.** Take Option 1, amended into one general form. That
-form also closes two other records: the power record
+**Recommendation.** Take Option 1, amended into one general form. Option 1
+is the term-scale bound for the matvec families, in **Options** above. The
+general form also closes two other records: the power record
 (`power-parity-bound.md`) and the additive chi2 record
 (`additive-chi2-parity-bound.md`).
 
@@ -266,7 +294,8 @@ form also closes two other records: the power record
      fitted state and the row.
    - Each family derives K from the error bounds of its operations. K may
      depend on the width n.
-   - g is a comparison map. It is the identity, unless a family names
+   - g is a comparison map, a function that `check` applies to both sides
+     before it compares them. It is the identity, unless a family names
      another map.
    - τ is a small floor for underflow.
    - Keep the measured maximum as evidence. Never use it as K.
@@ -293,8 +322,9 @@ form also closes two other records: the power record
    - If exactly one side of a field is infinite, the field passes only under
      three conditions:
      - The other side is finite.
-     - It has the same sign.
-     - It lies within K·eps·S of DBL_MAX, the largest finite double.
+     - The other side has the same sign as the infinite side.
+     - The other side lies within K·eps·S of DBL_MAX, the largest finite
+       double.
 7. **Do not serve noise fields.** A noise field is a field of a
    `whiten=True` component with one of these two properties:
    - sklearn clipped its scale to eps.
@@ -326,9 +356,11 @@ change when the entry replaces the twin:
     change. For matvec, the twin changes them against itself about half as
     often as the entry.
   - For elementwise families on one host, the twin never changes them.
-  - So a parity bound promises the range of the twin's own results across
-    hosts. It does not promise bit-exact predictions on one host. The
-    owner's ruling below therefore makes bit-exact the default.
+  - So a parity bound promises that the entry stays inside the range of the
+    twin's own results on different hosts. It does not promise that the
+    predictions of the entry are bit-exact with those of the twin on one
+    host. For this reason, the owner's ruling below makes bit-exact the
+    default.
 - **A measured K is not a bound.** K = 3 already fails at 1,000 seeds and
   on wider inputs. K = n + 3 holds for every order.
 - **The looser K costs almost no power to detect defects.** A structural
@@ -349,15 +381,17 @@ These questions are still for the owner (critique.md §2):
   - It decides if values that the twin recomputes on each call count as
     shared constants. These values are PCA's M, KMeans's ‖c‖² and chi2's
     `cosh(πjs)`.
-- **May a bounded step sit in a composition?** A bounded step is a step
-  whose bound is not 0. Today, the catalog module for compositions
-  (`compose.py`) raises `NotNative` for any bounded step.
+- **May a bounded step sit in a composition?** A composition combines
+  several steps, for example a sklearn Pipeline, which runs its steps one
+  after the other. A bounded step is a step whose parity bound is not 0.
+  Today, the catalog module for compositions (`compose.py`) raises
+  `NotNative` for any bounded step.
   - So with Option 1 alone, the translation of
     `make_pipeline(StandardScaler(), PCA())` still raises `NotNative`.
-  - If a bounded step is the last step of a Pipeline, it needs no new
-    theory.
-  - A bounded step that feeds a discontinuous step, such as a binner or a
-    threshold, has no bound.
-- **The API of check.** Its application programming interface (API) must
-  change from an integer ulp bound to an S for each field. That S reads the
-  fitted estimator, and K is a function K(n) of the width.
+  - If the bounded step is the last step of a Pipeline, that case needs no
+    new theory.
+  - If the bounded step feeds a discontinuous step, such as a binner or a
+    threshold, that case has no bound.
+- **The interface of check.** The application programming interface (API)
+  of `check` must change from an integer ulp bound to an S for each field.
+  That S reads the fitted estimator, and K is a function K(n) of the width.
