@@ -282,6 +282,9 @@ struct BoundSelect {
     joins: Vec<JoinSpec>,
     pred: Option<SExpr>,
     project: Vec<(String, SExpr)>,
+    /// Per projection entry: the item binds DuckDB's SQLNULL (the adoptable
+    /// NULL `expr_or_null` answers `None` for), not a typed NULL constant.
+    sqlnull: Vec<bool>,
     /// What the projection reads through `SKind::Let` (see `lets.rs`).
     lets: Vec<SExpr>,
     out_cols: Vec<Col>,
@@ -294,17 +297,22 @@ struct BoundQuery {
     stages: Vec<Stage>,
     joins: Vec<JoinSpec>,
     out_cols: Vec<Col>,
-    /// Per output column: a constant NULL, or a whole item that reads such a
-    /// column of the level below. DuckDB keeps a bare NULL typed SQLNULL
-    /// through each query level, and a consumer binds against that
-    /// type; confit does not model it, so the level above binds such a
-    /// column only as a whole projection item and refuses it anywhere else
-    /// ([`Binder::null_col`]). The refusal comes where the column binds,
-    /// before any fold: a fold drops the arms a constant CASE condition
-    /// does not take, and with them the column, while the type the column
-    /// gave the CASE stays (nightly seed 4824388:
-    /// `CASE WHEN TRUE THEN -87.375 ELSE i0 END` typed DECIMAL(13,3), where
-    /// DuckDB answers DECIMAL(5,3)).
+    /// Per output column: an item that binds DuckDB's SQLNULL (a NULL
+    /// literal, an all-NULL CASE; not a typed NULL such as `-38 + NULL`,
+    /// which is INTEGER there), or a whole item that reads such a column of
+    /// the level below. DuckDB keeps a bare NULL typed SQLNULL through each
+    /// query level, and types an expression over the column
+    /// as over a NULL literal: `CASE WHEN TRUE THEN -87.375 ELSE i0 END` is
+    /// DECIMAL(5,3) (nightly seed 4824388). So the level above binds such a
+    /// column as a NULL literal (`expr_or_null` answers `None`), except as a
+    /// whole projection item, which keeps it a column. The one difference
+    /// is that a column is not foldable: where DuckDB keeps the NULL a node
+    /// of its own (under a CAST, a comparison, CASE, COALESCE, a list or a
+    /// UDF argument), that node does not fold either
+    /// (`Binder::typed_null`). Any other read of the column, as a value of
+    /// the INTEGER confit stores it in, refuses where it binds
+    /// ([`Binder::null_col`]), before a fold could erase the column and
+    /// leave its type behind.
     null_cols: Vec<bool>,
     wide_outs: Vec<super::WideOut>,
     ctx: QueryCtx,
@@ -492,10 +500,10 @@ fn bind_query<'q>(
     let null_cols = b
         .project
         .iter()
-        .map(|(_, e)| match e.kind {
-            SKind::NullOf => true,
+        .zip(&b.sqlnull)
+        .map(|((_, e), &sqlnull)| match e.kind {
             SKind::Slot(i) => inner.null_cols[i as usize],
-            _ => false,
+            _ => sqlnull,
         })
         .collect();
     let mut stages = inner.stages;
@@ -533,7 +541,7 @@ fn bind_request_level(
         Driving::Request,
         QueryCtx::default(),
     )?;
-    let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
+    let null_cols = b.sqlnull.clone();
     Ok(BoundQuery {
         stages: vec![Stage {
             joins: (0..b.joins.len() as u32).collect(),
@@ -561,8 +569,8 @@ struct CteDef<'q> {
     reads: std::rc::Rc<std::cell::Cell<u32>>,
 }
 
-/// The refusal of a bare NULL column of the level below read anywhere but
-/// as a whole projection item (see [`BoundQuery::null_cols`]).
+/// The refusal of a bare NULL column of the level below read as a value of
+/// the INTEGER confit stores it in (see [`BoundQuery::null_cols`]).
 fn null_col_refusal() -> PrepareError {
     unsup("an expression over a bare NULL subquery column")
 }
@@ -580,10 +588,14 @@ fn is_column_ref(item: &SelectItem) -> bool {
     matches!(e, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_))
 }
 
-/// Whether `e` references an input column `pick` selects.
+/// Whether `e` reads an input column `pick` selects for its value. A
+/// nullness test is no such read: a bare NULL column under a node stands for
+/// a typed NULL that tests it (`Binder::typed_null`).
 fn refs_col(e: &mut SExpr, pick: &dyn Fn(u32) -> bool) -> bool {
-    if let SKind::Col(i) = e.kind {
-        return pick(i);
+    match &e.kind {
+        SKind::Col(i) => return pick(*i),
+        SKind::IsNull { inner, .. } if matches!(inner.kind, SKind::Col(_)) => return false,
+        _ => {}
     }
     e.children_mut().into_iter().any(|c| refs_col(c, pick))
 }
@@ -749,6 +761,8 @@ fn bind_select(
     }
     // A projection `share.rs` lowers reads lets as `SKind::Let`.
     binder.let_reads.set(!env.many);
+    // The entries of `exprs` that bind DuckDB's SQLNULL.
+    let mut sqlnull_at: Vec<usize> = Vec::new();
     for (item, written) in select.projection.iter().zip(written) {
         binder.whole_item.set(is_column_ref(item));
         // An unaliased item is named after its text as written, once.
@@ -806,7 +820,12 @@ fn bind_select(
                         push_val(&mut out_cols, &mut exprs, &mut wide_outs, name, v)?;
                     }
                 } else {
-                    push_item(&mut out_cols, &mut exprs, name_of(e), fold(binder.expr(e)?))?
+                    let v = binder.expr_or_null(e)?;
+                    if v.is_none() {
+                        sqlnull_at.push(exprs.len());
+                    }
+                    let v = fold(v.unwrap_or_else(|| null_of(Ty::I32)));
+                    push_item(&mut out_cols, &mut exprs, name_of(e), v)?
                 }
             }
             SelectItem::ExprWithAlias { expr, alias } => {
@@ -832,7 +851,11 @@ fn bind_select(
                     }
                     continue;
                 }
-                let e = fold(binder.expr(expr)?);
+                let v = binder.expr_or_null(expr)?;
+                if v.is_none() {
+                    sqlnull_at.push(exprs.len());
+                }
+                let e = fold(v.unwrap_or_else(|| null_of(Ty::I32)));
                 // Lateral aliases (pins-wave5/): later items and WHERE may
                 // reference this alias; the real column still wins.
                 binder
@@ -902,6 +925,10 @@ fn bind_select(
         filter = Some(pred);
     }
 
+    let mut sqlnull = vec![false; exprs.len()];
+    for i in sqlnull_at {
+        sqlnull[i] = true;
+    }
     let project = out_cols
         .iter()
         .map(|c| c.name.clone())
@@ -918,6 +945,7 @@ fn bind_select(
         joins,
         pred: filter,
         project,
+        sqlnull,
         lets,
         out_cols,
         wide_outs,

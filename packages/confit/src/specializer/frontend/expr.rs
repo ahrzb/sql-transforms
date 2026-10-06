@@ -113,6 +113,39 @@ fn rebalance_chain(e: &SqlExpr) -> Option<SqlExpr> {
     Some(build(&terms, op))
 }
 
+/// `inner IS NULL`.
+fn is_null_test(inner: SExpr) -> SExpr {
+    SExpr {
+        kind: SKind::IsNull {
+            negated: false,
+            inner: Box::new(inner),
+        },
+        ty: Ty::I1,
+        nullable: false,
+    }
+}
+
+/// A NULL of `to` that evaluates `read`, which reads a column: an SQLNULL
+/// DuckDB cannot fold, where it keeps a type (see `Binder::typed_null`).
+fn null_reading(read: SExpr, to: Ty) -> SExpr {
+    SExpr {
+        kind: SKind::Case {
+            arms: vec![(is_null_test(read), null_of(to))],
+            default: None,
+        },
+        ty: to,
+        nullable: true,
+    }
+}
+
+fn unfoldable_null_refusal() -> PrepareError {
+    unsup(
+        "a NULL that reads a column, where DuckDB keeps it a typed value that \
+         does not fold (under a CAST, a comparison, CASE, COALESCE, a list or \
+         a UDF argument)",
+    )
+}
+
 impl Binder<'_> {
     /// Bind an expression that must have a definite type on its own. A bare
     /// NULL with no adopting context takes DuckDB's SQLNULL default:
@@ -149,6 +182,14 @@ impl Binder<'_> {
         };
         match e {
             SqlExpr::Value(v) if matches!(v.value, SqlValue::Null) => Ok(None),
+            // A bare NULL column of the level below is DuckDB's SQLNULL, as
+            // a NULL literal is (see `BoundQuery::null_cols`); a whole item
+            // keeps it a column.
+            SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)
+                if !self.whole_item.get() && self.null_col_ref(e).is_some() =>
+            {
+                Ok(None)
+            }
             SqlExpr::Nested(inner) => self.expr_or_null(inner),
             SqlExpr::Function(f) => {
                 if f.name.to_string().eq_ignore_ascii_case(structs::SEQ_MARKER) {
@@ -251,6 +292,9 @@ impl Binder<'_> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         match e {
             SqlExpr::Value(v) => matches!(v.value, SqlValue::Null),
+            SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => {
+                self.null_col_ref(e).is_some()
+            }
             SqlExpr::Nested(i) => self.all_null_spelling(i),
             SqlExpr::Case {
                 conditions,
@@ -580,7 +624,11 @@ impl Binder<'_> {
                 if let Some((l, op, r)) = naming::as_cmp(e) {
                     return self.binary(&op, l, r);
                 }
-                let inner = bool_context(self.expr(expr)?, "NOT operand")?;
+                let inner = match self.expr_or_null(expr)? {
+                    Some(x) => x,
+                    None => self.typed_null(expr, Ty::I1)?,
+                };
+                let inner = bool_context(inner, "NOT operand")?;
                 if inner.ty != Ty::I1 {
                     return Err(PrepareError::Bind(format!(
                         "NOT requires BOOLEAN, got {}",
@@ -989,15 +1037,36 @@ impl Binder<'_> {
             return Ok(null_of(Ty::I32));
         }
         // A NULL literal adopts the other side's type; the op itself is not
-        // folded (NULL AND FALSE is FALSE, so folding would be wrong).
+        // folded (NULL AND FALSE is FALSE, so folding would be wrong). A
+        // comparison, AND and OR keep an SQLNULL operand a node, so one that
+        // reads a column does not fold (see `typed_null`); the other
+        // operators are calls, which make it a NULL constant.
+        let keeps = matches!(
+            op,
+            BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Lt
+                | BinaryOperator::LtEq
+                | BinaryOperator::Gt
+                | BinaryOperator::GtEq
+                | BinaryOperator::And
+                | BinaryOperator::Or
+        );
+        let adopt = |e: &SqlExpr, ty: Ty| {
+            if keeps {
+                self.typed_null(e, ty)
+            } else {
+                Ok(null_of(ty))
+            }
+        };
         let (a, b) = match (a, b) {
             (Some(a), Some(b)) => (a, b),
             (Some(a), None) => {
-                let n = null_of(null_context_ty(op, a.ty));
+                let n = adopt(right, null_context_ty(op, a.ty))?;
                 (a, n)
             }
             (None, Some(b)) => {
-                let n = null_of(null_context_ty(op, b.ty));
+                let n = adopt(left, null_context_ty(op, b.ty))?;
                 (n, b)
             }
             (None, None) => {
@@ -1010,7 +1079,7 @@ impl Binder<'_> {
                     BinaryOperator::PGStartsWith | BinaryOperator::StringConcat => Ty::Str,
                     _ => Ty::I64,
                 };
-                (null_of(ty), null_of(ty))
+                (adopt(left, ty)?, adopt(right, ty)?)
             }
         };
         let lits = (ast_int_literal(left), ast_int_literal(right));
@@ -1129,7 +1198,7 @@ impl Binder<'_> {
         // arbitrarily (only its flag matters).
         let inner = match self.expr_or_null(inner)? {
             Some(e) => e,
-            None => null_of(Ty::I64),
+            None => self.typed_null(inner, Ty::I64)?,
         };
         // NO nullness rewrite here, deliberately. `<arithmetic> IS [NOT] NULL`
         // answers without evaluating the arithmetic on optimizer-ON DuckDB —
@@ -1289,20 +1358,28 @@ impl Binder<'_> {
         if conditions.is_empty() {
             return Err(PrepareError::Bind("CASE with no WHEN arms".to_string()));
         }
-        let bound_operand = operand.map(|op| self.expr(op)).transpose()?;
+        // Each NULL here is a comparison's operand or a condition: a node
+        // (see `typed_null`).
+        let bound_operand = match operand {
+            Some(op) => Some(match self.expr_or_null(op)? {
+                Some(x) => x,
+                None => self.typed_null(op, Ty::I32)?,
+            }),
+            None => None,
+        };
         let mut conds = Vec::with_capacity(conditions.len());
         for when in conditions {
             let c = match &bound_operand {
                 Some(op) => {
                     let v = match self.expr_or_null(&when.condition)? {
                         Some(v) => v,
-                        None => null_of(op.ty),
+                        None => self.typed_null(&when.condition, op.ty)?,
                     };
                     self.cmp(CmpPred::Eq, op.clone(), v)?
                 }
                 None => match self.expr_or_null(&when.condition)? {
                     Some(c) => bool_context(c, "CASE WHEN condition")?,
-                    None => null_of(Ty::I1),
+                    None => self.typed_null(&when.condition, Ty::I1)?,
                 },
             };
             conds.push(c);
@@ -1413,9 +1490,10 @@ impl Binder<'_> {
             return Ok(null_of(Ty::I32));
         };
 
-        let coerce = |r: Option<SExpr>| -> SExpr {
-            match r {
-                None => null_of(unified),
+        // A NULL result is a node of the CASE (see `typed_null`).
+        let coerce = |r: Option<SExpr>, spelled: &SqlExpr| -> Result<SExpr, PrepareError> {
+            Ok(match r {
+                None => self.typed_null(spelled, unified)?,
                 Some(e) if unified.dec().is_some() || (unified == Ty::F64 && e.ty.dec().is_some()) => {
                     to_common(e, unified)
                 }
@@ -1424,22 +1502,26 @@ impl Binder<'_> {
                     widen_int(e, unified)
                 }
                 Some(e) => e,
-            }
+            })
         };
-        let raise_or = |r: Option<SExpr>, raise: Option<String>| match raise {
-            Some(msg) => SExpr {
+        let raise_or = |r: Option<SExpr>, raise: Option<String>, spelled: &SqlExpr| match raise {
+            Some(msg) => Ok(SExpr {
                 kind: SKind::Raise(msg),
                 ty: unified,
                 nullable: true,
-            },
-            None => coerce(r),
+            }),
+            None => coerce(r, spelled),
         };
         let results: Vec<SExpr> = results
             .into_iter()
             .zip(raises)
-            .map(|(r, raise)| raise_or(r, raise))
-            .collect();
-        let default = else_bound.map(|r| raise_or(r, else_raise));
+            .zip(conditions)
+            .map(|((r, raise), w)| raise_or(r, raise, &w.result))
+            .collect::<Result<_, _>>()?;
+        let default = match (else_bound, else_result) {
+            (Some(r), Some(spelled)) => Some(raise_or(r, else_raise, spelled)?),
+            _ => None,
+        };
 
         let nullable = default.is_none()
             || results.iter().any(|r| r.nullable)
@@ -1455,6 +1537,119 @@ impl Binder<'_> {
         })
     }
 
+    /// `e`, a spelling that binds DuckDB's SQLNULL (`expr_or_null` answered
+    /// `None`), as a value of `to` where DuckDB keeps it a node of its own:
+    /// under a CAST, a comparison, AND, OR, NOT, IS NULL, a CASE, COALESCE,
+    /// least, greatest, a list or a UDF argument. (A call with the default
+    /// NULL handling, such as `+`, `abs` or `LIKE`, is what turns an SQLNULL
+    /// operand into a NULL constant instead.) Where DuckDB folds `e` (a NULL
+    /// literal, `a + NULL`), the value is a NULL constant of `to`. Where `e`
+    /// reads a column (a bare NULL column, an all-NULL CASE over a column
+    /// condition, `nullif(NULL, c)`), DuckDB folds neither `e` nor the node
+    /// over it, so the value is a NULL of `to` that reads the column too: a
+    /// strict operator over the node still evaluates its other operand, and
+    /// a pure UDF over it runs per row (measured, 1.5.5: `CAST(i0 AS BIGINT)
+    /// + (k + 1)`, `coalesce(i0, CAST(NULL AS BIGINT)) + (k + 1)` and
+    /// `CAST(i0 = 1 AS INTEGER) + (k + 1)` trap on the overflow of `k + 1`
+    /// where the same with a NULL literal does not, and the field of
+    /// `udf(1.0, i0)` is DOUBLE where that of `udf(1.0, NULL)` is the SQLNULL
+    /// INTEGER). Any other such spelling refuses by name.
+    pub(super) fn typed_null(&self, e: &SqlExpr, to: Ty) -> Result<SExpr, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        if DuckNulls::new(self).closed(e)? {
+            return Ok(null_of(to));
+        }
+        let mut x = e;
+        while let SqlExpr::Nested(i) = x {
+            x = i;
+        }
+        if let Some((id, lets)) = lets::marker_let(x) {
+            return self.typed_null(&lets[id].ast, to);
+        }
+        if let Some((id, calls)) = calls::marker_call(x) {
+            return self.typed_null(&calls[id].1, to);
+        }
+        if let Some(col) = self.null_col_ref(x) {
+            return Ok(null_reading(col, to));
+        }
+        match x {
+            SqlExpr::Case {
+                operand,
+                conditions,
+                else_result,
+                ..
+            } if self.all_null_spelling(x) => {
+                // Bound as `case` binds them: its arms are guarded.
+                self.in_guarded.set(self.in_guarded.get() + 1);
+                let _guard = GuardScope(&self.in_guarded);
+                let conds = self.case_conditions(operand.as_deref(), conditions)?;
+                let mut arms = Vec::with_capacity(conds.len());
+                for (c, w) in conds.into_iter().zip(conditions) {
+                    arms.push((c, self.typed_null(&w.result, to)?));
+                }
+                let default = match else_result {
+                    Some(r) => Some(Box::new(self.typed_null(r, to)?)),
+                    None => None,
+                };
+                Ok(SExpr {
+                    kind: SKind::Case { arms, default },
+                    ty: to,
+                    nullable: true,
+                })
+            }
+            SqlExpr::Function(f) => {
+                let args: Vec<&SqlExpr> = match &f.args {
+                    FunctionArguments::List(list) => list
+                        .args
+                        .iter()
+                        .filter_map(|a| match a {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(a)) => Some(a),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                // `nullif(NULL, v)` is `CASE WHEN NULL = v THEN NULL END`
+                // there: it evaluates v.
+                if self.nullif_sqlnull(f)? {
+                    let v = args[1];
+                    let read = match self.expr_or_null(v)? {
+                        Some(b) => b,
+                        None => self.typed_null(v, Ty::I32)?,
+                    };
+                    return Ok(null_reading(read, to));
+                }
+                // An all-NULL COALESCE, least or greatest evaluates each
+                // argument in turn.
+                let name = f.name.to_string().to_ascii_lowercase();
+                if matches!(name.as_str(), "coalesce" | "ifnull" | "least" | "greatest")
+                    && self.all_null_spelling(x)
+                {
+                    let mut acc: Option<SExpr> = None;
+                    for a in args.iter().rev() {
+                        let t = self.typed_null(a, to)?;
+                        acc = Some(match acc {
+                            None => t,
+                            Some(rest) => SExpr {
+                                kind: SKind::Case {
+                                    arms: vec![(is_null_test(t), rest)],
+                                    default: None,
+                                },
+                                ty: to,
+                                nullable: true,
+                            },
+                        });
+                    }
+                    if let Some(acc) = acc {
+                        return Ok(acc);
+                    }
+                }
+                Err(unfoldable_null_refusal())
+            }
+            _ => Err(unfoldable_null_refusal()),
+        }
+    }
+
     pub(super) fn cast(
         &self,
         expr: &SqlExpr,
@@ -1464,8 +1659,7 @@ impl Binder<'_> {
         let to = cast_target(data_type)?;
         let inner = match self.expr_or_null(expr)? {
             Some(e) => e,
-            // CAST(NULL AS T) is just a typed NULL, both forms.
-            None => return Ok(null_of(to)),
+            None => return self.typed_null(expr, to),
         };
         if inner.ty == to && !trying {
             // A string LITERAL cast to VARCHAR is no longer a literal on

@@ -12,8 +12,9 @@ impl Binder<'_> {
         pattern: &SqlExpr,
         negated: bool,
     ) -> Result<SExpr, PrepareError> {
+        // A NULL subject keeps the call a node (see `typed_null`).
         let Some(bs) = self.expr_or_null(subject)? else {
-            return Ok(null_of(Ty::I1));
+            return self.typed_null(subject, Ty::I1);
         };
         let bs = str_only(name, bs)?;
         let Some(re) = self.regex_pattern(pattern, super::super::retrans::ReOptions::default(), true)?
@@ -74,6 +75,10 @@ impl Binder<'_> {
             return Ok(Some(super::super::retrans::ReOptions::default()));
         };
         match self.expr_or_null(o)? {
+            // A NULL that reads a column is no constant there.
+            None if !DuckNulls::new(self).closed(o)? => Err(PrepareError::Bind(
+                "Regex options field must be a constant".into(),
+            )),
             None => Ok(None),
             // CAST(NULL AS VARCHAR) options behave exactly like bare NULL
             // options (measured: same "must not be NULL" error class /
@@ -110,6 +115,11 @@ impl Binder<'_> {
         full: bool,
     ) -> Result<Option<(u32, usize)>, PrepareError> {
         let Some(bp) = self.expr_or_null(p)? else {
+            // A NULL that reads a column is a pattern DuckDB compiles per
+            // row, as any column is.
+            if !DuckNulls::new(self).closed(p)? {
+                return Err(unsup("non-constant regex pattern (patterns compile at prepare)"));
+            }
             return Ok(None);
         };
         if matches!(bp.kind, SKind::NullOf) && bp.ty == Ty::Str {

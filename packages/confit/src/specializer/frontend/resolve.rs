@@ -791,8 +791,36 @@ impl Binder<'_> {
             || self.joins.iter().any(|sj| name.eq_ignore_ascii_case(&sj.name))
     }
 
-    /// `r`, unless it reads a bare NULL column of the level below anywhere
-    /// but as a whole projection item (see `BoundQuery::null_cols`).
+    /// The column read that `e` names when `e` is a bare NULL column of the
+    /// level below (see `BoundQuery::null_cols`): a name, qualified or not,
+    /// in parentheses or not.
+    pub(super) fn null_col_ref(&self, e: &SqlExpr) -> Option<SExpr> {
+        if !self.null_cols.contains(&true) {
+            return None;
+        }
+        let mut x = e;
+        while let SqlExpr::Nested(i) = x {
+            x = i;
+        }
+        if !matches!(x, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)) {
+            return None;
+        }
+        let was = self.whole_item.replace(true);
+        let r = self.ref_res(x);
+        self.whole_item.set(was);
+        match r {
+            Ok(Resolved::Lane(v)) => match v.kind {
+                SKind::Col(i) if self.null_cols.get(i as usize) == Some(&true) => Some(v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `r`, unless it reads a bare NULL column of the level below where the
+    /// binder does not take it for DuckDB's SQLNULL: not as a whole
+    /// projection item, and not through `expr_or_null` (see
+    /// `BoundQuery::null_cols`).
     pub(super) fn null_col(&self, r: Resolved) -> Result<Resolved, PrepareError> {
         if let Resolved::Lane(SExpr {
             kind: SKind::Col(i),

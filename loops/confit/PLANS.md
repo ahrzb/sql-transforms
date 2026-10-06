@@ -35,8 +35,13 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    The 2026-10-06 night (seeds 4600000..4999999, replayed on master
    f72214b with the generator that declares SQL functions) is triaged, its
    fixed classes pinned in `test_fuzz_smoke.py`: an expression over a bare
-   NULL subquery column refuses where the column binds, before a fold erases
-   it (4824388, 4946335); NOT over a comparison binds as the negated
+   NULL subquery column types as over a NULL literal, and where DuckDB keeps
+   the NULL a node of its own (a CAST, a comparison, CASE, COALESCE, a list,
+   a UDF argument), that node does not fold either (4824388, 4946335; with
+   it, any NULL that reads a column, such as an all-NULL CASE over a column
+   condition, stays a node there: master folded it, answering NULL where
+   DuckDB traps, and ran a pure UDF over it at bind, where DuckDB runs it
+   per row); NOT over a comparison binds as the negated
    comparison, as DuckDB's transformer reads it, so in a JOIN ON it is a join
    condition (metamorphic 4873273); a LEFT JOIN over a static table with no
    rows never evaluates its ON clause (4712724); a pure UDF in the condition
@@ -49,13 +54,16 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    asks the owner to extend the empty-static ruling
    ([decisions/open/all-null-key-static.md](decisions/open/all-null-key-static.md)).
    Still open from it:
-   - A bare NULL subquery column read anywhere but as a whole item now
-     refuses, also where its INTEGER typing happened to agree (seed 3015628,
-     `CASE WHEN NOT NULL THEN '  pad  ' ELSE i1 END`): 18 cases of seeds
-     4600000..4699999 that agreed on master refuse. DuckDB types every
-     expression over such a column as over a NULL literal (measured over 30
-     spellings), except that the column is not foldable. Binding it as an
-     adoptable NULL that does not fold would serve them all.
+   - A field read over struct_pack keeps only the siblings that can trap, so
+     a NULL field folds where DuckDB's struct_pack, which reads every field,
+     does not: `struct_pack(f := a, g := CAST(NULL AS BIGINT)).g + (a +
+     9223372036854775807)` returns rows where DuckDB traps (master too).
+   - A regexp call over a NULL literal pattern is a NULL constant in confit,
+     but DuckDB calls it per row (the regexp functions handle a NULL
+     themselves), so it reads the subject and does not fold: `CAST((s ~
+     NULL) AS BIGINT) + (a + 9223372036854775807)` and the same over
+     `regexp_extract(s, NULL)` return rows where DuckDB traps, and over
+     `regexp_matches(s, NULL)` they are OPT_EMULATED (master too).
    - TIMEOUT 4667128 is no trap: the request table has no rows and both
      readings agree, but the optimizer-on reading folds a constant
      `repeat('0', 2147483647)` inside a SQL function at plan time (about

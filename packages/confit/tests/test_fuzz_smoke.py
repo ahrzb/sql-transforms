@@ -583,15 +583,13 @@ NIGHTLY_305_SHARDED = {
     4234049: "AGREE",
     4316677: "AGREE_TRAP",
     # 2026-10-06 nightly (seeds 4600000..4999999): an expression over a bare
-    # NULL subquery column refuses where the column binds, before a fold
-    # erases it (a constant CASE condition, `(-37 - NULL) + i0`); a LEFT JOIN
-    # over a static table with no rows never evaluates its ON clause.
-    4824388: "REFUSED",
-    4946335: "REFUSED",
-    # Agreed before: its bare NULL column stands in a CASE arm whose INTEGER
-    # type happens to match (loops/confit/PLANS.md: bind such a column as an
-    # adoptable NULL, to serve it again).
-    3015628: "REFUSED",
+    # NULL subquery column types as over a NULL literal (a constant CASE
+    # condition, `(-37 - NULL) + i0`, a CASE arm whose INTEGER type happened
+    # to match); a LEFT JOIN over a static table with no rows never
+    # evaluates its ON clause.
+    4824388: "AGREE",
+    4946335: "AGREE",
+    3015628: "AGREE",
     4712724: "AGREE",
     # The same window on the generator of 2026-10-06 12:00: a pure UDF in the
     # condition of a SQL function's struct folds at bind (it panicked the

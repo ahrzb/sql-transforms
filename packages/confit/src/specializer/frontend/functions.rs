@@ -558,10 +558,17 @@ impl Binder<'_> {
                 let mut unified: Option<Ty> = None;
                 let mut acc_lit: Option<i128> = None;
                 let mut seen_null = false;
+                // A NULL arg that reads a column stays, as a node (see
+                // `typed_null`): at its place among the others.
+                let closed = DuckNulls::new(self);
+                let mut kept_nulls: Vec<(usize, &SqlExpr)> = Vec::new();
                 for arg in &args {
                     let Some(e) = self.expr_or_null(arg)? else {
                         seen_null = true;
                         acc_lit = None;
+                        if !closed.closed(arg)? {
+                            kept_nulls.push((bound.len(), arg));
+                        }
                         continue;
                     };
                     // The hint rides with the arg's own SPELLING (never
@@ -626,6 +633,9 @@ impl Binder<'_> {
                         }
                     })
                     .collect();
+                for (at, arg) in kept_nulls.into_iter().rev() {
+                    bound.insert(at, self.typed_null(arg, unified)?);
+                }
                 // Args after the first non-nullable one are unreachable.
                 if let Some(stop) = bound.iter().position(|e| !e.nullable) {
                     bound.truncate(stop + 1);
@@ -668,11 +678,16 @@ impl Binder<'_> {
                     )));
                 }
                 let mut bound = Vec::new();
+                // As for COALESCE, a NULL arg that reads a column stays.
+                let closed = DuckNulls::new(self);
+                let mut kept_nulls: Vec<(usize, &SqlExpr)> = Vec::new();
                 for arg in &args {
                     // Literal NULL args contribute nothing (NULL-ignoring);
                     // hints ride with the SPELLING.
-                    if let Some(e) = self.expr_or_null(arg)? {
-                        bound.push((e, ast_int_literal(arg)));
+                    match self.expr_or_null(arg)? {
+                        Some(e) => bound.push((e, ast_int_literal(arg))),
+                        None if !closed.closed(arg)? => kept_nulls.push((bound.len(), arg)),
+                        None => {}
                     }
                 }
                 if bound.is_empty() {
@@ -710,7 +725,7 @@ impl Binder<'_> {
                     };
                     acc_lit = None;
                 }
-                let bound: Vec<SExpr> = bound
+                let mut bound: Vec<SExpr> = bound
                     .into_iter()
                     .map(|(e, _)| e)
                     .map(|mut e| {
@@ -726,6 +741,9 @@ impl Binder<'_> {
                         }
                     })
                     .collect();
+                for (at, arg) in kept_nulls.into_iter().rev() {
+                    bound.insert(at, self.typed_null(arg, unified)?);
+                }
                 let nullable = bound.iter().all(|e| e.nullable);
                 if bound.len() == 1 {
                     return Ok(bound.into_iter().next().expect("one"));
@@ -822,17 +840,24 @@ impl Binder<'_> {
                     // takes the first argument's type, and NULL = b is
                     // never TRUE — the whole call IS an int32 NULL.
                     (None, _) => Ok(null_of(Ty::I32)),
-                    // a = NULL is never TRUE, so nullif(a, NULL) is a.
-                    (Some(a), None) => Ok(a),
-                    (Some(a), Some(b)) => {
+                    // a = NULL is never TRUE, so nullif(a, NULL) is a, unless
+                    // that NULL reads a column: then it is a node of the
+                    // comparison (see `typed_null`), and the call does not
+                    // fold.
+                    (Some(av), None) if DuckNulls::new(self).closed(b)? => Ok(av),
+                    (Some(av), bv) => {
+                        let bv = match bv {
+                            Some(bv) => bv,
+                            None => self.typed_null(b, av.ty)?,
+                        };
                         // Comparison at the promoted type; result keeps a's
                         // ORIGINAL type (measured: nullif(1, 1.0) -> INTEGER).
-                        let cond = self.cmp(CmpPred::Eq, a.clone(), b)?;
-                        let ty = a.ty;
+                        let cond = self.cmp(CmpPred::Eq, av.clone(), bv)?;
+                        let ty = av.ty;
                         Ok(SExpr {
                             kind: SKind::Case {
                                 arms: vec![(cond, null_of(ty))],
-                                default: Some(Box::new(a)),
+                                default: Some(Box::new(av)),
                             },
                             ty,
                             nullable: true,
@@ -1113,8 +1138,9 @@ impl Binder<'_> {
                     ));
                 }
                 let sep = match self.expr_or_null(args[0])? {
-                    // NULL separator -> NULL result, regardless of args.
-                    None => return Ok(null_of(Ty::Str)),
+                    // NULL separator -> NULL result, regardless of args: a
+                    // node of the call (see `typed_null`).
+                    None => return self.typed_null(args[0], Ty::Str),
                     Some(e) => e,
                 };
                 if sep.ty != Ty::Str {
@@ -1295,8 +1321,9 @@ impl Binder<'_> {
                     }
                 };
                 let o = self.regex_options(opts, false)?;
+                // A NULL subject keeps the call a node (see `typed_null`).
                 let Some(bs) = self.expr_or_null(s)? else {
-                    return Ok(null_of(Ty::I1));
+                    return self.typed_null(s, Ty::I1);
                 };
                 let full = name == "regexp_full_match";
                 let bs = str_only(&name, bs)?;
@@ -1327,8 +1354,9 @@ impl Binder<'_> {
                     }
                 };
                 let o = self.regex_options(opts, false)?;
+                // A NULL subject keeps the call a node (see `typed_null`).
                 let Some(bs) = self.expr_or_null(s)? else {
-                    return Ok(null_of(Ty::Str));
+                    return self.typed_null(s, Ty::Str);
                 };
                 let bs = str_only(&name, bs)?;
                 // Group index: constant, flat 0..9 range check unrelated to
