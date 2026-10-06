@@ -291,3 +291,9 @@ item 10.
 - **Predictions can change on one host.** HistGradientBoosting flips some
   labels for the entry where the twin flips none. The owner's ruling makes
   bit-exact the default, and it puts this bound behind an explicit choice.
+
+**Ruling (owner, 2026-10-06).** The owner approved the recommendation:
+option 1, with the scales and the values of K above. The amendment in
+[matvec-parity-bound.md](matvec-parity-bound.md) applies. So these entries
+serve only when the caller asks for a parity bound above 0. That includes
+the Box-Cox entry, which serves by default today.

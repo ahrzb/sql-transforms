@@ -372,7 +372,8 @@ change when the entry replaces the twin:
   - The twin recomputes M on whatever host serves it. With |M| in S, a twin
     on another CPU kernel reaches K = 1,731.
 
-These questions are still for the owner (critique.md §2):
+The critique raised three more questions (critique.md §2). The ruling below
+answers or places each of them:
 
 - **Same host or another host?** Is the contract "on the host that
   translated the step"? That is all that `check` can test. The answer
@@ -395,3 +396,23 @@ These questions are still for the owner (critique.md §2):
 - **The interface of check.** The application programming interface (API)
   of `check` must change from an integer ulp bound to an S for each field.
   That S reads the fitted estimator, and K is a function K(n) of the width.
+
+**Ruling (owner, 2026-10-06).** The owner approved the recommendation, with
+one amendment after the downstream verification.
+
+- The parity bound has the general form above. Matvec uses S_full and
+  K = n + 3. The other families use the scales and the values of K above.
+- Bit-exact is the default. An entry with a parity bound above 0 serves only
+  when the caller asks for it, with `to_native(step, allow_bound=True)`.
+- The reason for the amendment: on repeated training values,
+  HistGradientBoosting flips labels for such an entry. On one host, the twin
+  of an elementwise family flips none.
+- Until `allow_bound` exists, the Box-Cox entry and the FunctionTransformer
+  functions with a bound above 0 still serve by default. PLANS.md lists this
+  change first.
+- **Same host or another host:** the approved forms hold on another host. S
+  is S_full, and the chi2 record counts its `cosh` constant as not shared.
+- **The interface of check:** this is work for the loop, not a question.
+  PLANS.md lists it.
+- **A bounded step in a composition:** this question stays open, in
+  [open/bounded-steps-in-compositions.md](../open/bounded-steps-in-compositions.md).

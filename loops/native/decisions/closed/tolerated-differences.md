@@ -175,3 +175,13 @@ change:
   of each leaf replaces most of that copy.
 
 This recommendation reverses the provisional rule in favour of exactness.
+
+**Ruling (owner, 2026-10-06).** The owner approved the recommendation. An
+entry must trap where the validation of its twin raises, through an input
+guard.
+
+- Until an entry has its input guard, it may answer where the twin raises.
+- An entry may never trap where the twin answers.
+- This record lists each twin error that is not validation. The first is
+  SplineTransformer with degree 0 and `extrapolation="constant"`: above the
+  knots, the twin raises a numpy broadcast error, and the entry answers 0.0.

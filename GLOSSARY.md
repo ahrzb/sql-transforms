@@ -90,6 +90,11 @@ The entries in `sql_transform.native` that translate a fitted sklearn
 transformer into a transform that confit serves.
 _Avoid_: native zoo, native transforms (for the catalog)
 
+**Catalog entry**:
+One translation in the native catalog. It turns a fitted sklearn
+transformer of one class into a transform that confit serves. In the native
+loop's records, "entry" alone means a catalog entry.
+
 **Twin**:
 The reference for a catalog entry: `PythonTransform`, which calls the fitted
 sklearn estimator.

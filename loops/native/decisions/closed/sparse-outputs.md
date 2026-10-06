@@ -203,3 +203,8 @@ against the goal that inference does not change.
   calling thread. So the same fitted model serves or fails, depending on who
   calls it. The step should not depend on that.
 - **The cost is under 0.4%** of the time of the step.
+
+**Ruling (owner, 2026-10-06).** The owner approved option 1. The Python step
+densifies a sparse output with one helper, at the four sites above. For
+OneHotEncoder and KBinsDiscretizer, the densified values are bit-exact
+against their dense configurations. So their entries serve by default.

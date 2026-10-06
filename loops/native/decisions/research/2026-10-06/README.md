@@ -1,18 +1,32 @@
-# Research behind the open native decisions (2026-10-06)
+# Research behind the native decisions of 2026-10-06
 
 This folder holds the evidence for the **Methodology** and **Recommendation**
 sections of the five decision records in [`../../closed/`](../../closed/).
+All five records are about the native catalog. The catalog translates fitted
+transformers of sklearn (scikit-learn, a Python library for machine learning).
 This README and its table name each record by a short name:
 
-- **matvec:** the parity bound for a matvec (matrix-vector product) entry, in
-  [`matvec-parity-bound.md`](../../closed/matvec-parity-bound.md).
+- **matvec:** the parity bound for a matvec entry, in
+  [`matvec-parity-bound.md`](../../closed/matvec-parity-bound.md). A matvec
+  entry is a catalog entry that computes a matrix-vector product (matvec). The
+  record covers three groups of families:
+  - the linear projections, for example `PCA`
+  - the distances to the fitted centres of `KMeans` (the sklearn clustering
+    model) and similar models
+  - the kernel samplers, for example `RBFSampler`. A kernel sampler is an
+    sklearn transformer that computes an approximate feature map of a kernel.
 - **power:** the parity bound for a power transformer, in
-  [`power-parity-bound.md`](../../closed/power-parity-bound.md).
-- **additive chi2:** the parity bound for an additive chi2 (chi-squared)
-  sampler, in
+  [`power-parity-bound.md`](../../closed/power-parity-bound.md). This is
+  sklearn's `PowerTransformer`. It applies a fitted power function to each
+  feature, so that the data is more like a normal distribution.
+- **additive chi2:** the parity bound for an additive chi2 sampler, in
   [`additive-chi2-parity-bound.md`](../../closed/additive-chi2-parity-bound.md).
+  This is sklearn's `AdditiveChi2Sampler`, the kernel sampler for the additive
+  chi-squared (chi2) kernel.
 - **sparse outputs:** whether the twin should make a sparse output dense, in
-  [`sparse-outputs.md`](../../closed/sparse-outputs.md).
+  [`sparse-outputs.md`](../../closed/sparse-outputs.md). A sparse output is a
+  sparse matrix of scipy, a Python library for scientific computing. A sparse
+  matrix stores only its nonzero values.
 - **tolerated differences:** where a catalog entry may differ from its twin,
   in [`tolerated-differences.md`](../../closed/tolerated-differences.md).
 
@@ -29,11 +43,17 @@ has one of these three labels:
 Four steps produced the notes:
 
 1. **Research.** Eight agents did the research, one agent for each question.
-   Each agent read the record of its question, the code of the native catalog
-   and the upstream sources. The sources were sklearn (scikit-learn), scipy,
-   numpy, OpenBLAS, glibc (the GNU C library) and DuckDB. Then each agent
-   measured what the record did not contain yet. Where that was cheap, it also
-   measured the record's own numbers again.
+   Each agent read the decision record that its question came from. It also
+   read the code of the native catalog and these upstream sources:
+   - sklearn and scipy
+   - numpy, the Python library for arrays
+   - OpenBLAS, a library of linear algebra kernels
+   - glibc, the GNU C library, which holds math functions such as `log` and
+     `exp`
+   - DuckDB, the database of the oracle
+
+   Then each agent measured what the record did not contain yet. Where that
+   was cheap, it also measured the record's own numbers again.
 2. **Adversarial verification.** For each note, a second agent tried to refute
    the key claims of the note. This agent is the verifier. The verifier did
    these three things:
@@ -56,7 +76,7 @@ The table below lists each note and the records that it supports.
 | note | records that it supports | verified |
 |---|---|---|
 | [matvec.md](matvec.md) | matvec | yes |
-| [distances.md](distances.md) | matvec (KMeans and similar models, kernel samplers) | yes |
+| [distances.md](distances.md) | matvec (`KMeans` and similar models, kernel samplers) | yes |
 | [framework.md](framework.md) | matvec, power, additive chi2 (the general form of a parity bound) | yes |
 | [power.md](power.md) | power | yes |
 | [chi2.md](chi2.md) | additive chi2 | yes |
@@ -68,9 +88,13 @@ The table below lists each note and the records that it supports.
 ## Environment
 
 - **Machine.** The research ran on one x86-64 host with 4 CPUs (central
-  processing units). The host has AVX-512 (Advanced Vector Extensions,
-  512-bit). On this host, numpy reports the CPU features `X86_V4`,
-  `AVX512_ICL` and `AVX512_SPR`.
+  processing units). x86-64 is the 64-bit instruction set of Intel and AMD
+  CPUs. The host has AVX-512 (Advanced Vector Extensions, 512-bit), the
+  512-bit vector instructions of x86-64. On this host, numpy reports these
+  groups of CPU features:
+  - `X86_V4`, the level of x86-64 that includes AVX-512
+  - `AVX512_ICL`, the AVX-512 extensions of the Intel Ice Lake CPUs
+  - `AVX512_SPR`, the AVX-512 extensions of the Intel Sapphire Rapids CPUs
 - **Software.** The research used these versions:
   - numpy 2.5.1, scipy 1.18.0 and scikit-learn 1.9.0
   - OpenBLAS 0.3.33 and glibc 2.39
@@ -79,39 +103,43 @@ The table below lists each note and the records that it supports.
   Subprograms) kernels. The research used the scipy-openblas build of
   OpenBLAS, with the build option `DYNAMIC_ARCH`. With this option, OpenBLAS
   selects a kernel for the CPU at run time.
-- **Repository.** All the work ran on master at commit 113fba7. It ran in the
-  virtual environment (venv) of the repository. The package manager `uv`
-  manages this venv.
+- **Repository.** All the work ran on master at the git commit 113fba7. It ran
+  in the virtual environment (venv) of the repository. The package manager
+  `uv` manages this venv.
 - **Emulation of other CPUs.** The agents used these environment variables to
   select the kernels of other CPUs:
   - `OPENBLAS_CORETYPE` selected other BLAS kernels. OpenBLAS names its
-    kernels after CPU generations. The agents used SkylakeX, Haswell,
-    Sandybridge, Nehalem and Prescott.
+    kernels after Intel CPU generations. The agents used SkylakeX, Haswell,
+    Sandybridge, Nehalem and Prescott, from the newest generation to the
+    oldest.
   - `NPY_DISABLE_CPU_FEATURES=X86_V4` selected the numpy kernels without
     AVX-512.
   - `GLIBC_TUNABLES` selected the glibc variants without FMA (fused
-    multiply-add).
+    multiply-add). An FMA instruction computes a·b + c with one rounding.
 
   Each setting ran in its own process. All the processes loaded the same
-  fitted model from one file that Python's `pickle` module wrote.
+  fitted model from one file. The Python module `pickle` wrote the model to
+  this file.
 - **What the emulation does not cover.** These settings reproduce the kernels
   that other CPUs would select. They do not reproduce an ARM, macOS or Windows
   host. None of this research measured such a host.
 - **The authoring package `sql_transform` does not import in this venv.** The
-  data validation library pydantic 2.13.4 calls
-  `typing._eval_type(prefer_fwd_module=...)`. CPython 3.14.0rc2 (the second
-  release candidate of Python 3.14.0) does not have this keyword. The agents
-  used two workarounds:
+  package uses the data validation library pydantic 2.13.4. pydantic calls
+  `typing._eval_type(prefer_fwd_module=...)`, a private function of Python.
+  CPython 3.14.0rc2 does not have this keyword. CPython is the standard Python
+  interpreter. The version 3.14.0rc2 is the second release candidate of Python
+  3.14.0. The agents used two workarounds:
   - A shim of two lines removes the keyword.
   - The agents loaded `_udf.py` on its own, or they copied the generator of
     the catalog fixtures verbatim. `_udf.py` is the module that holds the twin
-    (`PythonTransform`).
+    (`PythonTransform`). The catalog fixtures are the test data of the native
+    catalog.
 
-  In this venv, the test runner pytest does not collect the repository's own
-  tests. The check (`native.check`) is the test that serves the same query
-  with the twin and with the catalog entry, and compares the results. **No
-  family with a parity bound that is not bit-exact went through
-  `native.check` end to end.**
+  In this venv, pytest (the Python test runner) does not collect the
+  repository's own tests. The check (`native.check`) is the test that serves
+  the same query with the twin and with the catalog entry. Then it compares
+  the results. **Some families have a parity bound that is not bit-exact. None
+  of these families went through `native.check` end to end.**
 
 ## Scripts
 
@@ -125,8 +153,8 @@ paths of the scratch folder.
 
 The scripts are scratch code. The repository keeps them as evidence, not as
 tools. It also keeps them verbatim. The configuration of the pre-commit hooks
-(`.pre-commit-config.yaml`) excludes this folder from ruff, the Python linter
-and formatter. To run a script again, do these steps:
+(`.pre-commit-config.yaml`) excludes this folder from ruff (the Python linter
+and formatter). To run a script again, do these steps:
 
 1. Correct the path in the script.
 2. From the root of the repository, run the script with
@@ -145,15 +173,25 @@ Some content is not in this folder:
 ## Limits
 
 - **The agents cited some primary sources from memory or from search
-  snippets.** The network proxy of the session blocked SIAM (the Society for
-  Industrial and Applied Mathematics), Intel, the Oracle documentation,
-  duckdb.org and arxiv. This affects these citations:
-  - the equation numbers in Higham's *Accuracy and Stability*
-  - Higham & Mary (2019)
-  - Jeannerod & Rump (2013)
-  - the accuracy tiers of Intel's SVML (Short Vector Math Library)
-  - the CNR (Conditional Numerical Reproducibility) mode of Intel's MKL
-    (Math Kernel Library)
+  snippets.** The network proxy of the session blocked these sites:
+  - the site of SIAM (the Society for Industrial and Applied Mathematics)
+  - the site of Intel
+  - the documentation site of the company Oracle
+  - duckdb.org
+  - arXiv, a site for the preprints of scientific papers
+
+  This affects these citations:
+  - the equation numbers in Higham's book *Accuracy and Stability of
+    Numerical Algorithms*
+  - the paper of Higham and Mary (2019) on a probabilistic bound for rounding
+    errors
+  - the paper of Jeannerod and Rump (2013) on the rounding error of a dot
+    product in any order
+  - the accuracy tiers of Intel's SVML (Short Vector Math Library), a library
+    of vector math functions such as `log` and `exp`
+  - the CNR (Conditional Numerical Reproducibility) mode of Intel's MKL (Math
+    Kernel Library). MKL is a math library that includes BLAS kernels. The
+    CNR mode makes the results of MKL reproducible under some conditions.
   - §11 of IEEE 754, the standard of the IEEE (Institute of Electrical and
     Electronics Engineers) for floating-point arithmetic
 

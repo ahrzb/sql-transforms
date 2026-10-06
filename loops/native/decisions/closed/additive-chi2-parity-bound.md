@@ -148,8 +148,8 @@ The research used this setup and these terms:
    - The significand of a number is that number scaled by a power of two
      into the range [1, 2). With random significands, the two kernels
      disagree at rates from 2.5e-4 down to 7e-7.
-   - The kernel probe of the repository (`kernel_distance`, at
-     `function.py:214`) uses exp(uniform) draws too. The probe measures, on
+   - The kernel probe of the repository (`kernel_distance`, in
+     `native/function.py`) uses exp(uniform) draws too. The probe measures, on
      the host, how far numpy's kernel for a function is from the entry's SQL
      for that function.
    - The measurements behind `_BOUNDS` use exp(uniform) draws too.
@@ -235,3 +235,10 @@ predictions of a model) does not change:
   label, as the matvec record measured. That is why the owner's ruling
   below makes bit-exact parity the default. Where the probes read 0, this
   family reaches that default.
+
+**Ruling (owner, 2026-10-06).** The owner approved the recommendation:
+option 1, with K = 4, or K = 3 when the `cosh` constant is the twin's own.
+The amendment in [matvec-parity-bound.md](matvec-parity-bound.md) applies.
+So with K above 0, the entry serves only when the caller asks for it. Where
+the probes read 0, the entry is bit-exact and serves by default. The same
+holds for `sample_steps=1`.
