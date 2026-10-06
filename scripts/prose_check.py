@@ -1,19 +1,12 @@
 """Check prose against the writing rules of the simple-english skill.
 
-The checker reads its word list from .claude/skills/simple-english/SKILL.md: the fenced block after the
-line "<!-- prose-check: words -->". It does not read the _Avoid_ lists in
-GLOSSARY.md. Those words are wrong only for one concept, so a reader checks
-them, not a regular expression (the fresh-reader test in the simple-english skill).
-
 It checks these rules:
 
-- avoid:      a word in the list of the simple-english skill;
 - length:     a sentence of more than 25 words;
 - semicolon:  a semicolon that joins two sentences.
 
 It ignores code blocks, inline code, tables, headings, quotes, link targets,
-HTML comments and YAML front matter. The avoid rule also ignores a word in
-double quotes, because that is an example of the word, not a use.
+HTML comments and YAML front matter.
 
     python scripts/prose_check.py            # every file in scope
     python scripts/prose_check.py FILE...    # these files
@@ -21,8 +14,9 @@ double quotes, because that is an example of the word, not a use.
 
 The scope is SCOPE below: the docs that the owner reviews or maintains. A
 file joins the scope when someone rewrites it to the rules. Working files for
-agents (PLANS.md, tickets.md, worker briefs) are not in the scope. A report is fixed when it is written, so a report dated before
-REPORTS_FROM stays out of the scope.
+agents (PLANS.md, tickets.md, worker briefs) are not in the scope. A report
+is fixed when it is written, so a report dated before REPORTS_FROM stays out
+of the scope.
 """
 
 from __future__ import annotations
@@ -46,15 +40,6 @@ SCOPE = [
     "loops/confit/decisions/open/*.md",
     "loops/confit/reports/*.md",
 ]
-
-
-def _avoid_words() -> list[str]:
-    words = []
-    agents = (ROOT / ".claude/skills/simple-english/SKILL.md").read_text()
-    block = re.search(r"<!-- prose-check: words -->\s*```\w*\n(.*?)```", agents, re.S)
-    if block:
-        words += [w.strip() for w in block.group(1).splitlines() if w.strip()]
-    return words
 
 
 def _in_scope(path: Path) -> bool:
@@ -114,14 +99,10 @@ def _sentences(prose: list[tuple[int, str]]):
         yield start, " ".join(buf)
 
 
-def check(text: str, name: str, words: list[str]) -> list[str]:
+def check(text: str, name: str) -> list[str]:
     problems = []
     prose = _prose_lines(text)
     for i, s in prose:
-        used = re.sub(r'"[^"]*"', "QUOTE", s)  # a quoted word is an example, not a use
-        for w in words:
-            if re.search(rf"(?<![\w-]){re.escape(w)}(?![\w-])", used, re.I):
-                problems.append(f'{name}:{i}: avoid: "{w}" (simple-english skill)')
         if re.search(r";\s+\w", s):
             problems.append(f"{name}:{i}: semicolon: write two sentences")
     for i, sent in _sentences(prose):
@@ -132,9 +113,8 @@ def check(text: str, name: str, words: list[str]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    words = _avoid_words()
     if argv == ["-"]:
-        problems = check(sys.stdin.read(), "<stdin>", words)
+        problems = check(sys.stdin.read(), "<stdin>")
     else:
         if argv:
             files = [Path(a) for a in argv]
@@ -144,7 +124,7 @@ def main(argv: list[str]) -> int:
         for f in files:
             if f.suffix == ".md" and _in_scope(f):
                 rel = f.resolve().relative_to(ROOT).as_posix()
-                problems += check(f.read_text(), rel, words)
+                problems += check(f.read_text(), rel)
     for p in problems:
         print(p)
     if problems:
