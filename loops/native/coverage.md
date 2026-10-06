@@ -5,7 +5,7 @@ the catalog and sklearn's own transformer list; `coverage_test.py` fails
 while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 
 <!-- coverage:begin -->
-**30 of 68** in-scope transformers are native (84 listed by sklearn).
+**31 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -69,7 +69,7 @@ while it is stale. Scope and its reasons: [goal.md](goal.md#scope).
 | `RFE` | native | bit-exact |
 | `RFECV` | native | bit-exact |
 | `RadiusNeighborsTransformer` | not yet |  |
-| `RandomTreesEmbedding` | not yet |  |
+| `RandomTreesEmbedding` | native | bit-exact |
 | `RobustScaler` | native | bit-exact |
 | `SelectFdr` | native | bit-exact |
 | `SelectFpr` | native | bit-exact |

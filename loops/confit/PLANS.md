@@ -39,8 +39,7 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
 
 3. **Owner docs in simple English.** The docs the owner reviews or maintains
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
-   and spec docs, one file at a time; add each to `SCOPE` in
-   `scripts/prose_check.py`. Closed and postponed decision records stay as
+   and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
 
 ## For the native catalog

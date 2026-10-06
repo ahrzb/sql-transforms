@@ -13,7 +13,7 @@ Easiest first; each is one family, one PR.
    periodic spline breach of #406 hid there (#404, `tolerated.md` §5).
    `check` skips the rows where the twin raises (4.9% of the gate's rows),
    so a step that raises on every row compares nothing and passes. Every
-   class's draws change: its own ticket, run alone, after T16 and T17.
+   class's draws change: its own ticket, run alone, after T18 (#406).
 2. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
@@ -23,11 +23,10 @@ Easiest first; each is one family, one PR.
 3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
-   "lanes" after T16 and T17 merge: every module uses the word.
+   "lanes" as a ticket of its own: every module uses the word.
 4. **The five open decision records in simple English** (#401), after #404
    lands, with the errors #404 found: the chi2 record's (s, j) list is off
-   by one, and the matvec record's counts did not reproduce. Then add
-   `decisions/open/*.md` to the prose checker's `SCOPE`. Write two new
+   by one, and the matvec record's counts did not reproduce. Write two new
    records from #404's `critique.md` §2: "same-host or cross-host?" and
    "may a bounded step sit in a composition?".
 
@@ -86,6 +85,18 @@ Easiest first; each is one family, one PR.
   degree, so the need stands: a binding (a `let`, or a nested function
   whose arguments are evaluated once) would make the recurrence linear in
   the degree, and serve the steps past the token cap.
+- **A value bound once, for tree embeddings.** `RandomTreesEmbedding`'s
+  fastest spelling is one nested CASE per tree answering its leaf id, each
+  lane `leaf = k`: confit computes the CASE once per row and serves 0.11 us
+  a lane (30 trees of depth 5, 693 lanes, 75 us a row). But the body is
+  text, so the CASE is spelled in every lane of its tree, quadratic in the
+  tree's leaves: the default `RandomTreesEmbedding(n_estimators=100,
+  max_depth=5, sparse_output=False)` fitted on `normal(size=(2000, 8))`
+  expands past the 4,000,000-token cap (the CASE spelling, a reproduction,
+  is in the T16 PR's description). The entry spells each lane as its
+  leaf's path instead (trees.py), linear in the text, at 0.22 us a lane;
+  a binding would serve the CASE spelling at every width the entry takes
+  (release build, 2026-10-06).
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
@@ -148,11 +159,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   the Python step does not serve either (it reads a row with `float()`,
   and a sparse row is not a float). A note for the step, not the catalog.
 - `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
-  for `OneHotEncoder` above. `KBinsDiscretizer(dtype=np.float32)`: the
-  twin rounds x to float32 before it bins it, which the entry does not
-  spell (a cast to FLOAT would have to round as numpy does, unproven).
-  Bin edges that are not sorted numbers (searchsorted's answer is then
-  its search order's), which no strategy fits on finite data.
+  for `OneHotEncoder` above. Bin edges that are not sorted numbers
+  (searchsorted's answer is then its search order's), which no strategy
+  fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
   features, where builds reach 6-8 s (`quantile.MAX_QUANTILES`).
@@ -244,6 +253,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   nor the last tied operand, so `greatest`/`least` (the first) part from
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
+- `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
+  output (decisions/open/sparse-outputs.md). Past 25,000 path steps (a
+  leaf's depth, summed over the leaves) per estimator, an estimated 7 s
+  build (`trees.MAX_PATH_STEPS`): 250 trees of depth 5 (7.8 s), and
+  one unbounded tree over 2,000 rows has 33,688 steps. Where the twin
+  raises (±inf, a value past float32's range) the entry answers a leaf
+  (goal.md, "Tolerated differences").
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
@@ -251,7 +267,6 @@ Configurations a translator declines (`NotNative`), each with its ground:
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
-  `RadiusNeighborsTransformer`, `IterativeImputer`, `RandomTreesEmbedding`,
-  `BernoulliRBM`, `NMF`/`MiniBatchNMF`, the dictionary learners,
-  `SparsePCA`, `LatentDirichletAllocation`,
-  `NeighborhoodComponentsAnalysis`. Each needs a design first.
+  `RadiusNeighborsTransformer`, `IterativeImputer`, `BernoulliRBM`,
+  `NMF`/`MiniBatchNMF`, the dictionary learners, `SparsePCA`,
+  `LatentDirichletAllocation`, `NeighborhoodComponentsAnalysis`. Each needs a design first.

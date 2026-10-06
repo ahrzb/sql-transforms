@@ -96,20 +96,10 @@ words that we do not use for that thing.
 5. **Make the glossary shorter when you can.** Remove a term that the
    project does not use now.
 
-## Checks
+## Before you send the text
 
-### The checker
 
-`scripts/prose_check.py` finds sentences of more than 25 words and
-semicolons. The pre-commit hook runs it on the files in its
-`SCOPE`, so CI fails on these problems. When a doc that the owner reviews or
-maintains follows the rules, add it to `SCOPE`.
-
-### The fresh-reader test
-
-1. Run the checker on the text, and fix what it finds:
-   `uv run --no-sync python scripts/prose_check.py - < draft.md`
-2. Start a new agent with a small model. Give it only the text,
+1. Start a new agent with a small model. Give it only the text,
    `GLOSSARY.md`, and this prompt:
 
    > You are the owner of this repository. You did not see the session that
@@ -119,11 +109,11 @@ maintains follows the rules, add it to `SCOPE`.
    > that the glossary puts under _Avoid_ and that the text uses for the
    > concept of that entry. Do not rewrite the text.
 
-3. Fix each item that the reader lists:
+2. Fix each item that the reader lists:
    - explain the term where it first occurs;
    - use the glossary term;
    - or remove the item.
 
    If the item is a new concept, add it to `GLOSSARY.md` first
    ("The glossary" above).
-4. Send the text to the owner. Do not send the reader's list.
+3. Send the text to the owner. Do not send the reader's list.

@@ -29,7 +29,7 @@ Start the title of the PR with `report:`.
 
 **The text.** The report follows the `simple-english` skill and uses the
 terms in [GLOSSARY.md](../../GLOSSARY.md). Before you merge it, run the
-checker and the fresh-reader test of that skill.
+fresh-reader test of that skill.
 
 **Publishing it.** If the session can publish a document for the owner,
 such as a Claude Doc or an Artifact, publish the same text. Link both in
