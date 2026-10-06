@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{
-    types, AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Value as CVal,
+    types, AbiParam, InstBuilder, MemFlags, Opcode, StackSlotData, StackSlotKind, Value as CVal,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -1313,6 +1313,154 @@ pub fn interp_only(p: &Program) -> bool {
     })
 }
 
+/// Store to a scratch slot, in the block that computes it, each value that
+/// Cranelift would otherwise compute more than once.
+///
+/// Cranelift drops a block param that every edge feeds the same value
+/// (`remove_constant_phis`). Its egraph then takes each pure instruction
+/// out of its block and computes it where an instruction it keeps in place
+/// (one with effects, or a branch) reads it: at the first such read, and
+/// again at each later read that place does not dominate. A value the IR
+/// computes once and passes on, such as a shared subexpression that every
+/// field read of a struct reads inside its own CASE arm, was so computed
+/// again in every arm, and the values it reads stayed live across all of
+/// them: W field reads of a struct whose trap tests T inputs took build
+/// time in W * T. The store is a read where the IR computes the value, so
+/// the value is computed there, once, and every later read uses it.
+///
+/// Only such a value is stored: one read where no one place dominates the
+/// others. A value read in one place is computed there, as before; stored,
+/// it stayed live from where the IR computed it (a forest's 2,146 list
+/// elements, each read once at the end, built 1.4 times as slow).
+fn compute_once(func: &mut cranelift_codegen::ir::Function) {
+    use cranelift_codegen::cursor::{Cursor, FuncCursor};
+    use cranelift_codegen::dominator_tree::DominatorTree;
+    use cranelift_codegen::flowgraph::ControlFlowGraph;
+    use cranelift_codegen::ir::{Block, Inst as CInst};
+
+    let cfg = ControlFlowGraph::with_function(func);
+    let domtree = DominatorTree::with_function(func, &cfg);
+    let dfg = &func.dfg;
+    let dests = |inst: CInst| {
+        dfg.insts[inst].branch_destination(&dfg.jump_tables, &dfg.exception_tables)
+    };
+
+    // The value each block param stands for once `remove_constant_phis`
+    // drops it: the one value every edge passes. Predecessors first (the
+    // function is acyclic), so an edge's value is already resolved.
+    let mut same: HashMap<CVal, CVal> = HashMap::new();
+    let resolve = |same: &HashMap<CVal, CVal>, v: CVal| {
+        let v = dfg.resolve_aliases(v);
+        same.get(&v).copied().unwrap_or(v)
+    };
+    for &block in domtree.cfg_rpo().skip(1) {
+        let params = dfg.block_params(block);
+        // Per param: the one value seen so far, or None once two differ.
+        let mut fed: Vec<Option<Option<CVal>>> = vec![Some(None); params.len()];
+        for pred in cfg.pred_iter(block) {
+            for call in dests(pred.inst) {
+                if call.block(&dfg.value_lists) != block {
+                    continue;
+                }
+                for ((a, &p), f) in call.args(&dfg.value_lists).zip(params).zip(&mut fed) {
+                    let r = a.as_value().map(|a| resolve(&same, a));
+                    *f = match (*f, r) {
+                        (Some(seen), Some(r)) if r == p || seen == Some(r) => Some(seen),
+                        (Some(None), Some(r)) => Some(Some(r)),
+                        _ => None,
+                    };
+                }
+            }
+        }
+        for (&p, f) in params.iter().zip(fed) {
+            if let Some(Some(r)) = f {
+                same.insert(p, r);
+            }
+        }
+    }
+
+    // Where each value is computed: in one block, or in several, under
+    // their nearest common dominator. Readers first: post-order visits a
+    // block after every block it dominates, where its values are read.
+    #[derive(Clone, Copy)]
+    enum At {
+        One(Block),
+        Many(Block),
+    }
+    let common = |mut a: Block, b: Block| {
+        while !domtree.block_dominates(a, b) {
+            a = domtree.idom(a).expect("the entry block dominates every block");
+        }
+        a
+    };
+    let mut at: HashMap<CVal, At> = HashMap::new();
+    let read = |at: &mut HashMap<CVal, At>, v: CVal, b: Block| {
+        let next = match at.get(&v) {
+            None => At::One(b),
+            Some(&At::One(a)) if domtree.block_dominates(a, b) => At::One(a),
+            Some(&At::One(a)) if domtree.block_dominates(b, a) => At::One(b),
+            Some(&At::One(a)) => At::Many(common(a, b)),
+            Some(&At::Many(c)) if domtree.block_dominates(b, c) => At::One(b),
+            Some(&At::Many(c)) => At::Many(common(c, b)),
+        };
+        at.insert(v, next);
+    };
+    let mut stored = Vec::new();
+    for &block in domtree.cfg_postorder() {
+        let insts: Vec<CInst> = func.layout.block_insts(block).collect();
+        for &inst in insts.iter().rev() {
+            let op = dfg.insts[inst].opcode();
+            let results = dfg.inst_results(inst);
+            let pure = results.len() == 1
+                && !(op.is_call()
+                    || op.is_branch()
+                    || op.is_terminator()
+                    || op.can_load()
+                    || op.can_store()
+                    || op.can_trap()
+                    || op.other_side_effects());
+            let place = if pure {
+                match at.get(&results[0]) {
+                    None => continue,
+                    Some(&At::One(b)) => b,
+                    // Constants are rebuilt at each read.
+                    Some(_) if matches!(op, Opcode::Iconst | Opcode::F64const) => continue,
+                    Some(_) => {
+                        stored.push((results[0], inst));
+                        block
+                    }
+                }
+            } else {
+                for call in dests(inst) {
+                    let params = dfg.block_params(call.block(&dfg.value_lists));
+                    for (a, p) in call.args(&dfg.value_lists).zip(params) {
+                        if let (Some(a), false) = (a.as_value(), same.contains_key(p)) {
+                            read(&mut at, resolve(&same, a), block);
+                        }
+                    }
+                }
+                block
+            };
+            for &a in dfg.inst_args(inst) {
+                read(&mut at, resolve(&same, a), place);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    STORED.with(|c| c.set(stored.len()));
+    if stored.is_empty() {
+        return;
+    }
+    // Written here, never read.
+    let slot = func.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
+    for (v, inst) in stored {
+        let mut pos = FuncCursor::new(func).at_inst(inst);
+        pos.next_inst();
+        pos.ins().stack_store(v, slot, 0);
+    }
+}
+
 pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<CraneliftFn, CompileError> {
     compile_ext(p, statics, Vec::new())
 }
@@ -1551,6 +1699,7 @@ pub fn compile_ext(
         b.seal_all_blocks();
         b.finalize();
     }
+    compute_once(&mut ctx.func);
 
     check_size(
         ctx.func.dfg.num_insts(),
@@ -1575,7 +1724,10 @@ pub fn compile_ext(
             "size floor {floor:?} > what Cranelift assigned ({assigned}) or calls ({calls})"
         );
         #[cfg(test)]
-        ASSIGNED.with(|c| c.set((assigned, calls)));
+        {
+            ASSIGNED.with(|c| c.set((assigned, calls)));
+            OPCODES.with(|c| *c.borrow_mut() = opcodes(&ctx.func));
+        }
     }
     module.clear_context(&mut ctx);
     module
@@ -3064,6 +3216,25 @@ thread_local! {
     /// compiled.
     pub(crate) static ASSIGNED: std::cell::Cell<(usize, usize)> =
         const { std::cell::Cell::new((0, 0)) };
+    /// Per opcode, the instructions of the last function this thread
+    /// compiled, as optimized.
+    pub(crate) static OPCODES: std::cell::RefCell<HashMap<Opcode, usize>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// The values [`compute_once`] stored in the last function this thread
+    /// compiled.
+    pub(crate) static STORED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Per opcode, the instructions in `func`.
+#[cfg(all(test, debug_assertions))]
+fn opcodes(func: &cranelift_codegen::ir::Function) -> HashMap<Opcode, usize> {
+    let mut n = HashMap::new();
+    for bb in func.layout.blocks() {
+        for i in func.layout.block_insts(bb) {
+            *n.entry(func.dfg.insts[i].opcode()).or_default() += 1;
+        }
+    }
+    n
 }
 
 /// The virtual registers Cranelift assigns `func` (as optimized) before

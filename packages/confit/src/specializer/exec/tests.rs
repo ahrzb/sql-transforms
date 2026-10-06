@@ -1580,3 +1580,104 @@ fn extern_call_cranelift_agrees_with_interp() {
     let err = cf.run(&scaler_input(), &mut cst).unwrap_err();
     assert!(err.0.contains("boom"), "got: {err:?}");
 }
+
+/// A value the IR computes once and passes on, read only inside each
+/// item's ELSE arm, is computed once by Cranelift too
+/// (`cranelift::compute_once`). Its optimizer computed it again in every
+/// arm: W field reads of a struct whose trap tests T inputs built W * T
+/// code.
+#[test]
+fn a_value_every_case_arm_reads_is_computed_once() {
+    use super::super::ir::{print::print, Col, ColTy};
+    use super::cranelift;
+    use cranelift_codegen::ir::Opcode;
+    let col = |name: &str, ty, nullable| Col {
+        name: name.into(),
+        ty: ColTy { ty, nullable },
+    };
+    let cols = [
+        col("k", Ty::I64, true),
+        col("a", Ty::F64, false),
+        col("b", Ty::F64, false),
+        col("c", Ty::F64, false),
+        col("d", Ty::F64, false),
+    ];
+    // Behind one gate in every item: `share.rs` computes it once, ahead of
+    // the first item.
+    let n = "(a * b + c * d + a * c + b * d)";
+    let items: Vec<String> = (0..8)
+        .map(|i| format!("CASE WHEN k IS NULL THEN NULL ELSE {n} + {i} END AS o{i}"))
+        .collect();
+    let sql = format!("SELECT {} FROM __THIS__", items.join(", "));
+    let p = crate::specializer::prepare(&sql, "__THIS__", &cols, &[])
+        .unwrap()
+        .program;
+    assert_eq!(print(&p).matches(" fmul ").count(), 4, "{}", print(&p));
+    let fc = cranelift::compile(&p, vec![]).expect("cranelift compile");
+    let fmuls = cranelift::OPCODES.with(|c| c.borrow().get(&Opcode::Fmul).copied());
+    assert_eq!(fmuls, Some(4));
+    assert_eq!(cranelift::STORED.with(|c| c.get()), 1, "the value the arms read");
+
+    let input = batch(
+        2,
+        vec![
+            c_i64(&[Some(1), None]),
+            c_f64(&[Some(1.0), Some(1.0)]),
+            c_f64(&[Some(2.0), Some(2.0)]),
+            c_f64(&[Some(3.0), Some(3.0)]),
+            c_f64(&[Some(4.0), Some(4.0)]),
+        ],
+    );
+    // 2 + 12 + 3 + 8 = 25.
+    let want = vec![
+        (0..8).map(|i| format!("{}.0", 25 + i)).collect::<Vec<_>>(),
+        vec!["NULL".to_string(); 8],
+    ];
+    let mut stc = fc.new_state();
+    fc.run(&input, &mut stc).expect("cranelift run");
+    assert_eq!(snapshot(&stc), want);
+}
+
+/// A value the IR passes on but reads in one place is computed there
+/// (`cranelift::compute_once`), not stored where the IR computes it:
+/// stored, it stayed live across every block between.
+#[test]
+fn a_value_read_in_one_place_is_not_stored() {
+    use super::super::ir::{print::print, Col, ColTy};
+    use super::cranelift;
+    let col = |name: &str, ty, nullable| Col {
+        name: name.into(),
+        ty: ColTy { ty, nullable },
+    };
+    let cols = [
+        col("k", Ty::I64, true),
+        col("a", Ty::F64, false),
+        col("b", Ty::F64, false),
+    ];
+    // `s` rides the blocks of `t`'s CASE to the one place that reads it.
+    let sql = "SELECT s * 2 AS o, t FROM (SELECT a * b + a AS s, \
+               CASE WHEN k IS NULL THEN 0.5e0 ELSE 1.5e0 END AS t FROM __THIS__) AS sub";
+    let p = crate::specializer::prepare(sql, "__THIS__", &cols, &[])
+        .unwrap()
+        .program;
+    let fc = cranelift::compile(&p, vec![]).expect("cranelift compile");
+    assert_eq!(cranelift::STORED.with(|c| c.get()), 0, "{}", print(&p));
+
+    let input = batch(
+        2,
+        vec![
+            c_i64(&[Some(1), None]),
+            c_f64(&[Some(2.0), Some(3.0)]),
+            c_f64(&[Some(4.0), Some(5.0)]),
+        ],
+    );
+    let mut stc = fc.new_state();
+    fc.run(&input, &mut stc).expect("cranelift run");
+    assert_eq!(
+        snapshot(&stc),
+        vec![
+            vec!["20.0".to_string(), "1.5".to_string()],
+            vec!["36.0".to_string(), "0.5".to_string()],
+        ]
+    );
+}

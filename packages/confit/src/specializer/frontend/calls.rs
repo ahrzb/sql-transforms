@@ -156,8 +156,10 @@ fn with_id(base: &SqlExpr, id: usize) -> SqlExpr {
 }
 
 /// What a read's siblings bind to depends on the scope it binds in; the
-/// cache is keyed by this as well as the call.
-pub(super) type ScopeKey = (usize, usize, usize, u32, bool, usize);
+/// cache is keyed by this as well as the call, and by whether the read
+/// binds in a projection that reads lets (`projection_lets`), since its
+/// siblings keep their parts as lets there.
+pub(super) type ScopeKey = (usize, usize, usize, u32, bool, usize, bool);
 
 /// One call's siblings in one scope: each distinct trap skeleton, at the
 /// first field that has it.
@@ -179,6 +181,7 @@ impl Binder<'_> {
             self.in_guarded.get(),
             self.classify_keys.get(),
             self.beside.borrow().len(),
+            self.projection_lets.get(),
         )
     }
 
@@ -339,6 +342,13 @@ impl Binder<'_> {
                         if !reps.iter().any(|(_, r)| *r == s) {
                             reps.push((i, s));
                         }
+                    }
+                }
+                // Every read carries these: in a projection that reads lets,
+                // their parts that cannot trap stand once, as lets.
+                if self.projection_lets.get() {
+                    for (_, s) in &mut reps {
+                        *s = self.let_parts(std::mem::replace(s, null_of(Ty::I32)));
                     }
                 }
                 let s = Rc::new(reps);

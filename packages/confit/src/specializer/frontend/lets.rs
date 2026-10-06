@@ -16,7 +16,9 @@
 //!   projection: the decisions are the ones it makes for the text spelled
 //!   out, at the size of the lets. A read anywhere else (a WHERE, a JOIN
 //!   ON, a `shape='many'` query) answers the value itself, so every check
-//!   made there sees what the text spelled out gives;
+//!   made there sees what the text spelled out gives. The siblings that
+//!   every field read of a call carries (`calls.rs`) keep such parts as
+//!   lets of the projection too ([`Binder::let_parts`]);
 //! - a smaller one, or a closed one, is copied to every read;
 //! - one that can trap binds again at every read, where it stands: each
 //!   read keeps its own place, its own guards and its own traps.
@@ -406,6 +408,38 @@ impl Binder<'_> {
             },
         );
         Ok((Some(e), false))
+    }
+
+    /// `e` with each largest part that cannot trap, is not closed and has
+    /// at least [`MIN_LET_SIZE`] nodes kept as a let of the level, read
+    /// through [`SKind::Let`], as a let's value is. A value that many reads
+    /// carry (a sibling's trap skeleton, `calls.rs`) so stands once, not
+    /// once per read; where it is evaluated is invisible, as for any let.
+    pub(super) fn let_parts(&self, e: SExpr) -> SExpr {
+        fn walk(b: &Binder<'_>, e: &mut SExpr) {
+            stacker::maybe_grow(RED_ZONE, STACK_SEGMENT, || {
+                if !can_trap(e) {
+                    if !bind_foldable(e) && size_at_least(e, MIN_LET_SIZE) {
+                        let mut lets = b.lets.borrow_mut();
+                        let read = SExpr {
+                            kind: SKind::Let(lets.len() as u32),
+                            ty: e.ty,
+                            nullable: e.nullable,
+                        };
+                        lets.push(std::mem::replace(e, read));
+                    }
+                    return;
+                }
+                for c in e.children_mut() {
+                    walk(b, c);
+                }
+            })
+        }
+        // Folded first, as the item around it is folded: a let stands
+        // outside the fold of the item that reads it.
+        let mut e = fold(e);
+        walk(self, &mut e);
+        e
     }
 
     /// Count a let's text bound once more toward the query's budget.
