@@ -86,7 +86,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   output value) slowed it: 100 trees of depth 5 (2,286 output fields), a
   list return, built in 0.67 s before #417 and in 2.7 s after; a struct
   return builds in 3.8 s (release build, a7cd5aa and d36e64a). The confit
-  loop answered with #422 (T8, "Next" above).
+  loop answered with #422 (T8, "Next" above): a list return, or a struct
+  read whole, builds as before #417 (100 trees in 1.0 s). A struct read
+  field by field is unchanged at 4.3 s: each field read under the
+  function's NULL condition is a branch of its own. The confit loop lists
+  it in its plans (Performance).
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
