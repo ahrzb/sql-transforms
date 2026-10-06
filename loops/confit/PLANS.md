@@ -346,13 +346,13 @@ The first five are ruled, in this order; the rest follow.
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
 - **Branches that need not be branches.** Each CASE lowers to a branch, and
   Cranelift's build time grows with the branches. A forest of 100 depth-5
-  trees (`case_forest.py` in T8's PR) builds in 1.0 s as one list of
+  trees (`case_forest.py` in #422) builds in 1.0 s as one list of
   `CAST(leaf = k AS DOUBLE)`, in 3.0 s with `CASE WHEN leaf = k THEN 1.0
   ELSE 0.0 END` fields, and in 4.2 s read field by field: a field read under
   a `null_when` binds as `CASE WHEN g IS NULL THEN NULL ELSE <field> END`,
   one branch per read. Where the value cannot trap (`plan::can_trap`), the
   read could take the guard as its NULL flag, as a list or struct output
-  does since T8, and a CASE over constants could lower to a select.
+  does since #422, and a CASE over constants could lower to a select.
 
 ## Authoring boundary (`sql_transform`)
 
