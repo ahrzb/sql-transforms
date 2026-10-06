@@ -27,6 +27,9 @@ cd sql-transforms
 mise run install        # uv sync — installs both packages, builds Confit's extension
 ```
 
+With Nix, `nix develop` gives a shell with the pinned toolchain (Python 3.14,
+uv, Rust, JDK 21 for the Spark gate); run `uv sync --group spark` inside it.
+
 Confit ships a Rust/PyO3 extension (`confit._engine`) that
 [maturin](https://www.maturin.rs/) builds. sql-transform is pure Python. After
 you change Rust code, run `uv run maturin develop` in `packages/confit`. The
