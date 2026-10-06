@@ -82,7 +82,8 @@ refuses.
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 15
-fixture configurations, 3,000 steps, with none apart (2026-10-05). The
+fixture configurations, 3,000 steps, with none apart (2026-10-05; again
+at every width the generator draws, up to 32 features, 2026-10-06). The
 x86-64 build of scipy does not contract `h += w*(xb - x)` into a fused
 multiply-add; a build that does (aarch64) would part from it, and
 `bspline_is_scipys` probes for that on first use, the entry refusing where
