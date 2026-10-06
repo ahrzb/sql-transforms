@@ -39,32 +39,39 @@ routed by an explicit test, since DuckDB orders NaN above every number
 bit-exact. Where the twin raises (±inf, or past float32's range) the
 entry traps: its input guard (`_registry.rejects`).
 
-One CASE per tree serves 1.5-2x as fast as the paths, but its build
-grows faster with the lanes. The entry spells a forest with one CASE per
-tree where that build is estimated within MAX_BUILD_S, else with the
-paths where theirs is, else refuses it. The estimates (`_case_seconds`,
-`_paths_seconds`) are fitted on warm builds of 30 forests, each the
-slower of a struct and a list return (release build, 8 features, fits
-of 500 to 4,000 rows, master dc3ed3b, 2026-10-06). Each build over 0.3 s
-is within 0.77 to 1.23 times the CASE estimate, past two deep forests
-that it refuses either way, and within 0.93 to 1.08 times the paths
-estimate. A struct return, one instance, fits of 2,000 rows unless the
-row says, 10,000-row batches:
+One CASE per tree serves 1.5-2x as fast as the paths (100 trees of
+depth 5: 318 us a row against 585), but its build grows faster with the
+lanes. The entry spells a forest with one CASE per tree where that build
+is estimated within MAX_BUILD_S, else with the paths where theirs is,
+else refuses it. The estimates (`_case_seconds`, `_paths_seconds`) are
+fitted on warm builds of 36 forests, each the slower of a struct and a
+list return (release build, 8 features and, for five forests, 16 to 64;
+fits of 500 to 4,000 rows; master 6aea15e, 2026-10-06). The struct return
+is the slower, by 3.5 to 17 times: confit builds each field read of a
+struct on its own, the input guard's tests again with each
+(loops/native/PLANS.md, "Needs from confit"). The guard has two tests a
+feature here, so each estimate has a term in the lanes times the
+features. Each build over 0.3 s is within 0.70 to 1.33 times the CASE
+estimate, past two deep forests that it refuses either way, and within
+0.94 to 1.07 times the paths estimate. A struct return, one instance,
+8 features and fits of 2,000 rows unless the row says, 10,000-row
+batches; a refused forest shows the build of its faster spelling, with
+the cap lifted:
 
-    forest                        lanes   spelling   build   serve a row
-    30 trees, depth 5               693   CASE       0.6 s         63 us
-    100 trees, depth 5            2,286   CASE       3.7 s        253 us
-    130 trees, depth 5            3,021   CASE       5.8 s        361 us
-    160 trees, depth 5            3,745   paths      5.6 s        872 us
-    100 trees, depth 6            3,839   paths      6.1 s        911 us
-    1 tree, unbounded             2,000   CASE       2.6 s        191 us
-    200 trees, depth 5            4,657   paths      7.9 s    (refused)
-    1 tree, unbounded, 4,000 rows 4,000   CASE       8.3 s    (refused)
+    forest                           lanes   spelling   build   serve a row
+    30 trees, depth 5                  693   CASE       1.2 s         70 us
+    100 trees, depth 5               2,286   CASE       6.5 s        318 us
+    100 trees, depth 5, 32 features  2,242   paths      6.9 s        803 us
+    130 trees, depth 5               3,021   paths      6.4 s        804 us
+    1 tree, unbounded                2,000   CASE       4.2 s        232 us
+    160 trees, depth 5               3,745   paths      8.5 s    (refused)
+    100 trees, depth 6               3,839   paths      8.7 s    (refused)
+    1 tree, unbounded, 4,000 rows    4,000   paths     11.8 s    (refused)
 
-against the twin's 6.0 ms a row at 30 trees. confit #417 slowed the
-builds of one CASE per tree (100 trees of depth 5, a list return: 0.67 s
-before it, 2.7 s after; the confit loop has a reproduction), so its
-estimate may fall when confit builds it faster.
+against the twin's 6.6 ms a row at 30 trees. A list return builds in
+0.65 to 0.78 s at 100 trees of depth 5, over 8 to 64 features, so the
+estimates may fall when confit builds a struct read field by field as
+it builds a list.
 """
 
 from __future__ import annotations
