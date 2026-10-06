@@ -340,7 +340,7 @@ FIXTURES[IsotonicRegression] = [
 # served, unvalidated (the twin then answers NaN and infinity) and, for a
 # few, validated; each bounded function both ways. Each is held to its own
 # bound (`function._BOUNDS`), the rest to 0.
-BOUNDED = [np.exp, np.log, np.log2, np.log10, np.tan]
+BOUNDED = [np.exp, np.log, np.log2, np.log10, np.tan, np.cbrt]
 FUNCTIONS = [
     np.abs,
     np.fabs,
@@ -1135,12 +1135,6 @@ def _sum_rows(X):
 @pytest.mark.parametrize(
     "est, types, reason",
     [
-        (FunctionTransformer(np.cbrt), None, r"func=np\.cbrt\): confit's cbrt is not"),
-        (
-            FunctionTransformer(np.cbrt, validate=True),
-            None,
-            "confit's cbrt is not DuckDB's",
-        ),
         (FunctionTransformer(np.log1p), None, "DuckDB has no log1p"),
         (FunctionTransformer(np.expm1), None, "DuckDB has no expm1"),
         (FunctionTransformer(np.arctan), None, r"func=np\.arctan\): not a function"),
@@ -1197,6 +1191,7 @@ def test_a_failing_kernel_probe_leaves_the_function_python(monkeypatch, func):
         (np.exp, 2, "2 ulps from confit's on the probe, past the entry's bound of 1"),
         (np.log10, 3, "3 ulps .* past the entry's bound of 2"),
         (np.tan, 1 << 64, "past the entry's bound of 1"),
+        (np.cbrt, 4, "4 ulps .* past the entry's bound of 3"),
     ],
     ids=lambda v: None,
 )
@@ -1229,6 +1224,7 @@ def test_this_platforms_kernels_are_within_their_bounds():
         ([np.exp], 1),
         ([None, np.log10], 2),
         ([np.exp, np.log10, np.abs], 2),
+        ([None, np.cbrt, np.exp], 3),
     ],
     ids=lambda v: None,
 )

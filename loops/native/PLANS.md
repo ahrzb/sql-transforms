@@ -49,14 +49,6 @@ Easiest first; each is one family, one PR.
   quantiles over an estimator's features (6-8 s at that sum). Low priority
   for confit: a future entry that needs two trees in one expression would
   raise it again.
-- **`cbrt` that answers DuckDB's.** confit's `cbrt` (`duck_cbrt`, Rust's
-  `f64::cbrt`) is not DuckDB's, which is glibc's: over 200,000 draws
-  (uniform in +-1e3 and +-exp(uniform(-700, 700))) they part on 99,438,
-  by up to 3 ulps; e.g. `cbrt(23.64324940051347)` is 2.8701354167475395
-  in confit and 2.87013541674754 in DuckDB 1.5.5 (and glibc's `cbrt`
-  through ctypes). Reproduction: `SELECT cbrt(x) AS y FROM __THIS__` served
-  by `DuckDBInferFn` against `duckdb.sql` on the same column. Waits on it:
-  `FunctionTransformer(np.cbrt)`, within 3 ulps of DuckDB's (2026-10-05).
 - **A value bound once in a SQL function body, and a build linear in the
   parameters.** A function body is substituted as text, so an expression
   read twice is spelled twice, and a recurrence whose every step reads
@@ -78,7 +70,7 @@ Easiest first; each is one family, one PR.
   recurrence linear in the degree.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
-#353, #358, #362, #363, #374, #375, #377): a constant CASE
+#353, #358, #362, #363, #374, #375, #377, #390): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -111,7 +103,10 @@ under a guard on `abs(x)` as trap-free (`FunctionTransformer(np.sin)` at
 and 19.5 us at 128, uncapped, with the guard spelled through `abs`); and
 a subexpression shared only where it costs no row anything (a
 three-instance `QuantileTransformer` served 64 rows in 21,480 us after
-#363; now 1,033; release build, master 8a67154).
+#363; now 1,033; release build, master 8a67154); and `cbrt` as glibc's,
+as DuckDB's is (confit parted from DuckDB on 99,438 of 200,000 draws, by
+up to 3 ulps; now on none, so `FunctionTransformer(np.cbrt)` is served
+within its 3 ulps of numpy).
 
 ## Left Python
 
@@ -152,12 +147,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `FunctionTransformer` with a `func` other than the identity and numpy's
   `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
-  (bit-exact) and `exp`, `log`, `log2`, `tan` (within 1 ulp) and `log10`
-  (within 2) (lambdas, partials, user functions, other ufuncs); with
-  `kw_args`; over a string feature, or a boolean one except for the
-  identity (numpy keeps a boolean row boolean). `cbrt`, 3 ulps from
-  DuckDB's, waits on confit's `cbrt` answering DuckDB's (Needs from
-  confit); `log1p` and `expm1` have no DuckDB function. `sin` and `cos`,
+  (bit-exact) and `exp`, `log`, `log2`, `tan` (within 1 ulp), `log10`
+  (within 2) and `cbrt` (within 3) (lambdas, partials, user functions,
+  other ufuncs); with `kw_args`; over a string feature, or a boolean one
+  except for the identity (numpy keeps a boolean row boolean). `log1p`
+  and `expm1` have no DuckDB function. `sin` and `cos`,
   and the bounded functions, only where `kernel_distance` finds numpy's
   kernel within the function's bound of confit's (numpy picks its kernel
   by CPU). A bounded function does not compose: a `Pipeline`,
