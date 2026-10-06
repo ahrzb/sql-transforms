@@ -225,7 +225,8 @@ gated.
 _Avoid_: bucket, cluster
 
 **Nightly**:
-The campaign that CI runs each night. It posts its findings to issue #305.
+The campaign that CI runs each night. It posts its findings to the open issue
+titled "Nightly campaign findings", and creates that issue if none is open.
 
 **Exclusion**:
 A rule in `fuzz/exclusions.py` that removes a generated case from the

@@ -67,7 +67,7 @@ In both modes, the work is done when all of these are true:
 
 ## Standing duties (both modes)
 
-- **Nightly triage.** Read the latest "Nightly campaign findings" comment on issue #305. Then re-run each
+- **Nightly triage.** Read the latest report on the open issue titled "Nightly campaign findings". Then re-run each
   gated seed on master. Fix each live class. Alternatively, pin it as an expected failure that must keep
   failing (xfail-strict) in `packages/confit/tests/test_open_divergences.py`. Re-run the metamorphic seeds
   too.
