@@ -22,6 +22,7 @@ import pytest
 from sklearn.cluster import FeatureAgglomeration
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomTreesEmbedding
 from sklearn.feature_selection import (
     RFE,
     RFECV,
@@ -590,6 +591,49 @@ def _pinned_box_cox() -> PowerTransformer:
 FIXTURES[PowerTransformer] = [
     positive(lambda: PowerTransformer("box-cox", standardize=False)),
     positive(_pinned_box_cox),
+]
+
+# RandomTreesEmbedding: dense output only (trees.py). One tree to 30, depth
+# 1 to 5 (the default) and unbounded, min_samples_leaf above 1, and
+# max_leaf_nodes (best-first growth). The trees allow NaN, so the
+# generator puts holes in the fit data (columns partly and wholly
+# missing), which sets missing_go_to_left by what the fit saw; serving
+# NULLs route by it either way. A fixed random_state keeps the fits the
+# same from run to run. Rows at and beside the cutpoints are in
+# test_trees_at_the_cutpoints.
+FIXTURES[RandomTreesEmbedding] = [
+    lambda: RandomTreesEmbedding(n_estimators=1, sparse_output=False, random_state=0),
+    lambda: RandomTreesEmbedding(
+        n_estimators=3, max_depth=1, sparse_output=False, random_state=1
+    ),
+    lambda: RandomTreesEmbedding(
+        n_estimators=10, max_depth=3, sparse_output=False, random_state=2
+    ),
+    lambda: RandomTreesEmbedding(
+        n_estimators=30, max_depth=5, sparse_output=False, random_state=3
+    ),
+    lambda: RandomTreesEmbedding(
+        n_estimators=5,
+        max_depth=4,
+        min_samples_leaf=3,
+        sparse_output=False,
+        random_state=4,
+    ),
+    lambda: RandomTreesEmbedding(
+        n_estimators=8,
+        max_depth=None,
+        max_leaf_nodes=6,
+        sparse_output=False,
+        random_state=5,
+    ),
+    lambda: RandomTreesEmbedding(
+        n_estimators=4,
+        max_depth=2,
+        min_samples_leaf=2,
+        max_leaf_nodes=3,
+        sparse_output=False,
+        random_state=6,
+    ),
 ]
 
 # A string feature's fitted values, and the unseen ones serving adds.
@@ -1829,3 +1873,157 @@ def test_agglomeration_refuses_labels_that_skip_a_cluster():
     est.labels_ = np.array([0, 0, 2, 2])
     with pytest.raises(NotNative, match="skip a cluster"):
         to_native(_agglomeration_step(est), strict=True)
+
+
+# -------------------------------------------------------- RandomTreesEmbedding
+
+
+def _beside(v: float) -> list[float]:
+    """`v` and the doubles either side of it."""
+    return [float(np.nextafter(v, -np.inf)), v, float(np.nextafter(v, np.inf))]
+
+
+def _cutpoint_values(t: float) -> list[float]:
+    """A threshold, the float32 values either side of it, and the doubles
+    at and beside the cutpoint the entry compares against instead."""
+    from sql_transform._trees import _f32_grid_threshold
+
+    below = np.float32(t)
+    if float(below) > t:
+        below = np.nextafter(below, np.float32(-np.inf))
+    above = np.nextafter(below, np.float32(np.inf))
+    cut = float(_f32_grid_threshold(np.array([t]))[0])
+    return [t, float(below), float(above), *_beside(cut)]
+
+
+# The values a float32 grid makes special: signed zeros, the double and
+# float32 subnormals and the smallest normals, float32's largest finite
+# value, and the largest double that still rounds to it (the next one up
+# rounds to infinity); then past float32's range, and the infinities,
+# where the twin raises; and NaN.
+F32_MAX = float(np.finfo(np.float32).max)
+F32_LAST = float(np.nextafter(2.0**128 * (1 - 2.0**-25), 0.0))
+TREE_SPECIALS = [
+    0.0,
+    -0.0,
+    5e-324,
+    -5e-324,
+    *_beside(float(np.finfo(np.float32).smallest_subnormal)),
+    -float(np.finfo(np.float32).smallest_subnormal),
+    float(np.finfo(np.float32).smallest_normal),
+    float(np.finfo(np.float64).smallest_normal),
+    F32_MAX,
+    -F32_MAX,
+    F32_LAST,
+    -F32_LAST,
+    2.0**128 * (1 - 2.0**-25),
+    1e39,
+    -1e300,
+    math.inf,
+    -math.inf,
+    math.nan,
+]
+
+
+def test_trees_at_the_cutpoints():
+    # Four features: spread values, float32 subnormals, values near
+    # float32's largest, and few integers with holes (so some nodes saw
+    # NaN and some did not). Every feature of a row is a training row's
+    # but one, which takes each threshold's values in turn, and the
+    # specials.
+    rng = np.random.default_rng(11)
+    n = 60
+    X = np.column_stack(
+        [
+            rng.normal(0.0, 3.0, n),
+            rng.integers(-40, 40, n) * float(np.finfo(np.float32).smallest_subnormal),
+            rng.uniform(-1.0, 1.0, n) * F32_MAX,
+            np.where(rng.random(n) < 0.2, np.nan, rng.integers(-3, 4, n)),
+        ]
+    )
+    est = RandomTreesEmbedding(
+        n_estimators=12, max_depth=5, sparse_output=False, random_state=0
+    ).fit(X)
+    assert any(t.tree_.missing_go_to_left[t.tree_.feature >= 0].any() for t in est)
+    by_feature: dict[int, set[float]] = {j: set(TREE_SPECIALS) for j in range(4)}
+    for tree in est.estimators_:
+        t = tree.tree_
+        for f, thr in zip(t.feature, t.threshold, strict=True):
+            if f >= 0:
+                by_feature[int(f)].update(_cutpoint_values(float(thr)))
+    rows: list[list[float]] = []
+    for j, values in by_feature.items():
+        for v in sorted(values, key=repr):
+            row = [float(c) for c in X[int(rng.integers(n))]]
+            row[j] = v
+            rows.append(row)
+    step = _tree_step(est, 4)
+
+    # The twin answers a row whose values are finite as float32s
+    # (F32_LAST included, the next double up not), and raises on the rest;
+    # served apart, so the step serves the first in one batch.
+    def finite(r: list[float]) -> bool:
+        return all(math.isnan(v) or abs(v) <= F32_LAST for v in r)
+
+    def table(rs: list[list[float]]) -> pa.Table:
+        cols = {f"x{j}": pa.array([r[j] for r in rs], pa.float64()) for j in range(4)}
+        return pa.table({"__iid": pa.array([0] * len(rs), pa.int64()), **cols})
+
+    native = to_native(step, strict=True)
+    answered = [r for r in rows if finite(r)]
+    assert check(step, native, table(answered)) == len(answered)
+    # Where the twin raises, the entry answers (check serves every row).
+    assert check(step, native, table([r for r in rows if not finite(r)])) == 0
+
+
+def test_trees_answer_where_the_twin_raises():
+    X = np.random.default_rng(0).normal(size=(20, 2))
+    est = RandomTreesEmbedding(n_estimators=2, sparse_output=False).fit(X)
+    with pytest.raises(ValueError, match="infinity or a value too large"):
+        est.transform([[2.0**128 * (1 - 2.0**-25), 0.0]])
+    est.transform([[F32_LAST, 0.0]])  # the twin answers the double below
+
+
+def test_trees_refuse_a_sparse_output():
+    X = np.random.default_rng(0).normal(size=(20, 2))
+    est = RandomTreesEmbedding(n_estimators=2).fit(X)
+    step = PythonTransform(
+        "tf", {0: est}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
+    )
+    with pytest.raises(NotNative, match=r"sparse_output=True"):
+        to_native(step, strict=True)
+
+
+def _tree_step(est: RandomTreesEmbedding, n_features: int) -> PythonTransform:
+    width = len(np.concatenate(est.one_hot_encoder_.categories_))
+    return PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{j}", pa.float64()) for j in range(n_features)]),
+        pa.list_(pa.float64(), width),
+    )
+
+
+def test_trees_serve_the_default_forest():
+    # n_estimators=100, max_depth=5: up to 3,200 lanes, past MAX_LANES,
+    # so the generator never draws it (2.7 s to build, trees.py).
+    X = np.random.default_rng(3).normal(size=(500, 6))
+    est = RandomTreesEmbedding(sparse_output=False, random_state=0).fit(X)
+    step = _tree_step(est, 6)
+    # Rows the twin answers, NULLs among them, so it serves them at once.
+    R = np.random.default_rng(4).normal(size=(40, 6))
+    cols = {f"x{j}": [None if v > 1.5 else float(v) for v in R[:, j]] for j in range(6)}
+    rows = pa.table({"__iid": pa.array([0] * 40, pa.int64()), **cols})
+    assert check(step, to_native(step, strict=True), rows) == 40
+
+
+def test_trees_refuse_a_build_past_the_cap():
+    from sql_transform.native.trees import MAX_PATH_STEPS, _steps
+
+    X = np.random.default_rng(0).normal(size=(2000, 8))
+    est = RandomTreesEmbedding(
+        n_estimators=1, max_depth=None, sparse_output=False, random_state=0
+    ).fit(X)
+    assert _steps(est) > MAX_PATH_STEPS
+    with pytest.raises(NotNative, match=r"path steps, past 25,000"):
+        to_native(_tree_step(est, 8), strict=True)

@@ -63,6 +63,18 @@ Easiest first; each is one family, one PR.
   degree, so the need stands: a binding (a `let`, or a nested function
   whose arguments are evaluated once) would make the recurrence linear in
   the degree, and serve the steps past the token cap.
+- **A value bound once, for tree embeddings.** `RandomTreesEmbedding`'s
+  fastest spelling is one nested CASE per tree answering its leaf id, each
+  lane `leaf = k`: confit computes the CASE once per row and serves 0.11 us
+  a lane (30 trees of depth 5, 693 lanes, 75 us a row). But the body is
+  text, so the CASE is spelled in every lane of its tree, quadratic in the
+  tree's leaves: the default `RandomTreesEmbedding(n_estimators=100,
+  max_depth=5, sparse_output=False)` fitted on `normal(size=(2000, 8))`
+  expands past the 4,000,000-token cap (the CASE spelling, a reproduction,
+  is in the T16 PR's description). The entry spells each lane as its
+  leaf's path instead (trees.py), linear in the text, at 0.22 us a lane;
+  a binding would serve the CASE spelling at every width the entry takes
+  (release build, 2026-10-06).
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
@@ -221,6 +233,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   nor the last tied operand, so `greatest`/`least` (the first) part from
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
+- `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
+  output (decisions/open/sparse-outputs.md). Past 25,000 path steps (a
+  leaf's depth, summed over the leaves) per estimator, an estimated 7 s
+  build (`trees.MAX_PATH_STEPS`): 250 trees of depth 5 (7.8 s), and
+  one unbounded tree over 2,000 rows has 33,688 steps. Where the twin
+  raises (±inf, a value past float32's range) the entry answers a leaf
+  (goal.md, "Tolerated differences").
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
@@ -228,7 +247,6 @@ Configurations a translator declines (`NotNative`), each with its ground:
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
-  `RadiusNeighborsTransformer`, `IterativeImputer`, `RandomTreesEmbedding`,
-  `BernoulliRBM`, `NMF`/`MiniBatchNMF`, the dictionary learners,
-  `SparsePCA`, `LatentDirichletAllocation`,
-  `NeighborhoodComponentsAnalysis`. Each needs a design first.
+  `RadiusNeighborsTransformer`, `IterativeImputer`, `BernoulliRBM`,
+  `NMF`/`MiniBatchNMF`, the dictionary learners, `SparsePCA`,
+  `LatentDirichletAllocation`, `NeighborhoodComponentsAnalysis`. Each needs a design first.

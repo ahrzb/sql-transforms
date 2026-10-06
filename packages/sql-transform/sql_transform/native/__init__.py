@@ -36,6 +36,7 @@ from sql_transform.native import quantile as _quantile  # noqa: F401  (registers
 from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
 from sql_transform.native import select as _select  # noqa: F401  (registers)
 from sql_transform.native import spline as _spline  # noqa: F401  (registers)
+from sql_transform.native import trees as _trees  # noqa: F401  (registers)
 from sql_transform.native._check import ParityError, check
 from sql_transform.native._registry import (
     Entry,
