@@ -14,7 +14,7 @@ from sklearn.utils._mask import _get_mask
 from sklearn.utils._missing import is_scalar_nan
 
 from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import NotNative, any_of, rejects, translates
 
 
 def _missing(est: Any, x: list[S.Expr]) -> list[S.Expr]:
@@ -61,7 +61,19 @@ def _simple(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     return out
 
 
-@translates(MissingIndicator)
+def _not_missing(est: Any, types: list[pa.DataType]) -> list[Any]:
+    """The input guard's probe row for a MissingIndicator: no value its
+    marker spells missing, where `error_on_new` would raise."""
+    mv = est.missing_values
+    number = 2.0 if not is_scalar_nan(mv) and mv == 1.0 else 1.0
+    boolean = not is_scalar_nan(mv) and mv == 0.0
+    return [
+        "" if t == pa.string() else boolean if t == pa.bool_() else number
+        for t in types
+    ]
+
+
+@translates(MissingIndicator, base=_not_missing)
 def _indicator(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: the mask's columns that had a missing value at fit
     # (features="missing-only"; with error_on_new a new one raises in the
@@ -70,4 +82,12 @@ def _indicator(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Ex
         raise NotNative("MissingIndicator(sparse=True): the output is sparse")
     if est._precomputed:
         raise NotNative("a MissingIndicator fitted on a mask transforms masks")
-    return _indicate(_missing(est, x), est.features_)
+    miss = _missing(est, x)
+    if est.features == "missing-only" and est.error_on_new:
+        # A feature missing where it was not at fit raises. The input
+        # guard's probe finds a NaN marker's; a number marker's is a test.
+        fitted = {int(f) for f in est.features_}
+        new = [m for j, m in enumerate(miss) if j not in fitted]
+        if new and not is_scalar_nan(est.missing_values):
+            rejects(any_of(new))
+    return _indicate(miss, est.features_)

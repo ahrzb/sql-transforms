@@ -55,12 +55,15 @@ The boundary constants of `constant` and `linear` (`spl(t[k])`,
 `spl(t[k], nu=1)`, ...) are the fitted splines' own numbers, computed with
 them at translation time.
 
-Where the twin raises the entry answers (loops/native/goal.md): on a row
-past the knots under `extrapolation="error"`, every lane NaN, which is
-what scipy hands sklearn before it raises; on NaN under
-`handle_missing="error"`, 0.0 as under `"zeros"`; and under `constant` with
-`degree=0` above the knots, where the twin's slice assignment fails to
-broadcast (or, with one lane, assigns nothing), 0.0.
+Where the validation of the twin raises, the entry traps: on a row past
+the knots under `extrapolation="error"` (`rejects`), and on NaN under
+`handle_missing="error"` (the input guard's probe finds it). Behind the
+trap the lanes answer NaN past the knots, which is what scipy hands
+sklearn before it raises, and 0.0 on NaN. Under `constant` with
+`degree=0` above the knots the twin's slice assignment fails to
+broadcast (or, with one lane, assigns nothing): an sklearn bug, not
+validation, where the entry answers 0.0
+(decisions/closed/tolerated-differences.md, the ruling lists it).
 
 Widths. The recurrence reads each round's values twice, so a lane's
 text doubles per degree (about 3 KB of SQL per lane at degree 3, 8 knots,
@@ -106,7 +109,7 @@ from confit import sql as S
 from sklearn.preprocessing import SplineTransformer
 
 from sql_transform.native._helpers import SameTree, f64, isnan
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import NotNative, rejects, translates
 
 # The longest build the entry takes on (seconds, warm, release), as
 # quantile.py's and isotonic.py's caps (about 7 s and 6 s).
@@ -380,9 +383,20 @@ def _bare(x: S.Expr) -> S.Expr:
 
 def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]:
     if np.isnan(np.asarray(spl.t, dtype=np.float64)).all():
+        if est.extrapolation == "error":
+            raise NotNative(
+                f"SplineTransformer(extrapolation='error'): feature {j}'s knots"
+                " are NaN, where the twin raises on every number"
+            )
         return _unknotted(est, spl, x)
     t, k, c = _knots(spl, j)
     nan = isnan(x)
+    if est.extrapolation == "error":
+        # Past the knots scipy answers NaN, and the twin raises; NaN is
+        # not past them (`handle_missing="zeros"` answers 0.0 there), but
+        # DuckDB orders it above every number.
+        lo, hi = t[k], t[len(t) - k - 1]
+        rejects((x < f64(lo)) | ((x > f64(hi)) & ~nan))
     x = _bare(x)
     n = len(t) - k - 1
     n_splines = c.shape[1]
@@ -410,7 +424,8 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
         lanes = _arms(t, k, c, x, unbounded, every)
         head = [(nan, zero)]
         if ext == "error":
-            # Past the knots scipy answers NaN, and the twin raises.
+            # Past the knots scipy answers NaN, and the twin raises: the
+            # input guard traps there (above), and the lanes answer NaN.
             out = f64(math.nan)
             head += [(x < f64(lo), out), (x > f64(hi), out)]
         return [_lane(head, arms, x) for arms in lanes]
@@ -475,7 +490,18 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
     ]
 
 
-@translates(SplineTransformer)
+def _inside(est: Any, types: list[pa.DataType]) -> list[Any]:
+    """The input guard's probe row: each feature at its first inner knot,
+    `t[k]`, inside the knots `extrapolation="error"` raises past (1.0
+    where the knots are NaN)."""
+    row = []
+    for spl in est.bsplines_:
+        lo = float(spl.t[spl.k])
+        row.append(1.0 if math.isnan(lo) else lo)
+    return row
+
+
+@translates(SplineTransformer, base=_inside)
 def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     if est.sparse_output:
         raise NotNative(

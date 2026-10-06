@@ -11,7 +11,8 @@ means), the translation asks the fitted estimator: it transforms one probe
 row per class, reads the feature's block, and spells each lane as a CASE
 over the classes. The values are the twin's own, so the entry is bit-exact;
 a class the twin raises on (an unknown category under
-`handle_unknown="error"`) is NULL, where the twin answers nothing.
+`handle_unknown="error"`) is NULL there, and the input guard traps on it
+(`_reject`).
 
 The classes follow the feature's declared type, which fixes what the step
 hands `transform`: a string or None, a float or NaN, or a boolean or NaN
@@ -30,7 +31,7 @@ from confit import sql as S
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, TargetEncoder
 
 from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import NotNative, rejects, translates
 
 
 def _widths(est: Any, n: int) -> list[int]:
@@ -83,14 +84,19 @@ def _unknown(classes: list[Any], string: bool) -> Any:
         i += 1
 
 
-@translates(OneHotEncoder, OrdinalEncoder, TargetEncoder)
+def _first_classes(est: Any, types: list[pa.DataType]) -> list[Any]:
+    """The probe row: every feature at its first class, a fitted category
+    where it has one, so a probe raises only for the feature it sets
+    (the input guard's too)."""
+    return [_classes(est.categories_[j], t)[0] for j, t in enumerate(types)]
+
+
+@translates(OneHotEncoder, OrdinalEncoder, TargetEncoder, base=_first_classes)
 def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     if getattr(est, "sparse_output", False):
         raise NotNative("OneHotEncoder(sparse_output=True): the output is sparse")
     classes = [_classes(est.categories_[j], t) for j, t in enumerate(types)]
-    # The probe row: every feature at its first class, a fitted category
-    # where it has one, so a probe raises only for the feature it sets.
-    base = [c[0] for c in classes]
+    base = _first_classes(est, types)
     widths = _widths(est, len(x))
     # Over boolean features only, the row is a boolean array when none is
     # NULL and a float64 one otherwise, and sklearn's matching is not the
@@ -120,6 +126,10 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         if booleans:
             known = [c for c in classes[j] if not _missing(c)]
             rows_b = [(c, _probe(est, bits, j, c, np.bool_)) for c in known]
+        raises = t != pa.bool_() and unknown is None
+        _reject(xj, string, classes[j], rows, raises, null if booleans else None)
+        if booleans:
+            _reject(xj, string, known, rows_b, False, ~null)
         for lane in range(offset, offset + widths[j]):
             e = _lane(xj, string, rows, unknown, lane)
             if booleans:
@@ -131,6 +141,27 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     if offset != len(_probe(est, base, 0, base[0]) or []):
         raise NotNative(f"{type(est).__name__}: blocks of {offset} lanes in all")
     return out
+
+
+def _reject(
+    xj: S.Expr,
+    string: bool,
+    classes: list[Any],
+    rows: list[tuple[Any, list[float] | None]],
+    unknown: bool,
+    where: S.Expr | None,
+) -> None:
+    """The input guard's tests for one feature (`_registry.rejects`): the
+    classes the twin raises on (`rows`), and, where it raises on an
+    `unknown` value (`handle_unknown="error"`), a value of none of them;
+    on rows where `where` holds, the form (float64 or boolean) the probes
+    ran in."""
+    raised = [c for c, got in rows if got is None]
+    tests = [_member(xj, string, raised)] if raised else []
+    if unknown:
+        tests.append(~_member(xj, string, classes))
+    for test in tests:
+        rejects(test if where is None else where & test)
 
 
 def _probe(

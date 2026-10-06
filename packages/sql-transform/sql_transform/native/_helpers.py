@@ -22,6 +22,19 @@ from confit import sql as S
 TINY_SCALE = float(10 * np.finfo(np.float64).eps)
 
 
+# The least double that numpy's narrowing to float32 rounds to infinity:
+# float32's largest, (2 - 2**-23) * 2**127, plus half its ulp, a tie that
+# rounds to the even infinity.
+F32_INF = 2.0**128 - 2.0**103
+
+
+def narrows_to_infinity(e: S.Expr) -> S.Expr:
+    """`e` is a number that float32 narrowing makes infinite (±inf among
+    them), which a validation in float32 rejects. NaN is not: DuckDB
+    orders it above every number, hence its own test."""
+    return (S.fn("abs", e) >= f64(F32_INF)) & ~isnan(e)
+
+
 def f64(v: Any) -> S.Const:
     """A fitted number as a DOUBLE constant (a numpy scalar included)."""
     return S.lit(float(v))

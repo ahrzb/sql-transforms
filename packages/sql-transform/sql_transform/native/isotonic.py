@@ -35,9 +35,9 @@ never taken: with finite `fp` and finite widths a slope is never NaN and
 `out_of_bounds="clip"` needs no clip of its own: a clipped `T` equals
 `xp[0]` or `xp[-1]` (as numbers: `X_min_` and `X_max_` are the thresholds'
 ends), which `np.interp` answers `fp[0]` and `fp[-1]` by its exact arms,
-so the entry answers those for `x <= xp[0]` and `x >= xp[-1]`. "raise"
-answers NaN where the twin raises (loops/native/goal.md, "Tolerated
-differences").
+so the entry answers those for `x <= xp[0]` and `x >= xp[-1]`. Under
+"raise" the twin raises outside `[xp[0], xp[-1]]`, and the entry traps
+there: its input guard (`_registry.rejects`).
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ from scipy.interpolate import interp1d
 from sklearn.isotonic import IsotonicRegression
 
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import NotNative, rejects, translates
 from sql_transform.native.quantile import interp_is_numpys
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
@@ -103,7 +103,13 @@ def _tree(x: S.Expr, pieces: list[_Piece]) -> S.Expr:
     )
 
 
-@translates(IsotonicRegression)
+def _first_threshold(est: Any, types: list[pa.DataType]) -> list[Any]:
+    """The input guard's probe row: the first threshold, inside the bounds
+    of `out_of_bounds="raise"`."""
+    return [float(est.X_thresholds_[0])]
+
+
+@translates(IsotonicRegression, base=_first_threshold)
 def _isotonic(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     xp, fp = est.X_thresholds_, est.y_thresholds_
     if xp.dtype != np.float64 or fp.dtype != np.float64:
@@ -139,11 +145,13 @@ def _isotonic(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         )
     lo, hi = f64(xp[0]), f64(xp[-1])
     inside = _tree(v, _pieces(xp, fp))
+    if est.out_of_bounds == "raise":
+        rejects((v < lo) | (v > hi))
     if est.out_of_bounds == "clip":
         e = S.case(v <= lo, f64(fp[0])).when(v >= hi, f64(fp[-1]))
     else:
-        # "nan", and "raise" where the twin raises. NaN reads above every
-        # number in DuckDB, so it answers NaN (the twin raises on it).
+        # "nan", and "raise" where its input guard traps. NaN reads above
+        # every number in DuckDB, so it answers NaN (the twin raises on it).
         nan = f64(math.nan)
         e = S.case(v < lo, nan).when(v > hi, nan).when(v == hi, f64(fp[-1]))
     return [e.otherwise(inside)]

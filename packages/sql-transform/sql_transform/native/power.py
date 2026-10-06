@@ -22,7 +22,7 @@ from confit import sql as S
 from sklearn.preprocessing import PowerTransformer
 
 from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import NotNative, rejects, translates
 
 _ONE = f64(1.0)
 # scipy's Box-Cox: `log(x)` below this |lambda|, and `expm1` below this
@@ -55,9 +55,10 @@ def _box_cox(x: S.Expr, lam: float) -> S.Expr:
     # else, with w = lambda * log(x), `expm1(w) / lambda` when w < 709.78,
     # else `copysign(1, lambda) * exp(w - log(|lambda|)) - 1 / lambda`.
     # Only `expm1` is not the twin's own rounding. The twin rejects x <= 0
-    # (`np.nanmin(X) <= 0` raises), where the entry answers NaN rather than
-    # trap in `ln`; NaN passes through the twin, and gets its own arm here,
-    # as DuckDB orders NaN above every number.
+    # (`np.nanmin(X) <= 0` raises), where the input guard traps (`_power`)
+    # and this arm answers NaN rather than trap in `ln`; NaN passes through
+    # the twin, and gets its own arm here, as DuckDB orders NaN above
+    # every number.
     lx = S.fn("ln", x)
     if abs(lam) < _LOG_LAMBDA:
         e = lx
@@ -95,4 +96,8 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
             " rounding expm1 is apart by into any number of ulps; it waits"
             " on the parity bound (decisions/closed/power-parity-bound.md)"
         )
+    for xi in x:
+        # `np.nanmin(X) <= 0` raises; NaN reads above every number, so it
+        # meets no test, as `nanmin` skips it.
+        rejects(xi <= f64(0.0))
     return [_box_cox(xi, float(lam)) for xi, lam in zip(x, est.lambdas_, strict=True)]
