@@ -70,6 +70,8 @@ def _exactness(entry: Entry) -> str:
     class's ceiling. A bound above 0 serves only on request."""
     b = entry.ulps
     on_request = "served only with `allow_bound=True`"
+    if entry.scale is not None:
+        return f"within K·eps·S + τ (S its error scale), {on_request}"
     if b == 0:
         return "bit-exact"
     if entry.varies:
@@ -80,8 +82,8 @@ def _exactness(entry: Entry) -> str:
 def nonzero_ulp_bounds() -> int:
     """The KPI of that name (loops/native/report-format.md): the catalog
     classes some configuration of which serves within a bound above 0,
-    with `allow_bound=True`."""
-    return sum(1 for e in catalog().values() if e.ulps)
+    with `allow_bound=True`: an ulp bound above 0, or an error scale."""
+    return sum(1 for e in catalog().values() if e.ulps or e.scale is not None)
 
 
 def rows() -> list[tuple[str, str, str]]:

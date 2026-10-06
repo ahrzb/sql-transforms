@@ -10,15 +10,21 @@ from __future__ import annotations
 
 import math
 import struct
+import sys
+from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 import pyarrow as pa
 from confit import DuckDBInferFn, compare
 from confit import sql as S
 from confit.oracle import Oracle
 
 from sql_transform._udf import PythonTransform
-from sql_transform.native._registry import bound, query
+from sql_transform.native._registry import ErrorScale, catalog, query
+
+EPS = np.longdouble(2.0**-52)
+_DBL_MAX = np.longdouble(sys.float_info.max)
 
 
 class ParityError(AssertionError):
@@ -51,6 +57,56 @@ def _same(a: Any, b: Any, ulps: int) -> bool:
             return repr(a) == repr(b)  # bit-exact: -0.0 is not 0.0
         return ulp_distance(a, b) <= ulps
     return a == b
+
+
+def near(a: float, b: float, bound: Any, g: Callable[[Any], Any] | None = None) -> bool:
+    """`a` and `b` within `bound` of each other after the map `g` (an error
+    scale's comparison, matvec-parity-bound.md, Recommendation 6): NaN is
+    only near NaN; where one side is infinite, the other passes if it is
+    finite, has the same sign and lies within `bound` of DBL_MAX, since
+    overflow on one side can be rounding alone; else `|g(a) - g(b)| <=
+    bound`. In long doubles, so that neither the map nor the difference
+    overflows (on x86-64)."""
+    if math.isnan(a) or math.isnan(b):
+        return math.isnan(a) and math.isnan(b)
+    ga, gb = np.longdouble(a), np.longdouble(b)
+    if g is not None:
+        ga, gb = g(ga), g(gb)
+    if ga == gb:
+        return True
+    if np.isinf(ga) and np.isinf(gb):
+        return False
+    if np.isinf(ga) or np.isinf(gb):
+        big, fin = (ga, gb) if np.isinf(ga) else (gb, ga)
+        return bool(np.sign(fin) == np.sign(big) and _DBL_MAX - abs(fin) <= bound)
+    return bool(abs(ga - gb) <= bound)
+
+
+def _features(rows: pa.Table, i: int, names: list[str]) -> np.ndarray:
+    """Row `i`'s features as the twin's `transform` sees them, for an
+    error scale: NaN for NULL, a boolean as 0 or 1, as long doubles."""
+    vals = [rows.column(n)[i].as_py() for n in names]
+    return np.array(
+        [math.nan if v is None else float(v) for v in vals], dtype=np.longdouble
+    )
+
+
+def _bounds(scale: ErrorScale, est: Any, x: np.ndarray, width: int) -> np.ndarray:
+    """Each output field's bound at one row, K*eps*S + tau."""
+    k, tau = scale.k(est), scale.tau(est)
+    s = scale.s(est, x)
+    b = np.asarray(k, np.longdouble) * EPS * np.asarray(s, np.longdouble)
+    return np.broadcast_to(b + np.asarray(tau, np.longdouble), (width,))
+
+
+def _lanes(rec: dict) -> list[tuple[str, Any]]:
+    """One answered row's lanes, each `(name, value)`: a struct's fields,
+    a list's elements, or the one value."""
+    if len(rec) == 1:
+        ((key, v),) = rec.items()
+        if isinstance(v, list):
+            return [(f"{key}[{j}]", x) for j, x in enumerate(v)]
+    return list(rec.items())
 
 
 def _once(step: PythonTransform, id_col: str) -> str:
@@ -90,17 +146,17 @@ def check(
     id_col: str = "__iid",
 ) -> int:
     """Raise `ParityError` unless `native` answers every row of `rows` as
-    `step` does, within `ulps` doubles per lane (0 = bit-exact; by default
-    the catalog's declared bound for the step). `rows`
-    holds `id_col` and one column per declared feature.
+    `step` does, lane by lane, within the parity bound of the row's
+    instance: its ulp bound (0 = bit-exact) or its error scale
+    (`ErrorScale`). With `ulps`, every row is held to that many doubles
+    per lane instead. `rows` holds `id_col` and one column per declared
+    feature.
 
     Where the step itself raises on a row (sklearn rejecting an input it
     validates), the native answer is not compared: loops/native/goal.md,
     "Where the twin raises". Where it raises on every row, nothing is
     compared and `check` raises: such rows prove nothing. Returns the number
     of rows compared, at least 1."""
-    if ulps is None:
-        ulps = bound(step)
     sql = query(step, id_col)
 
     # The native twin against its own definition, exactly.
@@ -121,25 +177,68 @@ def check(
         # Row by row, so a row the step rejects leaves the others compared.
         twin = [_serve(sql, rows.slice(i, 1), step) for i in range(rows.num_rows)]
         twin = [t[0] if isinstance(t, list) else None for t in twin]
+    entries = catalog()
+    ids = rows.column(id_col).to_pylist()
     compared = 0
     for i, (a, b) in enumerate(zip(twin, got, strict=True)):
         if a is None:
             continue  # the step raised on this row
         compared += 1
-        for k in a:
-            if not _same(a[k], b[k], ulps):
+        # The row's instance, and its bound. A NULL id answers NULL on both
+        # sides, compared exactly.
+        est = None if ids[i] is None else step.instances.get(ids[i])
+        entry = None if est is None else entries.get(type(est))
+        scale = None if ulps is not None or entry is None else entry.scale
+        if ulps is not None:
+            u = ulps
+        elif entry is None or scale is not None:
+            u = 0  # what is not a double (NULL, say) compares exactly
+        else:
+            u = entry.bound(est)
+        la, lb = _lanes(a), _lanes(b)
+        if len(la) != len(lb):
+            raise ParityError(
+                f"row {i}: step {a!r}, native {b!r}; input {_input(rows, i)}"
+            )
+        bounds = None
+        for j, ((name, x), (_, y)) in enumerate(zip(la, lb, strict=True)):
+            if scale is None or not (isinstance(x, float) and isinstance(y, float)):
+                if _same(x, y, u):
+                    continue
                 d = (
-                    ulp_distance(a[k], b[k])
-                    if isinstance(a[k], float) and isinstance(b[k], float)
+                    ulp_distance(x, y)
+                    if isinstance(x, float) and isinstance(y, float)
                     else "n/a"
                 )
-                row = rows.slice(i, 1).to_pylist()[0]
                 raise ParityError(
-                    f"row {i} lane {k!r}: step {a[k]!r}, native {b[k]!r}"
-                    f" ({d} ulps, bound {ulps}); input {row}"
+                    f"row {i} lane {name!r}: step {x!r}, native {y!r}"
+                    f" ({d} ulps, bound {u}); input {_input(rows, i)}"
+                )
+            if repr(x) == repr(y):
+                continue
+            if bounds is None:
+                x_in = _features(rows, i, list(step.takes.names))
+                bounds = _bounds(scale, est, x_in, len(la))
+            if not near(x, y, bounds[j], scale.g):
+                raise ParityError(
+                    f"row {i} lane {name!r}: step {x!r}, native {y!r}, past"
+                    f" its bound K*eps*S + tau = {float(bounds[j]):.6g}"
+                    f" ({_apart(x, y, scale.g)} apart); input {_input(rows, i)}"
                 )
     if not compared:
         raise ParityError(
             f"check compares no row: the step raises on each of {rows.num_rows} rows"
         )
     return compared
+
+
+def _input(rows: pa.Table, i: int) -> dict:
+    return rows.slice(i, 1).to_pylist()[0]
+
+
+def _apart(a: float, b: float, g: Callable[[Any], Any] | None) -> str:
+    """How far apart `a` and `b` are, after `g`, as a message reads it."""
+    ga, gb = np.longdouble(a), np.longdouble(b)
+    if g is not None:
+        ga, gb = g(ga), g(gb)
+    return f"{float(abs(ga - gb)):.6g}"

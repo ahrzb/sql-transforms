@@ -29,19 +29,20 @@ default, and a bound above 0 serves only on the caller's request (it can
 flip HistGradientBoosting labels on repeated training values). T19 built
 that request, `to_native(step, allow_bound=True)`. In order:
 
-1. **The parity bound in `native.check`:** per output field
-   `|g(entry) - g(twin)| <= K*eps*S + tau`, with S and K declared per
-   family, S computed overflow-safely, and the one-sided-infinity rule on
-   the output (matvec-parity-bound.md, Recommendation 1 and 6).
-2. **The input guard** (tolerated-differences.md): probe each leaf for the
+1. **The input guard** (tolerated-differences.md): probe each leaf for the
    values its twin rejects, trap in the first output field, check "raises
    iff the twin raises" on every row. The row generator draws ±inf since
    T20, and the periodic spline breach at ±inf is fixed (#406).
-3. **Densify sparse outputs** (sparse-outputs.md): one helper at
+2. **Densify sparse outputs** (sparse-outputs.md): one helper at
    `_udf.py:314`, `_projection.py:352`, `model/_foreign.py:128` and
    `native/encode.py:110`; then drop the sparse guards of OneHotEncoder,
    KBinsDiscretizer, MissingIndicator and SplineTransformer (not degree 0).
-4. **Families on the parity bound:**
+3. **Families on the parity bound.** Since T24 a family declares its error
+   scale, `translates(cls, scale=ErrorScale(k, s, tau, g))`, and
+   `native.check` holds each row to it (`_registry.ErrorScale` says what
+   each operand is). The first family also lists its error scale in the
+   reports: `report-format.md`, "Exactness", names ulp bounds only, where
+   `coverage.nonzero_ulp_bounds` counts error scales too.
    - Linear projections (`PCA` and kin): S_full, K = n + 3, summed pairwise;
      refuse whitened components whose scale was clipped.
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
@@ -53,7 +54,7 @@ that request, `to_native(step, allow_bound=True)`. In order:
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
      not served until a normwise S is derived.
-5. **Still open for the owner:** a bounded step inside a composition
+4. **Still open for the owner:** a bounded step inside a composition
    (decisions/open/bounded-steps-in-compositions.md). `compose.py` keeps
    refusing one meanwhile.
 

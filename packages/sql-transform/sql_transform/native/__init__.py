@@ -45,6 +45,7 @@ from sql_transform.native import trees as _trees  # noqa: F401  (registers)
 from sql_transform.native._check import ParityError, check
 from sql_transform.native._registry import (
     Entry,
+    ErrorScale,
     NotNative,
     bound,
     bound_of,
@@ -56,6 +57,7 @@ from sql_transform.native._registry import (
 
 __all__ = [
     "Entry",
+    "ErrorScale",
     "NotNative",
     "bound",
     "bound_of",
