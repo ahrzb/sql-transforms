@@ -1,6 +1,6 @@
 """A projection as a leaf: both halves spliced as SQL, θ as data.
 
-D1 and D2 of `docs/specs/2026-08-11-row-wise-projections-design.md`:
+SQL leaf composition follows `packages/sql-transform/docs/contract.md`.
 
 ``p_fit(bundle)`` rewrites to a struct of the projection's own aggregates —
 grouped by whatever GROUP BY surrounds it, or windowed per-field when the
@@ -117,7 +117,7 @@ def plan(stem: str, projection) -> _LeafPlan:
     is: the host's own fit is what will bind ``__FIT__``.
     """
     program = projection._program
-    if program.bindings or program.foreign:
+    if program.bindings or program.foreign or program.udfs or program.estimators:
         raise _refuse(
             stem,
             "it captures relations or Python leaves of its own, which the "
@@ -251,7 +251,7 @@ def keyed_plan(stem: str, projection) -> _KeyedPlan:  # noqa: C901
     AND-tree of column equalities.
     """
     program = projection._program
-    if program.bindings or program.foreign:
+    if program.bindings or program.foreign or program.udfs or program.estimators:
         raise _refuse(
             stem,
             "it captures relations or Python leaves of its own, which the "

@@ -1,7 +1,7 @@
 """Slice 1 gates: the two parameters, freezing, ``fit``/``transform``.
 
-Every test here is a row from the spec's Properties and gates tables
-(`docs/specs/2026-08-07-datamodel-redesign-design.md`). The
+These cases exercise the current authoring contract's freezing and execution
+rules (`packages/sql-transform/docs/contract.md`). The
 ordered-frame gate is written first, deliberately: it pins a result that looks
 like a bug and must not be "corrected".
 """
@@ -14,7 +14,6 @@ from sql_transform.model import (
     CorrelatedFit,
     SQLTransform,
     TransformError,
-    normalize,
     run,
 )
 from sql_transform.model._analysis import _reads
@@ -181,15 +180,6 @@ def test_statelessness_is_real():
     assert approx(t.fit(D)(D2)) == approx(t.fit(D2)(D2))
 
 
-def test_substitution_is_surgical():
-    """The residual differs from the original only at the frozen subtrees."""
-    fitted = SQLTransform(TWO_CTES_SQL).fit(D)
-    assert fitted.sql == normalize(
-        "WITH a AS (SELECT * FROM __param_a), b AS (SELECT * FROM __param_b) "
-        "SELECT (t.price - a.m) / b.s AS z FROM __THIS__ t, a, b"
-    )
-
-
 def test_params_are_measurable():
     """A well-behaved transform is O(1) in |D|; a retaining one reports |D|."""
     well_behaved = SQLTransform(Z_SQL).fit(D)
@@ -252,3 +242,114 @@ def test_no_third_mode_for_the_slice_1_corpus():
     """C5: every transform serves or refuses by name — never both, never neither."""
     for sql in (Z_SQL, TWO_CTES_SQL, ORDERED_SQL):
         assert isinstance(SQLTransform(sql).fit(D)(D2), pa.Table)
+
+
+# ------------------------------------------------- frozen picks, the fit DAG
+
+CARRIER = "c AS (SELECT cat, avg(price) OVER (PARTITION BY cat) AS m FROM __FIT__)"
+PICK_SQL = f"""
+WITH {CARRIER},
+     p AS (SELECT DISTINCT c.cat, c.m FROM c)
+SELECT t.price - p.m AS z FROM __THIS__ t JOIN p ON t.cat = p.cat ORDER BY t.price
+"""
+
+
+def test_a_distinct_pick_of_a_frozen_cte_ships_alone():
+    """The pick freezes after its carrier, and the carrier — every fit row —
+    is neither shipped nor left in the residual."""
+    t = SQLTransform(PICK_SQL)
+    fitted = t.fit(D)
+    assert set(fitted.params) == {"__param_p"}
+    assert "__param_c" not in fitted.sql
+    assert not reads_fit(fitted.sql)
+    assert approx(fitted(D2), 4) == [(85.0,), (185.0,), (270.0,)]
+    assert approx(fitted(D)) == approx(run(t, D))
+
+
+def test_a_pick_scales_with_its_keys_not_the_fit_rows():
+    big = pa.table({"cat": ["a", "b"] * 1500, "price": [float(i) for i in range(3000)]})
+    fitted = SQLTransform(PICK_SQL).fit(big)
+    assert len(fitted.params["__param_p"]) == 2
+
+
+def test_a_carrier_lives_until_its_last_pick():
+    """Two picks read one carrier. Given back after the first, the second would
+    fail to bind; both answering is what proves the order."""
+    t = SQLTransform("""
+        WITH c AS (SELECT cat, avg(price) OVER (PARTITION BY cat) AS m,
+                          max(price) OVER () AS hi FROM __FIT__),
+             p AS (SELECT DISTINCT c.cat, c.m FROM c),
+             q AS (SELECT DISTINCT c.hi FROM c)
+        SELECT t.price - p.m AS z, t.price / q.hi AS r
+        FROM __THIS__ t JOIN p ON t.cat = p.cat, q ORDER BY t.price
+    """)
+    fitted = t.fit(D)
+    assert set(fitted.params) == {"__param_p", "__param_q"}
+    assert (len(fitted.params["__param_p"]), len(fitted.params["__param_q"])) == (2, 1)
+    assert approx(fitted(D2), 4) == [
+        (85.0, 3.3333),
+        (185.0, 6.6667),
+        (270.0, 10.0),
+    ]
+
+
+def test_a_residual_that_reads_the_carrier_retains_it():
+    """Retention the author wrote is kept: the pick still freezes, and the
+    carrier ships because the residual itself reads it."""
+    t = SQLTransform(f"""
+        WITH {CARRIER},
+             p AS (SELECT DISTINCT c.cat, c.m FROM c)
+        SELECT t.price - p.m AS z, (SELECT count(*) FROM c) AS n
+        FROM __THIS__ t JOIN p ON t.cat = p.cat ORDER BY t.price
+    """)
+    fitted = t.fit(D)
+    assert set(fitted.params) == {"__param_c", "__param_p"}
+    assert len(fitted.params["__param_c"]) == len(D)
+    assert approx(fitted(D2), 4) == [(85.0, 3), (185.0, 3), (270.0, 3)]
+
+
+@pytest.mark.parametrize(
+    "pick",
+    [
+        "SELECT DISTINCT cat, m FROM c",  # unqualified
+        "SELECT DISTINCT c.cat, c.m + 0 AS m FROM c",  # an expression
+        "SELECT DISTINCT c.cat, c.m FROM c WHERE c.m > 0",  # a clause
+        "SELECT DISTINCT ON (c.cat) c.cat, c.m FROM c",
+        "SELECT DISTINCT c.cat, c.m FROM c ORDER BY c.cat LIMIT 5",
+        "SELECT c.cat, max(c.m) AS m FROM c GROUP BY c.cat",  # not DISTINCT
+    ],
+)
+def test_anything_but_the_flat_pick_stays_live(pick):
+    """Over the same frozen carrier, every near miss is ordinary SQL over a
+    parameter: it stays in the residual, and the carrier ships."""
+    t = SQLTransform(f"""
+        WITH {CARRIER}, p AS ({pick})
+        SELECT t.price - p.m AS z FROM __THIS__ t JOIN p ON t.cat = p.cat
+        ORDER BY t.price
+    """)
+    fitted = t.fit(D)
+    assert set(fitted.params) == {"__param_c"}
+    assert approx(fitted(D2), 4) == [(85.0,), (185.0,), (270.0,)]
+
+
+def test_a_pick_of_a_live_cte_stays_live():
+    """A source reading ``__THIS__`` is not a fit-step parameter, so its pick
+    answers per batch."""
+    t = SQLTransform("""
+        WITH c AS (SELECT cat FROM __THIS__), p AS (SELECT DISTINCT c.cat FROM c)
+        SELECT count(*) AS n FROM p
+    """)
+    fitted = t.fit(D)
+    assert fitted.params == {}
+    assert rows(fitted(D)) == [(2,)]
+    assert rows(fitted(pa.table({"cat": ["x"]}))) == [(1,)]
+
+
+def test_a_dead_cte_is_neither_fit_nor_shipped():
+    t = SQLTransform(
+        "WITH unused AS (SELECT avg(price) AS m FROM __FIT__) "
+        "SELECT price * 2 AS z FROM __THIS__"
+    )
+    fitted = t.fit(D)
+    assert fitted.params == {}
+    assert fitted(D2).to_pylist() == [{"z": 200.0}, {"z": 400.0}, {"z": 600.0}]

@@ -14,17 +14,17 @@ tables into a native function that answers one request at a time.
 _Avoid_: the compiler, the specializer (as the product name)
 
 **sql-transform**:
-The authoring package (`packages/sql-transform`). It holds `SQLProjection`,
-fit and the native catalog.
+The authoring package (`packages/sql-transform`). It authors, composes and fits
+transforms.
 
 **Transform**:
-A SQL statement that computes feature columns from a request row and static
-tables.
+An authored computation `(F, T) -> R` over fit data `F` and request data `T`.
+A row-local transform answers each request independently after fit.
 _Avoid_: feature query, pipeline
 
 **Request**:
-One row of the request table that the function answers. The answer for one
-request does not depend on other requests in the same batch.
+One row of the request table. For row-local serving, its answer does not
+depend on other requests in the same batch.
 
 **Request table**:
 The table that holds the request rows, `__THIS__` by default. The caller
@@ -37,13 +37,18 @@ declares it in `static_tables`.
 _Avoid_: frozen table, lookup table
 
 **Params table**:
-A static table that fit writes. It holds one fitted value for each group.
+A static table that fit writes. It can hold fitted values or explicitly
+retained fit data.
 _Avoid_: parameter table, stats table
 
 **Fit**:
-The sql-transform step that reads the training data, computes each window
-aggregate, and writes the params tables and the serving SQL.
+The step that binds fit data `F` and writes params tables for later
+execution on request data `T`.
 _Avoid_: train, prepare
+
+**Decorrelation**:
+Rewriting supported correlated fit subqueries into fit queries and queries
+over params tables.
 
 **Marginalize**:
 To replace a window aggregate over the request table with a join to a
@@ -51,8 +56,8 @@ params table that holds its value for each partition.
 _Avoid_: precompute
 
 **Serving SQL**:
-The SQL that fit writes. It joins params tables where the original SQL had
-window aggregates.
+The fitted SQL over request data and static tables. It does not read the
+fit relation.
 _Avoid_: rewritten query
 
 **Build**:

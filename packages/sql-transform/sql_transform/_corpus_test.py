@@ -1,23 +1,7 @@
-"""The progression metric: corpus replay with a pinned scoreboard.
+"""Original corpus SQL and its distinct kept/migrated classifications.
 
-Three outcomes per statement, zero failures required:
-
-- MARGINALIZED — accepted, and the training-set round-trip invariant holds
-  bit-exactly against the corpus table.
-- REFUSED — a named MarginalizeError.
-- FAILED — anything else (a gate mismatch, an unexpected exception). Always
-  a bug; the tests assert this set is empty.
-
-The scoreboard pins are the progression record: widening a future loop means
-editing them upward in a reviewable diff (Confit's 550/678, for
-marginalization).
-
-Two corpus halves: window queries **mined from DuckDB's own test suite**
-(``duckdb/test/sql/window/*.test``, every ``query`` block referencing
-``empsalary``, table renamed to ``__THIS__``, query-level ORDER BY — test
-scaffolding, refused by design in a row-at-a-time context — stripped via the
-AST during mining), replayed against the suite's own ten rows; and a curated
-set covering every family from the three loops so far.
+The original query remains the numerical oracle for every computation.
+Removing chain/schema sugar changes admission, not the required computation.
 """
 
 import datetime
@@ -25,8 +9,8 @@ import datetime
 import pyarrow as pa
 import pytest
 
-from sql_transform import MarginalizeError, marginalize
-from sql_transform._projection_test import gate
+from sql_transform import SQLProjection, TransformError
+from sql_transform._marginal_projection_test import explicit_chain, gate
 
 # The empsalary table exactly as DuckDB's window suite creates it.
 _D = datetime.date
@@ -101,7 +85,6 @@ MINED = [
     "SELECT depname, empno, nth_value(-1, 2) OVER (PARTITION BY depname ORDER BY empno ASC ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS fv FROM __THIS__",
 ]
 
-MINED_SCOREBOARD = {"marginalized": 11, "refused": 11}
 
 # --- curated: one entry per family, all three loops --------------------------
 
@@ -166,12 +149,12 @@ CURATED_REFUSED = [
     "SELECT sum(salary) OVER (ORDER BY empno RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) FROM __THIS__",
     "SELECT avg(salary) FROM __THIS__",
     "SELECT salary IN (SELECT salary FROM __THIS__) FROM __THIS__",
-    "SELECT salary + 1 AS s, s * 2 FROM __THIS__",
+    # Ordinary scalar lateral aliases are now in CURATED_KEPT below.
     "SELECT (SELECT max(x) FROM other_table) FROM __THIS__",
 ]
 
 
-# --- curated, schema-aware (loop 4): replayed with a declared this_schema ----
+# Original declared-schema SQL remains visible; explicit replacements follow.
 
 CURATED_SCHEMA = [
     "SELECT COLUMNS('.*name') FROM __THIS__",
@@ -182,35 +165,78 @@ CURATED_SCHEMA = [
 ]
 
 
-def _outcome(sql: str) -> tuple[str, str]:
+# The original accepted mined cases are required, not a count-based scoreboard.
+# Bounded ROWS and position-dependent computations remain named refusals.
+MINED_REFUSED = {
+    MINED[2],
+    MINED[4],
+    MINED[10],
+    MINED[13],
+    *MINED[15:],
+}
+MINED_KEPT = [sql for sql in MINED if sql not in MINED_REFUSED]
+
+# Chain admission was deliberately removed. Keep each original prefix intact
+# in the explicit fit queries instead of fitting the upstream serving joins.
+CURATED_MIGRATED = {
+    sql: explicit_chain
+    for sql in CURATED_MARGINALIZED
+    if sql.startswith("WITH ") or " AS sub" in sql
+}
+CURATED_KEPT = [sql for sql in CURATED_MARGINALIZED if sql not in CURATED_MIGRATED]
+CURATED_KEPT.append("SELECT salary + 1 AS s, s * 2 FROM __THIS__")
+
+SCHEMA_EXPLICIT = [
+    "SELECT depname FROM __THIS__",
+    "SELECT depname, empno, salary + 1 AS salary FROM __THIS__",
+    "SELECT depname AS dep, empno, salary, enroll_date FROM __THIS__",
+    "SELECT salary + 1 AS s2, s2 * 2 AS s4 FROM __THIS__",
+    "WITH a AS (SELECT depname, salary, enroll_date FROM __THIS__)"
+    " SELECT salary - avg(salary) OVER (PARTITION BY depname) AS d FROM a",
+]
+
+
+def _outcome(sql: str, explicit: str | None = None) -> tuple[str, str]:
     try:
-        marginalize(sql)
-    except MarginalizeError as e:
+        if explicit is None:
+            SQLProjection.marginalize(sql)
+        else:
+            SQLProjection(explicit)
+    except TransformError as e:
         return "refused", str(e)
     try:
-        gate(sql, EMPSALARY)
-        return "marginalized", ""
-    except Exception as e:  # corpus triage: anything non-named is a failure
+        gate(sql, EMPSALARY, explicit=explicit)
+        return ("marginalized" if explicit is None else "migrated"), ""
+    except Exception as e:  # a gate mismatch or unexpected exception is a bug
         return "failed", f"{type(e).__name__}: {e}"
 
 
-def test_mined_corpus_scoreboard():
-    counts = {"marginalized": 0, "refused": 0}
-    failures = []
-    for sql in MINED:
-        kind, detail = _outcome(sql)
-        if kind == "failed":
-            failures.append((sql, detail))
-        else:
-            counts[kind] += 1
-    assert not failures, failures
-    assert counts == MINED_SCOREBOARD
-
-
-@pytest.mark.parametrize("sql", CURATED_MARGINALIZED, ids=lambda s: s[:56])
-def test_curated_marginalizes(sql):
+@pytest.mark.parametrize("sql", MINED_KEPT, ids=lambda s: s[:56])
+def test_original_accepted_mined_computations(sql):
     kind, detail = _outcome(sql)
     assert kind == "marginalized", f"{kind}: {detail}"
+
+
+@pytest.mark.parametrize(
+    "sql", [s for s in MINED if s in MINED_REFUSED], ids=lambda s: s[:56]
+)
+def test_mined_meaningful_refusals(sql):
+    kind, detail = _outcome(sql)
+    assert kind == "refused", f"{kind}: {detail}"
+
+
+@pytest.mark.parametrize("sql", CURATED_KEPT, ids=lambda s: s[:56])
+def test_curated_kept_original_syntax(sql):
+    kind, detail = _outcome(sql)
+    assert kind == "marginalized", f"{kind}: {detail}"
+
+
+@pytest.mark.parametrize("sql", CURATED_MIGRATED, ids=lambda s: s[:56])
+def test_curated_migrated_chain_computations(sql):
+    with pytest.raises(TransformError):
+        SQLProjection.marginalize(sql)
+    kind, detail = _outcome(sql, explicit=CURATED_MIGRATED[sql](sql))
+    assert kind == "migrated", f"{kind}: {detail}"
 
 
 @pytest.mark.parametrize("sql", CURATED_REFUSED, ids=lambda s: s[:56])
@@ -219,21 +245,16 @@ def test_curated_refuses(sql):
     assert kind == "refused", f"{kind}: {detail}"
 
 
-@pytest.mark.parametrize("sql", CURATED_SCHEMA, ids=lambda s: s[:56])
-def test_curated_schema_marginalizes(sql):
-    from sql_transform._projection_test import gate
-
-    try:
-        marginalize(sql, list(EMPSALARY.column_names))
-    except MarginalizeError as e:
-        raise AssertionError(f"refused: {e}") from e
-    gate(sql, EMPSALARY, schema=True)
-
-
-def test_progression_totals():
-    """The metric, in one place. Edit these pins when a loop widens support."""
-    assert len(MINED) == 22
-    assert MINED_SCOREBOARD["marginalized"] + MINED_SCOREBOARD["refused"] == 22
-    assert len(CURATED_MARGINALIZED) == 39
-    assert len(CURATED_REFUSED) == 17
-    assert len(CURATED_SCHEMA) == 5
+@pytest.mark.parametrize(
+    "original,replacement",
+    list(zip(CURATED_SCHEMA, SCHEMA_EXPLICIT, strict=True)),
+    ids=[s[:56] for s in CURATED_SCHEMA],
+)
+def test_curated_schema_migrated_computations(original, replacement):
+    explicit = (
+        explicit_chain(replacement)
+        if replacement.startswith("WITH ")
+        else SQLProjection.marginalize(replacement).source
+    )
+    kind, detail = _outcome(original, explicit=explicit)
+    assert kind == "migrated", f"{kind}: {detail}"

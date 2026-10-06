@@ -1,26 +1,13 @@
-"""Transformer serving-path bench — what the opaque-UDF trampoline costs.
+"""Serving timings for SQL, scalar UDFs, and fitted sklearn transforms.
 
-`bench_serving.py` measures pure-SQL serving. This one measures the piece
-that had no number: a fitted sklearn transformer served row-at-a-time
-through the UDF extern slot (GIL crossing + `est.transform` on a 1xk
-block), against the same query with the transformer removed.
+All four scenarios use the same wide input and base SQL projections:
 
-Rows are the same wide shape in every variant, so the delta between rows
-IS the transformer cost, not the query's.
+  sql_only    window-derived params, without a UDF
+  udf_plain   one author PythonUDF
+  tf_width1   one fitted StandardScaler output field
+  tf_fields2  two output fields from one width-2 PCA call
 
-  sql_only    marginalized aggregates only — the ceiling (no UDF at all)
-  udf_plain   + one author PythonUDF (trampoline, no sklearn)
-  tf_width1   + one fitted StandardScaler (one extern call per row)
-  tf_fields2  two field accesses on ONE width-2 PCA
-
-`tf_fields2` pins DRAFT-24 loop 4 (TASK-63): k accessed fields share ONE
-evaluation per row on both paths — the row path (confit: lane reads off
-one ecall) and the batch column (DuckDB `transform`: one struct-returning
-call, CSE merges the identical mentions). The former `tf_bare2` scenario
-(a bare width-2 item) stopped being legal SQL with struct-valued calls —
-bare transformer items refuse until DRAFT-25's nested outputs.
-
-Run: uv run python -m benchmarks.bench_transforms [--json out.json]
+Run: uv run --no-sync python -m benchmarks.bench_transforms [--json out.json]
 """
 
 from __future__ import annotations
@@ -90,24 +77,25 @@ def registry() -> dict:
 
 
 def _prepared(sql: str):
-    p = SQLProjection(sql, transformers=registry()).fit(TRAIN)
-    p.infer(TRAIN.to_pylist()[0])  # force the lazy Confit prepare
-    return p, TRAIN
+    fitted = SQLProjection.marginalize(sql, captured=registry()).fit(TRAIN)
+    function = fitted.compile()
+    function.infer_rows(TRAIN.slice(0, 1).to_pylist())
+    return fitted, function, TRAIN
 
 
 def bench(sql: str, sizes=(1, 64), repeats: int = 200) -> dict[int, float]:
-    p, train = _prepared(sql)
+    _, function, train = _prepared(sql)
     rows = train.to_pylist()
     out: dict[int, float] = {}
     for n in sizes:
         batch = rows[:n]
         for _ in range(20):  # warmup
-            p.infer_batch(batch)
+            function.infer_rows(batch)
         samples = []
         for i in range(repeats):
             chunk = rows[(i * n) % (len(rows) - n) :][:n]
             t0 = time.perf_counter_ns()
-            p.infer_batch(chunk)
+            function.infer_rows(chunk)
             samples.append((time.perf_counter_ns() - t0) / n)
         out[n] = statistics.median(samples)
     return out
@@ -115,7 +103,7 @@ def bench(sql: str, sizes=(1, 64), repeats: int = 200) -> dict[int, float]:
 
 def bench_batch(sql: str, repeats: int = 5) -> float:
     """The DuckDB batch path (`transform` over the full table), ns/row."""
-    p, train = _prepared(sql)
+    p, _, train = _prepared(sql)
     p.transform(train)  # warmup
     samples = []
     for _ in range(repeats):

@@ -1,30 +1,17 @@
-"""Nested struct outputs — fit/transform-split slice 5 (engine-touching).
-
-The output boundary learns struct columns on BOTH paths: a bare
-transformer call as an output item serves its whole output struct
-(measured: DuckDB already serves it via the arrow-typed UDF; confit
-refused by name at specializer/frontend.rs — this slice teaches it to
-emit the lanes as a struct value). C2 gates batch ≡ DuckDB; C3 gates
-row ≡ batch. Spec: docs/specs/2026-08-05-fit-transform-split-design.md,
-slice 5.
-"""
+"""Struct-valued estimator outputs and explicitly named field projections."""
 
 import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.preprocessing import StandardScaler
 
-from sql_transform import MarginalizeError, SQLProjection
+from sql_transform import FittedProjection, SQLProjection, TransformError
 
 from ._transformers_test import TRAIN, _reference
 
-ROW = TRAIN.schema
 
-
-def _fit(sql: str) -> SQLProjection:
-    return SQLProjection(
-        sql, this_schema=ROW, transformers={"sc": StandardScaler()}
-    ).fit(TRAIN)
+def _fit(sql: str) -> FittedProjection:
+    return SQLProjection.marginalize(sql, captured={"sc": StandardScaler()}).fit(TRAIN)
 
 
 def _ref_struct():
@@ -50,7 +37,9 @@ def test_bare_call_serves_struct_column_row_path():
     """C3: infer emits the same struct the batch path serves."""
     p = _fit("SELECT sc(struct_pack(a := age, f := fare)) AS s, name FROM __THIS__")
     want = _ref_struct()[0]
-    row = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
+    row = p.compile().infer_rows(
+        [{"country": "US", "age": 40.0, "fare": 7.0, "name": "x"}]
+    )[0]
     got = row["s"]
     np.testing.assert_allclose(got["a"], want["a"], rtol=1e-12)
     np.testing.assert_allclose(got["f"], want["f"], rtol=1e-12)
@@ -61,7 +50,7 @@ def test_struct_output_and_field_read_share_one_fit():
         "SELECT sc(struct_pack(a := age, f := fare)) AS s,"
         " sc(struct_pack(a := age, f := fare)).a AS za, name FROM __THIS__"
     )
-    assert len([st for st in p.plan if st.kind == "fit"]) == 1
+    assert len(p.instances) == 1
     out = p.transform(TRAIN)
     ref = _ref_struct()
     for i in range(TRAIN.num_rows):
@@ -103,7 +92,7 @@ def test_unseen_group_serves_null_whole_struct_both_paths():
     unseen = pa.table({"country": ["JP"], "age": [33.0], "fare": [4.0], "name": ["q"]})
     assert p.transform(unseen).column("s").to_pylist() == [None]
     row = {"country": "JP", "age": 33.0, "fare": 4.0, "name": "q"}
-    assert p.infer(row)["s"] is None
+    assert p.compile().infer_rows([row])[0]["s"] is None
 
 
 def test_underscore_fitted_field_serves_whole_struct():
@@ -119,7 +108,9 @@ def test_underscore_fitted_field_serves_whole_struct():
         assert set(row) == {"_a", "f"}
         np.testing.assert_allclose(row["_a"], want["a"], rtol=1e-12)
         np.testing.assert_allclose(row["f"], want["f"], rtol=1e-12)
-    row0 = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
+    row0 = p.compile().infer_rows(
+        [{"country": "US", "age": 40.0, "fare": 7.0, "name": "x"}]
+    )[0]
     np.testing.assert_allclose(row0["s"]["_a"], ref[0]["a"], rtol=1e-12)
     np.testing.assert_allclose(row0["s"]["f"], ref[0]["f"], rtol=1e-12)
 
@@ -150,7 +141,9 @@ def test_previously_pydantic_reserved_fitted_field_serves():
             assert set(row) == {member, "f"}
             np.testing.assert_allclose(row[member], want["a"], rtol=1e-12)
             np.testing.assert_allclose(row["f"], want["f"], rtol=1e-12)
-        row0 = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
+        row0 = p.compile().infer_rows(
+            [{"country": "US", "age": 40.0, "fare": 7.0, "name": "x"}]
+        )[0]
         np.testing.assert_allclose(row0["s"][member], ref[0]["a"], rtol=1e-12)
 
 
@@ -163,118 +156,39 @@ def test_distinct_on_the_call_refuses_at_construction():
         "SELECT sc(DISTINCT age).age AS z FROM __THIS__",
         "SELECT sc_transform(DISTINCT sc_fit(age) OVER (), age) AS s FROM __THIS__",
     ]:
-        with pytest.raises(MarginalizeError, match="DISTINCT"):
+        with pytest.raises(TransformError, match="DISTINCT|modifier|scalar bundle"):
             _fit(sql)
 
 
 def test_star_over_a_call_is_the_oracles_parser_error():
-    # Measured 2026-08-05: `call.*` / `(call).*` are DuckDB PARSER errors —
-    # the star-over-expression spelling does not exist in the oracle. The
-    # lawful expansion spelling is unnest (below).
-    with pytest.raises(MarginalizeError, match="parse error"):
+    with pytest.raises(TransformError, match="parse|Parser"):
         _fit("SELECT sc(struct_pack(a := age, f := fare)).*, name FROM __THIS__")
 
 
-def test_unnest_expands_struct_output():
-    p = _fit("SELECT unnest(sc(struct_pack(a := age, f := fare))), name FROM __THIS__")
+def test_migrated_struct_expansion_uses_named_fields():
+    # Automatic transformer unnest is removed; select its computed fields explicitly.
+    p = _fit(
+        "SELECT sc(struct_pack(a := age, f := fare)).a AS a,"
+        " sc(struct_pack(a := age, f := fare)).f AS f, name FROM __THIS__"
+    )
     out = p.transform(TRAIN)
     assert out.column_names == ["a", "f", "name"]
     ref = _ref_struct()
     for i in range(TRAIN.num_rows):
-        np.testing.assert_allclose(
-            out.column("a").to_pylist()[i], ref[i]["a"], rtol=1e-12
-        )
-        np.testing.assert_allclose(
-            out.column("f").to_pylist()[i], ref[i]["f"], rtol=1e-12
-        )
+        np.testing.assert_allclose(out.column("a")[i].as_py(), ref[i]["a"], rtol=1e-12)
+        np.testing.assert_allclose(out.column("f")[i].as_py(), ref[i]["f"], rtol=1e-12)
+    compiled = p.compile()
+    assert compiled.infer_rows(TRAIN.to_pylist()) == out.to_pylist()
+    assert compiled.infer_arrow(TRAIN).to_pylist() == out.to_pylist()
 
 
-def test_unnest_expands_struct_output_row_path():
-    """C3: the row path expands to the same columns, same values."""
-    p = _fit("SELECT unnest(sc(struct_pack(a := age, f := fare))), name FROM __THIS__")
-    want = p.transform(TRAIN).to_pylist()
-    got = p.infer_batch(TRAIN.to_pylist())
-    assert got == want
-
-
-def test_unnest_ignores_its_alias():
-    # Measured: DuckDB ignores an alias on an unnest item — the learned
-    # field names are the output names, at every width.
+def test_migrated_named_fields_and_repeated_read_share_fit():
     p = _fit(
-        "SELECT unnest(sc(struct_pack(a := age, f := fare))) AS zzz, name FROM __THIS__"
-    )
-    assert p.transform(TRAIN).column_names == ["a", "f", "name"]
-
-
-def test_unnest_alongside_a_field_read_shares_one_fit():
-    p = _fit(
-        "SELECT unnest(sc(struct_pack(a := age, f := fare))),"
+        "SELECT sc(struct_pack(a := age, f := fare)).a AS a,"
+        " sc(struct_pack(a := age, f := fare)).f AS f,"
         " sc(struct_pack(a := age, f := fare)).a AS ra, name FROM __THIS__"
     )
-    assert len([st for st in p.plan if st.kind == "fit"]) == 1
+    assert len(p.instances) == 1
     out = p.transform(TRAIN)
     assert out.column_names == ["a", "f", "ra", "name"]
     assert out.column("a").to_pylist() == out.column("ra").to_pylist()
-
-
-def test_unnest_name_collision_refuses_at_fit():
-    # Measured: DuckDB emits DUPLICATE result columns (a, b, a) — the row
-    # path's output model cannot carry that, so a learned name colliding
-    # with any sibling output refuses by name at fit (P7 carve-out: the
-    # names are learned, so construction cannot know them).
-    with pytest.raises(MarginalizeError, match="collides"):
-        _fit(
-            "SELECT unnest(sc(struct_pack(a := age, f := fare))),"
-            " name AS a FROM __THIS__"
-        )
-
-
-def test_two_unnests_of_the_same_call_refuse_at_fit():
-    with pytest.raises(MarginalizeError, match="collides"):
-        _fit(
-            "SELECT unnest(sc(struct_pack(a := age, f := fare))),"
-            " unnest(sc(struct_pack(a := age, f := fare))) FROM __THIS__"
-        )
-
-
-@pytest.mark.parametrize(
-    "clause,sql",
-    [
-        ("DISTINCT", "SELECT unnest(DISTINCT sc(%s)), name FROM __THIS__"),
-        ("FILTER", "SELECT unnest(sc(%s)) FILTER (WHERE age > 0), name FROM __THIS__"),
-        ("ORDER BY", "SELECT unnest(sc(%s) ORDER BY age), name FROM __THIS__"),
-    ],
-)
-def test_modifiers_on_the_unnest_item_refuse(clause, sql):
-    # Measured: DuckDB refuses all three on UNNEST itself ('"DISTINCT",
-    # "FILTER", and "ORDER BY" are not applicable to "UNNEST"'). The
-    # unnest branch rebuilds the item, so it must re-screen them —
-    # they were silently dropped (review round).
-    with pytest.raises(MarginalizeError, match="UNNEST"):
-        _fit(sql % "struct_pack(a := age, f := fare)")
-
-
-@pytest.mark.parametrize(
-    "sql,match",
-    [
-        # Measured binder errors — the oracle has no reading for these.
-        (
-            "SELECT unnest(sc(struct_pack(a := age, f := fare))) + 1 FROM __THIS__",
-            "root element",
-        ),
-        (
-            "SELECT unnest(unnest(sc(struct_pack(a := age, f := fare)))) FROM __THIS__",
-            "[Nn]ested UNNEST",
-        ),
-        # WHERE is refused wholesale (filter shape, not a projection) —
-        # it never reaches the unnest position check.
-        (
-            "SELECT name FROM __THIS__ WHERE"
-            " unnest(sc(struct_pack(a := age, f := fare))) > 0",
-            "filter shape",
-        ),
-    ],
-)
-def test_unlawful_unnest_positions_refuse(sql, match):
-    with pytest.raises(MarginalizeError, match=match):
-        _fit(sql)

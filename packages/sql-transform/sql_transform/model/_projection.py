@@ -10,17 +10,17 @@ what serves. The levels that carry the batch's rows (the *spine*) must be pure
 projection over joins; a level that reads only params is free, because it is a
 constant table at serving.
 
-Implements `docs/specs/2026-08-11-row-wise-projections-design.md`.
+Implements `packages/sql-transform/docs/contract.md`.
 """
 
 import sys
 from dataclasses import dataclass, replace
 from typing import Any, NoReturn
 
-import duckdb
 import pyarrow as pa
 
-from sql_transform.model._analysis import _names_in, _reads
+from sql_transform._udf import PythonTransform, UDFError
+from sql_transform.model._analysis import _bindings_at, _names_in, _reads
 from sql_transform.model._ast import (
     THIS,
     Captured,
@@ -35,7 +35,6 @@ from sql_transform.model._ast import (
     _unaliased,
 )
 from sql_transform.model._errors import KeyNotUnique, NotRowWise, TransformError
-from sql_transform.model._foreign import _Registry
 from sql_transform.model._nodes import (
     BaseTable,
     ColumnRef,
@@ -55,7 +54,7 @@ from sql_transform.model._nodes import (
     rebuild,
     with_cte_entries,
 )
-from sql_transform.model._program import Fitted, Program, _lease
+from sql_transform.model._program import Fitted, Program, _arrow
 
 # One reason per refused shape. The projection test walks this dict looking
 # for gaps, the way the decorrelation test walks its REASONS — a reason
@@ -257,12 +256,15 @@ class _Probe:
     ``keys`` are the joined side's columns from the equality conjuncts —
     unique keys bound the matches at one, and extra non-equality conjuncts
     only filter further. No keys at all means the relation sits beside
-    ``__THIS__`` whole, and must have exactly one row.
+    ``__THIS__`` whole: an ``outer`` side (LEFT/RIGHT, the batch preserved)
+    may hold zero rows or one, a CROSS side exactly one — its miss would drop
+    the row.
     """
 
     name: str  # the author's name for the side, for the message
     node: Node  # SELECT <keys or *> FROM <side>, CTEs attached, renderable
     keys: tuple[str, ...]  # the author's spelling of each key
+    outer: bool  # the batch side is preserved: a miss is a NULL, not a drop
 
 
 def _eq_keys(condition: Node, side_names: set[str]) -> list[ColumnRef] | None:
@@ -376,6 +378,7 @@ def _key_probes(residual: Node) -> list[_Probe]:
                     name=name or "the joined relation",
                     node=_probe_node(side, keys, ctes),
                     keys=tuple(".".join(k.column_names) for k in keys),
+                    outer=j.join_type in ("LEFT", "RIGHT"),
                 )
             )
 
@@ -383,27 +386,18 @@ def _key_probes(residual: Node) -> list[_Probe]:
     return probes
 
 
-def _measure(
-    probes: list[_Probe], fitted: Fitted, bindings: dict, foreign: dict
-) -> None:
-    """Run every probe against the materialized params; refuse by name.
+def _measure(probes: list[_Probe], fitted: Fitted) -> None:
+    """Run every probe against the artifact's own params; refuse by name.
 
-    A fresh connection with the artifact's own tables — the same registration
-    ``Fitted._bind`` does, minus ``__THIS__``, which no probe reads.
+    The same lease batch execution takes — the caller's connection when there
+    is one, so a catalog relation the residual joins is measured where it
+    binds — minus ``__THIS__``, which no probe reads.
     """
     if not probes:
         return
-    con = duckdb.connect()
-    try:
-        _lease(
-            con,
-            dict(fitted.params) | dict(bindings),
-            foreign,
-            _Registry(fitted.instances),
-            rename=False,
-        )
+    with fitted._leased() as (con, render, _):
         for p in probes:
-            rel = _deserialize(_statement(p.node))
+            rel = render(p.node)
             if p.keys:
                 cols = ", ".join(f"__k{i}" for i in range(len(p.keys)))
                 # The key tiebreak keeps the refusal deterministic: two keys
@@ -423,23 +417,28 @@ def _measure(
                         f"({shown}) has {n} rows, so one serving row would "
                         f"become {n}. Aggregate or de-duplicate it."
                     )
-            else:
-                (n,) = con.execute(
-                    f"SELECT count(*) FROM ({rel}) __cf_probe"  # noqa: S608
-                ).fetchone()
-                if n != 1:
-                    became = (
-                        f"one serving row would become {n}"
-                        if n
-                        else "every serving row would disappear"
-                    )
-                    raise KeyNotUnique(
-                        f"{p.name} sits beside {THIS} with no join key and has "
-                        f"{n} rows, so {became}. Aggregate it to one row, or "
-                        "join it on a key."
-                    )
-    finally:
-        con.close()
+                continue
+            (n,) = con.execute(
+                f"SELECT count(*) FROM ({rel}) __cf_probe"  # noqa: S608
+            ).fetchone()
+            if n == 1 or (p.outer and n == 0):
+                continue
+            if p.outer:
+                raise KeyNotUnique(
+                    f"{p.name} joins {THIS} with no join key and has {n} rows, "
+                    f"so one serving row would become {n}. Aggregate it to "
+                    "one row, or join it on a key."
+                )
+            became = (
+                f"one serving row would become {n}"
+                if n
+                else "every serving row would disappear"
+            )
+            raise KeyNotUnique(
+                f"{p.name} sits beside {THIS} with no join key and has "
+                f"{n} rows, so {became}. Aggregate it to one row, or "
+                "join it on a key."
+            )
 
 
 def _passthrough(node: Node) -> str | None:
@@ -616,8 +615,9 @@ def _row_order() -> list[Node]:
 def _threaded(residual: Node) -> Node:
     """The residual with ``__cf_row`` carried through every spine level and a
     final ORDER BY on it. Every spine level is a plain projection (the gate
-    ran first), so the extra select item is always lawful; a level with a
-    star already carries the column, because the input table has it.
+    ran first), so the extra select item is always lawful. A star over the
+    batch's side already carries the column — the input has it — while a
+    star qualified by a params side does not, so that level gets it appended.
     """
 
     def thread(node: Node, reading: dict[str, set[str]]) -> Node:
@@ -644,14 +644,17 @@ def _threaded(residual: Node) -> Node:
             node, lambda v: thread(v, reading) if is_query(v) else None, deep=False
         )
         if isinstance(node, Select) and THIS in _reads(node, reading):
-            # ponytail: a spine star always includes __cf_row today; a
-            # params-only star (`SELECT p.* FROM __THIS__ t, p`) would lose
-            # the thread and refuse loudly at bind rather than serve unordered.
-            stars = any(
-                isinstance(i, Opaque) and i.fields.get("class") == "STAR"
+            bound = _bindings_at(node, reading)
+            carried = any(
+                isinstance(i, Opaque)
+                and i.fields.get("class") == "STAR"
+                and (
+                    not (rel := field(i, "relation_name"))
+                    or bound.get(str(rel).lower(), False)
+                )
                 for i in node.select_list
             )
-            if not stars:
+            if not carried:
                 node = node.model_copy(
                     update={"select_list": [*node.select_list, _row_item()]}
                 )
@@ -667,17 +670,24 @@ def _serving_columns(residual: Node, schema: pa.Schema) -> pa.Schema:
     A label column nothing references must not be in the row model at all:
     Confit requires every declared attribute on every input row, so keeping it
     would make serving demand a column training never served. Kept by name
-    against every column reference (and USING list) in the text; a star keeps
-    everything, because a star reads everything.
+    against every column reference (and USING list) in the text. Only a star
+    over a request-carrying relation keeps the full request schema.
     """
+    for level, reading in _levels(residual, {}):
+        if not isinstance(level, Select) or THIS not in _reads(level, reading):
+            continue
+        bound = _bindings_at(level, reading)
+        for item in level.select_list:
+            if isinstance(item, Opaque) and item.fields.get("class") == "STAR":
+                relation = str(field(item, "relation_name") or "").lower()
+                if not relation or bound.get(relation, False):
+                    return schema
     parts: set[str] = set()
     for v in (residual, *descendants(residual, deep=True)):
         if isinstance(v, ColumnRef):
             parts.update(p.lower() for p in v.column_names)
         if isinstance(v, Join):
             parts.update(c.lower() for c in v.using_columns)
-        if isinstance(v, Opaque) and v.fields.get("class") == "STAR":
-            return schema
     kept = [f for f in schema if f.name.lower() in parts]
     return pa.schema(kept)
 
@@ -693,14 +703,35 @@ def _serving_schema(schema: pa.Schema) -> pa.Schema:
     return pa.schema([pa.field(f.name, f.type) for f in schema])
 
 
+def _free_tables(node: Node, defined: frozenset[str] = frozenset()) -> set[str]:
+    """The base tables ``node`` names that no CTE in scope defines — the
+    relations something outside the text has to supply."""
+    defined = defined | {e.key.lower() for e in cte_entries(node)}
+    free: set[str] = set()
+    for entry in cte_entries(node):
+        free |= _free_tables(entry.value.query.node, defined)
+    for v in descendants(node, deep=False):
+        if is_query(v):
+            free |= _free_tables(v, defined)
+        elif isinstance(v, BaseTable) and v.table_name.lower() not in defined:
+            free.add(v.table_name)
+    return free
+
+
 @dataclass(slots=True, eq=False, repr=False)
 class FittedProjection:
     """``T -> R``, one row out per row in — and the artifact you ship.
 
-    ``params`` is the whole learned state, inspectable. ``transform`` numbers
-    the input, runs the ordered residual, and drops the ordinal: SQL results
-    are unordered and a params LEFT JOIN really does emit unmatched rows last,
-    so input order is threaded through the text, never assumed.
+    ``sql``, ``schema``, ``params`` and ``udfs`` are the whole public serving
+    artifact: Confit built from those four fields alone is what ``compile``
+    returns. ``params`` is one stored mapping — the captured statics,
+    normalized to Arrow once at fit, and the learned tables — and batch,
+    probes and ``compile`` all read that same dict.
+
+    ``transform`` numbers the input, runs a private ordered copy of the
+    residual, and drops the ordinal: SQL results are unordered and a params
+    LEFT JOIN really does emit unmatched rows last, so input order is threaded
+    through the text, never assumed.
 
     ``compile`` hands back Confit's own serving function, unwrapped — its
     surface is not re-exported here, and a fresh object per call means no
@@ -723,13 +754,23 @@ class FittedProjection:
         return self._fitted.instances
 
     @property
+    def udfs(self) -> dict[str, Any]:
+        return self._fitted.udfs
+
+    @property
     def sql(self) -> str:
-        """The serving text, ordinal and all. What actually executes."""
-        return self._fitted.sql
+        """The standalone serving query: unordered, one row per request row,
+        under the names ``params`` and ``udfs`` use."""
+        return _deserialize(_statement(self._residual))
+
+    @property
+    def schema(self) -> pa.Schema:
+        """The request row schema: the fit columns the query reads, nullable."""
+        return self._row_schema
 
     def transform(self, data: Any) -> pa.Table:
-        table = data if isinstance(data, pa.Table) else pa.table(data)
-        if ROW in table.column_names:
+        table = _arrow(data)
+        if any(c.lower() == ROW for c in table.column_names):
             raise TransformError(f"input column {ROW} is reserved for the model")
         table = table.append_column(
             ROW, pa.array(range(table.num_rows), type=pa.int64())
@@ -740,35 +781,36 @@ class FittedProjection:
     __call__ = transform
 
     def compile(self) -> Any:
-        """The row path: Confit's ``DuckDBInferFn`` over the same residual and
-        the same params, ``shape="map"`` — forced, not chosen, it is the
-        scalar-UDF fact seen from the serving side. Confit's contract makes
-        this bit-exact with ``transform`` or refuses by name.
-
-        The *unordered* residual: the row path has no batch to reorder, and
-        the threaded ordinal would demand a column no serving row has.
+        """The row path: Confit's ``DuckDBInferFn`` over the public fields,
+        ``shape="map"`` — forced, not chosen, it is the scalar-UDF fact seen
+        from the serving side. Confit's contract makes this bit-exact with
+        ``transform`` or refuses by name.
         """
         if self._fitted.foreign:
             raise TransformError(
-                "a projection calling a Python leaf ("
+                "a projection calling relation-batch callbacks ("
                 + ", ".join(sorted(self._fitted.foreign))
-                + ") cannot compile to the row path — there is no Python "
-                "there. Serve it in batch with transform(), or wait for "
-                "theta-as-data (D1), which makes an SQL leaf of it."
+                + ") cannot compile to the row path. "
+                "Serve it in batch with transform()."
+            )
+        known = {name.lower() for name in self.params} | {THIS.lower()}
+        catalog = sorted(
+            n for n in _free_tables(self._residual) if n.lower() not in known
+        )
+        if catalog:
+            raise TransformError(
+                f"{', '.join(catalog)} binds from the caller's connection "
+                "catalog, which the row path does not have. Serve it in batch "
+                "with transform(), or capture an Arrow snapshot "
+                "(captured={name: table}) and refit."
             )
         from confit import DuckDBInferFn  # noqa: PLC0415
 
-        statics = {
-            name: table if isinstance(table, pa.Table) else pa.table(table)
-            for name, table in {
-                **self._fitted.bindings,
-                **self._fitted.params,
-            }.items()
-        }
         return DuckDBInferFn(
-            _deserialize(_statement(self._residual)),
-            row_tables={THIS: self._row_schema},
-            static_tables=statics,
+            self.sql,
+            row_tables={THIS: self.schema},
+            static_tables=self.params,
+            udfs=list(self.udfs.values()),
             shape="map",
         )
 
@@ -797,7 +839,9 @@ class SQLProjection:
             _scope = frame.f_globals | frame.f_locals
             del frame
 
-        program = Program.compile(sql, _scope, connection=connection, captured=captured)
+        program = Program.compile(
+            sql, _scope, connection=connection, captured=captured, row_udfs=True
+        )
         _refuse_not_row_wise(program.residual)
         self._program = program
         self.connection = program.connection
@@ -818,13 +862,18 @@ class SQLProjection:
         (a window aggregate over the spine) frozen over ``__FIT__`` per
         partition and joined back NULL-safe. A rewrite in front of the
         ordinary constructor — one code path below the derived text
-        (`docs/specs/2026-08-13-marginalize-design.md`)."""
+        (`packages/sql-transform/docs/contract.md`)."""
         frame = sys._getframe(1)
         scope = frame.f_globals | frame.f_locals
         del frame
         from sql_transform.model import _marginal  # noqa: PLC0415
 
-        return cls(_marginal.derive(sql, scope), connection, captured, _scope=scope)
+        return cls(
+            _marginal.derive(sql, scope | (captured or {})),
+            connection,
+            captured,
+            _scope=scope,
+        )
 
     def __repr__(self) -> str:
         return f"SQLProjection({self.sql!r})"
@@ -833,12 +882,73 @@ class SQLProjection:
         """Partial application: the params materialize, the measurement runs,
         the artifact serves. `KeyNotUnique` fires here — uniqueness is a fact
         about data, the one check construction cannot hoist."""
-        table = data if isinstance(data, pa.Table) else pa.table(data)
+        table = _arrow(data)
         fitted = self._program.fit(table)
-        _measure(self._probes, fitted, self._program.bindings, self._program.foreign)
-        flat = _flattened(self._program.residual)
+        for value in (
+            self._program.residual,
+            *descendants(self._program.residual, deep=True),
+        ):
+            if (
+                isinstance(value, Function)
+                and value.function_name.lower() == "struct_extract"
+            ):
+                children = value.children
+            elif (
+                isinstance(value, Opaque)
+                and field(value, "class") == "OPERATOR"
+                and field(value, "type") == "STRUCT_EXTRACT"
+            ):
+                children = field(value, "children") or []
+            else:
+                continue
+            if len(children) != 2 or not isinstance(children[0], Function):
+                continue
+            udf = fitted.udfs.get(children[0].function_name)
+            name = _constant_text(children[1])
+            if isinstance(udf, PythonTransform) and name is not None:
+                try:
+                    udf.lane_of(name)
+                except UDFError as exc:
+                    raise TransformError(str(exc)) from exc
+        _measure(self._probes, fitted)
+        raw = {
+            descriptor.udf_name: fitted.udfs[descriptor.udf_name]
+            for descriptor in self._program.estimators.values()
+        }
+        sql_types = {
+            pa.int64(): "BIGINT",
+            pa.float64(): "DOUBLE",
+            pa.bool_(): "BOOLEAN",
+            pa.string(): "VARCHAR",
+        }
+        casts = {
+            dtype: _template(f"SELECT CAST(1 AS {sql_types[dtype]})").select_list[0]
+            for udf in raw.values()
+            for dtype in udf.takes.types
+        }
+
+        def typed_raw(value: Node) -> Node | None:
+            if not isinstance(value, Function) or value.function_name not in raw:
+                return None
+            udf = raw[value.function_name]
+            # Make DuckDB's declared-UDF argument coercion explicit for Confit.
+            children = [value.children[0]]
+            for argument, dtype in zip(
+                value.children[1:], udf.takes.types, strict=True
+            ):
+                cast = casts[dtype]
+                children.append(
+                    cast.model_copy(
+                        update={
+                            "fields": cast.fields | {"child": _unaliased(argument)},
+                        }
+                    )
+                )
+            return value.model_copy(update={"children": children})
+
+        flat = _flattened(rebuild(self._program.residual, typed_raw, deep=True))
         return FittedProjection(
-            replace(fitted, node=self._ordered),
+            replace(fitted, node=rebuild(self._ordered, typed_raw, deep=True)),
             flat,
             _serving_schema(_serving_columns(flat, table.schema)),
         )
