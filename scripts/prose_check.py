@@ -59,7 +59,7 @@ def _avoid_words() -> list[str]:
 
 def _in_scope(path: Path) -> bool:
     rel = path.resolve().relative_to(ROOT).as_posix()
-    if not any(Path(rel).full_match(g) for g in SCOPE):
+    if path.resolve() not in {p.resolve() for g in SCOPE for p in ROOT.glob(g)}:
         return False
     m = re.match(r"loops/[^/]+/reports/(\d{4}-\d{2}-\d{2})-", rel)
     return not (m and m.group(1) < REPORTS_FROM)
