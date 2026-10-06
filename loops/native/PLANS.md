@@ -8,13 +8,22 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Fit `trees._case_seconds` again.** The confit loop answered the
-   forest's slower build ("Needs from confit" below) with #422 (T8): a
-   list of 3,200 elements, 100 trees, builds in 1.0 s, not 3.2 s, and 250
-   trees in 3.6 s, not 17.5 s. The input guard (T25) adds build time to a
-   struct return read field by field ("Needs from confit"). Measure both
-   spellings on master again, with both return types, and refit the
-   estimate.
+1. **The encoders' input guard in one test a feature.** Under
+   `handle_unknown="error"`, the default, the guard tests `x NOT IN
+   (categories)` for each feature, and confit builds the guard again at
+   each field read of a struct ("Needs from confit"), so a wide encoder's
+   build grows with its fields times its categories. `OneHotEncoder` over
+   8 string features of 50 categories (400 fields) runs 27 s in
+   `to_native`, and then confit refuses it past Cranelift's size limit (it
+   built in 2.7 s before the guard); `OrdinalEncoder` over 32 features of
+   125 categories builds in 25 s against 0.6 s (release build, master
+   6aea15e). Spell the test for string categories as one substring
+   search, `contains(SEP c1 SEP ... cn SEP, SEP x SEP)`, with a separator
+   that no category holds (`x` holding it is unknown too): about 10 nodes
+   whatever the categories. Where the twin raises on an unknown value, a
+   lane can also answer its largest group in the ELSE, since the guard
+   traps first: an `OneHotEncoder` lane becomes one comparison, not an IN
+   list of the other categories.
 2. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
@@ -63,34 +72,33 @@ that request, `to_native(step, allow_bound=True)`. In order:
 
 ## Needs from confit
 
-- **A trap in one field of a struct output, bound once for all the field
-  reads of a call.** The input guard traps in the first output field.
-  Where a query reads every field of a struct output one by one, each
-  trap in a field adds build time to every field read: a confit-only
-  struct of 2,000 fields builds in 0.52 s without a trap, 0.94 s with the
-  unknown-id trap, and 1.37 s with the guard's trap too; read as one
-  value, 0.015 s in each case (release build, master f72214b). In the
-  catalog, a `RandomTreesEmbedding` of 100 trees (2,000 fields, struct
-  return) builds in 2.9 s without the guard and 5.1 s with it, and
-  `StandardScaler` at 128 features in 0.12 s and 0.31 s; a list return
-  does not pay it. A reproduction is in the message sent to the confit
-  loop, 2026-10-06 (`/mnt/project-files/transforms-loop/`). The build
-  estimates (`trees._case_seconds`, `spline._build_estimate`) do not
-  count the guard yet.
-- **One CASE per tree that builds about linearly in the output fields.**
-  `trees.py` spells a forest as one nested CASE per tree, which every
-  output field of the tree reads, where its build is estimated within
-  7 s: about 3,100 output fields. Past that it spells the paths, which
-  serve a row 1.5-2x slower. The build of this spelling grows with the
-  square of the output fields, and confit's #417 (a whole struct as one
-  output value) slowed it: 100 trees of depth 5 (2,286 output fields), a
-  list return, built in 0.67 s before #417 and in 2.7 s after; a struct
-  return builds in 3.8 s (release build, a7cd5aa and d36e64a). The confit
-  loop answered with #422 (T8, "Next" above): a list return, or a struct
-  read whole, builds as before #417 (100 trees in 1.0 s). A struct read
-  field by field is unchanged at 4.3 s: each field read under the
-  function's NULL condition is a branch of its own. The confit loop lists
-  it in its plans (Performance).
+- **A struct output read field by field, built once for the call.**
+  Where a query reads each field of a struct output one by one
+  (`to_native`'s trial build does, and so does a serving query that names
+  fields), confit builds each field read on its own, with everything that
+  field reads: a value #412 binds once, and the input guard's tests, which
+  every field read must fire. A confit-only struct of 2,000 fields over 64
+  parameters builds in 1.16 s read field by field and 0.09 s read whole; a
+  trap of T tests in field 0 adds about 28 us a field per test (T = 64:
+  4.77 s), and costs the same in field 0, the NULL condition, every field
+  or the unknown-id arm (5.4 to 6.4 s; reproductions in
+  `/mnt/project-files/transforms-loop/`, release build, master 6aea15e).
+  In the catalog:
+  - `RandomTreesEmbedding` of 100 trees of depth 5 (2,286 fields), one
+    CASE per tree: a list return builds in 0.65 s; a struct read field by
+    field in 4.3 s before the guard, 6.5 s with it, and 12.9 s over 64
+    features. Since T26, `trees.py` and `spline.py` count this in their
+    estimates: a forest of 8 features takes one CASE per tree up to about
+    2,450 fields (it took 3,100), and 160 trees of depth 5 (8.5 s) are
+    refused.
+  - The encoders under `handle_unknown="error"` ("Next" item 1).
+  - `StandardScaler` at 256 features builds in 1.4 s (0.4 s without the
+    guard), and `PolynomialFeatures` of degree 2 over 64 features in 4.6 s
+    (2.4 s).
+
+  The confit loop lists it in its plans (Performance) and has the
+  reproductions; it was asked to raise it, 2026-10-06. When it lands,
+  measure the builds again and refit the estimates.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
@@ -234,8 +242,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
   Knots that are not sorted, partly NaN, or span past a double, and a
   spline whose `c` is not sklearn's shape (no fit makes these). A step
   past an estimated 7 s build, per estimator (`spline._build_estimate`):
-  of the configurations measured, none up to 64 features, and ten of 96
-  and 128 features that build in 7.1 to 15 s; and any
+  of the configurations measured, none up to 48 features, one of 64
+  features (8.0 s), and 38 of 96 and 128 features that build in 6.7 to
+  19 s, with the four that confit refuses past Cranelift's size limit
+  (128 features of degree 3 to 5 at 8 knots, `extrapolation="error"`);
+  and any
   step where scipy's `BSpline` does not round as the unfused recurrence
   (`spline.bspline_is_scipys`, an FMA build). `extrapolation="error"`
   with a feature whose knots are NaN: the twin raises on every number
@@ -276,9 +287,10 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
   output (decisions/closed/sparse-outputs.md). A forest whose build is
   estimated past 7 s in both spellings, one CASE per tree and the paths
-  (`trees._spelling`): 200 trees of depth 5 (4,657 output fields, 7.9 s
-  for the paths), and one unbounded tree over 4,000 rows (8.3 s for one
-  CASE per tree). One unbounded tree over 2,000 rows, refused before T22,
+  (`trees._spelling`), with the input guard's cost since T26 ("Needs from
+  confit"): 160 trees of depth 5 (3,745 output fields, 8.5 s for the
+  paths), 100 trees of depth 6 (8.7 s), and one unbounded tree over 4,000
+  rows (11.8 s). One unbounded tree over 2,000 rows, refused before T22,
   is served.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
