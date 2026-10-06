@@ -1,7 +1,7 @@
 # Research behind the open native decisions (2026-10-06)
 
 This folder backs the **Methodology** and **Recommendation** sections of the five
-records in [`../../open/`](../../open/). Each record names the notes it rests on.
+records in [`../../closed/`](../../closed/). Each record names the notes it rests on.
 Every claim in the notes is labelled as one of:
 
 - **measured:** names the script, the sample size and the numbers;
@@ -34,7 +34,7 @@ Every claim in the notes is labelled as one of:
 | [chi2.md](chi2.md) | additive chi2 | yes |
 | [sparse.md](sparse.md) | sparse outputs | yes |
 | [tolerated.md](tolerated.md) | tolerated differences | yes |
-| [inference.md](inference.md) | all three bounds | **pending** |
+| [inference.md](inference.md) | all three bounds, and the owner's amendment | yes |
 | [critique.md](critique.md) | all | n/a |
 
 ## Environment

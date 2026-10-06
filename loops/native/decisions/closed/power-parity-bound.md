@@ -59,51 +59,84 @@ loop's proposal, with the matvec families'.
 it covers a per-lane condition other than a dot product's term scale, or a
 ruling here.
 
-**Methodology (2026-10-06).** The notes are in
-[research/2026-10-06/](../research/2026-10-06/README.md): power.md, re-run by
-an adversarial verifier, plus framework.md, critique.md and inference.md
-(inference.md's verification is pending). The environment is x86-64 with
-AVX-512; numpy 2.5.1, scipy 1.18.0, scikit-learn 1.9.0, glibc 2.39,
-DuckDB 1.5.5; master 113fba7. The scale is
-`S = (1 + max(w, 0))·|t|`, with w = λ·log1p(x) (or (2 − λ)·log1p(−x)), and
-with `standardize` `(S_t + |mean_|)/scale_`. K is `|a − b| / (eps·S)`.
+**Methodology (2026-10-06).** The research notes are in
+[research/2026-10-06/](../research/2026-10-06/README.md). This record uses
+four of them:
+
+- power.md is the note on this family. An adversarial verifier re-ran it.
+  The verifier is a second agent that tried to refute each claim of the note.
+- framework.md is the note on the general form of a parity bound.
+- critique.md is the note that settles the contradictions between the notes.
+- inference.md is the note that tests if the entry changes a prediction. An
+  adversarial verifier re-ran it too.
+
+The environment is an x86-64 host with AVX-512 (Advanced Vector Extensions,
+512-bit). The software is numpy 2.5.1, scipy 1.18.0, scikit-learn (sklearn)
+1.9.0, glibc 2.39 and DuckDB 1.5.5. Here glibc is the GNU C library. The code
+is master at commit 113fba7.
+
+In the counts below, a field is one output field of one row. Each item says
+how the research found its claims. A sourced claim cites the code of a package
+or a URL.
+
+The error scale is `S = (1 + max(w, 0))·|t|`. Here t is the output of the
+power transform, x is its input and λ is its fitted parameter. The variable w
+is λ·log1p(x), or (2 − λ)·log1p(−x) on the branch for x < 0. The function
+`log1p(x)` computes ln(1 + x), and `expm1(w)` computes e^w − 1.
+
+With `standardize=True`, S is `(S_t + |mean_|)/scale_`. S_t is the error scale
+of t, and `mean_` and `scale_` are the fitted mean and scale. For two results a
+and b of one field, K is `|a − b| / (eps·S)`.
 
 1. **What the twin computes** (sourced).
-   - sklearn's Yeo-Johnson is scipy's `_yeojohnson_transform`. It tests λ
-     strictly against eps = 2^-52: λ = 2 − eps takes the `-log1p(-x)` branch,
-     and λ = 2 + 2eps takes `expm1` with divisor −2eps.
-   - `standardize` is a `StandardScaler`: subtract, then divide.
-   - Box-Cox is `scipy.special.boxcox`, on glibc's `log` and `expm1`.
+   - sklearn's Yeo-Johnson is scipy's function `_yeojohnson_transform`.
+   - That function compares λ with eps = 2^-52 by strict tests. With
+     λ = 2 − eps, it takes the `-log1p(-x)` branch. With λ = 2 + 2eps, it
+     takes `expm1` with the divisor −2eps.
+   - `standardize=True` is sklearn's class `StandardScaler`. It subtracts
+     `mean_`, then it divides by `scale_`.
+   - Box-Cox is scipy's function `scipy.special.boxcox`, on glibc's `log` and
+     `expm1`.
 2. **Which kernels the twin runs** (sourced from numpy v2.5.1, then
    measured).
    - On Linux x86-64 with AVX-512, numpy's float64 `log1p`, `expm1`, `log`
-     and `exp` are Intel SVML's high-accuracy kernels. Elsewhere they are
-     the platform libm.
-   - Against MPFR (gmpy2) over 800,000 + 300,000 draws, for `log1p` and
-     `expm1`:
-     - SVML is within 0.60 ulp of the correctly rounded result;
-     - glibc is within 0.78 ulp;
-     - the two are at most 1 ulp apart, and differ on 1–6% of draws,
-       depending on the mix.
-   - `NPY_DISABLE_CPU_FEATURES=X86_V4` makes numpy equal glibc bit for bit.
-3. **The twin against itself.** The same fitted steps, seeds 0–199, under
-   SVML and under glibc:
-   - 11.4% of lanes differ without `standardize`, and 7.7% with it;
-   - up to 886 ulps, at K ≈ 1.9;
-   - one `standardize` lane differs by 1e19 ulps on its own (0.0 against
-     nonzero).
-4. **The entry's spellings** (derived from glibc's documented accuracies:
-   0.52 ulp for `log` and 0.51 ulp for `exp`).
-   - Goldberg's `log1p` is within 4.04u: Yeo-Johnson only calls it on z ≥ 0,
-     and the bound grows to 5.04u once 1 + z exceeds 2^53.
-   - Kahan's `expm1` is within 4.06u (5.06u when e^w < ½ or e^w > 2^53).
-   - Measured: within 2.01 and 2.30 ulps over 400,000 draws each.
-   - DuckDB evaluates both spellings bit-identically to the Python model.
-5. **Conditioning** (derived; re-derived by the verifier).
+     and `exp` are high-accuracy kernels from Intel's Short Vector Math
+     Library (SVML). On other hosts, they are the C math library of the
+     platform (libm).
+   - The research measured `log1p` and `expm1` against MPFR over
+     800,000 + 300,000 draws. MPFR is the GNU Multiple Precision
+     Floating-Point Reliable library, and it rounds correctly. The research
+     used it through gmpy2, its Python binding. The results:
+     - SVML is within 0.60 ulp of the correctly rounded result.
+     - glibc is within 0.78 ulp.
+     - The two are at most 1 ulp apart. They differ on 1–6% of draws,
+       depending on the mix of draws.
+   - The environment variable `NPY_DISABLE_CPU_FEATURES=X86_V4` turns off
+     numpy's AVX-512 kernels. With it, numpy is bit-exact with glibc.
+3. **The twin against itself.** The research ran the same fitted steps on
+   seeds 0–199, under SVML and under glibc. The results:
+   - Without `standardize`, 11.4% of the fields differ. With it, 7.7% differ.
+   - The largest difference is 886 ulps, and the largest K is ≈ 1.9.
+   - One field with `standardize` differs by 1e19 ulps on its own (0.0
+     against a nonzero value).
+4. **The entry's spellings** (derived from glibc's documented accuracies,
+   0.52 ulp for `log` and 0.51 ulp for `exp`). In this item, z is the
+   argument of `log1p`, and u is the unit roundoff, 2^-53. This u is not the
+   u = 1 + z of the spelling above.
+   - Goldberg's `log1p` is within 4.04u. Yeo-Johnson calls it only on z ≥ 0.
+     If 1 + z exceeds 2^53, the bound grows to 5.04u.
+   - Kahan's `expm1` is within 4.06u. If e^w < ½ or e^w > 2^53, the bound is
+     5.06u.
+   - Measured over 400,000 draws each, Goldberg's spelling is within 2.01
+     ulps and Kahan's spelling is within 2.30 ulps.
+   - DuckDB's results for both spellings are bit-exact with a Python model of
+     the entry.
+5. **Conditioning** (derived, and re-derived by the verifier).
    - The relative condition of t with respect to `log1p` is
-     c(w) = w·e^w/(e^w − 1) ≤ 1 + max(w, 0). The record's `(1 + |w|)·|t|` is
-     valid but up to (1 + |w|)× loose for w < 0.
-   - The first-order worst-case K:
+     c(w) = w·e^w/(e^w − 1) ≤ 1 + max(w, 0).
+   - For w < 0, the record's scale `(1 + |w|)·|t|` is valid, but it is up to
+     (1 + |w|)× loose.
+   - The first-order analysis gives this worst-case K:
 
      | configuration | K |
      |---|---|
@@ -112,31 +145,46 @@ with `standardize` `(S_t + |mean_|)/scale_`. K is `|a − b| / (eps·S)`.
      | Box-Cox | 4.53 |
      | Box-Cox, `standardize` | 6.53 |
 6. **Measured K.**
-   - Fixtures: ≤ 1.99 in every configuration.
-   - 2M stress lanes: 2.84.
-   - The verifier's adversarial search: 3.9.
-   - No inf/NaN mismatches anywhere.
-7. **The record's 4.4e18-ulp lane** is at K = 0.112. It comes from an int64
-   constant fit column c, where `mean_ = t(c)` exactly and the served x is c.
-8. **The served Box-Cox bound** (critique, 400M targeted lanes): 692 lanes
-   sit at exactly 4 ulps and none at 5. It holds, with no headroom; the
-   first-order worst case is about 9 ulps.
-9. **DuckDB** has no `log1p` or `expm1`, in 1.5.5 or on main (2026-10-06).
-10. **Downstream** (inference.md, verification pending): Yeo-Johnson with
-    `standardize`, on 6 datasets, changed no prediction on new rows.
-11. **Verifier corrections taken.**
-    - The overflow rule must be stated on the output, not on w, because
+   - On the catalog's fixtures, K ≤ 1.99 in every configuration.
+   - On 2M fields of a stress test, the largest K is 2.84.
+   - The adversarial search of the verifier reached K = 3.9.
+   - No run found a field where the two sides disagree on infinity (inf) or
+     on not a number (NaN).
+7. **The record's field at 4.4e18 ulps** has K = 0.112. It comes from a fit
+   column c that holds the same int64 value in every row. There,
+   `mean_ = t(c)` exactly, and the served x is c.
+8. **The served Box-Cox bound** (critique.md, 400M targeted fields). In that
+   run, 692 fields are at exactly 4 ulps, and none are at 5. The bound holds,
+   but it has no headroom. The first-order worst case is about 9 ulps.
+9. **DuckDB** has no `log1p` or `expm1`, in 1.5.5 or on its main branch
+   (2026-10-06).
+10. **Downstream** (inference.md, verified, and one independent check).
+    - Linear models, trees and forests changed no prediction on new rows.
+    - HistGradientBoosting puts its thresholds at training values. On
+      grid-valued data, such as prices in cents, new rows repeat those
+      values, and one rounding decides the branch.
+    - On one host, the twin's row, batch and `fit_transform` outputs are
+      bit-identical. So the twin never flips a label there.
+    - The shipped Box-Cox entry (ulp bound 4) flipped 53–80 labels per
+      200,000 fresh rows in the verifier's 4 seeds. An independent check
+      found 13–24 in 2 seeds, with 1,150 rows on another branch.
+    - The Yeo-Johnson entry flipped 86–111 labels per 100,000–200,000 rows.
+      The twin without AVX-512 numpy flipped 17–98.
+11. **The record takes these corrections from the verifier.**
+    - The rule for overflow must test the output, not w, because
       `standardize` moves the point of overflow.
-    - In DuckDB `NaN >= 0` is TRUE.
-    - The constants assume glibc-grade `ln` and `exp`. With 1-ulp functions,
-      K becomes 10.5 and 12.5.
+    - In DuckDB, `NaN >= 0` is TRUE.
+    - The constants assume `ln` and `exp` with the accuracy of glibc's. With
+      1-ulp functions, K becomes 10.5 and 12.5 (Yeo-Johnson without and with
+      `standardize`).
 
-**Recommendation.** Option 1.
+**Recommendation.** Option 1, a parity bound with an error scale for each
+output field.
 
 - **Scales:**
   - Yeo-Johnson: `S_t = (1 + max(w, 0))·|t|`.
-  - Box-Cox: `S_t = |t|`. Its `log` and its large-w branch are rounded
-    identically on both sides.
+  - Box-Cox: `S_t = |t|`. Both sides round its `log` and its branch for
+    large w the same way.
   - With `standardize`: `(S_t + |mean_|)/scale_`.
 - **K, from the first-order analysis, rounded up:**
 
@@ -147,30 +195,43 @@ with `standardize` `(S_t + |mean_|)/scale_`. K is `|a − b| / (eps·S)`.
   | Box-Cox, `standardize` | 7 |
   | Box-Cox, as served today | 5, with S = \|t\| |
 
-  - The served Box-Cox moves from 4 ulps to K = 5 because its 4 ulps is a
-    measurement with no headroom.
-  - These constants assume glibc-grade `ln` and `exp` on the entry's side.
-    Gate them on the kernel probe, as `function.py` already gates its
-    bounds, and refuse elsewhere. On a host with 1-ulp functions, K would
-    be 11 and 13 for Yeo-Johnson, and 6 and 8 for Box-Cox.
+  - The served Box-Cox entry moves from 4 ulps to K = 5. The reason is that
+    its 4 ulps is a measurement with no headroom.
+  - These constants assume that the entry's `ln` and `exp` have the accuracy
+    of glibc's.
+  - The kernel probe (`function.kernel_distance`) measures, on the host, how
+    far numpy's kernel for a function is from the entry's spelling of it.
+  - Gate the constants on the kernel probe, as the family for function
+    transformers (`native/function.py`) already gates its bounds.
+  - On a host that does not pass the probe, make the entry raise `NotNative`.
+  - On a host with 1-ulp functions, K would be 11 and 13 for Yeo-Johnson. For
+    Box-Cox, K would be 6 and 8.
 - **The entry:**
-  - copies scipy's strict branch tests;
-  - has an explicit NaN arm;
-  - adds an `isinf` arm to Kahan's `expm1`, which returns NaN at overflow
-    today (inf·0).
-- **check:** a lane with exactly one infinite side passes only if the other
-  side is finite, has the same sign, and lies within K·eps·S of DBL_MAX.
+  - It copies the strict tests with which scipy chooses a branch.
+  - It has an explicit branch for NaN.
+  - It adds a branch for infinity (`isinf`) to Kahan's `expm1`. Today that
+    spelling returns NaN at overflow (inf·0).
+- **check:** `native.check` is the test that serves the same query with the
+  twin and with the entry and compares the results. If exactly one side of a
+  field is infinite, the field passes only under three conditions:
+  - The other side is finite.
+  - It has the same sign.
+  - It lies within K·eps·S of DBL_MAX, the largest finite double.
 
-Why, judged against the goal that inference does not change:
+These are the reasons, judged against the goal that inference does not
+change:
 
-- **Option 3's exit never arrives.**
-  - The twin is SVML on Linux AVX-512 and libm everywhere else, and it
-    differs from itself by 886 ulps between the two.
-  - Even with a DuckDB `log1p`/`expm1`, the entry would equal only the
-    non-AVX-512 twin.
-- **The bound covers both distances with headroom.** The entry differs from
-  the twin by K ≤ 3.9 at worst, and the twin differs from itself by K ≈ 1.9.
-  Both sit inside the derived 10 and 12 with about 3× headroom.
-- **The record's open case closes.** Its 4.4e18-ulp lane is K = 0.11 under
-  this form.
-- **No prediction changed** downstream on new rows.
+- **The exit from Option 3 never comes.**
+  - On Linux with AVX-512, the twin uses SVML. On every other host, it uses
+    libm. Between the two, the twin differs from itself by 886 ulps.
+  - Even if DuckDB had `log1p` and `expm1`, the entry would equal only the
+    twin on a host without AVX-512.
+- **The bound covers both distances with headroom.** At worst, the entry
+  differs from the twin by K ≤ 3.9. The twin differs from itself by K ≈ 1.9.
+  Both sit inside the derived 10 and 12, with about 3× headroom.
+- **The open case of this record closes.** Under this form, its field at
+  4.4e18 ulps has K = 0.11.
+- **Predictions can change on one host.** HistGradientBoosting flips some
+  labels for the entry where the twin flips none. The owner's ruling below
+  therefore makes bit-exact the default, and puts this bound behind an
+  explicit choice of the caller.

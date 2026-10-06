@@ -73,7 +73,7 @@ ruling here.
 **Methodology (2026-10-06).** The notes are in
 [research/2026-10-06/](../research/2026-10-06/README.md): chi2.md, re-run by
 an adversarial verifier, plus framework.md §2.3, critique.md and inference.md
-(inference.md's verification is pending). The environment is x86-64 with
+(inference.md is verified). The environment is x86-64 with
 AVX-512; numpy 2.5.1, scikit-learn 1.9.0, glibc 2.39, DuckDB 1.5.5;
 master 113fba7. The scale is S = f·(1 + |a|), with f the lane's `factor` and
 a = j·s·ln x. K is `|native − twin| / (eps·S)`.
@@ -132,9 +132,13 @@ a = j·s·ln x. K is `|native − twin| / (eps·S)`.
 8. **Spelling SVML's `log` in SQL** is not feasible now. It takes 11
    FMA-class operations, a 17-step `vrcp14` table, and a value bound once,
    which confit does not have.
-9. **Downstream** (inference.md, verification pending). On 4 datasets,
-   0.02–0.08% of entries differ and no prediction changed. On integer pixels
-   the entry is bit-exact.
+9. **Downstream** (inference.md, verified). On 4 datasets, 0.02–0.08% of
+   entries differ and no prediction changed. On integer pixels the entry is
+   bit-exact. The HistGradientBoosting mechanism of the matvec record (a
+   repeated training value on a threshold) applies here too, but on fewer
+   values. With `sample_steps=3`, the entry equals the twin without AVX-512
+   numpy only if the `cosh` constant is glibc's (177,541 of 600,000 entries
+   differ otherwise).
 
 **Recommendation.** Option 1, with S = f·(1 + |j·s·ln x|).
 
@@ -156,4 +160,7 @@ Why, judged against the goal that inference does not change:
 - **The twin's bits depend on the host.** Pinned to baseline kernels it
   equals the entry exactly; on AVX-512 it does not. The bound promises
   parity with any legitimate twin, not with one host's bits.
-- **No prediction changed** downstream.
+- **No prediction changed** downstream in these cases. A repeated training
+  value on a HistGradientBoosting threshold can still flip, as the matvec
+  record measured. That is why the owner's ruling below makes bit-exact the
+  default, which this family reaches where the probes read 0.

@@ -64,7 +64,7 @@ loop's proposal.
 **Methodology (2026-10-06).** The notes are in
 [research/2026-10-06/](../research/2026-10-06/README.md): matvec.md,
 distances.md and framework.md, each re-run by an adversarial verifier, plus
-critique.md and inference.md (inference.md's verification is pending).
+critique.md and inference.md (inference.md is verified).
 
 The setup:
 - **Environment.** x86-64 with AVX-512; numpy 2.5.1, scikit-learn 1.9.0,
@@ -138,15 +138,32 @@ The setup:
    - *PolynomialCountSketch* is an FFT convolution, not a matvec. Its proposed
      per-row S can be exactly 0 while the twin returns noise, so it needs a
      normwise S.
-7. **Downstream predictions** (inference.md, verification pending).
+7. **Downstream predictions** (inference.md, verified, plus one
+   independent check of Box-Cox).
    - The setup: PCA, KMeans, Yeo-Johnson and chi2, each in front of
      LogisticRegression, a linear regressor, a decision tree, a random forest,
      HistGradientBoosting and KMeans argmin. About 1.6M served rows, against
      14 twin variants (CPU kernel, numpy SIMD, threads, batch).
-   - On new rows, neither the entry nor any twin variant changed a label or a
-     tree leaf.
+   - LogisticRegression, the linear regressor, the decision tree, the random
+     forest and KMeans argmin: on new rows, neither the entry nor any twin
+     variant changed a label or a tree leaf.
+   - HistGradientBoosting puts its thresholds at training values of a
+     feature. A served row that repeats a training value lands on such a
+     threshold, and one rounding decides the branch.
+     - Matvec: on re-served training rows the entry changed 6,569 branch rows
+       and 19 labels of 1.63M. The twin's own `fit_transform` against
+       one-row serving changed 3,349 and 7, and the batch twin 3,899 and 7.
+     - KMeans: the entry was 2–5× worse than every twin variant, for example
+       313 against 161 branch rows.
+     - Elementwise families: on one host the twin's row, batch and
+       `fit_transform` outputs are bit-identical, so the twin never flips
+       there. The shipped Box-Cox entry (ulp bound 4) flipped 53–80 labels
+       per 200,000 fresh grid-valued rows (verifier, 4 seeds), and 13–24 in
+       an independent check (2 seeds). Yeo-Johnson flipped 86–111 per
+       100,000–200,000 rows, against 17–98 for the twin without AVX-512 numpy.
    - The left-to-right entry equals the twin on the Sandybridge kernel bit for
-     bit, in 11 of 12 PCA cases.
+     bit, in 11 of 12 PCA cases. With a nonzero `mean_` this holds only if
+     the mean constant is also summed left to right.
 8. **Verifier corrections taken.**
    - The thread count does change the twin above m·n = 460,800.
    - The record's |m·c| scale never fails inside `check`, because one process
@@ -199,12 +216,14 @@ replaces the twin:
   ulps between CPU kernels. A ulp bound would fail sklearn against itself.
 - **The term scale is what stays invariant.** Every pair measured (entry or
   twin, any kernel, row or batch) stays within K ≤ 4.12 of S_full.
-- **Predictions behave the same way.**
-  - On new rows, nothing changed a prediction.
-  - Where predictions do change, the twin changes them against itself at the
-    same rate. That happens where HistGradientBoosting thresholds equal
-    training values and a training row is re-served, and on noise lanes.
-  - The bound therefore promises what the twin can promise about itself.
+- **Predictions mostly behave the same way, but not always.**
+  - Linear models, trees, forests and KMeans argmin changed no prediction.
+  - HistGradientBoosting on repeated training values does change. For matvec,
+    the twin changes it against itself about half as often as the entry. For
+    elementwise families on one host, the twin never does.
+  - So a parity bound promises the twin's envelope across hosts, not
+    bit-equal predictions on one host. The owner's ruling below therefore
+    makes bit-exact the default.
 - **A measured K is not a bound.** K = 3 already breaks at 1,000 seeds and on
   wider inputs. n + 3 holds for every order.
 - **The looser K costs almost no detection power.** A structural bug (a
