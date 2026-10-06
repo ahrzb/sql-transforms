@@ -1,0 +1,38 @@
+######## SCALE=S
+== seeds 0..199, lanes with finite S: 25208 (all lanes 25348)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                          25208   4819     9877709850        5   1.124   2.992
+Haswell row vs SkylakeX row                       25208    680            568        0   0.805  19.815
+Sandybridge row vs SkylakeX row                   25208   8418           2026        1   5.776 237.568
+SkylakeX-t4 row vs SkylakeX row                   25208      0              0        0   0.000   0.000
+SkylakeX batch(gemm) vs SkylakeX row              25208   4696     9877709850        4   1.106   2.992
+Haswell batch(gemm) vs SkylakeX row               25208   5075     9877709850        3   1.178  19.815
+Sandybridge batch(gemm) vs SkylakeX row           25208   8896     9877709850        3   5.761 237.568
+SkylakeX-t4 batch(gemm) vs SkylakeX row           25208   4696     9877709850        4   1.106   2.992
+native vs Haswell row                             25208   5048     9877709850        5   1.174  19.815
+native vs Sandybridge row                         25208   7979     9877709850        5   5.776 237.568
+native vs SkylakeX-t4 row                         25208   4819     9877709850        5   1.124   2.992
+
+x.c vs exact, eps*S0 units (S0 = sum|x_i c_i|), 24939 lanes: LTR max nan p99 nan; SkylakeX gemv max nan p99 nan
+worst Haswell vs SkylakeX: K=19.81 seed=128 m=3 k=3 C-contig=False S_rec=1.101e+14 S2=9.395e+15 S2/S_rec=85.3
+worst Sandybridge vs SkylakeX: K=237.57 seed=157 m=28 k=28 C-contig=True S_rec=3.009e-03 S2=2.071e+00 S2/S_rec=688.2
+worst SkylakeX-t4 vs SkylakeX: K=0.00 seed=0 m=3 k=3 C-contig=False S_rec=1.195e+00 S2=1.195e+00 S2/S_rec=1.0
+######## SCALE=S2
+== seeds 0..199, lanes with finite S: 25208 (all lanes 25348)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                          25208   4819     9877709850        5   1.072   2.992
+Haswell row vs SkylakeX row                       25208    680            568        0   0.672   1.762
+Sandybridge row vs SkylakeX row                   25208   8418           2026        1   1.178   2.861
+SkylakeX-t4 row vs SkylakeX row                   25208      0              0        0   0.000   0.000
+SkylakeX batch(gemm) vs SkylakeX row              25208   4696     9877709850        4   1.067   2.992
+Haswell batch(gemm) vs SkylakeX row               25208   5075     9877709850        3   1.093   2.992
+Sandybridge batch(gemm) vs SkylakeX row           25208   8896     9877709850        3   1.247   2.992
+SkylakeX-t4 batch(gemm) vs SkylakeX row           25208   4696     9877709850        4   1.067   2.992
+native vs Haswell row                             25208   5048     9877709850        5   1.085   2.992
+native vs Sandybridge row                         25208   7979     9877709850        5   1.226   3.096
+native vs SkylakeX-t4 row                         25208   4819     9877709850        5   1.072   2.992
+
+x.c vs exact, eps*S0 units (S0 = sum|x_i c_i|), 24939 lanes: LTR max nan p99 nan; SkylakeX gemv max nan p99 nan
+worst Haswell vs SkylakeX: K=1.76 seed=37 m=3 k=3 C-contig=False S_rec=2.905e+02 S2=2.905e+02 S2/S_rec=1.0
+worst Sandybridge vs SkylakeX: K=2.86 seed=171 m=24 k=24 C-contig=True S_rec=9.444e+15 S2=9.444e+15 S2/S_rec=1.0
+worst SkylakeX-t4 vs SkylakeX: K=0.00 seed=0 m=3 k=3 C-contig=False S_rec=1.195e+00 S2=1.195e+00 S2/S_rec=1.0

@@ -1,0 +1,10 @@
+rows 200000, n 32, threads 1
+LTR  sql    1245 chars      29.0 ms
+Dot2 sql   13751 chars     320.2 ms   ratio 11.0x
+DuckDB LTR == Python LTR: 5000 / 5000
+DuckDB Dot2 == Python Dot2: 5000 / 5000
+Dot2 == correctly rounded x.c: 5000 / 5000
+LTR  == correctly rounded x.c: 670 / 5000
+max |Dot2 - exact| / (eps*S0): 0.0
+max |LTR  - exact| / (eps*S0): 0.5671475095218922
+max |Dot2 - exact| in ulps of exact: 0.0

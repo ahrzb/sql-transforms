@@ -1,0 +1,78 @@
+chi2 cos_0.8_1 twin[V4] vs native: lanes 599999, differ 30, max ulps 1238, p99.9 ulps 0, max K 0.723, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.8_1 twin[V4] vs twin[V2]: lanes 599999, differ 233591, max ulps 1238, p99.9 ulps 2, max K 0.985, p99.9 K 0.985, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.8_1 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.8_1 twin[V2] vs native: lanes 599999, differ 233573, max ulps 3, p99.9 ulps 2, max K 0.985, p99.9 K 0.985, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.8_1 twin[V4] vs exact (30k sub): max K 1.384, p99.9 K 1.201, max err in ulps of own result 488312.8
+chi2 cos_0.8_1 native vs exact (30k sub): max K 1.384, p99.9 K 1.201, max err in ulps of own result 488312.8
+chi2 sin_0.8_1 twin[V4] vs native: lanes 599999, differ 2696, max ulps 118, p99.9 ulps 1, max K 0.633, p99.9 K 0.001, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.8_1 twin[V4] vs twin[V2]: lanes 599999, differ 238317, max ulps 119, p99.9 ulps 2, max K 0.704, p99.9 K 0.276, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.8_1 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.8_1 twin[V2] vs native: lanes 599999, differ 236792, max ulps 2, p99.9 ulps 2, max K 0.585, p99.9 K 0.274, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.8_1 twin[V4] vs exact (30k sub): max K 0.562, p99.9 K 0.453, max err in ulps of own result 1400999.7
+chi2 sin_0.8_1 native vs exact (30k sub): max K 0.562, p99.9 K 0.453, max err in ulps of own result 1400999.7
+chi2 cos_0.5_1 twin[V4] vs native: lanes 599999, differ 13, max ulps 5, p99.9 ulps 0, max K 0.484, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_1 twin[V4] vs twin[V2]: lanes 599999, differ 13, max ulps 5, p99.9 ulps 0, max K 0.484, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_1 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_1 twin[V2] vs native: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_1 twin[V4] vs exact (30k sub): max K 1.115, p99.9 K 0.975, max err in ulps of own result 1137.9
+chi2 cos_0.5_1 native vs exact (30k sub): max K 1.115, p99.9 K 0.975, max err in ulps of own result 1137.9
+chi2 sin_0.5_1 twin[V4] vs native: lanes 599999, differ 2717, max ulps 7482, p99.9 ulps 1, max K 0.505, p99.9 K 0.001, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_1 twin[V4] vs twin[V2]: lanes 599999, differ 2717, max ulps 7482, p99.9 ulps 1, max K 0.505, p99.9 K 0.001, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_1 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_1 twin[V2] vs native: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_1 twin[V4] vs exact (30k sub): max K 0.466, p99.9 K 0.329, max err in ulps of own result 11039.3
+chi2 sin_0.5_1 native vs exact (30k sub): max K 0.466, p99.9 K 0.329, max err in ulps of own result 11039.3
+chi2 cos_0.5_2 twin[V4] vs native: lanes 599999, differ 33, max ulps 27, p99.9 ulps 0, max K 0.684, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_2 twin[V4] vs twin[V2]: lanes 599999, differ 33, max ulps 27, p99.9 ulps 0, max K 0.684, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_2 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_2 twin[V2] vs native: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.5_2 twin[V4] vs exact (30k sub): max K 1.198, p99.9 K 1.032, max err in ulps of own result 12651.8
+chi2 cos_0.5_2 native vs exact (30k sub): max K 1.198, p99.9 K 1.032, max err in ulps of own result 12651.8
+chi2 sin_0.5_2 twin[V4] vs native: lanes 599999, differ 2828, max ulps 6962, p99.9 ulps 1, max K 0.568, p99.9 K 0.002, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_2 twin[V4] vs twin[V2]: lanes 599999, differ 2828, max ulps 6962, p99.9 ulps 1, max K 0.568, p99.9 K 0.002, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_2 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_2 twin[V2] vs native: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.5_2 twin[V4] vs exact (30k sub): max K 0.445, p99.9 K 0.286, max err in ulps of own result 10272.3
+chi2 sin_0.5_2 native vs exact (30k sub): max K 0.445, p99.9 K 0.286, max err in ulps of own result 10272.3
+chi2 cos_0.4_1 twin[V4] vs native: lanes 599999, differ 29, max ulps 76, p99.9 ulps 0, max K 0.640, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_1 twin[V4] vs twin[V2]: lanes 599999, differ 201076, max ulps 75, p99.9 ulps 2, max K 0.825, p99.9 K 0.771, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_1 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_1 twin[V2] vs native: lanes 599999, differ 201059, max ulps 2, p99.9 ulps 2, max K 0.825, p99.9 K 0.771, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_1 twin[V4] vs exact (30k sub): max K 1.173, p99.9 K 0.990, max err in ulps of own result 51727.5
+chi2 cos_0.4_1 native vs exact (30k sub): max K 1.173, p99.9 K 0.990, max err in ulps of own result 51727.5
+chi2 sin_0.4_1 twin[V4] vs native: lanes 599999, differ 2537, max ulps 10, p99.9 ulps 2, max K 0.558, p99.9 K 0.001, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_1 twin[V4] vs twin[V2]: lanes 599999, differ 195487, max ulps 11, p99.9 ulps 2, max K 0.686, p99.9 K 0.379, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_1 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_1 twin[V2] vs native: lanes 599999, differ 194120, max ulps 2, p99.9 ulps 2, max K 0.536, p99.9 K 0.378, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_1 twin[V4] vs exact (30k sub): max K 0.553, p99.9 K 0.466, max err in ulps of own result 895932.6
+chi2 sin_0.4_1 native vs exact (30k sub): max K 0.553, p99.9 K 0.466, max err in ulps of own result 895932.6
+chi2 cos_0.4_2 twin[V4] vs native: lanes 599999, differ 30, max ulps 1750, p99.9 ulps 0, max K 0.745, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_2 twin[V4] vs twin[V2]: lanes 599999, differ 258563, max ulps 1750, p99.9 ulps 2, max K 0.745, p99.9 K 0.697, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_2 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_2 twin[V2] vs native: lanes 599999, differ 258547, max ulps 3, p99.9 ulps 2, max K 0.697, p99.9 K 0.697, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_2 twin[V4] vs exact (30k sub): max K 1.163, p99.9 K 0.992, max err in ulps of own result 690578.9
+chi2 cos_0.4_2 native vs exact (30k sub): max K 1.163, p99.9 K 0.992, max err in ulps of own result 690578.9
+chi2 sin_0.4_2 twin[V4] vs native: lanes 599999, differ 2451, max ulps 83, p99.9 ulps 2, max K 0.597, p99.9 K 0.001, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_2 twin[V4] vs twin[V2]: lanes 599999, differ 251757, max ulps 83, p99.9 ulps 2, max K 0.796, p99.9 K 0.286, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_2 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_2 twin[V2] vs native: lanes 599999, differ 250860, max ulps 3, p99.9 ulps 2, max K 0.647, p99.9 K 0.284, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_2 twin[V4] vs exact (30k sub): max K 0.531, p99.9 K 0.451, max err in ulps of own result 990657.0
+chi2 sin_0.4_2 native vs exact (30k sub): max K 0.531, p99.9 K 0.451, max err in ulps of own result 990657.0
+chi2 cos_0.4_3 twin[V4] vs native: lanes 599999, differ 29, max ulps 652, p99.9 ulps 0, max K 0.909, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_3 twin[V4] vs twin[V2]: lanes 599999, differ 29, max ulps 652, p99.9 ulps 0, max K 0.909, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_3 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_3 twin[V2] vs native: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 cos_0.4_3 twin[V4] vs exact (30k sub): max K 1.129, p99.9 K 0.926, max err in ulps of own result 584579.0
+chi2 cos_0.4_3 native vs exact (30k sub): max K 1.129, p99.9 K 0.926, max err in ulps of own result 584579.0
+chi2 sin_0.4_3 twin[V4] vs native: lanes 599999, differ 2301, max ulps 45, p99.9 ulps 2, max K 1.031, p99.9 K 0.003, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_3 twin[V4] vs twin[V2]: lanes 599999, differ 2301, max ulps 45, p99.9 ulps 2, max K 1.031, p99.9 K 0.003, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_3 twin[V3] vs twin[V2]: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_3 twin[V2] vs native: lanes 599999, differ 0, max ulps 0, p99.9 ulps 0, max K 0.000, p99.9 K 0.000, sign flips 0, nonfinite mismatches 0
+chi2 sin_0.4_3 twin[V4] vs exact (30k sub): max K 0.970, p99.9 K 0.831, max err in ulps of own result 7130376.0
+chi2 sin_0.4_3 native vs exact (30k sub): max K 0.970, p99.9 K 0.831, max err in ulps of own result 7130376.0
+YJ twin[V4] vs native: lanes 915000, differ 233077, max ulps 128, p99.9 ulps 83, max K 3.003, p99.9 K 1.986, sign flips 0, nonfinite mismatches 0
+YJ twin[V4] vs twin[V2]: lanes 915000, differ 79049, max ulps 63, p99.9 ulps 19, max K 2.469, p99.9 K 1.205, sign flips 0, nonfinite mismatches 0
+YJ twin[V2] vs native: lanes 915000, differ 261922, max ulps 128, p99.9 ulps 83, max K 3.003, p99.9 K 1.986, sign flips 0, nonfinite mismatches 0
+YJ twin[V4] vs exact (30k sub): max K 1.403, p99.9 K 1.177, max err in ulps of own result 136.8
+YJ twin[V2] vs exact (30k sub): max K 1.403, p99.9 K 1.186, max err in ulps of own result 136.8
+YJ native vs exact (30k sub): max K 2.169, p99.9 K 1.652, max err in ulps of own result 136.8

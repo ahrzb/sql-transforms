@@ -1,0 +1,330 @@
+OHE str {}                                                     rows    201 lanes     2613 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {}                                                     rows    202 lanes     2020 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'handle_unknown': 'ignore'}                           rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'handle_unknown': 'ignore'}                           rows    204 lanes     2040 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'handle_unknown': 'infrequent_if_exist', 'min_frequency': 20} rows    203 lanes     2233 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'handle_unknown': 'infrequent_if_exist', 'min_frequency': 20} rows    204 lanes     2040 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'handle_unknown': 'infrequent_if_exist', 'max_categories': 3} rows    203 lanes     1218 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'handle_unknown': 'infrequent_if_exist', 'max_categories': 3} rows    204 lanes     1224 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'handle_unknown': 'warn', 'min_frequency': 20}        rows    203 lanes     2233 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'handle_unknown': 'warn', 'min_frequency': 20}        rows    204 lanes     2040 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'drop': 'first', 'handle_unknown': 'ignore'}          rows    203 lanes     2233 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'drop': 'first', 'handle_unknown': 'ignore'}          rows    204 lanes     1632 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'drop': 'if_binary'}                                  rows    201 lanes     2613 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'drop': 'if_binary'}                                  rows    202 lanes     2020 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'drop': 'first', 'handle_unknown': 'infrequent_if_exist', 'min_frequency': 20} rows    203 lanes     1827 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'drop': 'first', 'handle_unknown': 'infrequent_if_exist', 'min_frequency': 20} rows    204 lanes     1632 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'dtype': <class 'numpy.float32'>, 'handle_unknown': 'ignore'} rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'dtype': <class 'numpy.float32'>, 'handle_unknown': 'ignore'} rows    204 lanes     2040 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE str {'dtype': <class 'numpy.int64'>, 'handle_unknown': 'ignore'} rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+OHE num {'dtype': <class 'numpy.int64'>, 'handle_unknown': 'ignore'} rows    204 lanes     2040 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 2, 'strategy': 'quantile', 'quantile_method': 'averaged_inverted_cdf'} rows    154 lanes      924 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 5, 'strategy': 'quantile', 'quantile_method': 'averaged_inverted_cdf'} rows    154 lanes     2156 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 9, 'strategy': 'quantile', 'quantile_method': 'averaged_inverted_cdf'} rows    154 lanes     3388 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 2, 'strategy': 'uniform'}                     rows    154 lanes      924 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 5, 'strategy': 'uniform'}                     rows    154 lanes     2310 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 9, 'strategy': 'uniform'}                     rows    154 lanes     4158 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 2, 'strategy': 'kmeans', 'subsample': None}   rows    154 lanes      924 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 5, 'strategy': 'kmeans', 'subsample': None}   rows    154 lanes     2310 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+KBins {'n_bins': 9, 'strategy': 'kmeans', 'subsample': None}   rows    154 lanes     4004 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    127 lanes      254 differing_rows    44 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(0.06612551678995082), np.float64(4.5155296125204085)], [(1, np.float64(1.0), np.float64(0.0))])
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    127 lanes      254 differing_rows    49 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(2.987155562627728), np.float64(-2.7595043548712166)], [(0, np.float64(1.0), np.float64(0.0))])
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    127 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    127 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows     27 lanes       54 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows     32 lanes       64 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows     28 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows     24 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    127 lanes      254 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    127 lanes      254 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    127 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    127 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     30 lanes       60 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     34 lanes       68 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     35 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     37 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows     70 lanes      280 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 59
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows     77 lanes      308 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 52
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows     78 lanes      156 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 51
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows     87 lanes      174 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 42
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    129 lanes      516 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    129 lanes      516 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    129 lanes      258 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    129 lanes      258 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    129 lanes      516 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    129 lanes      516 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    129 lanes      258 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    129 lanes      258 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     39 lanes      156 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     53 lanes      212 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     37 lanes       74 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     36 lanes       72 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows     89 lanes      890 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 46
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows     80 lanes      800 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 55
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows     95 lanes      760 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 40
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows     90 lanes      720 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 45
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    135 lanes     1350 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    135 lanes     1350 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    135 lanes     1080 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    135 lanes     1080 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    135 lanes     1350 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    135 lanes     1350 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    135 lanes     1080 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    135 lanes     1080 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     49 lanes      490 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     42 lanes      420 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     49 lanes      392 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 0, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     44 lanes      352 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    131 lanes      524 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    131 lanes      524 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    131 lanes      262 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    131 lanes      262 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    131 lanes      524 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    131 lanes      524 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    131 lanes      262 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    131 lanes      262 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    131 lanes      524 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    131 lanes      524 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    131 lanes      262 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    131 lanes      262 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    131 lanes      262 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    131 lanes      262 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    131 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    131 lanes        0 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     38 lanes      152 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     40 lanes      160 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     43 lanes       86 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     45 lanes       90 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    133 lanes      798 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    133 lanes      798 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    133 lanes      532 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    133 lanes      532 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    133 lanes      798 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    133 lanes      798 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    133 lanes      532 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    133 lanes      532 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    133 lanes      798 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    133 lanes      798 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    133 lanes      532 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    133 lanes      532 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    133 lanes      532 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    133 lanes      532 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    133 lanes      266 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    133 lanes      266 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     57 lanes      342 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     44 lanes      264 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     41 lanes      164 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     44 lanes      176 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1668 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1668 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1668 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1668 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1668 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1668 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1390 differing_rows     0 stored_zeros     9 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1390 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes     1112 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes     1112 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     49 lanes      588 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     42 lanes      504 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     45 lanes      450 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 1, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     39 lanes      390 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    135 lanes      810 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    135 lanes      810 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    135 lanes      540 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    135 lanes      540 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    135 lanes      810 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    135 lanes      810 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    135 lanes      540 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    135 lanes      540 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    135 lanes      810 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    135 lanes      810 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    135 lanes      540 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    135 lanes      540 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     35 lanes      210 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     42 lanes      252 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     36 lanes      144 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     38 lanes      152 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    137 lanes     1096 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    137 lanes     1096 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    137 lanes      822 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    137 lanes      822 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    137 lanes     1096 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    137 lanes     1096 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    137 lanes      822 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    137 lanes      822 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    137 lanes     1096 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    137 lanes     1096 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    137 lanes      822 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    137 lanes      822 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    137 lanes      548 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    137 lanes      548 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    137 lanes      274 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    137 lanes      274 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     40 lanes      320 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     53 lanes      424 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     40 lanes      240 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     36 lanes      216 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    143 lanes     2002 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    143 lanes     2002 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    143 lanes     1716 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    143 lanes     1716 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    143 lanes     2002 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    143 lanes     2002 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    143 lanes     1716 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    143 lanes     1716 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    143 lanes     2002 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    143 lanes     2002 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    143 lanes     1716 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    143 lanes     1716 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    143 lanes     1430 differing_rows     0 stored_zeros     7 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    143 lanes     1430 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    143 lanes     1144 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    143 lanes     1144 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     51 lanes      714 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     45 lanes      630 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     46 lanes      552 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 2, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     58 lanes      696 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1112 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1112 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes      834 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes      834 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1112 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1112 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes      834 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes      834 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    139 lanes     1112 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    139 lanes     1112 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    139 lanes      834 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    139 lanes      834 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     37 lanes      296 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     38 lanes      304 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     36 lanes      216 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     44 lanes      264 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    141 lanes     1410 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    141 lanes     1410 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    141 lanes     1128 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    141 lanes     1128 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    141 lanes     1410 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    141 lanes     1410 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    141 lanes     1128 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    141 lanes     1128 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    141 lanes     1410 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    141 lanes     1410 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    141 lanes     1128 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    141 lanes     1128 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     39 lanes      390 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     45 lanes      450 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     53 lanes      424 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     37 lanes      296 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     2352 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     2352 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     2058 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     2058 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     2352 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     2352 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     2058 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     2058 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     2352 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     2352 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     2058 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     2058 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     1470 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     1470 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     1176 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     1176 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     51 lanes      816 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     39 lanes      624 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     42 lanes      588 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 3, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     45 lanes      630 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     1764 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     1764 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     1470 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     1470 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     1764 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     1764 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     1470 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     1470 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    147 lanes     1764 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    147 lanes     1764 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    147 lanes     1470 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    147 lanes     1470 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     40 lanes      480 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     47 lanes      564 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     34 lanes      340 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 2, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     42 lanes      420 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    149 lanes     2086 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    149 lanes     2086 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    149 lanes     1788 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    149 lanes     1788 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    149 lanes     2086 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    149 lanes     2086 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    149 lanes     1788 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    149 lanes     1788 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    149 lanes     2086 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    149 lanes     2086 differing_rows     0 stored_zeros     3 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    149 lanes     1788 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    149 lanes     1788 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     43 lanes      602 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     48 lanes      672 differing_rows     0 stored_zeros     2 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     51 lanes      612 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 3, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     38 lanes      456 differing_rows     0 stored_zeros     1 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'uniform'} rows    155 lanes     3100 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': True, 'knots': 'quantile'} rows    155 lanes     3100 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'uniform'} rows    155 lanes     2790 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'constant', 'include_bias': False, 'knots': 'quantile'} rows    155 lanes     2790 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'uniform'} rows    155 lanes     3100 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': True, 'knots': 'quantile'} rows    155 lanes     3100 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'uniform'} rows    155 lanes     2790 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'linear', 'include_bias': False, 'knots': 'quantile'} rows    155 lanes     2790 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'uniform'} rows    155 lanes     3100 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': True, 'knots': 'quantile'} rows    155 lanes     3100 differing_rows     0 stored_zeros     6 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'uniform'} rows    155 lanes     2790 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'continue', 'include_bias': False, 'knots': 'quantile'} rows    155 lanes     2790 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'uniform'} rows    155 lanes     1550 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': True, 'knots': 'quantile'} rows    155 lanes     1550 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'uniform'} rows    155 lanes     1240 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'periodic', 'include_bias': False, 'knots': 'quantile'} rows    155 lanes     1240 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'uniform'} rows     49 lanes      980 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': True, 'knots': 'quantile'} rows     55 lanes     1100 differing_rows     0 stored_zeros     5 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'uniform'} rows     49 lanes      882 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+Spline {'degree': 5, 'n_knots': 6, 'extrapolation': 'error', 'include_bias': False, 'knots': 'quantile'} rows     44 lanes      792 differing_rows     0 stored_zeros     4 (neg 0) raise_mismatch 0
+MissingIndicator features=missing-only                         rows     60 lanes      180 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+MissingIndicator features=all                                  rows     60 lanes      180 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+RandomTreesEmbedding                                           rows     80 lanes    17200 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+ColumnTransformer OHE+passthrough-ish identity FT thr=1 vs 0   rows     63 lanes      252 differing_rows     2 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(1.0), np.float64(-0.0)], [(3, np.float64(0.0), np.float64(-0.0))])
+ColumnTransformer OHE+FT(np.negative) thr=1 vs 0               rows     63 lanes      252 differing_rows     6 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(0.0), np.float64(0.0)], [(3, np.float64(0.0), np.float64(-0.0))])
+ColumnTransformer OHE+StandardScaler(with_mean=False) thr=1 vs 0 rows     63 lanes      252 differing_rows     2 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(1.0), np.float64(-0.0)], [(3, np.float64(0.0), np.float64(-0.0))])
+FeatureUnion OHE+FT(np.negative)                               rows     63 lanes    12663 differing_rows    23 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(0.0), np.float64(0.0)], [(199, np.float64(0.0), np.float64(-0.0)), (200, np.float64(0.0), np.float64(-0.0))])
+FeatureUnion OHE+StandardScaler(with_mean=False)               rows     63 lanes    12663 differing_rows     2 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(1.0), np.float64(-0.0)], [(200, np.float64(0.0), np.float64(-0.0))])
+Pipeline OHE -> MaxAbsScaler                                   rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Pipeline Spline(d3,k5) -> MaxAbsScaler                         rows    400 lanes     5600 differing_rows   377 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(-0.6342359595385842), np.float64(1.232002994826591)], [(10, np.float64(0.636864958476806), np.float64(0.6368649584768059)), (11, np.float64(0.7961598873309955), np.float64(0.7961598873309956))])
+Pipeline OHE -> StandardScaler(with_mean=False)                rows    203 lanes     2639 differing_rows   203 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: (['b', None], [(1, np.float64(2.2459508492791174), np.float64(2.245950849279115)), (12, np.float64(6.11489280352467), np.float64(6.114892803524657))])
+Pipeline Spline(d3,k5) -> StandardScaler(with_mean=False)      rows    400 lanes     5600 differing_rows   400 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(-1.5423271597347843), np.float64(-1.3461444535488143)], [(0, np.float64(1.4607139509653364), np.float64(1.460713950965335)), (1, np.float64(2.537803479790194), np.float64(2.5378034797901954)), (2, np.float64(1.5222440781450925), np.float64(1.5222440781450932))])
+Pipeline OHE -> Normalizer(l2)                                 rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Pipeline Spline(d3,k5) -> Normalizer(l2)                       rows    400 lanes     5600 differing_rows   111 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(-1.120065835446109), np.float64(2.7501304194544822)], [(0, np.float64(0.0058627537653417735), np.float64(0.005862753765341774)), (1, np.float64(0.37306408333621166), np.float64(0.3730640833362117)), (2, np.float64(0.5908404891031175), np.float64(0.5908404891031176))])
+Pipeline OHE -> Normalizer(l1)                                 rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Pipeline Spline(d3,k5) -> Normalizer(l1)                       rows    400 lanes     5600 differing_rows    36 stored_zeros     0 (neg 0) raise_mismatch 0
+     first diff: ([np.float64(-0.0015262584351920516), np.float64(0.9190451072047061)], [(1, np.float64(0.005952335648797982), np.float64(0.00595233564879798)), (2, np.float64(0.2122424162392235), np.float64(0.21224241623922344)), (3, np.float64(0.26511426759777185), np.float64(0.2651142675977718))])
+Pipeline OHE -> Normalizer(max)                                rows    203 lanes     2639 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Pipeline Spline(d3,k5) -> Normalizer(max)                      rows    400 lanes     5600 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Pipeline OHE -> PolynomialFeatures(2)                          rows    203 lanes    21315 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+Pipeline Spline(d3,k5) -> PolynomialFeatures(2)                rows    400 lanes    48000 differing_rows     0 stored_zeros     0 (neg 0) raise_mismatch 0
+TOTAL differing rows: 1255

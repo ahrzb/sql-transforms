@@ -1,0 +1,6 @@
+yj_std breast done 177.9s
+yj_std wine done 382.9s
+yj_std digits done 1898.4s
+yj_std diabetes done 249.8s
+yj_std synth done 627.5s
+yj_std synth_pos done 404.9s

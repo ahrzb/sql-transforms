@@ -1,0 +1,3 @@
+SkylakeX bit-exact 10640/10640 misses: []
+Haswell bit-exact 10640/10640 misses: []
+Sandybridge bit-exact 10609/10640 misses: [(45, 1, 0), (62, 1, 0), (60, 1, 0), (62, 1, 0), (78, 1, 0), (74, 1, 0), (50, 1, 0), (43, 1, 0), (61, 1, 0), (51, 1, 0)]

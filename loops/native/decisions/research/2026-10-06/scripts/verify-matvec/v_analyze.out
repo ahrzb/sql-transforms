@@ -1,0 +1,88 @@
+/tmp/claude-0/-home-user-sql-transforms/903b9aef-c7e3-5c91-bc7f-b02f0b9c62f5/scratchpad/research/verify-matvec/v_analyze.py:24: RuntimeWarning: overflow encountered in scalar divide
+  e = (acc - float(mcS[j])) / s
+/tmp/claude-0/-home-user-sql-transforms/903b9aef-c7e3-5c91-bc7f-b02f0b9c62f5/scratchpad/research/verify-matvec/v_analyze.py:27: RuntimeWarning: overflow encountered in scalar divide
+  ent.append(e); Srec.append((s0 + abs(float(mcS[j]))) / s); S2.append((s0 + sm) / s); S0a.append(s0)
+lanes 135034 finite Srec 134285 finite S2 134285 max n 32
+
+== seeds <40 scale Srec lanes 4618 (all 4636)
+  entry vs SKX row         differ    844 maxulps 1306 p99K 1.057 maxK 2.292 nonfiniteK 0
+  SKX batch vs SKX row     differ    795 maxulps 1306 p99K 0.977 maxK 2.042 nonfiniteK 0
+  HSW row vs SKX row       differ    159 maxulps 25 p99K 0.840 maxK 12.817 nonfiniteK 0
+  SNB row vs SKX row       differ   1505 maxulps 692 p99K 5.834 maxK 49.684 nonfiniteK 0
+  NHM row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  PRS row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  entry vs SNB row         differ   1375 maxulps 614 p99K 5.821 maxK 49.684 nonfiniteK 0
+  entry vs HSW row         differ    886 maxulps 1306 p99K 1.145 maxK 12.817 nonfiniteK 0
+  SNB batch vs SKX row     differ   1550 maxulps 1383 p99K 5.834 maxK 49.684 nonfiniteK 0
+  entry vs SKX batch       differ    681 maxulps 222 p99K 1.023 maxK 2.042 nonfiniteK 0
+  HSW batch vs SKX batch   differ    288 maxulps 36 p99K 0.942 maxK 12.817 nonfiniteK 0
+
+== seeds <40 scale S2 lanes 4618 (all 4636)
+  entry vs SKX row         differ    844 maxulps 1306 p99K 0.995 maxK 2.162 nonfiniteK 0
+  SKX batch vs SKX row     differ    795 maxulps 1306 p99K 0.960 maxK 2.042 nonfiniteK 0
+  HSW row vs SKX row       differ    159 maxulps 25 p99K 0.704 maxK 1.762 nonfiniteK 0
+  SNB row vs SKX row       differ   1505 maxulps 692 p99K 1.182 maxK 2.290 nonfiniteK 0
+  NHM row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  PRS row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  entry vs SNB row         differ   1375 maxulps 614 p99K 1.191 maxK 2.470 nonfiniteK 0
+  entry vs HSW row         differ    886 maxulps 1306 p99K 1.026 maxK 2.162 nonfiniteK 0
+  SNB batch vs SKX row     differ   1550 maxulps 1383 p99K 1.221 maxK 2.162 nonfiniteK 0
+  entry vs SKX batch       differ    681 maxulps 222 p99K 0.951 maxK 2.042 nonfiniteK 0
+  HSW batch vs SKX batch   differ    288 maxulps 36 p99K 0.784 maxK 2.042 nonfiniteK 0
+
+== seeds <200 scale Srec lanes 25208 (all 25348)
+  entry vs SKX row         differ   4819 maxulps 9.878e+09 p99K 1.124 maxK 2.992 nonfiniteK 0
+  SKX batch vs SKX row     differ   4696 maxulps 9.878e+09 p99K 1.106 maxK 2.992 nonfiniteK 0
+  HSW row vs SKX row       differ    680 maxulps 568 p99K 0.805 maxK 19.815 nonfiniteK 0
+  SNB row vs SKX row       differ   8418 maxulps 2026 p99K 5.776 maxK 237.568 nonfiniteK 0
+  NHM row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  PRS row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  entry vs SNB row         differ   7979 maxulps 9.878e+09 p99K 5.776 maxK 237.568 nonfiniteK 0
+  entry vs HSW row         differ   5048 maxulps 9.878e+09 p99K 1.174 maxK 19.815 nonfiniteK 0
+  SNB batch vs SKX row     differ   8896 maxulps 9.878e+09 p99K 5.761 maxK 237.568 nonfiniteK 0
+  entry vs SKX batch       differ   3312 maxulps 5235 p99K 0.913 maxK 2.042 nonfiniteK 0
+  HSW batch vs SKX batch   differ    885 maxulps 2.635e+04 p99K 0.829 maxK 19.815 nonfiniteK 0
+
+== seeds <200 scale S2 lanes 25208 (all 25348)
+  entry vs SKX row         differ   4819 maxulps 9.878e+09 p99K 1.072 maxK 2.992 nonfiniteK 0
+  SKX batch vs SKX row     differ   4696 maxulps 9.878e+09 p99K 1.067 maxK 2.992 nonfiniteK 0
+  HSW row vs SKX row       differ    680 maxulps 568 p99K 0.672 maxK 1.762 nonfiniteK 0
+  SNB row vs SKX row       differ   8418 maxulps 2026 p99K 1.178 maxK 2.861 nonfiniteK 0
+  NHM row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  PRS row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  entry vs SNB row         differ   7979 maxulps 9.878e+09 p99K 1.226 maxK 3.096 nonfiniteK 0
+  entry vs HSW row         differ   5048 maxulps 9.878e+09 p99K 1.085 maxK 2.992 nonfiniteK 0
+  SNB batch vs SKX row     differ   8896 maxulps 9.878e+09 p99K 1.247 maxK 2.992 nonfiniteK 0
+  entry vs SKX batch       differ   3312 maxulps 5235 p99K 0.876 maxK 2.042 nonfiniteK 0
+  HSW batch vs SKX batch   differ    885 maxulps 2.635e+04 p99K 0.662 maxK 2.388 nonfiniteK 0
+
+== seeds <1000 scale Srec lanes 134285 (all 135034)
+  entry vs SKX row         differ  26764 maxulps 9.234e+18 p99K 1.170 maxK 4.119 nonfiniteK 0
+  SKX batch vs SKX row     differ  26350 maxulps 1.302e+19 p99K 1.143 maxK 4.119 nonfiniteK 0
+  HSW row vs SKX row       differ   2876 maxulps 5.154e+10 p99K 0.684 maxK 27.520 nonfiniteK 0
+  SNB row vs SKX row       differ  45541 maxulps 9.466e+18 p99K 4.046 maxK 1730.781 nonfiniteK 0
+  NHM row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  PRS row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  entry vs SNB row         differ  43747 maxulps 9.472e+18 p99K 4.051 maxK 1730.781 nonfiniteK 0
+  entry vs HSW row         differ  27764 maxulps 9.234e+18 p99K 1.199 maxK 27.520 nonfiniteK 0
+  SNB batch vs SKX row     differ  48604 maxulps 9.234e+18 p99K 4.056 maxK 1730.781 nonfiniteK 0
+  entry vs SKX batch       differ  18208 maxulps 1.303e+19 p99K 0.914 maxK 2.853 nonfiniteK 0
+  HSW batch vs SKX batch   differ   4069 maxulps 3.436e+10 p99K 0.744 maxK 27.520 nonfiniteK 0
+
+== seeds <1000 scale S2 lanes 134285 (all 135034)
+  entry vs SKX row         differ  26764 maxulps 9.234e+18 p99K 1.108 maxK 4.118 nonfiniteK 0
+  SKX batch vs SKX row     differ  26350 maxulps 1.302e+19 p99K 1.086 maxK 4.118 nonfiniteK 0
+  HSW row vs SKX row       differ   2876 maxulps 5.154e+10 p99K 0.615 maxK 1.833 nonfiniteK 0
+  SNB row vs SKX row       differ  45541 maxulps 9.466e+18 p99K 1.231 maxK 3.097 nonfiniteK 0
+  NHM row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  PRS row vs SNB row       differ      0 maxulps 0 p99K 0.000 maxK 0.000 nonfiniteK 0
+  entry vs SNB row         differ  43747 maxulps 9.472e+18 p99K 1.294 maxK 4.118 nonfiniteK 0
+  entry vs HSW row         differ  27764 maxulps 9.234e+18 p99K 1.121 maxK 4.118 nonfiniteK 0
+  SNB batch vs SKX row     differ  48604 maxulps 9.234e+18 p99K 1.302 maxK 4.118 nonfiniteK 0
+  entry vs SKX batch       differ  18208 maxulps 1.303e+19 p99K 0.878 maxK 2.728 nonfiniteK 0
+  HSW batch vs SKX batch   differ   4069 maxulps 3.436e+10 p99K 0.642 maxK 2.728 nonfiniteK 0
+SkylakeX mc (1,n)@C.T vs C@mean differ lanes: 0  mc vs SKX mc differ: 0
+Haswell mc (1,n)@C.T vs C@mean differ lanes: 0  mc vs SKX mc differ: 3678
+Sandybridge mc (1,n)@C.T vs C@mean differ lanes: 0  mc vs SKX mc differ: 55509
+Nehalem mc (1,n)@C.T vs C@mean differ lanes: 0  mc vs SKX mc differ: 55509
+Prescott mc (1,n)@C.T vs C@mean differ lanes: 0  mc vs SKX mc differ: 55509

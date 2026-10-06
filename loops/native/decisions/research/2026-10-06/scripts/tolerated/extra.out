@@ -1,0 +1,33 @@
+== A. encoders, row = (string, number)
+  OneHotEncoder(ignore) x=inf: twin [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 0.0, 'f5': 0.0}]  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 0.0, 'f5': 0.0}]
+  OneHotEncoder(ignore) x=-inf: twin [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 0.0, 'f5': 0.0}]  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 0.0, 'f5': 0.0}]
+  OneHotEncoder(ignore) x=nan: twin [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 0.0, 'f5': 0.0}]  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 0.0, 'f5': 0.0}]
+  OneHotEncoder(ignore) x=2.0: twin [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 1.0, 'f5': 0.0}]  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 1.0, 'f5': 0.0}]
+  OrdinalEncoder(use_encoded_value) x=inf: twin [{'f0': 0.0, 'f1': -1.0}]  entry [{'f0': 0.0, 'f1': -1.0}]
+  OrdinalEncoder(use_encoded_value) x=-inf: twin [{'f0': 0.0, 'f1': -1.0}]  entry [{'f0': 0.0, 'f1': -1.0}]
+  OrdinalEncoder(use_encoded_value) x=nan: twin [{'f0': 0.0, 'f1': -1.0}]  entry [{'f0': 0.0, 'f1': -1.0}]
+  OrdinalEncoder(use_encoded_value) x=2.0: twin [{'f0': 0.0, 'f1': 1.0}]  entry [{'f0': 0.0, 'f1': 1.0}]
+  TargetEncoder() x=inf: twin [{'f0': 0.5051072522982636, 'f1': 0.575}]  entry [{'f0': 0.5051072522982636, 'f1': 0.575}]
+  TargetEncoder() x=-inf: twin [{'f0': 0.5051072522982636, 'f1': 0.575}]  entry [{'f0': 0.5051072522982636, 'f1': 0.575}]
+  TargetEncoder() x=nan: twin [{'f0': 0.5051072522982636, 'f1': 0.575}]  entry [{'f0': 0.5051072522982636, 'f1': 0.575}]
+  TargetEncoder() x=2.0: twin [{'f0': 0.5051072522982636, 'f1': 0.5045072115384616}]  entry [{'f0': 0.5051072522982636, 'f1': 0.5045072115384616}]
+  OneHotEncoder(error) x=inf: twin RAISES: udf 'tf' raised: ValueError: Found unknown categories [inf] in column 1 during transform  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': None, 'f4': None, 'f5': None}]
+  OneHotEncoder(error) x=-inf: twin RAISES: udf 'tf' raised: ValueError: Found unknown categories [-inf] in column 1 during transform  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': None, 'f4': None, 'f5': None}]
+  OneHotEncoder(error) x=nan: twin RAISES: udf 'tf' raised: ValueError: Found unknown categories [nan] in column 1 during transform  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': None, 'f4': None, 'f5': None}]
+  OneHotEncoder(error) x=2.0: twin [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 1.0, 'f5': 0.0}]  entry [{'f0': 1.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 1.0, 'f5': 0.0}]
+  numeric-only OneHotEncoder(ignore) x0=inf: twin RAISES: udf 'tf' raised: ValueError: Input contains infinity or a value too large for dtype('float64').  entry [{'f0': 0.0, 'f1': 0.0, 'f2': 0.0, 'f3': 0.0, 'f4': 1.0, 'f5': 0.0}]
+== B. Box-Cox, pinned lambdas, x = +inf
+  lambdas [-50.0, -1.0, -0.001, 0.5]
+  twin  RAISES: udf 'tf' raised: ValueError: Input X contains infinity or a value too large for dtype('float64').
+  entry [{'f0': 0.02, 'f1': 1.0, 'f2': 1000.0, 'f3': inf}]
+  scipy boxcox(inf, lam) [0.02, 1.0, 1000.0, inf]  -1/lam [np.float64(0.02), np.float64(1.0), np.float64(1000.0), np.float64(-2.0)]
+  x=1e308: twin [{'f0': 0.02, 'f1': 1.0, 'f2': 507.9604643185491, 'f3': 2.0000000000000135e+154}] 
+           entry [{'f0': 0.02, 'f1': 1.0, 'f2': 507.9604643185491, 'f3': 2.0000000000000135e+154}]
+== C. one NULL among 1,000 rows, KBinsDiscretizer(ordinal) over 2 features
+  twin : RAISES: udf 'tf' raised: ValueError: Input X contains NaN.
+  entry: 1000 rows; row 517 = {'f0': 4.0, 'f1': 2.0} (bins 0..4; edges [-3.772, -0.736, -0.245, 0.257, 0.759, 2.278])
+== D. a lane-0 trap, reading one other field
+  inf in x3; tf(__iid, x0, x1, x2, x3).f3: confit RAISES: Invalid Input Error: tf: input contains infinity | duckdb RAISES: InvalidInputException: Invalid Input Error: tf: input contains infinity | twin RAISES: udf 'tf' raised: ValueError: Input X contains infini
+  inf in x3; tf(__iid, x0, x1, x2, x3).f0: confit RAISES: Invalid Input Error: tf: input contains infinity | duckdb RAISES: InvalidInputException: Invalid Input Error: tf: input contains infinity | twin RAISES: udf 'tf' raised: ValueError: Input X contains infini
+  unknown id 99; tf(__iid, x0, x1, x2, x3).f3: confit RAISES: Invalid Input Error: tf: an instance id not in the fitted instances (params table and instances are from diffe | duckdb RAISES: InvalidInputException: Invalid Input Error: tf: an instance id not in the fitted | twin RAISES: udf 'tf' raised: UDFError: UDF tf: instance id 99 no
+  unknown id 99; tf(__iid, x0, x1, x2, x3).f0: confit RAISES: Invalid Input Error: tf: an instance id not in the fitted instances (params table and instances are from diffe | duckdb RAISES: InvalidInputException: Invalid Input Error: tf: an instance id not in the fitted | twin RAISES: udf 'tf' raised: UDFError: UDF tf: instance id 99 no

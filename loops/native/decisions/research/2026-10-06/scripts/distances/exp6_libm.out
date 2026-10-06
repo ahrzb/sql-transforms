@@ -1,0 +1,2 @@
+exp: numpy != glibc on 9177/200000, max 1 ulp apart; max ulps from correctly rounded: numpy 1, glibc 1
+log: numpy != glibc on 19/200000, max 1 ulp apart; max ulps from correctly rounded: numpy 1, glibc 1

@@ -9,5 +9,7 @@ the ground. A ruled question moves from `open/` to `closed/`.
   [how close a power transform must be](open/power-parity-bound.md),
   [how close an additive chi2 sampler must be](open/additive-chi2-parity-bound.md),
   [should the Python step densify a sparse output](open/sparse-outputs.md).
+- [research/](research/2026-10-06/README.md): the measurements and derivations
+  behind each open record's Methodology and Recommendation (2026-10-06).
 - [closed/](closed/): the parity bound is ruled in confit's record,
   `packages/confit/docs/decisions/closed/native-transform-parity-bounds.md`.

@@ -1,0 +1,37 @@
+seeds 0..1, 51s
+| class | steps | rows | uncompared (twin raised) | share |
+|---|---|---|---|---|
+| StandardScaler | 8 | 320 | 0 | 0.0% |
+| MinMaxScaler | 8 | 320 | 0 | 0.0% |
+| MaxAbsScaler | 4 | 160 | 0 | 0.0% |
+| RobustScaler | 10 | 400 | 0 | 0.0% |
+| Normalizer | 6 | 240 | 13 | 5.4% |
+| Binarizer | 6 | 240 | 13 | 5.4% |
+| SimpleImputer | 16 | 640 | 11 | 1.7% |
+| MissingIndicator | 6 | 240 | 9 | 3.8% |
+| VarianceThreshold | 2 | 80 | 0 | 0.0% |
+| SelectKBest | 4 | 160 | 8 | 5.0% |
+| SelectPercentile | 2 | 80 | 5 | 6.2% |
+| SelectFpr | 2 | 80 | 3 | 3.8% |
+| SelectFdr | 2 | 80 | 3 | 3.8% |
+| SelectFwe | 2 | 80 | 3 | 3.8% |
+| GenericUnivariateSelect | 2 | 80 | 5 | 6.2% |
+| SelectFromModel | 4 | 160 | 8 | 5.0% |
+| RFE | 2 | 80 | 5 | 6.2% |
+| RFECV | 2 | 80 | 4 | 5.0% |
+| SequentialFeatureSelector | 2 | 80 | 5 | 6.2% |
+| PolynomialFeatures | 10 | 400 | 20 | 5.0% |
+| OrdinalEncoder | 6 | 240 | 53 | 22.1% |
+| OneHotEncoder | 10 | 400 | 76 | 19.0% |
+| TargetEncoder | 4 | 160 | 0 | 0.0% |
+| KBinsDiscretizer | 20 | 800 | 52 | 6.5% |
+| QuantileTransformer | 10 | 400 | 0 | 0.0% |
+| SplineTransformer | 30 | 1200 | 124 | 10.3% |
+| IsotonicRegression | 16 | 640 | 81 | 12.7% |
+| FunctionTransformer | 60 | 2400 | 33 | 1.4% |
+| Pipeline | 20 | 800 | 21 | 2.6% |
+| ColumnTransformer | 14 | 560 | 6 | 1.1% |
+| FeatureUnion | 12 | 480 | 6 | 1.2% |
+| FeatureAgglomeration | 14 | 560 | 36 | 6.4% |
+| PowerTransformer | 4 | 160 | 21 | 13.1% |
+| all | 320 | 12800 | 624 | 4.9% |

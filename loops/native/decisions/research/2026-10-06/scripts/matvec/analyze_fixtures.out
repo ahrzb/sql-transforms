@@ -1,0 +1,102 @@
+######## fixtures200_b851298
+lanes 27850; finite S 27718
+emulated SkylakeX row twin == SkylakeX row twin: 27447/27850 bit-exact
+
+== seeds 0..39, lanes with finite S: 5700 (all lanes 5726)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                           5700   1301            276        0   1.199   2.451
+SkylakeX-t4 row vs SkylakeX row                    5700      0              0        0   0.000   0.000
+Haswell row vs SkylakeX row                        5700    112             31        0   0.585   8.683
+Haswell-t4 row vs SkylakeX row                     5700    112             31        0   0.585   8.683
+Sandybridge row vs SkylakeX row                    5700   2105            516        0   2.953  20.255
+Nehalem row vs SkylakeX row                        5700   2105            516        0   2.953  20.255
+Prescott row vs SkylakeX row                       5700   2105            516        0   2.953  20.255
+SkylakeX batch(gemm) vs SkylakeX row               5700   1216            276        0   1.108   2.532
+SkylakeX-t4 batch(gemm) vs SkylakeX row            5700   1216            276        0   1.108   2.532
+Haswell batch(gemm) vs SkylakeX row                5700   1339            276        0   1.187   8.683
+Haswell-t4 batch(gemm) vs SkylakeX row             5700   1339            276        0   1.187   8.683
+Sandybridge batch(gemm) vs SkylakeX row            5700   2222            276        0   2.953  20.255
+Nehalem batch(gemm) vs SkylakeX row                5700   2222            276        0   2.953  20.255
+Prescott batch(gemm) vs SkylakeX row               5700   2213            276        0   2.953  20.255
+native vs SkylakeX-t4 row                          5700   1301            276        0   1.199   2.451
+native vs Haswell row                              5700   1335            276        0   1.223   8.683
+native vs Haswell-t4 row                           5700   1335            276        0   1.223   8.683
+native vs Sandybridge row                          5700   1971            420        0   2.953  20.255
+native vs Nehalem row                              5700   1971            420        0   2.953  20.255
+native vs Prescott row                             5700   1971            420        0   2.953  20.255
+
+== seeds 0..199, lanes with finite S: 27718 (all lanes 27850)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                          27718   5675   268393135278        5   1.223   3.095
+SkylakeX-t4 row vs SkylakeX row                   27718      0              0        0   0.000   0.000
+Haswell row vs SkylakeX row                       27718    619           4696        1   0.658  11.980
+Haswell-t4 row vs SkylakeX row                    27718    619           4696        1   0.658  11.980
+Sandybridge row vs SkylakeX row                   27718   9748           5849        4   3.733  67.700
+Nehalem row vs SkylakeX row                       27718   9748           5849        4   3.733  67.700
+Prescott row vs SkylakeX row                      27718   9748           5849        4   3.733  67.700
+SkylakeX batch(gemm) vs SkylakeX row              27718   5432   268393135278        3   1.141   3.095
+SkylakeX-t4 batch(gemm) vs SkylakeX row           27718   5432   268393135278        3   1.141   3.095
+Haswell batch(gemm) vs SkylakeX row               27718   5789   268393135278        4   1.205  11.980
+Haswell-t4 batch(gemm) vs SkylakeX row            27718   5789   268393135278        4   1.205  11.980
+Sandybridge batch(gemm) vs SkylakeX row           27718  10337   268393135278        6   3.733  67.700
+Nehalem batch(gemm) vs SkylakeX row               27718  10277   268393135278        6   3.733  67.700
+Prescott batch(gemm) vs SkylakeX row              27718  10292   268393135278        6   3.733  67.700
+native vs SkylakeX-t4 row                         27718   5675   268393135278        5   1.223   3.095
+native vs Haswell row                             27718   5801   268393135278        4   1.242  11.980
+native vs Haswell-t4 row                          27718   5801   268393135278        4   1.242  11.980
+native vs Sandybridge row                         27718   9294   268393135278        4   3.733  67.700
+native vs Nehalem row                             27718   9294   268393135278        4   3.733  67.700
+native vs Prescott row                            27718   9294   268393135278        4   3.733  67.700
+
+x.c vs exact, eps*S0 units (S0 = sum|x_i c_i|), 27394 lanes: LTR max nan p99 nan; SkylakeX gemv max nan p99 nan
+######## fixtures200
+lanes 25348; finite S 25208
+emulated SkylakeX row twin == SkylakeX row twin: 25006/25348 bit-exact
+
+== seeds 0..39, lanes with finite S: 4618 (all lanes 4636)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                           4618    844           1306        1   1.057   2.292
+SkylakeX-t4 row vs SkylakeX row                    4618      0              0        0   0.000   0.000
+Haswell row vs SkylakeX row                        4618    159             25        0   0.840  12.817
+Haswell-t4 row vs SkylakeX row                     4618    159             25        0   0.840  12.817
+Sandybridge row vs SkylakeX row                    4618   1505            692        0   5.834  49.684
+Nehalem row vs SkylakeX row                        4618   1505            692        0   5.834  49.684
+Prescott row vs SkylakeX row                       4618   1505            692        0   5.834  49.684
+SkylakeX batch(gemm) vs SkylakeX row               4618    795           1306        1   0.977   2.042
+SkylakeX-t4 batch(gemm) vs SkylakeX row            4618    795           1306        1   0.977   2.042
+Haswell batch(gemm) vs SkylakeX row                4618    903           1306        1   1.172  12.817
+Haswell-t4 batch(gemm) vs SkylakeX row             4618    903           1306        1   1.172  12.817
+Sandybridge batch(gemm) vs SkylakeX row            4618   1550           1383        1   5.834  49.684
+Nehalem batch(gemm) vs SkylakeX row                4618   1545           1383        1   5.834  49.684
+Prescott batch(gemm) vs SkylakeX row               4618   1549           1383        1   5.834  49.684
+native vs SkylakeX-t4 row                          4618    844           1306        1   1.057   2.292
+native vs Haswell row                              4618    886           1306        1   1.145  12.817
+native vs Haswell-t4 row                           4618    886           1306        1   1.145  12.817
+native vs Sandybridge row                          4618   1375            614        0   5.821  49.684
+native vs Nehalem row                              4618   1375            614        0   5.821  49.684
+native vs Prescott row                             4618   1375            614        0   5.821  49.684
+
+== seeds 0..199, lanes with finite S: 25208 (all lanes 25348)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                          25208   4819     9877709850        5   1.124   2.992
+SkylakeX-t4 row vs SkylakeX row                   25208      0              0        0   0.000   0.000
+Haswell row vs SkylakeX row                       25208    680            568        0   0.805  19.815
+Haswell-t4 row vs SkylakeX row                    25208    680            568        0   0.805  19.815
+Sandybridge row vs SkylakeX row                   25208   8418           2026        1   5.776 237.568
+Nehalem row vs SkylakeX row                       25208   8418           2026        1   5.776 237.568
+Prescott row vs SkylakeX row                      25208   8418           2026        1   5.776 237.568
+SkylakeX batch(gemm) vs SkylakeX row              25208   4696     9877709850        4   1.106   2.992
+SkylakeX-t4 batch(gemm) vs SkylakeX row           25208   4696     9877709850        4   1.106   2.992
+Haswell batch(gemm) vs SkylakeX row               25208   5075     9877709850        3   1.178  19.815
+Haswell-t4 batch(gemm) vs SkylakeX row            25208   5075     9877709850        3   1.178  19.815
+Sandybridge batch(gemm) vs SkylakeX row           25208   8896     9877709850        3   5.761 237.568
+Nehalem batch(gemm) vs SkylakeX row               25208   8822     9877709850        3   5.761 237.568
+Prescott batch(gemm) vs SkylakeX row              25208   8874     9877709850        3   5.761 237.568
+native vs SkylakeX-t4 row                         25208   4819     9877709850        5   1.124   2.992
+native vs Haswell row                             25208   5048     9877709850        5   1.174  19.815
+native vs Haswell-t4 row                          25208   5048     9877709850        5   1.174  19.815
+native vs Sandybridge row                         25208   7979     9877709850        5   5.776 237.568
+native vs Nehalem row                             25208   7979     9877709850        5   5.776 237.568
+native vs Prescott row                            25208   7979     9877709850        5   5.776 237.568
+
+x.c vs exact, eps*S0 units (S0 = sum|x_i c_i|), 24939 lanes: LTR max nan p99 nan; SkylakeX gemv max nan p99 nan

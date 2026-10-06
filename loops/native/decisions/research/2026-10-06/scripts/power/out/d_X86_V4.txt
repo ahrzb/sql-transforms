@@ -1,0 +1,5 @@
+log1p {'target': 'baseline(X86_V2)', 'n': 800000, 'np_ne_glibc': 0, 'np_not_cr': 7509, 'gl_not_cr': 7509, 'np_max_ulp': 0.739727034445371, 'gl_max_ulp': 0.739727034445371, 'np_arg': -0.6266337336680363, 'gl_arg': -0.6266337336680363, 'per_elem_ne_batch': 0, 'per_n': 20000}
+expm1 {'target': 'baseline(X86_V2)', 'n': 800000, 'np_ne_glibc': 0, 'np_not_cr': 32163, 'gl_not_cr': 32163, 'np_max_ulp': 0.781127606979178, 'gl_max_ulp': 0.781127606979178, 'np_arg': 0.3584559232664759, 'gl_arg': 0.3584559232664759, 'per_elem_ne_batch': 0, 'per_n': 20000}
+log {'target': 'X86_V3', 'n': 800000, 'np_ne_glibc': 0, 'np_not_cr': 272, 'gl_not_cr': 272, 'np_max_ulp': 0.512889780587957, 'gl_max_ulp': 0.512889780587957, 'np_arg': 1.1093513290490011, 'gl_arg': 1.1093513290490011, 'per_elem_ne_batch': 0, 'per_n': 20000}
+exp {'target': 'X86_V3', 'n': 800000, 'np_ne_glibc': 0, 'np_not_cr': 459, 'gl_not_cr': 459, 'np_max_ulp': 0.5056427556221439, 'gl_max_ulp': 0.5056427556221439, 'np_arg': 41.51509615655334, 'gl_arg': 41.51509615655334, 'per_elem_ne_batch': 0, 'per_n': 20000}
+NPY_DISABLE_CPU_FEATURES= X86_V4

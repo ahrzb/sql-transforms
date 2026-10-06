@@ -1,0 +1,233 @@
+data        n quantity                                            p50       p99          max
+gauss       4 LTR-exact                                         0.000     0.872        1.429
+gauss       4 gemv(SKX)-exact                                   0.000     0.829       0.9938
+gauss       4 LTR-gemv(SKX)                                     0.000     0.882        1.481
+gauss       4 gemm(SKX)-gemv(SKX)                               0.000     0.919        1.481
+gauss       4 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+gauss       4 gemv(SNB)-gemv(SKX)                               0.000     0.882        1.481
+gauss       4 gemv(PSC)-gemv(SKX)                               0.000     0.882        1.481
+gauss       4 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+gauss       4 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+gauss       4 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+offset      4 LTR-exact                                         0.060     0.490       0.9746
+offset      4 gemv(SKX)-exact                                   0.119     0.489        0.957
+offset      4 LTR-gemv(SKX)                                     0.000     0.488       0.9613
+offset      4 gemm(SKX)-gemv(SKX)                               0.119     0.641       0.9735
+offset      4 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+offset      4 gemv(SNB)-gemv(SKX)                               0.000     0.488       0.9613
+offset      4 gemv(PSC)-gemv(SKX)                               0.000     0.488       0.9613
+offset      4 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+offset      4 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+offset      4 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca         4 LTR-exact                                         0.000     0.988        1.073
+pca         4 gemv(SKX)-exact                                   0.000     0.988       0.9881
+pca         4 LTR-gemv(SKX)                                     0.000     0.988       0.9881
+pca         4 gemm(SKX)-gemv(SKX)                               0.000     0.988        1.611
+pca         4 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+pca         4 gemv(SNB)-gemv(SKX)                               0.000     0.988       0.9881
+pca         4 gemv(PSC)-gemv(SKX)                               0.000     0.988       0.9881
+pca         4 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+pca         4 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+pca         4 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca         4 lane: native-twin(SKX row) [eps*S2]               0.000     0.501       0.9769
+pca         4 lane: native-twin(SKX row) [eps*S_rec]            0.000     0.501       0.9769
+pca         4 lane: native-twin(SKX row) [ulps]                 0.000 490270351.000    1.569e+10
+pca         4 lane: twin batch-row (SKX) [eps*S2]               0.000     0.580       0.9769
+pca         4 lane: twin batch-row (SKX) [eps*S_rec]            0.000     0.583       0.9769
+pca         4 lane: twin batch-row (SKX) [ulps]                 0.000 580742825.000    7.844e+09
+pca         4 lane: twin SNB row-SKX row [eps*S2]               0.000     0.711       0.9769
+pca         4 lane: twin SNB row-SKX row [eps*S_rec]            0.000     0.727       0.9769
+pca         4 lane: twin SNB row-SKX row [ulps]                 0.000 1161485649.000    1.569e+10
+pca         4 lane: twin HSW row-SKX row [eps*S2]               0.000     0.000            0
+pca         4 lane: twin HSW row-SKX row [eps*S_rec]            0.000     0.000            0
+pca         4 lane: twin HSW row-SKX row [ulps]                 0.000     0.000            0
+pca         4 lane: native-twin(SNB row) [eps*S2]               0.000     0.366       0.3853
+pca         4 lane: native-twin(SNB row) [eps*S_rec]            0.000     0.374       0.3946
+pca         4 lane: native-twin(SNB row) [ulps]                 0.000 580742825.000    4.646e+09
+gauss      32 LTR-exact                                         0.133     0.792         1.88
+gauss      32 gemv(SKX)-exact                                   0.075     0.492       0.9093
+gauss      32 LTR-gemv(SKX)                                     0.154     0.878         1.88
+gauss      32 gemm(SKX)-gemv(SKX)                               0.144     0.894        1.594
+gauss      32 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+gauss      32 gemv(SNB)-gemv(SKX)                               0.131     0.630        1.281
+gauss      32 gemv(PSC)-gemv(SKX)                               0.131     0.630        1.281
+gauss      32 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+gauss      32 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+gauss      32 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+offset     32 LTR-exact                                         0.123     0.607        1.077
+offset     32 gemv(SKX)-exact                                   0.068     0.327       0.6029
+offset     32 LTR-gemv(SKX)                                     0.141     0.796        1.077
+offset     32 gemm(SKX)-gemv(SKX)                               0.131     0.660        1.198
+offset     32 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+offset     32 gemv(SNB)-gemv(SKX)                               0.122     0.534       0.7994
+offset     32 gemv(PSC)-gemv(SKX)                               0.122     0.534       0.7994
+offset     32 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+offset     32 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+offset     32 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca        32 LTR-exact                                         0.353     1.681        3.122
+pca        32 gemv(SKX)-exact                                   0.000     0.890        1.671
+pca        32 LTR-gemv(SKX)                                     0.378     1.700        3.903
+pca        32 gemm(SKX)-gemv(SKX)                               0.374     1.698        3.903
+pca        32 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+pca        32 gemv(SNB)-gemv(SKX)                               0.342     1.538        2.218
+pca        32 gemv(PSC)-gemv(SKX)                               0.342     1.538        2.218
+pca        32 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+pca        32 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+pca        32 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca        32 lane: native-twin(SKX row) [eps*S2]               0.191     0.855        1.951
+pca        32 lane: native-twin(SKX row) [eps*S_rec]            0.251     0.989        1.966
+pca        32 lane: native-twin(SKX row) [ulps]               358.000 4163601950.770    8.158e+11
+pca        32 lane: twin batch-row (SKX) [eps*S2]               0.189     0.855        1.951
+pca        32 lane: twin batch-row (SKX) [eps*S_rec]            0.249     0.979        1.966
+pca        32 lane: twin batch-row (SKX) [ulps]               347.000 4165094107.800    1.382e+13
+pca        32 lane: twin SNB row-SKX row [eps*S2]               0.266     0.890        1.334
+pca        32 lane: twin SNB row-SKX row [eps*S_rec]            0.381     1.059        1.526
+pca        32 lane: twin SNB row-SKX row [ulps]              1098.000 5501522937.540    1.382e+13
+pca        32 lane: twin HSW row-SKX row [eps*S2]               0.000     0.000            0
+pca        32 lane: twin HSW row-SKX row [eps*S_rec]            0.000     0.000            0
+pca        32 lane: twin HSW row-SKX row [ulps]                 0.000     0.000            0
+pca        32 lane: native-twin(SNB row) [eps*S2]               0.310     1.153         1.73
+pca        32 lane: native-twin(SNB row) [eps*S_rec]            0.395     1.180        1.799
+pca        32 lane: native-twin(SNB row) [ulps]              1388.000 6373053014.000    1.382e+13
+gauss     128 LTR-exact                                         0.130     0.822        1.426
+gauss     128 gemv(SKX)-exact                                   0.075     0.364       0.8129
+gauss     128 LTR-gemv(SKX)                                     0.142     0.850        1.712
+gauss     128 gemm(SKX)-gemv(SKX)                               0.140     0.838        1.712
+gauss     128 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+gauss     128 gemv(SNB)-gemv(SKX)                               0.126     0.559        1.067
+gauss     128 gemv(PSC)-gemv(SKX)                               0.126     0.559        1.067
+gauss     128 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+gauss     128 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+gauss     128 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+offset    128 LTR-exact                                         0.133     0.822        1.379
+offset    128 gemv(SKX)-exact                                   0.070     0.289       0.5789
+offset    128 LTR-gemv(SKX)                                     0.139     0.862        1.517
+offset    128 gemm(SKX)-gemv(SKX)                               0.139     0.862        1.793
+offset    128 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+offset    128 gemv(SNB)-gemv(SKX)                               0.113     0.550       0.8623
+offset    128 gemv(PSC)-gemv(SKX)                               0.113     0.550       0.8623
+offset    128 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+offset    128 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+offset    128 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca       128 LTR-exact                                         0.650     3.268        5.689
+pca       128 gemv(SKX)-exact                                   0.425     1.881        3.376
+pca       128 LTR-gemv(SKX)                                     0.609     3.178        4.723
+pca       128 gemm(SKX)-gemv(SKX)                               0.603     3.178        5.269
+pca       128 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+pca       128 gemv(SNB)-gemv(SKX)                               0.480     2.508        4.527
+pca       128 gemv(PSC)-gemv(SKX)                               0.480     2.508        4.527
+pca       128 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+pca       128 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+pca       128 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca       128 lane: native-twin(SKX row) [eps*S2]               0.306     1.623        2.361
+pca       128 lane: native-twin(SKX row) [eps*S_rec]            0.397     2.004        3.107
+pca       128 lane: native-twin(SKX row) [ulps]              1476.000 5165674473.070    5.921e+11
+pca       128 lane: twin batch-row (SKX) [eps*S2]               0.305     1.630        2.646
+pca       128 lane: twin batch-row (SKX) [eps*S_rec]            0.392     1.957        3.107
+pca       128 lane: twin batch-row (SKX) [ulps]              1476.000 5159705177.010    5.921e+11
+pca       128 lane: twin SNB row-SKX row [eps*S2]               0.330     2.025        3.444
+pca       128 lane: twin SNB row-SKX row [eps*S_rec]            0.474     2.349        3.579
+pca       128 lane: twin SNB row-SKX row [ulps]              2095.000 6025236477.190    4.441e+11
+pca       128 lane: twin HSW row-SKX row [eps*S2]               0.000     0.000            0
+pca       128 lane: twin HSW row-SKX row [eps*S_rec]            0.000     0.000            0
+pca       128 lane: twin HSW row-SKX row [ulps]                 0.000     0.000            0
+pca       128 lane: native-twin(SNB row) [eps*S2]               0.450     2.348        4.109
+pca       128 lane: native-twin(SNB row) [eps*S_rec]            0.562     2.740        4.274
+pca       128 lane: native-twin(SNB row) [ulps]              3309.000 6885955327.000    1.036e+12
+gauss     512 LTR-exact                                         0.124     0.786        1.811
+gauss     512 gemv(SKX)-exact                                   0.071     0.375       0.6659
+gauss     512 LTR-gemv(SKX)                                     0.139     0.843        1.915
+gauss     512 gemm(SKX)-gemv(SKX)                               0.129     0.600         1.15
+gauss     512 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+gauss     512 gemv(SNB)-gemv(SKX)                               0.105     0.526        1.188
+gauss     512 gemv(PSC)-gemv(SKX)                               0.105     0.526        1.188
+gauss     512 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+gauss     512 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+gauss     512 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+offset    512 LTR-exact                                         0.107     0.720        1.581
+offset    512 gemv(SKX)-exact                                   0.071     0.287       0.5733
+offset    512 LTR-gemv(SKX)                                     0.138     0.855        1.868
+offset    512 gemm(SKX)-gemv(SKX)                               0.107     0.573        1.003
+offset    512 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+offset    512 gemv(SNB)-gemv(SKX)                               0.089     0.463        1.004
+offset    512 gemv(PSC)-gemv(SKX)                               0.089     0.463        1.004
+offset    512 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+offset    512 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+offset    512 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca       512 LTR-exact                                         0.468     2.869        4.746
+pca       512 gemv(SKX)-exact                                   0.288     1.219         2.31
+pca       512 LTR-gemv(SKX)                                     0.487     2.798        5.498
+pca       512 gemm(SKX)-gemv(SKX)                               0.466     2.149        4.176
+pca       512 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+pca       512 gemv(SNB)-gemv(SKX)                               0.393     1.824        3.136
+pca       512 gemv(PSC)-gemv(SKX)                               0.393     1.824        3.136
+pca       512 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+pca       512 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+pca       512 gemm(HSW)-gemm(SKX)                               0.000     0.000            0
+pca       512 lane: native-twin(SKX row) [eps*S2]               0.254     1.420        2.749
+pca       512 lane: native-twin(SKX row) [eps*S_rec]            0.378     2.466        4.574
+pca       512 lane: native-twin(SKX row) [ulps]              1419.000 4972569691.460    1.434e+11
+pca       512 lane: twin batch-row (SKX) [eps*S2]               0.234     1.114        2.205
+pca       512 lane: twin batch-row (SKX) [eps*S_rec]            0.341     1.846        4.129
+pca       512 lane: twin batch-row (SKX) [ulps]              1124.500 4636575777.820    2.009e+11
+pca       512 lane: twin SNB row-SKX row [eps*S2]               0.323     1.600        2.501
+pca       512 lane: twin SNB row-SKX row [eps*S_rec]            0.462     2.609        5.067
+pca       512 lane: twin SNB row-SKX row [ulps]              2485.000 6689537318.830    4.018e+11
+pca       512 lane: twin HSW row-SKX row [eps*S2]               0.000     0.000            0
+pca       512 lane: twin HSW row-SKX row [eps*S_rec]            0.000     0.000            0
+pca       512 lane: twin HSW row-SKX row [ulps]                 0.000     0.000            0
+pca       512 lane: native-twin(SNB row) [eps*S2]               0.373     2.021        3.273
+pca       512 lane: native-twin(SNB row) [eps*S_rec]            0.515     3.315        5.682
+pca       512 lane: native-twin(SNB row) [ulps]              3175.000 8932621526.010    4.018e+11
+gauss    2048 LTR-exact                                         0.115     0.767        1.524
+gauss    2048 gemv(SKX)-exact                                   0.070     0.350       0.5888
+gauss    2048 LTR-gemv(SKX)                                     0.138     0.852        1.657
+gauss    2048 gemm(SKX)-gemv(SKX)                               0.096     0.418       0.7987
+gauss    2048 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+gauss    2048 gemv(SNB)-gemv(SKX)                               0.100     0.485       0.9557
+gauss    2048 gemv(PSC)-gemv(SKX)                               0.100     0.485       0.9557
+gauss    2048 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+gauss    2048 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+gauss    2048 gemm(HSW)-gemm(SKX)                               0.067     0.268       0.4181
+offset   2048 LTR-exact                                         0.126     0.702        1.149
+offset   2048 gemv(SKX)-exact                                   0.073     0.356       0.6971
+offset   2048 LTR-gemv(SKX)                                     0.155     0.736        1.283
+offset   2048 gemm(SKX)-gemv(SKX)                               0.107     0.413       0.6639
+offset   2048 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+offset   2048 gemv(SNB)-gemv(SKX)                               0.108     0.475       0.8798
+offset   2048 gemv(PSC)-gemv(SKX)                               0.108     0.475       0.8798
+offset   2048 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+offset   2048 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+offset   2048 gemm(HSW)-gemm(SKX)                               0.071     0.287       0.4216
+pca      2048 LTR-exact                                         1.113     7.452        15.79
+pca      2048 gemv(SKX)-exact                                   0.545     3.619        7.462
+pca      2048 LTR-gemv(SKX)                                     1.247     6.907         12.4
+pca      2048 gemm(SKX)-gemv(SKX)                               0.721     4.512          9.1
+pca      2048 gemv(HSW)-gemv(SKX)                               0.000     0.000            0
+pca      2048 gemv(SNB)-gemv(SKX)                               0.793     5.414        12.04
+pca      2048 gemv(PSC)-gemv(SKX)                               0.793     5.414        12.04
+pca      2048 gemv(SKX,4thr)-gemv(SKX,1thr)                     0.000     0.000            0
+pca      2048 gemm(SKX,4thr)-gemm(SKX,1thr)                     0.000     0.000            0
+pca      2048 gemm(HSW)-gemm(SKX)                               0.310     1.706        3.289
+pca      2048 lane: native-twin(SKX row) [eps*S2]               0.625     3.454        6.368
+pca      2048 lane: native-twin(SKX row) [eps*S_rec]            1.002     4.923        7.632
+pca      2048 lane: native-twin(SKX row) [ulps]             19911.000 25707456607.580    1.747e+12
+pca      2048 lane: twin batch-row (SKX) [eps*S2]               0.365     2.256        4.642
+pca      2048 lane: twin batch-row (SKX) [eps*S_rec]            0.575     3.184        5.505
+pca      2048 lane: twin batch-row (SKX) [ulps]              6127.000 15684441516.500    1.645e+12
+pca      2048 lane: twin SNB row-SKX row [eps*S2]               0.599     3.751        6.091
+pca      2048 lane: twin SNB row-SKX row [eps*S_rec]            0.971     4.924        7.308
+pca      2048 lane: twin SNB row-SKX row [ulps]             14215.500 21377092157.010    2.159e+12
+pca      2048 lane: twin HSW row-SKX row [eps*S2]               0.000     0.000            0
+pca      2048 lane: twin HSW row-SKX row [eps*S_rec]            0.000     0.000            0
+pca      2048 lane: twin HSW row-SKX row [ulps]                 0.000     0.000            0
+pca      2048 lane: native-twin(SNB row) [eps*S2]               0.820     5.205        9.474
+pca      2048 lane: native-twin(SNB row) [eps*S_rec]            1.305     6.921        11.28
+pca      2048 lane: native-twin(SNB row) [ulps]             26209.000 37643972056.210    3.598e+12
+
+provable K (|native - twin| <= K eps S0): any order on the twin side: n; SkylakeX gemv_t (depth n/4+3): (n + n/4 + 3)/2
+4 any: 4  skx: 4.0
+32 any: 32  skx: 21.5
+128 any: 128  skx: 81.5
+512 any: 512  skx: 321.5
+2048 any: 2048  skx: 1281.5

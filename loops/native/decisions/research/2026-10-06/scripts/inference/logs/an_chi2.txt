@@ -1,0 +1,4 @@
+chi2 breast done 93.2s
+chi2 wine done 189.7s
+chi2 digits done 859.6s
+chi2 synth_pos done 384.0s

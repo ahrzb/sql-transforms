@@ -1,0 +1,388 @@
+{
+ "n_enr": 0,
+ "n_cand": 14000000,
+ "steps=2,s=0.5,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=2,s=0.5,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=3,s=0.4,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=3,s=0.4,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=2,s=0.8,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=2,s=0.8,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=3,s=0.5,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=3,s=0.5,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=4,s=0.4,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "cos3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=4,s=0.4,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "cos3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=4,s=0.26,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "cos3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=4,s=0.26,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "cos2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin2": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "cos3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin3": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=2,s=0.3,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=2,s=0.3,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ },
+ "steps=2,s=0.7,U(0,1e3)": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 682.3518632481434
+  }
+ },
+ "steps=2,s=0.7,randmant_full": {
+  "lane0_diff": 0,
+  "cos1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  },
+  "sin1": {
+   "lanes_diff": 0,
+   "maxK": 0.0,
+   "nK>1": 0,
+   "x_at_max": 3.8149611068273e+229
+  }
+ }
+}

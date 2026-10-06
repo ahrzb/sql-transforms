@@ -1,0 +1,4 @@
+2 compared 2
+3 compared 2
+4 ParityError: row 0 lane 'f1': step nan, native 0.0 (18446744073709551616 ulps, bound 0); input {'__iid': 0, 'x0': inf}
+6 ParityError: row 0 lane 'f1': step nan, native 0.0 (18446744073709551616 ulps, bound 0); input {'__iid': 0, 'x0': inf}

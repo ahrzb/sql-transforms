@@ -1,0 +1,6 @@
+pca_all breast done 131.2s
+pca_all wine done 338.6s
+pca_all digits done 559.8s
+pca_all diabetes done 107.8s
+pca_all synth done 388.1s
+pca_all synth_redund done 113.2s

@@ -1,0 +1,5 @@
+Installed 1 package in 3ms
+goldberg log1p: n=400000  err vs exact: max 2.012 ulp, p99.9 1.474, not CR 17.9895% | dist to glibc log1p: max 2 ulp, differ 19.337% | dist to numpy log1p: max 2 ulp, differ 18.011% | numpy err max 0.603 | worst arg np.float64(1.038001426588247e+16)
+kahan expm1: n=400000  err vs exact: max 2.303 ulp, p99.9 1.561, not CR 8.0680% | dist to glibc expm1: max 2 ulp, differ 11.203% | dist to numpy expm1: max 2 ulp, differ 8.068% | numpy err max 0.519 | worst arg np.float64(4.393088459071292e-13)
+duckdb goldberg == python: 0 mismatches of 400000
+duckdb kahan == python: 0 mismatches of 400000

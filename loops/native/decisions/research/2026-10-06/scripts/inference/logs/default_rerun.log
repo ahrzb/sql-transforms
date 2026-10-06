@@ -1,0 +1,12 @@
+default_rerun {'env': {}, 'blas': [('libscipy_openblas', 'SkylakeX', 4)], 'npy_avx512_skx': True}
+default_rerun pca_all breast 8.4s
+default_rerun pca_all wine 6.0s
+default_rerun pca_all digits 9.7s
+default_rerun pca_all diabetes 5.9s
+default_rerun pca_all synth 8.9s
+default_rerun pca_all synth_redund 9.2s
+default_rerun kmeans8 breast 17.1s
+default_rerun kmeans8 wine 17.9s
+default_rerun kmeans8 digits 21.9s
+default_rerun kmeans8 diabetes 22.1s
+default_rerun kmeans8 synth 32.0s

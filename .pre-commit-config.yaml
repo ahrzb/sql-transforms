@@ -5,6 +5,10 @@
 # version locked in uv.lock; bump both together or local and CI will disagree.
 #
 # One-time local setup:  uv run pre-commit install
+#
+# The research scripts behind decision records are kept verbatim, as the
+# evidence they are, not as maintained code.
+exclude: ^loops/native/decisions/research/
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.21

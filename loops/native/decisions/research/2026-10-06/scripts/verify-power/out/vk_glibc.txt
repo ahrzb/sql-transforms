@@ -1,0 +1,4 @@
+log1p {'n': 300000, 'np_max': np.float64(0.7719623773606391), 'np_ncr': np.float64(0.024193333333333334), 'lm_max': np.float64(0.7719623773606391), 'lm_ncr': np.float64(0.024193333333333334), 'differ': np.float64(0.0), 'maxdist': 0, 'batch_vs_single': 0}
+expm1 {'n': 300000, 'np_max': np.float64(0.7692581999829731), 'np_ncr': np.float64(0.06196), 'lm_max': np.float64(0.7692581999829731), 'lm_ncr': np.float64(0.06196), 'differ': np.float64(0.0), 'maxdist': 0, 'batch_vs_single': 0}
+log {'n': 300000, 'np_max': np.float64(0.5157703300451321), 'np_ncr': np.float64(0.00071), 'lm_max': np.float64(0.5157703300451321), 'lm_ncr': np.float64(0.00071), 'differ': np.float64(0.0), 'maxdist': 0, 'batch_vs_single': 0}
+exp {'n': 300000, 'np_max': np.float64(0.5051566366660384), 'np_ncr': np.float64(0.0007), 'lm_max': np.float64(0.5051566366660384), 'lm_ncr': np.float64(0.0007), 'differ': np.float64(0.0), 'maxdist': 0, 'batch_vs_single': 0}

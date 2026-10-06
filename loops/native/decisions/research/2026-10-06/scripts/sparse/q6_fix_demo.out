@@ -1,0 +1,6 @@
+[spmatrix] OneHotEncoder: declared equal=True (width 4); DuckDB transform bit-equal=True; confit infer bit-equal=True
+[spmatrix] KBinsDiscretizer: declared equal=True (width 10); DuckDB transform bit-equal=True; confit infer bit-equal=True
+[spmatrix] SplineTransformer: declared equal=True (width 14); DuckDB transform bit-equal=True; confit infer bit-equal=True
+[sparray] OneHotEncoder: declared equal=True (width 4); DuckDB transform bit-equal=True; confit infer bit-equal=True
+[sparray] KBinsDiscretizer: declared equal=True (width 10); DuckDB transform bit-equal=True; confit infer bit-equal=True
+[sparray] SplineTransformer: declared equal=True (width 14); DuckDB transform bit-equal=True; confit infer bit-equal=True

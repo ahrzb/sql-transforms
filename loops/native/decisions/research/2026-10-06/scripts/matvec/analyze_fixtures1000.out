@@ -1,0 +1,48 @@
+## SCALE=S
+term scale: S = (sum|x_i c_i| + |m.c|) / s (the record's)
+lanes 135034; finite S 134285
+emulated SkylakeX row twin == SkylakeX row twin: 133390/135034 bit-exact
+== seeds 0..199, lanes with finite S: 25208 (all lanes 25348)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                          25208   4819     9877709850        5   1.124   2.992
+Sandybridge row vs SkylakeX row                   25208   8418           2026        1   5.776 237.568
+SkylakeX batch(gemm) vs SkylakeX row              25208   4696     9877709850        4   1.106   2.992
+Sandybridge batch(gemm) vs SkylakeX row           25208   8896     9877709850        3   5.761 237.568
+native vs Sandybridge row                         25208   7979     9877709850        5   5.776 237.568
+== seeds 0..999, lanes with finite S: 134285 (all lanes 135034)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                         134285  26764 9234217737743218688       32   1.170   4.119
+Sandybridge row vs SkylakeX row                  134285  45541 9466171209597812736       47   4.046 1730.781
+SkylakeX batch(gemm) vs SkylakeX row             134285  26350 13021609213280948224       39   1.143   4.119
+Sandybridge batch(gemm) vs SkylakeX row          134285  48604 9234217737743218688       50   4.056 1730.781
+native vs Sandybridge row                        134285  43747 9471513525359742976       49   4.051 1730.781
+x.c vs exact, eps*S0 units (S0 = sum|x_i c_i|), 131516 lanes: LTR max 4.671 p99 1.298; SkylakeX gemv max 2.844 p99 0.955
+worst Sandybridge vs SkylakeX: K=1730.78 seed=715 m=31 k=31 C-contig=True S_rec=9.629e-04 S2=4.929e+00 S2/S_rec=5119.3
+SkylakeX: native!=twin lanes with eps*S subnormal/zero: 0; with S non-finite: 1
+   e.g. lane 61214 native -8.470005491905276e+306 twin -8.470005491905126e+306 S inf ulps 120
+Sandybridge: native!=twin lanes with eps*S subnormal/zero: 0; with S non-finite: 1
+   e.g. lane 58686 native 1.596489892245738e+308 twin 1.5964898922457384e+308 S inf ulps 2
+## SCALE=S2
+term scale: S2 = (sum|x_i c_i| + sum|m_i c_i|) / s
+lanes 135034; finite S 134285
+emulated SkylakeX row twin == SkylakeX row twin: 133390/135034 bit-exact
+== seeds 0..199, lanes with finite S: 25208 (all lanes 25348)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                          25208   4819     9877709850        5   1.072   2.992
+Sandybridge row vs SkylakeX row                   25208   8418           2026        1   1.178   2.861
+SkylakeX batch(gemm) vs SkylakeX row              25208   4696     9877709850        4   1.067   2.992
+Sandybridge batch(gemm) vs SkylakeX row           25208   8896     9877709850        3   1.247   2.992
+native vs Sandybridge row                         25208   7979     9877709850        5   1.226   3.096
+== seeds 0..999, lanes with finite S: 134285 (all lanes 135034)
+pair                                              lanes differ       max ulps >1e3ulps   p99 K   max K
+native (LTR) vs SkylakeX                         134285  26764 9234217737743218688       32   1.108   4.118
+Sandybridge row vs SkylakeX row                  134285  45541 9466171209597812736       47   1.231   3.097
+SkylakeX batch(gemm) vs SkylakeX row             134285  26350 13021609213280948224       39   1.086   4.118
+Sandybridge batch(gemm) vs SkylakeX row          134285  48604 9234217737743218688       50   1.302   4.118
+native vs Sandybridge row                        134285  43747 9471513525359742976       49   1.294   4.118
+x.c vs exact, eps*S0 units (S0 = sum|x_i c_i|), 131516 lanes: LTR max 4.671 p99 1.298; SkylakeX gemv max 2.844 p99 0.955
+worst Sandybridge vs SkylakeX: K=3.10 seed=594 m=18 k=18 C-contig=True S_rec=4.543e+14 S2=4.545e+14 S2/S_rec=1.0
+SkylakeX: native!=twin lanes with eps*S subnormal/zero: 0; with S non-finite: 1
+   e.g. lane 61214 native -8.470005491905276e+306 twin -8.470005491905126e+306 S inf ulps 120
+Sandybridge: native!=twin lanes with eps*S subnormal/zero: 0; with S non-finite: 1
+   e.g. lane 58686 native 1.596489892245738e+308 twin 1.5964898922457384e+308 S inf ulps 2

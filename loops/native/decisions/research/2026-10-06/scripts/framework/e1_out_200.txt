@@ -1,0 +1,30 @@
+M differs across kernels on 10586 of 25348 projected-mean constants
+/tmp/claude-0/-home-user-sql-transforms/903b9aef-c7e3-5c91-bc7f-b02f0b9c62f5/scratchpad/research/framework/e1_analyze.py:80: RuntimeWarning: invalid value encountered in subtract
+  K = np.abs(a - b) / (EPS * s)
+/tmp/claude-0/-home-user-sql-transforms/903b9aef-c7e3-5c91-bc7f-b02f0b9c62f5/scratchpad/research/framework/e1_analyze.py:80: RuntimeWarning: invalid value encountered in divide
+  K = np.abs(a - b) / (EPS * s)
+n in [1,4]: lanes 8750, max K 1.762, p99 K 0.875
+n in [5,16]: lanes 3292, max K 1.641, p99 K 1.070
+n in [17,32]: lanes 13151, max K 2.992, p99 K 1.276
+{'pair': 'twin[default] vs native(M_default)', 'lanes': 25193, 'differ': 4819, 'max_ulps': 9877709850.0, 'p99_ulps': 10.0, 'p99_K': 1.124153661703502, 'max_K': 2.9921733146894844, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Haswell] vs native(M_Haswell)', 'lanes': 25193, 'differ': 4686, 'max_ulps': 9877709850.0, 'p99_ulps': 9.0, 'p99_K': 1.1145282057403592, 'max_K': 2.9921733146894844, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Sandybridge] vs native(M_Sandybridge)', 'lanes': 25193, 'differ': 3754, 'max_ulps': 9877709850.0, 'p99_ulps': 7.0, 'p99_K': 1.0913606373245288, 'max_K': 3.09697798835106, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Nehalem] vs native(M_Nehalem)', 'lanes': 25193, 'differ': 3754, 'max_ulps': 9877709850.0, 'p99_ulps': 7.0, 'p99_K': 1.0913606373245288, 'max_K': 3.09697798835106, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Core2] vs native(M_Core2)', 'lanes': 25193, 'differ': 3754, 'max_ulps': 9877709850.0, 'p99_ulps': 7.0, 'p99_K': 1.0913606373245288, 'max_K': 3.09697798835106, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[default] vs twin[Haswell] (S_full)', 'lanes': 25193, 'differ': 680, 'max_ulps': 568.0, 'p99_ulps': 1.0, 'p99_K': 0.6721329788535426, 'max_K': 1.762496655315697, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[default] vs twin[Sandybridge] (S_full)', 'lanes': 25193, 'differ': 8418, 'max_ulps': 2026.0, 'p99_ulps': 18.0, 'p99_K': 1.1781850728609962, 'max_K': 2.8612120418217972, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[default] vs twin[Nehalem] (S_full)', 'lanes': 25193, 'differ': 8418, 'max_ulps': 2026.0, 'p99_ulps': 18.0, 'p99_K': 1.1781850728609962, 'max_K': 2.8612120418217972, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[default] vs twin[Core2] (S_full)', 'lanes': 25193, 'differ': 8418, 'max_ulps': 2026.0, 'p99_ulps': 18.0, 'p99_K': 1.1781850728609962, 'max_K': 2.8612120418217972, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Haswell] vs twin[Sandybridge] (S_full)', 'lanes': 25193, 'differ': 8061, 'max_ulps': 2026.0, 'p99_ulps': 17.0, 'p99_K': 1.1631296909937388, 'max_K': 2.8612120418217972, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Haswell] vs twin[Nehalem] (S_full)', 'lanes': 25193, 'differ': 8061, 'max_ulps': 2026.0, 'p99_ulps': 17.0, 'p99_K': 1.1631296909937388, 'max_K': 2.8612120418217972, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Haswell] vs twin[Core2] (S_full)', 'lanes': 25193, 'differ': 8061, 'max_ulps': 2026.0, 'p99_ulps': 17.0, 'p99_K': 1.1631296909937388, 'max_K': 2.8612120418217972, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Sandybridge] vs twin[Nehalem] (S_full)', 'lanes': 25193, 'differ': 0, 'max_ulps': 0.0, 'p99_ulps': 0.0, 'p99_K': 0.0, 'max_K': 0.0, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Sandybridge] vs twin[Core2] (S_full)', 'lanes': 25193, 'differ': 0, 'max_ulps': 0.0, 'p99_ulps': 0.0, 'p99_K': 0.0, 'max_K': 0.0, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Nehalem] vs twin[Core2] (S_full)', 'lanes': 25193, 'differ': 0, 'max_ulps': 0.0, 'p99_ulps': 0.0, 'p99_K': 0.0, 'max_K': 0.0, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[Haswell] vs native(M_default) (S_full)', 'lanes': 25193, 'differ': 5048, 'max_ulps': 9877709850.0, 'p99_ulps': 10.0, 'p99_K': 1.0852236764224712, 'max_K': 2.9918353777726665, 'sign_flips': 0, 'nonfinite_mismatch': 0}
+{'pair': 'twin[default] vs exact (S_full)', 'lanes': 25193, 'p99_K': 0.9831887882818499, 'max_K': 1.9355333854219336, 'n_at_max': 21, 'derived_Kdet_at_that_n': 11.5}
+{'pair': 'twin[Haswell] vs exact (S_full)', 'lanes': 25193, 'p99_K': 0.989663602416169, 'max_K': 1.9355333854219336, 'n_at_max': 21, 'derived_Kdet_at_that_n': 11.5}
+{'pair': 'twin[Sandybridge] vs exact (S_full)', 'lanes': 25193, 'p99_K': 1.0171966136147406, 'max_K': 2.155856671359165, 'n_at_max': 24, 'derived_Kdet_at_that_n': 13.0}
+{'pair': 'twin[Nehalem] vs exact (S_full)', 'lanes': 25193, 'p99_K': 1.0171966136147406, 'max_K': 2.155856671359165, 'n_at_max': 24, 'derived_Kdet_at_that_n': 13.0}
+{'pair': 'twin[Core2] vs exact (S_full)', 'lanes': 25193, 'p99_K': 1.0171966136147406, 'max_K': 2.155856671359165, 'n_at_max': 24, 'derived_Kdet_at_that_n': 13.0}
+{'pair': 'native vs exact (S_full)', 'lanes': 25193, 'p99_K': 1.0987849177589557, 'max_K': 3.0421715114544448, 'n_at_max': 31, 'derived_Kdet_at_that_n': 16.5}
