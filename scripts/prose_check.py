@@ -128,9 +128,8 @@ def main(argv: list[str]) -> int:
     for p in problems:
         print(p)
     if problems:
-        print(
-            f"prose_check: {len(problems)} problems. The rules are in .claude/skills/simple-english/SKILL.md."
-        )
+        rules = ".claude/skills/simple-english/SKILL.md"
+        print(f"prose_check: {len(problems)} problems. The rules are in {rules}.")
     return 1 if problems else 0
 
 
