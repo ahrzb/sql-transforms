@@ -144,7 +144,8 @@ def test_a_field_read_agrees_with_the_oracle(expr):
         " q := levenshtein(s, CAST(NULL AS VARCHAR))) END).p",
         "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
         " q := ((a + NULL) * a) - a) END).p",
-        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x', q := nullif(NULL, a)) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := nullif(NULL, a)) END).p",
         "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x', q := nullif(a + NULL, a))"
         " END).p",
         "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x', q := levenshtein('a',"
