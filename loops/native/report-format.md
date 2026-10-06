@@ -72,6 +72,14 @@ The sections below are in order. Number them, and give each an anchor
    give the family, the configuration, the ulp bound, the seeds and date
    measured, and the reason. The reason is usually a reduction order that
    cannot be reproduced. Say "all bit-exact" when that is true.
+   - A class can declare its bound per configuration (`translates(cls,
+     ulps=ceiling, bound=...)`): list each configuration with a bound
+     above 0 on its own line, as `FunctionTransformer(np.log10)`, 2 ulps.
+   - The KPI `nonzero_ulp_bounds` counts the catalog classes that serve
+     some configuration within a bound above 0: a class whose bound is
+     per configuration counts once, however many of its configurations
+     are bounded. `python -m sql_transform.native.coverage --bounds`
+     prints it.
 
 5. **Findings.** Number the bugs found and fixed, in the catalog or in
    confit. For each one: what it was, how it was found, and the PR that

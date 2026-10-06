@@ -15,13 +15,18 @@ correctly rounded on both sides; DuckDB raises on a negative, so it is
 guarded), `reciprocal` (`1.0 / x`), `floor`, `ceil`, `trunc`, `rint` (half
 to even, spelled from `trunc`: confit has no `round_even`),
 `sign`, and `sin`/`cos` where this platform's numpy answers as confit
-does (`kernel_is_confits` probes it).
+does: all bit-exact. And within a bound of their own (`_BOUNDS`, the
+entry's bound per estimator): `exp`, `log` (DuckDB's `ln`), `log2`,
+`log10`, `tan` and `cbrt`, each DuckDB's function of that name, guarded
+where DuckDB raises and numpy answers IEEE's value. numpy's float64
+kernels for these are its own SIMD code on x86-64 with AVX-512, 1 to 3
+ulps from glibc's, which DuckDB and confit call; numpy picks its kernels
+by CPU, so each is served only where `kernel_distance` finds this
+platform's numpy within the function's bound of confit, as `sin` and
+`cos` within 0.
 
-Refused: every other transcendental. numpy's float64 `exp`, `log`, `log2`,
-`log10`, `tan` and `cbrt` are its own SIMD kernels on x86-64 with AVX-512,
-1 to 3 ulps from glibc's, which DuckDB calls (`_NOT_EXACT`); an entry's
-bound is its class's, and this class is bit-exact. DuckDB has no `log1p`
-nor `expm1`, and confit no inverse or hyperbolic trigonometry.
+Refused: `log1p` and `expm1` (DuckDB has neither), and every other
+function (confit has no inverse or hyperbolic trigonometry).
 """
 
 from __future__ import annotations
@@ -89,6 +94,22 @@ def _sqrt(x: S.Expr) -> S.Expr:
     return S.case(x < _ZERO, _NAN).otherwise(S.fn("sqrt", x))
 
 
+def _log(name: str) -> Callable[[S.Expr], S.Expr]:
+    def spell(x: S.Expr) -> S.Expr:
+        # numpy: -inf at either zero, NaN below zero (-inf included). DuckDB
+        # raises on both. `x <= 0` passed is the guard confit reads as
+        # ruling them out (#362), so a field read leaves the other lanes
+        # unevaluated; NaN is above every number in DuckDB, so it reaches
+        # `name`, which keeps it.
+        return (
+            S.case(x == _ZERO, f64(-math.inf))
+            .when(x <= _ZERO, _NAN)
+            .otherwise(S.fn(name, x))
+        )
+
+    return spell
+
+
 def _trig(name: str) -> Callable[[S.Expr], S.Expr]:
     def spell(x: S.Expr) -> S.Expr:
         # DuckDB raises on an infinity where numpy answers NaN. The guard is
@@ -117,16 +138,26 @@ _SERVED: dict[Any, Callable[[S.Expr], S.Expr]] = {
     np.sign: _sign,
     np.sin: _trig("sin"),
     np.cos: _trig("cos"),
+    # Total in DuckDB: exp overflows to inf and underflows to 0.0, as
+    # numpy's does; cbrt keeps signed zeros, infinities and NaN.
+    np.exp: lambda x: S.fn("exp", x),
+    np.cbrt: lambda x: S.fn("cbrt", x),
+    np.log: _log("ln"),
+    np.log2: _log("log2"),
+    np.log10: _log("log10"),
+    np.tan: _trig("tan"),
 }
 
-# Served only where this platform's numpy kernel is DuckDB's, to the bit.
-_PROBED = {np.sin: "sin", np.cos: "cos"}
-
-# Elementwise functions SQL spells, but not to numpy's bit: the largest
-# distance measured, numpy 2.5.1 against DuckDB 1.5.5 on x86-64 with
-# AVX-512, 1,600,000 draws (uniform in +-1e3 and +-50, normal, and
-# +-exp(uniform(-700, 700))), 2026-10-05.
-_NOT_EXACT = {
+# The functions served within a bound above 0: numpy's kernel is not
+# glibc's, which DuckDB and confit call. Each bound is the largest distance
+# measured, numpy 2.5.1 against DuckDB 1.5.5 and confit on x86-64 with
+# AVX-512: over 1,600,000 draws (uniform in +-1e3 and +-50, normal, and
+# +-exp(uniform(-700, 700))) exp, log, log2 and tan reach 1, log10 2 and
+# cbrt 3; over NATIVE_SEEDS=200 of the catalog's fixtures (each function
+# validated and not, 250,551 rows with the other functions') cbrt reaches
+# 3 and the others 1 (2026-10-05; cbrt against confit after #390). The
+# class's ceiling is the largest of them.
+_BOUNDS = {
     np.exp: 1,
     np.log: 1,
     np.log2: 1,
@@ -134,6 +165,10 @@ _NOT_EXACT = {
     np.log10: 2,
     np.cbrt: 3,
 }
+
+# Served only where this platform's numpy kernel is within its bound of
+# confit's (`kernel_distance`): sin and cos at 0, and the bounded ones.
+_PROBED = {np.sin, np.cos, *_BOUNDS}
 
 # Elementwise functions SQL does not spell.
 _NO_SQL = {
@@ -150,13 +185,21 @@ def _name(func: Any) -> str:
     return name
 
 
+def _ordered(x: np.ndarray) -> np.ndarray:
+    """Each double's position on the line of all doubles (`_check`'s
+    `ulp_distance`, over an array): -0.0 and 0.0 share one."""
+    i = x.view(np.int64)
+    return np.where(i >= 0, i, -(i & 0x7FFF_FFFF_FFFF_FFFF))
+
+
 @functools.cache
-def kernel_is_confits(name: str) -> bool:
-    """Whether numpy's float64 `name` answers as confit's `name`, the engine
-    that serves the entry, on probe values: 40,000 draws over the
-    magnitudes a double spans (huge arguments exercise the range
-    reduction), and the signed zeros and subnormals. A probe that fails to
-    run answers no."""
+def kernel_distance(func: Any) -> int | None:
+    """The largest distance, in doubles, between numpy's float64 `func` and
+    the entry's spelling of it as confit, the engine that serves the entry,
+    computes it, on probe values: 40,000 draws over the magnitudes a double
+    spans (huge arguments exercise the range reduction), and the signed
+    zeros, subnormals, infinities and NaN. NaN against a number counts as
+    2**64. None when the probe fails to run."""
     rng = np.random.default_rng(20261005)
     n = 10_000
     x = np.concatenate(
@@ -166,22 +209,40 @@ def kernel_is_confits(name: str) -> bool:
             rng.uniform(-50.0, 50.0, n),
             np.exp(rng.uniform(-700.0, 700.0, n)) * rng.choice([-1.0, 1.0], n),
             [0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308, math.pi],
+            [math.inf, -math.inf, math.nan, 1e308, -1e308, 709.78, 710.0],
         ]
     )
     rows = pa.table({"x": x})
-    sql = f"SELECT {name}(x) AS y FROM __THIS__"  # noqa: S608 — a fixed name
+    y = _SERVED[func](S.col("x"))
+    sql = f"SELECT {y.sql()} AS y FROM __THIS__"  # noqa: S608 — a fixed spelling
     try:
         probe = DuckDBInferFn(
             sql, row_tables={"__THIS__": rows.schema}, static_tables={}, udfs=[]
         )
         got = probe.infer_arrow(rows).column("y").to_numpy()
     except Exception:  # noqa: BLE001 — any failure leaves the entry out
-        return False
-    want = getattr(np, name)(x)
-    return bool(np.array_equal(want.view(np.int64), got.view(np.int64)))
+        return None
+    with np.errstate(all="ignore"):
+        want = func(x)
+    nan_w, nan_g = np.isnan(want), np.isnan(got)
+    if np.any(nan_w != nan_g):
+        return 1 << 64
+    both = ~nan_w
+    # Python ints: positions of opposite sign can differ past int64.
+    a = _ordered(want[both]).tolist()
+    b = _ordered(got[both]).tolist()
+    return max((abs(p - q) for p, q in zip(a, b, strict=True)), default=0)
 
 
-@translates(FunctionTransformer)
+def _bound(est: Any) -> int:
+    """The estimator's own bound: its function's, 0 for the rest."""
+    try:
+        return _BOUNDS.get(est.func, 0)
+    except TypeError:  # an unhashable callable, which the entry refuses
+        return 0
+
+
+@translates(FunctionTransformer, ulps=max(_BOUNDS.values()), bound=_bound)
 def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate if `validate` (NaN and infinity raise), then
     # `func(X, **kw_args)`, elementwise on the float64 row.
@@ -202,14 +263,16 @@ def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
     except TypeError:  # an unhashable callable
         spell = None
     if spell is None:
-        if isinstance(func, np.ufunc) and func in _NOT_EXACT:
-            raise NotNative(
-                f"{what}: numpy's kernel is up to {_NOT_EXACT[func]} ulp(s) from"
-                " DuckDB's, and the entry is bit-exact"
-            )
         if isinstance(func, np.ufunc) and func in _NO_SQL:
             raise NotNative(f"{what}: {_NO_SQL[func]}")
         raise NotNative(f"{what}: not a function the entry serves")
-    if func in _PROBED and not kernel_is_confits(_PROBED[func]):
-        raise NotNative(f"{what}: this platform's numpy kernel is not confit's")
+    if func in _PROBED:
+        d, b = kernel_distance(func), _bound(est)
+        if d is None:
+            raise NotNative(f"{what}: the kernel probe did not run")
+        if d > b:
+            raise NotNative(
+                f"{what}: this platform's numpy kernel is {d} ulps from"
+                f" confit's on the probe, past the entry's bound of {b}"
+            )
     return [spell(xi) for xi in x]

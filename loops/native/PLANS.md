@@ -8,26 +8,19 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Non-linear maps:** `AdditiveChi2Sampler`.
-2. **`QuantileTransformer` as one search tree per feature:** its two
-   `np.interp` searches bisect the same breakpoints (`-x` mirrors them,
-   with the other endpoint of each interval closed), so one tree whose
-   leaves compute both lines, with `x` at a breakpoint dispatched to the
-   neighbour piece the mirrored search picks, keeps the twin's arithmetic
-   and builds linearly (Needs from confit, "Two CASE trees"): the default
-   1,000 quantiles would build in about 0.6 s per feature, against 1.4 s,
-   and the caps could rise.
-3. **A bound per configuration.** An entry's ulp bound is its class's
-   (`translates(cls, ulps=)`), so `FunctionTransformer`, bit-exact for the
-   identity and the exact functions, refuses `np.exp`, `np.log`,
-   `np.log2`, `np.tan` (1 ulp from DuckDB's on x86-64 with AVX-512),
-   `np.log10` (2) and `np.cbrt` (3), measured over 1,600,000 draws
-   (`function.py`, 2026-10-05). A translator that declares its own bound
-   per estimator would serve them within those, once each is measured over
-   200 seeds of fixtures.
+1. **Boolean features in the fixture generator.** No entry is tested on a
+   boolean column yet ("Left Python", the encoders), though the step reads
+   one as 0/1 (`_registry._feature`) and a `ColumnTransformer` passes it
+   through. Every class's draws change, so it is its own ticket, run alone.
 
 ## Waiting on the owner
 
+- **`AdditiveChi2Sampler`:** its lanes are `factor * cos(j * (s *
+  log(x)))` and the same with `sin`, and numpy's `log`, up to 1 ulp from
+  DuckDB's `ln`, reaches `cos` and `sin` unchanged in absolute terms, so
+  near a zero the result parts by any number of ulps (8,192 over 400,000
+  draws), while within 0.91 eps of the lane's term scale
+  (decisions/open/additive-chi2-parity-bound.md).
 - **Linear projections:** `PCA` (`whiten`), `IncrementalPCA`,
   `TruncatedSVD`, `FactorAnalysis`, `FastICA`, `GaussianRandomProjection`,
   `SparseRandomProjection`, `PLSSVD`/`PLSRegression`/`CCA`/`PLSCanonical`
@@ -48,16 +41,16 @@ Easiest first; each is one family, one PR.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
-  tree(-x))` over `x = coalesce(p, NaN)`, the shape of
-  `QuantileTransformer`'s entry (`np.interp` both ways), builds in 0.46,
-  1.37, 4.48 s, and the entry at 4,000 quantiles in 16.2 s (release
-  build, master 49acad5). One tree whose leaves hold both lines builds in
-  0.28, 0.59, 1.25, 2.87 s up to 4,000. A confit-only reproduction is in
-  the message sent to the confit loop (2026-10-05). The entry is capped at
-  4,000 quantiles over the features and 4,000,000 in their squares
-  meanwhile (about 7 s at most); Next, item 2, is the entry-side
-  alternative.
-
+  tree(-x))` over `x = coalesce(p, NaN)` builds in 0.46, 1.37, 4.48 s
+  (release build, master 49acad5; a confit-only reproduction is in the
+  message sent to the confit loop, 2026-10-05). The catalog no longer
+  needs it: `QuantileTransformer` answers both searches from one tree
+  whose leaves compute both lines (T12), 0.5, 1.3, 2.7-3.2 s at 1,000,
+  2,000, 4,000 quantiles over one feature against 1.4, 4.7, 23 s for the
+  two trees (release build, one container, 2026-10-05); capped at 8,000
+  quantiles over an estimator's features (6-8 s at that sum). Low priority
+  for confit: a future entry that needs two trees in one expression would
+  raise it again.
 - **A value bound once in a SQL function body.** A function body is
   substituted as text, so an expression read twice is spelled twice, and
   a recurrence whose every step reads the previous one twice doubles per
@@ -76,7 +69,7 @@ Easiest first; each is one family, one PR.
   the degree, and serve the steps past the token cap.
 
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
-#353, #358, #362, #363, #374, #375, #377): a constant CASE
+#353, #358, #362, #363, #374, #375, #377, #390): a constant CASE
 result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
 against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
@@ -109,7 +102,10 @@ under a guard on `abs(x)` as trap-free (`FunctionTransformer(np.sin)` at
 and 19.5 us at 128, uncapped, with the guard spelled through `abs`); and
 a subexpression shared only where it costs no row anything (a
 three-instance `QuantileTransformer` served 64 rows in 21,480 us after
-#363; now 1,033; release build, master 8a67154).
+#363; now 1,033; release build, master 8a67154); and `cbrt` as glibc's,
+as DuckDB's is (confit parted from DuckDB on 99,438 of 200,000 draws, by
+up to 3 ulps; now on none, so `FunctionTransformer(np.cbrt)` is served
+within its 3 ulps of numpy).
 
 ## Left Python
 
@@ -138,9 +134,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   Bin edges that are not sorted numbers (searchsorted's answer is then
   its search order's), which no strategy fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
-  `norm.ppf` has no SQL twin. Past 4,000 quantiles over an estimator's
-  features or 4,000,000 in their squares, where builds pass about 7 s
-  (Needs from confit, "Two CASE trees in one expression").
+  `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
+  features, where builds reach 6-8 s (`quantile.MAX_QUANTILES`).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
@@ -151,12 +146,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `FunctionTransformer` with a `func` other than the identity and numpy's
   `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`
-  (lambdas, partials, user functions, other ufuncs); with `kw_args`; over
-  a string feature, or a boolean one except for the identity (numpy keeps
-  a boolean row boolean). The transcendentals 1-3 ulps from DuckDB's wait
-  on a bound per configuration (Next, item 3); `log1p` and `expm1` have no
-  DuckDB function; `sin` and `cos` only where `kernel_is_confits` finds
-  numpy's kernel bit-equal to confit's.
+  (bit-exact) and `exp`, `log`, `log2`, `tan` (within 1 ulp), `log10`
+  (within 2) and `cbrt` (within 3) (lambdas, partials, user functions,
+  other ufuncs); with `kw_args`; over a string feature, or a boolean one
+  except for the identity (numpy keeps a boolean row boolean). `log1p`
+  and `expm1` have no DuckDB function. `sin` and `cos`,
+  and the bounded functions, only where `kernel_distance` finds numpy's
+  kernel within the function's bound of confit's (numpy picks its kernel
+  by CPU). A bounded function does not compose: a `Pipeline`,
+  `ColumnTransformer` or `FeatureUnion` refuses it, naming its bound.
 - A `Pipeline` with a step that is not a catalog entry, or one
   registered with a bound (a later step does not keep it bounded:
   `x - mean_` near `mean_`); with `transform_input` (which only transforms
