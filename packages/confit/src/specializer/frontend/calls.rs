@@ -127,6 +127,18 @@ pub(super) fn marker_args(f: &sqlparser::ast::Function) -> Vec<SqlExpr> {
         .collect()
 }
 
+/// Whether the marker has arguments ([`marker_args`] is not empty).
+fn has_args(f: &sqlparser::ast::Function) -> bool {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+    let FunctionArguments::List(list) = &f.args else {
+        return false;
+    };
+    list.args
+        .iter()
+        .skip(1)
+        .any(|a| matches!(a, FunctionArg::Unnamed(FunctionArgExpr::Expr(_))))
+}
+
 /// The marker `base` (with its arguments) standing for call `id` instead.
 fn with_id(base: &SqlExpr, id: usize) -> SqlExpr {
     let mut out = base.clone();
@@ -160,46 +172,65 @@ impl Binder<'_> {
         // the marker, which carries the arguments, not from the expansion,
         // whose struct field names are often the output aliases
         // (`f(x)."f0" AS "f0"`).
-        let args = match marker {
-            SqlExpr::Function(f) => marker_args(f),
-            _ => Vec::new(),
-        };
-        let words = if args.is_empty() {
-            Rc::default()
-        } else {
-            self.call_words
-                .borrow_mut()
-                .entry(id)
-                .or_insert_with(|| {
-                    Rc::new(
-                        args.iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                            .filter(|w| !w.is_empty())
-                            .map(str::to_ascii_lowercase)
-                            .collect(),
-                    )
-                })
-                .clone()
-        };
-        // A marker without arguments (a split CASE arm bound bare) counts
-        // every alias.
-        let aliases = self
-            .bound_aliases
-            .borrow()
-            .iter()
-            .filter(|(a, _)| words.is_empty() || words.contains(&a.to_ascii_lowercase()))
-            .count();
         (
             id,
             self.joins.len(),
-            aliases,
+            self.aliases_named(id, marker),
             self.in_guarded.get(),
             self.classify_keys.get(),
             self.beside.borrow().len(),
         )
+    }
+
+    /// How many of the aliases bound so far the arguments of call `id`
+    /// name. Aliases are only added, so the count goes on from where the
+    /// last read of the call left it: counting from the first alias at each
+    /// read would take n^2 steps over n items that each read the call.
+    fn aliases_named(&self, id: usize, marker: &SqlExpr) -> usize {
+        let bound = self.bound_aliases.borrow();
+        let words = match marker {
+            SqlExpr::Function(f) if has_args(f) => self.arg_words(id, f),
+            _ => Rc::default(),
+        };
+        // A marker without arguments (a split CASE arm bound bare) counts
+        // every alias.
+        if words.is_empty() {
+            return bound.len();
+        }
+        let mut counts = self.call_aliases.borrow_mut();
+        let (from, n) = counts.entry(id).or_default();
+        *n += bound[*from..]
+            .iter()
+            .filter(|(a, _)| words.contains(&a.to_ascii_lowercase()))
+            .count();
+        *from = bound.len();
+        *n
+    }
+
+    /// The identifier words of the arguments of call `id`, as `f` spells
+    /// them, taken once.
+    fn arg_words(
+        &self,
+        id: usize,
+        f: &sqlparser::ast::Function,
+    ) -> Rc<std::collections::HashSet<String>> {
+        self.call_words
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| {
+                Rc::new(
+                    marker_args(f)
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .filter(|w| !w.is_empty())
+                        .map(str::to_ascii_lowercase)
+                        .collect(),
+                )
+            })
+            .clone()
     }
 
     /// A field read whose root is a call marker: `Ok(None)` when `e` is not

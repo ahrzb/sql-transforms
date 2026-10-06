@@ -1020,6 +1020,9 @@ struct Binder<'a> {
     call_words: std::cell::RefCell<
         std::collections::HashMap<usize, std::rc::Rc<std::collections::HashSet<String>>>,
     >,
+    /// Per call: how many bound aliases its arguments name, counted up to
+    /// how many aliases were bound (see `calls::aliases_named`).
+    call_aliases: std::cell::RefCell<std::collections::HashMap<usize, (usize, usize)>>,
     /// The values this level reads through `SKind::Let` (see `lets.rs`).
     lets: std::cell::RefCell<Vec<SExpr>>,
     /// Per let and scope: what its reads answer.
