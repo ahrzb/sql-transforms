@@ -423,8 +423,13 @@ impl Binder<'_> {
         };
         let mut lanes = Vec::with_capacity(1 + elems.len());
         for (j, b) in self.list_elements(&elems)?.into_iter().map(fold).enumerate() {
-            // DuckDB evaluates the ELSE arm only on the rows that reach it.
-            let b = if guard.is_some() {
+            // DuckDB evaluates the ELSE arm only on the rows that reach it,
+            // so an element that can trap is read only there. One that
+            // cannot trap is read on every row: the boundary NULLs it where
+            // the list is NULL, and a CASE per element would cost a branch
+            // per element (a forest of trees read as one list built 3x
+            // slower with them).
+            let b = if guard.is_some() && can_trap(&b) {
                 let ty = b.ty;
                 SExpr {
                     kind: SKind::Case {

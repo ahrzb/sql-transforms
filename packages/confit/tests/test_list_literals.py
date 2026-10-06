@@ -92,6 +92,33 @@ def test_a_list_sql_function_agrees_with_the_oracle(sql):
     assert_parity(sql, ROWS, udfs=[LST])
 
 
+# A row where the guard is NULL and every element is not.
+GUARDED = table(
+    {"a": "int?", "x": "float?"},
+    [{"a": None, "x": 2.5}, {"a": 1, "x": None}, {"a": 3, "x": -1.0}],
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Elements that cannot trap are read on every row, and the list is
+        # NULL where its guard is.
+        q("CASE WHEN a IS NULL THEN NULL ELSE [x * 2.0, coalesce(x, 7.5), -x] END"),
+        "SELECT lst(a, x) AS o FROM __THIS__",
+        # An element that can trap is read only where the list is: where x
+        # is NULL, 1e30 is past BIGINT and DuckDB never casts it.
+        q(
+            "CASE WHEN x IS NULL THEN NULL "
+            "ELSE [CAST(coalesce(x, 1e30) AS BIGINT), a] END"
+        ),
+        q("CASE WHEN a IS NULL THEN NULL ELSE [x, CAST(a * 3 AS DOUBLE), -x] END"),
+    ],
+)
+def test_a_guarded_list_is_null_where_its_guard_is(sql):
+    assert_parity(sql, GUARDED, udfs=[LST])
+
+
 @pytest.mark.parametrize(
     "expr, why",
     [

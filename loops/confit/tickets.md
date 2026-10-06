@@ -14,7 +14,10 @@ The first wave (the set of tickets that the supervisor started together) is merg
 T4 moved the loop files to `loops/confit/`. It merged inline as #370. T5 binds once a value that a SQL
 function body reads more than once. It merged inline as #412. T6 serves a whole struct as one output value
 (ruled class 3). It merged inline as #417. T7 names an unaliased call of a SQL function after the call, as
-DuckDB does, and lets the campaign generator declare SQL functions. It merged inline as #419.
+DuckDB does, and lets the campaign generator declare SQL functions. It merged inline as #419. T8 reads
+each element of a list output, and each field of a struct output, that a SQL function's `null_when` can make
+NULL without a CASE of its own where the element cannot trap; #417 had made such builds up to 5x slower. It
+merged inline as #422.
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|

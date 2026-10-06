@@ -92,11 +92,15 @@ fn is_not_null(e: SExpr) -> SExpr {
 }
 
 impl OutVal {
-    /// This value read only where `guard` holds: a scalar becomes
-    /// `CASE WHEN guard THEN value END`, which the engine evaluates only on
-    /// the rows the guard selects, as DuckDB evaluates a CASE arm.
+    /// This value read only where `guard` holds: a scalar that can trap
+    /// becomes `CASE WHEN guard THEN value END`, which the engine evaluates
+    /// only on the rows the guard selects, as DuckDB evaluates a CASE arm.
+    /// A scalar that cannot trap stays as it is, read on every row: the
+    /// boundary NULLs it where the struct is NULL, and a CASE per field
+    /// would cost a branch per field.
     fn guarded(self, guard: &SExpr) -> OutVal {
         match self {
+            OutVal::Scalar(e) if !can_trap(&e) => OutVal::Scalar(e),
             OutVal::Scalar(e) => {
                 let ty = e.ty;
                 OutVal::Scalar(SExpr {
