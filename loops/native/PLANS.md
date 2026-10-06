@@ -20,7 +20,12 @@ Easiest first; each is one family, one PR.
    The registered bounds hold on 2,000,000 random-significand draws in each
    of three ranges (numpy 2.5.1 against DuckDB 1.5.5, 2026-10-06): `log`
    1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3.
-3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+3. **Fit the trees cap again** (reading 4, finding 56). `trees.py` takes
+   25,000 path steps as about 7 s, at 0.28 ms a step. Reading 4 measured
+   0.25 ms a step at 1,173 steps and 0.44 ms at 21,353, and #403's forest
+   of 100 trees at depth 6 (21,753 steps) built in 8.8-9.5 s. Fit the
+   estimate on the measured growth, as T13 did for the spline.
+4. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
@@ -93,9 +98,10 @@ flip HistGradientBoosting labels on repeated training values). In order:
   just before its first reader) took the build from growing with the
   parameters times that text to about linear in it: 32 features of degree
   3, 8 knots, build in 1.1-2.4 s (21-46 s before), and the entry's 7 s
-  cap now refuses only degree 5 at 7 knots from 32 features (`continue`,
-  `periodic`) or 64 (the others), and degree 4 at 64 (`continue`, 5
-  knots) (spline.py, `_build_estimate`). The size still doubles per
+  cap refuses, for example, degree 5 at 7 knots from 22 features with
+  `continue` (21 build in 5.2 s), at 32 with `periodic` and at 64 with
+  `constant`, and degree 4 at 64 (`continue`, 5 knots) (spline.py,
+  `_build_estimate`; reading 4). The size still doubles per
   degree, so the need stands: a binding (a `let`, or a nested function
   whose arguments are evaluated once) would make the recurrence linear in
   the degree, and serve the steps past the token cap.

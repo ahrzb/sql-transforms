@@ -90,6 +90,9 @@ def _domain(est, i: int) -> tuple[float, float] | None:
 
 
 def _value(rng: random.Random, est, i: int, f: pa.Field, positive: bool):
+    if f.type == pa.bool_():
+        # A boolean feature (the step hands it to `transform` as a bool).
+        return rng.random() < 0.5
     cats = getattr(est, "categories_", None)
     if cats is not None:
         # A category the step can hand over (NaN and None are missing: a
@@ -139,6 +142,8 @@ def rows(step, seed: int, positive: bool = False) -> pa.Table:
         vals = [r[i] for r in drawn]
         if f.type == pa.int64():
             vals = [None if v is None else int(v) for v in vals]
+        elif f.type == pa.bool_():
+            vals = [None if v is None else bool(v) for v in vals]
         elif f.type != pa.string():
             vals = [None if v is None else float(v) for v in vals]
         cols[f.name] = pa.array(vals, f.type)
