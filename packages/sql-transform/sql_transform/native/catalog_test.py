@@ -1234,6 +1234,97 @@ def test_an_encoder_reads_a_boolean_row_by_its_dtype(make):
     assert check(step, to_native(step, strict=True), rows) >= 3
 
 
+@pytest.mark.parametrize("held", [0, 1, 4], ids=["free", "held-one", "held-all"])
+@pytest.mark.parametrize("kind", ["ordinal", "ordinal-missing", "onehot"])
+def test_an_ordinal_guard_finds_many_strings_by_one_search(monkeypatch, kind, held):
+    # Past SEARCH_PAST strings (lowered here), the input guard of an
+    # encoder with one output field a feature finds a value among them by
+    # one substring search of the strings joined by a separator that none
+    # holds; where a string holds the first separator, the next; where one
+    # holds them all, an IN list. A one-hot encoder keeps the IN list. A
+    # part or a join of the strings, or a value holding a separator, is
+    # none of them; NULL is one where it was fitted.
+    from sql_transform.native import encode
+
+    monkeypatch.setattr(encode, "SEARCH_PAST", 4)
+    holds = {0: [], 1: ["q\x1fr"], 4: ["q" + "".join(encode._SEPARATORS)]}[held]
+    cats = ["a", "b", "", "a b", "日本", "ab", "x%y", *holds]
+    X = np.array(
+        [[c] for c in cats + (["a", None] if kind == "ordinal-missing" else [])]
+    )
+    X = X.astype(object)
+    est = (
+        OneHotEncoder(sparse_output=False) if kind == "onehot" else OrdinalEncoder()
+    ).fit(X)
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.string())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    native = to_native(step, strict=True)
+    assert ("contains(" in native.sql_body) == (kind != "onehot" and held < 4)
+    values = [
+        *[*cats, None, "zz", "A", "日", "q", "r", "ba", "a b "],
+        *["a\x1fb", "\x1fa\x1f", "\x1f", "a\x1eb", "\x1ea\x1e", "a\x1f"],
+    ]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.string()),
+        }
+    )
+    assert check(step, native, rows) >= len(cats)
+
+
+def test_a_onehot_lane_tests_its_category_alone():
+    # Under handle_unknown="error" the ELSE answers the largest group, 0:
+    # every other value it meets traps in the input guard, whose one test
+    # holds the body's one IN list.
+    X = np.array([[f"c{i}"] for i in range(12)], dtype=object)
+    est = OneHotEncoder(sparse_output=False).fit(X)
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.string())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(12)]),
+    )
+    native = to_native(step, strict=True)
+    assert native.sql_body.count(" IN (") == 1
+    values = [f"c{i}" for i in range(12)] + [None, "zz", "c1 c2", ""]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.string()),
+        }
+    )
+    assert check(step, native, rows) == 12
+
+
+@pytest.mark.parametrize(
+    "make",
+    [OrdinalEncoder, lambda: OneHotEncoder(sparse_output=False)],
+    ids=["OrdinalEncoder", "OneHotEncoder"],
+)
+def test_an_encoder_refuses_a_feature_whose_every_value_raises(make):
+    # A string feature fitted only on NaN: the step hands None, which
+    # sklearn does not match to NaN, so every call raises in Python too.
+    X = np.empty((4, 2), dtype=object)
+    X[:, 0] = np.nan
+    X[:, 1] = ["a", "b", "a", "b"]
+    est = make().fit(X)
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.string()), ("x1", pa.string())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    with pytest.raises(NotNative, match="raises on every value of feature 0"):
+        to_native(step, strict=True)
+
+
 def test_a_null_id_is_a_null_struct():
     # The whole struct, as DuckDB reads it from each definition (confit
     # serves field reads, which are NULL either way).
