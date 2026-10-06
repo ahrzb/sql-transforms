@@ -8,23 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **The encoders' input guard in one test a feature.** Under
-   `handle_unknown="error"`, the default, the guard tests `x NOT IN
-   (categories)` for each feature, and confit builds the guard again at
-   each field read of a struct ("Needs from confit"), so a wide encoder's
-   build grows with its fields times its categories. `OneHotEncoder` over
-   8 string features of 50 categories (400 fields) runs 27 s in
-   `to_native`, and then confit refuses it past Cranelift's size limit (it
-   built in 2.7 s before the guard); `OrdinalEncoder` over 32 features of
-   125 categories builds in 25 s against 0.6 s (release build, master
-   6aea15e). Spell the test for string categories as one substring
-   search, `contains(SEP c1 SEP ... cn SEP, SEP x SEP)`, with a separator
-   that no category holds (`x` holding it is unknown too): about 10 nodes
-   whatever the categories. Where the twin raises on an unknown value, a
-   lane can also answer its largest group in the ELSE, since the guard
-   traps first: an `OneHotEncoder` lane becomes one comparison, not an IN
-   list of the other categories.
-2. **The kernel probe draws random significands**
+1. **The kernel probe draws random significands**
    (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
    on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
    The registered bounds hold on 2,000,000 random-significand draws in each
@@ -32,10 +16,18 @@ Easiest first; each is one family, one PR.
    1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
    that reads 0 makes a bounded function bit-exact on that platform: it
    serves by default, is checked at 0 and composes, as `sin` and `cos`.
-3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+2. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
+3. **Numeric categories as ranges in the encoders' guard.** The guard
+   tests a numeric feature with an IN list of its categories, one
+   comparison a category at each field read: `OrdinalEncoder` over 32
+   features of 125 integer categories builds in 16.5 s (release build,
+   master e1f15b9), against 1.2 s for strings, which search. A run of
+   consecutive integers a..b is `x >= a AND x <= b AND floor(x) = x`,
+   exact on doubles (NaN and ±inf fail the range; -0.0 is 0), in three
+   comparisons whatever the run.
 
 ## Ruled 2026-10-06, to build
 
@@ -91,7 +83,21 @@ that request, `to_native(step, allow_bound=True)`. In order:
     estimates: a forest of 8 features takes one CASE per tree up to about
     2,450 fields (it took 3,100), and 160 trees of depth 5 (8.5 s) are
     refused.
-  - The encoders under `handle_unknown="error"` ("Next" item 1).
+  - The encoders under `handle_unknown="error"`, the default. Since T27
+    the guard is one test a feature, and a one-hot lane is one comparison.
+    The guard is an IN list, which confit expands into one comparison a
+    category (`frontend/expr.rs`) and builds and runs again at each field
+    read. `OneHotEncoder` over 8 string features of 50 categories (400
+    fields) builds in 5.3 s and serves a row in 920 us (the twin 1,695
+    us); over 8 features of 125 categories or 32 of 20 it is refused,
+    after 8.2 s and 4.8 s. Past 100 strings an ordinal encoder's guard is
+    one substring search (`contains`), which builds smaller:
+    `OrdinalEncoder` over 32 features of 125 categories builds in 1.2 s
+    (26 s with the IN lists) and serves a row in 1,127 us (1,033), and
+    over 32 of 500 in 3.3 s (refused after 235 s) and 3,208 us. A
+    one-hot encoder keeps the IN lists: each of its fields runs the guard,
+    and over 8 features of 125 categories the search served a row in
+    11.9 ms, against the twin's 2.8 ms (release build, master e1f15b9).
   - `StandardScaler` at 256 features builds in 1.4 s (0.4 s without the
     guard), and `PolynomialFeatures` of degree 2 over 64 features in 4.6 s
     (2.4 s).
@@ -99,6 +105,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
   The confit loop lists it in its plans (Performance) and has the
   reproductions; it was asked to raise it, 2026-10-06. When it lands,
   measure the builds again and refit the estimates.
+- **A named refusal, not a Cranelift verifier error.** `OneHotEncoder`
+  over 16 string features of 125 categories (2,000 fields) stops after
+  31 s with `cranelift define: verifier error`, an internal error, where
+  confit names the limit it passes for the other wide encoders (release
+  build, T27's code on master e1f15b9). The catalog leaves the step Python
+  either way.
 - **Two CASE trees in one expression that build in linear time.** One
   balanced CASE tree of q linear pieces over a DOUBLE builds linearly
   (0.09, 0.17, 0.40 s at q = 500, 1,000, 2,000); `0.5 * (tree(x) -
@@ -183,6 +195,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   number (`None`, `pd.NA`, a string); `MissingIndicator(sparse=True)`.
 - A selector that keeps no feature, or whose `get_support()` raises (as
   its `transform` would).
+- An encoder whose twin raises on every value of a feature: a string
+  feature fitted only on NaN, which sklearn does not match to the None
+  that the step hands. Every call raises in Python too.
 - `OneHotEncoder(sparse_output=True)`, the default: a sparse output, which
   the Python step does not serve either (it reads a row with `float()`,
   and a sparse row is not a float). A note for the step, not the catalog.

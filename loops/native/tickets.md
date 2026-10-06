@@ -10,16 +10,19 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
-T26 merged on 2026-10-06: the forest and spline build estimates count
-the input guard. confit builds the guard's tests again at each field read
-of a struct output, so a build grows with the fields read times the
-guard's tests; `trees._case_seconds`, `trees._paths_seconds` and
-`spline._build_estimate` have a term for it, refitted on master 6aea15e.
-Coverage is 31 of 68. The loop runs from the "Transforms Loop" project
-thread.
+T27 merged on 2026-10-06: the encoders' input guard is one test a
+feature, and under `handle_unknown="error"` a lane's ELSE answers its
+largest group, so a one-hot lane is one comparison. Past 100 strings an
+ordinal encoder's guard is one substring search. `OneHotEncoder` over 8
+string features of 50 categories builds again (5.3 s; refused since T25),
+over 8 of 10 it builds in 0.21 s against 0.46 s and serves a row in 18 us
+against 30, and `OrdinalEncoder` over 32 features of 125 categories builds
+in 1.2 s against 26 s. Coverage is 31 of 68. The loop runs from the
+"Transforms Loop" project thread.
 
-Next up: the encoders' input guard in one test a feature (PLANS "Next"
-item 1: wide encoders build slowly or are refused since T25), then the
-densified sparse outputs and the families on the parity bound.
+The loop is paused at the owner's request (2026-10-06): it takes no new
+ticket until the owner resumes it. Next when it resumes: the kernel
+probe's random significands (PLANS "Next" item 1), then the densified
+sparse outputs and the families on the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.
