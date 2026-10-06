@@ -26,6 +26,7 @@ from sklearn.pipeline import FeatureUnion, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from sql_transform.model import SQLTransform, Transform
+from sql_transform.model._foreign_test import fit_scaler, transform_scaler
 
 SMALL = pa.table({"v": [1.0, 2.0, 3.0]})
 REL = (
@@ -101,8 +102,7 @@ def test_cross_val_score_runs_with_a_shared_connection():
 
 
 def test_clone_still_carries_captured_objects():
-    codes = pa.table({"k": ["a"], "mul": [10.0]})
-    assert codes is not None
+    codes = pa.table({"k": ["a"], "mul": [10.0]})  # noqa: F841 — resolved from the SQL caller frame
     t = SQLTransform("SELECT t.v * c.mul AS z FROM __THIS__ t, codes c")
     copy = clone(t)
     assert copy.captured["codes"] is codes
@@ -111,31 +111,37 @@ def test_clone_still_carries_captured_objects():
 # ------------------------------------------------------------------- pickling
 
 
-def test_a_from_estimator_leaf_pickles():
-    """``Transform.from_estimator`` built its two halves as closures, which are
-    unpicklable — ``deepcopy`` treats functions as atomic so ``clone``
-    survived, but anything that actually serialises did not."""
-    leaf = Transform.from_estimator(StandardScaler(), takes=("v",), returns=("v",))
-    assert pickle.loads(pickle.dumps(leaf)).takes == ("v",)  # noqa: S301 — our own objects, round-tripped
+def test_a_callback_pair_pickles_and_keeps_its_fitted_output():
+    leaf = Transform(fit_scaler, transform_scaler, takes=("v",), returns=("v",))
+    instance = leaf.fit(SMALL)
+    revived_leaf, revived_instance = pickle.loads(  # noqa: S301 — our own objects, round-tripped
+        pickle.dumps((leaf, instance))
+    )
+    out = revived_leaf.transform(revived_instance, pa.table({"v": [1.0, 2.0, 3.0]}))
+    assert out.column_names == ["v"]
+    assert out["v"].to_pylist() == pytest.approx(
+        [-1.224744871391589, 0.0, 1.224744871391589]
+    )
 
 
 def test_a_fitted_transform_with_a_foreign_leaf_pickles():
-    sc = Transform.from_estimator(StandardScaler(), takes=("v",), returns=("v",))
-    assert sc is not None
+    sc = Transform(fit_scaler, transform_scaler, takes=("v",), returns=("v",))  # noqa: F841 — resolved from the SQL caller frame
     t = SQLTransform(
         "SELECT sc_transform(f.theta, struct_pack(v := t.v)).v AS z "
         "FROM __THIS__ t, (SELECT sc_fit(struct_pack(v := v)) AS theta "
         "FROM __FIT__) f"
     )
     fitted = t.fit(SMALL)
-    assert pickle.loads(pickle.dumps(fitted.params)) is not None  # noqa: S301 — our own objects, round-tripped
-    assert pickle.loads(pickle.dumps(sc)).returns == ("v",)  # noqa: S301 — our own objects, round-tripped
+    revived = pickle.loads(pickle.dumps(fitted))  # noqa: S301 — our own objects, round-tripped
+    assert revived(SMALL)["z"].to_pylist() == pytest.approx(
+        [-1.224744871391589, 0.0, 1.224744871391589]
+    )
 
 
 def test_the_estimator_is_still_cloned_per_fit():
     """Making the halves picklable must not accidentally share learned state
     between groups — that was the reason they were built per call."""
-    leaf = Transform.from_estimator(StandardScaler(), takes=("v",), returns=("v",))
+    leaf = Transform(fit_scaler, transform_scaler, takes=("v",), returns=("v",))
     one = leaf.fit(pa.table({"v": [1.0, 2.0, 3.0]}))
     two = leaf.fit(pa.table({"v": [100.0, 200.0, 300.0]}))
     assert one is not two
@@ -143,7 +149,7 @@ def test_the_estimator_is_still_cloned_per_fit():
 
 
 def test_a_pickled_leaf_still_transforms():
-    leaf = Transform.from_estimator(StandardScaler(), takes=("v",), returns=("v",))
+    leaf = Transform(fit_scaler, transform_scaler, takes=("v",), returns=("v",))
     instance = leaf.fit(pa.table({"v": [1.0, 2.0, 3.0]}))
     revived = pickle.loads(pickle.dumps(leaf))  # noqa: S301 — our own objects, round-tripped
     out = revived.transform(instance, pa.table({"v": [2.0]}))

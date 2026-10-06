@@ -469,13 +469,18 @@ The first five are ruled, in this order; the rest follow.
 
 ## Authoring boundary (`sql_transform`)
 
+The current authoring boundary is in
+[`packages/sql-transform/docs/contract.md`](../../packages/sql-transform/docs/contract.md).
+Use that contract for fit, composition, supported decorrelation and bounded
+window marginalization; the engine contract remains separate.
+
 - Admission-ladder headroom: step semantics for order-keyed windows off the
   training support; static-table joins with frozen composition; IN-subqueries
   as fitted sets; star bundles into transformers; typed takes.
-- Composition directions not yet law (`docs/properties.md`): FROM-position
+- Composition directions not yet law (`packages/sql-transform/docs/contract.md`): FROM-position
   templates, frozen-artifact inlining, `as_udf()`, leakage/cross-fitting.
 - BIT, TIMETZ and UNION partition keys cannot round-trip through the params
-  table (xfail in `sql_transform/model/_marginal_test.py`).
+  table (xfail in `sql_transform/_marginal_test.py`).
 - Reverse dialect frontends (`parse(sql, dialect=SPARK|BIGQUERY)`) are unbuilt;
   the BigQuery L3 execution leg is not written (wire the Spark leg's seam
   through the BigQuery client: `load_table_from_dataframe`, run the printed

@@ -33,58 +33,17 @@ Runs at inference time (`transform()`/`_infer()`), row-at-a-time, no DataFusion.
 | Subqueries / CTEs | ❌ | not implemented |
 | Window functions | ❌ | fit-phase only, not in InferFn |
 
-## Layer 2 — Transformer authoring (`SQLTransform.fit()`, sqlglot parse + rewrite, `sql_transform/_sql.py` + `_state.py` + `_rewrite.py`)
+## Layer 2 — Transform authoring (`sql-transform`)
 
-This is the SQL you actually write as a user. `fit()` parses it with **sqlglot**
-(`_sql.py`), validates it against the supported subset, and structurally locates
-every window aggregate; DataFusion then executes one small value query per
-distinct aggregate; `_rewrite.py` mutates the sqlglot tree into the narrower
-Layer-1 SQL. **The rewrite step is the bottleneck** — it currently only
-understands plain columns and binary-op arithmetic in the SELECT list, so most of
-what could run at `fit()` time can't survive into `transform()`.
+The [authoring contract](../packages/sql-transform/docs/contract.md) defines
+the current SQL surface. It covers authored `(F, T) -> R` transforms, fit,
+composition, supported decorrelation and bounded window marginalization.
 
-**Parser swap complete:** sqlglot now does 100% of the SQL parsing/analysis for
-Layer 2 — parsing the *original* SQL text directly (stable, documented AST, built
-for exactly this job) instead of walking DataFusion's Python *logical plan*
-objects. DataFusion's only remaining role in `fit()` is executing the
-per-aggregate value queries; it never parses or plans the authored SQL anymore.
-This removed the old wall where `Expr::WindowFunction` wasn't wired into the
-DataFusion Python binding's `to_variant()`, forcing an undocumented
-`node.method(raw_expr)` fallback. v1 target scope for the sqlglot rewrite: simple
-projection + simple equality joins (see rows below) — not "arbitrary SQL."
-Out-of-scope constructs raise a clear `ValueError` from `_sql.py`'s
-`parse_and_validate` at parse time, not silently pass through to a confusing
-`InferFn` failure later.
+`SQLTransform` supports general relation computations. `SQLProjection` adds
+the row-local rule. Confit checks serving admission separately.
 
-| Feature | Status | Source |
-|---|---|---|
-| Window aggregate, no `PARTITION BY`/`ORDER BY` (e.g. `AVG(age) OVER ()`) | ✅ | `_sql.py` `find_window_aggregates` |
-| Plain column reference in SELECT | ✅ | `_rewrite.py` `rewrite_sql` |
-| Binary-op arithmetic in SELECT (e.g. `age - AVG(age) OVER ()`) | ✅ | `_rewrite.py` `rewrite_sql` |
-| Required alias on every SELECT item | ✅ (enforced) | `_rewrite.py` `rewrite_sql` |
-| Explicit `ValueError` naming the unsupported clause (`WHERE`/`JOIN`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`) instead of a downstream failure | ✅ | `_sql.py` `parse_and_validate` |
-| `MEAN` → `AVG` synonym (preserves pre-sqlglot behavior) | ✅ | `_sql.py` `_FUNCTION_SYNONYMS` |
-| `PARTITION BY` window aggregates (target/categorical encoding) | ✅ | `_state.py` `build_state_tables` (per-partition table) + `_rewrite.py` LEFT JOIN + native LEFT lookup join; unseen partition → NULL, transform stays 1-to-1 |
-| Parameterized (quantile) window aggregate — `percentile_cont(x, q)` / `approx_percentile_cont` OVER, quantile fraction frozen at fit | ✅ | `_sql.py` `_PARAMETERIZED_AGGS` (folds the literal `q` into the state key so p25/p75 don't collide; rejects non-literal `q`) + `_state.py` extraction GROUP BY. `MEDIAN(x)` works as any 1-arg window fn |
-| Per-partition/global state value types preserved (int/float/str/bool, nullable) | ✅ | `_state.py` `build_state_tables` (no float coercion) |
-| `ORDER BY` window aggregates | ❌ explicitly rejected | `_state.py` `build_state_tables` (via `WindowAgg.has_order`) |
-| Simple equality JOIN in authored SQL (row⋈row, row⋈static) | 🔜 v1 target of the sqlglot rewrite | not started |
-| `WHERE` in the authored SQL | ❌ deferred past v1 | rejected at parse time by `_sql.py` `parse_and_validate`; execution-side support deferred |
-| Function calls in SELECT (`UPPER(...)`, `CAST(...)`, etc.) — even though Layer 1 supports them | ❌ deferred past v1 | `_rewrite.py` `rewrite_sql` only handles plain columns, binary ops, and window aggregates |
-| `CASE WHEN` in authored SQL | ❌ deferred past v1 | same gap as above, and Layer 1 doesn't support it either |
-| Non-equality or outer JOIN in authored SQL | ❌ deferred past v1 | Layer 1 itself only supports inner-equality joins anyway |
-| `GROUP BY` (non-window aggregation) | ❌ | rejected at parse time by `_sql.py` `parse_and_validate` |
-| `sklearn.*` transforms (`standardize`, `minmax_scale`, `onehot_encode`, etc.) | ❌ not implemented | README advertises these; no `sklearn` reference anywhere in `sql_transform/` or `src/` as of 2026-07-15 — treat README's sklearn section as aspirational, not current |
+## Reading this tracker
 
-## Reading this table
-
-Layer 1 (the interpreter) is currently *more* capable than Layer 2 (the authoring
-front-end) exposes — e.g. `WHERE`, joins, and string functions all work in
-`InferFn` today but can't be reached by writing `SQLTransform(sql)` because
-`_rewrite.py` doesn't pass them through. Closing that gap (making the rewrite
-pass handle more SQL constructs that Layer 1 already runs) is probably higher
-leverage than adding new Layer-1 features, since goal 1 (easy authoring) is
-bottlenecked there.
-The sqlglot rewrite (see above) is the first step of that, scoped deliberately
-narrow (projection + equality joins) rather than chasing full parity in one pass.
-See [[project_goal_and_planning]] in memory for the two project goals this maps to.
+Layer 1 describes the execution engine. Use the authoring contract for
+Layer 2, rather than inferring authoring support from an engine feature.
+A batch projection can succeed while Confit refuses its serving SQL.

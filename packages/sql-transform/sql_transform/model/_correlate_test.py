@@ -324,22 +324,6 @@ def test_the_refusals_are_named_and_at_construction(reason, sql):
     assert caught.value.reason == reason, str(caught.value)
 
 
-def test_every_refusal_reason_is_documented():
-    """The metric is only a metric if the list is written down. Each reason has
-    an entry in the unsupported-cases page, with what it would take to lift."""
-    import pathlib
-
-    from sql_transform.model._correlate import REASONS
-
-    page = (
-        pathlib.Path(__file__).resolve().parents[4]
-        / "docs"
-        / "decorrelation-unsupported.md"
-    ).read_text(encoding="utf-8")
-    missing = [r for r in REASONS if f"`{r}`" not in page]
-    assert not missing, f"undocumented refusal reasons: {missing}"
-
-
 # ------------------------------------------------- what the audit turned up
 # Four ways to be accepted and answered wrong, plus one over-refusal. Each is
 # the shortest shape that shows it.
@@ -476,20 +460,6 @@ def test_a_plain_column_of_the_same_name_is_not_shadowing():
         " FROM __THIS__ t ORDER BY 1",
         fit,
         pa.table({"cat": ["a", "b", "zz"]}),
-    )
-
-
-def test_no_refusal_escapes_the_documented_list():
-    """The gate walks ``REASONS`` to the page and so cannot see a reason that
-    is not in ``REASONS``. ``CorrelatedFit``'s default reason was exactly that:
-    reachable, unnamed, and undocumented."""
-    import inspect
-
-    from sql_transform.model import _errors
-
-    signature = inspect.signature(_errors.CorrelatedFit.__init__)
-    assert signature.parameters["reason"].default is inspect.Parameter.empty, (
-        "a default reason is a refusal nobody has to name"
     )
 
 

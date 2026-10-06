@@ -5,28 +5,35 @@ Companion to the [success measures](specs/success-measures.md): KPIs are what we
 *measure*; properties are what must remain *true*. Each entry says where the
 property is pinned (test).
 
-Layers follow the pipeline: marginalization → fit → serving → engine.
+Layers follow the authored transform: fit → serving → engine.
+
+The [system specification](../../../docs/specs/README.md) organizes the current
+contracts by topic. The [authoring contract](../../sql-transform/docs/contract.md)
+defines authoring syntax, fit behavior and the public artifact.
+These properties record checks, not a second authoring specification.
 
 ---
 
-## Marginalization (the rewrite)
+## Authoring
 
-**P1 — The binding-time split.** A query is a chain of strict projections
-over `__THIS__`. Everything whole-table (window aggregates, scalar/EXISTS
-subqueries, transformer windows) is *static* — computed at fit, frozen into
-params tables; everything row-wise is *dynamic* — survives verbatim into
-`serving_sql`. An expression that survives untouched appears identically in
-both texts, so the two cannot disagree on it.
-*Pinned:*
-`_marginalize_test.py` rewrite goldens.
+**P1 — Fit binds the first parameter.** An authored transform computes
+`(F, T) -> R`. Fit binds `F` and writes params for later execution on `T`.
+Independent fit queries freeze into params tables. Decorrelation rewrites
+supported correlated fit subqueries into fit queries and queries over params.
+`SQLTransform` supports general composition; `SQLProjection` adds the row-local rule.
+Confit checks serving admission separately.
+*Pinned:* the original-query gate in `_marginal_projection_test.py::gate`,
+the freezing tests in `_walk_test.py`, and correlation tests in `_correlate_test.py`.
+The [authoring contract](../../sql-transform/docs/contract.md) defines the admitted forms.
 
-**P2 — The one window rule.** A window is admitted iff its value is a
-function of row-visible values (partition keys, plus order values under
-RANGE/GROUPS peers). Physical position is the one thing a join key cannot
-carry: `row_number`, `ntile`, `lag`/`lead`, bounded ROWS frames, EXCLUDE
-are refused permanently.
-*Pinned:* refusal tables in
-`_marginalize_test.py`.
+**P2 — Window marginalization is bounded convenience.** Admitted window values
+depend on partition keys and, where needed, order values.
+The fit-time carrier executes the original window expressions together.
+It preserves their numerical reading rather than replacing windows with grouped aggregates.
+Physical-position windows (`row_number`, `ntile`, `lag`/`lead`), bounded ROWS
+frames and EXCLUDE refuse.
+*Pinned:* `_marginal_test.py::test_refusals_fire_pre_rewrite_in_the_authors_vocabulary`,
+`::test_the_carrier_keeps_the_original_reduction_order`, and the original-query gate.
 
 **P3 — Params multiplicity.** Every admitted window's value is constant
 within its key tuple, so DISTINCT over (keys, values) collapses to exactly
@@ -36,49 +43,50 @@ serving never duplicates or drops a row (`shape="map"` is provable).
 **P4 — NULL keys are ordinary keys.** PARTITION BY groups NULLs into one
 partition, so params joins use `IS NOT DISTINCT FROM`, never `=`; a NULL
 partition key is a real params row, on every path (DuckDB and Confit).
-*Pinned:* `_projection_test.py::test_standard_scaler_with_null_keys...`,
+*Pinned:* `_marginal_projection_test.py::test_standard_scaler_with_null_keys_and_null_inputs`,
 `confit/tests/test_params_joins.py`.
 *Scope — this is a **window** rule.* A key derived from a correlation
 predicate instead mirrors whichever operator the author wrote: `=` rejects
 NULL keys at fit and never ships that group, `IS NOT DISTINCT FROM` keeps it.
 Applying P4 there invents an answer for a key `=` cannot reach — measured.
-The general law both obey: the params key's equivalence must **equal** the
-join predicate's, not merely refine it (which is also P3's real precondition,
-and what a coercing or collated predicate breaks).
+Both rules require the params key to group rows exactly as the join predicate does.
+A coercion or collation can break that requirement.
 *Pinned:* `_correlate_test.py::test_the_join_predicate_mirrors_the_operator...`.
 
-**P5 — Chain flattening is substitution.** CTEs/derived tables resolve to
-a base-first level list and flatten by expression substitution; output
-names are frozen as explicit aliases before rewriting so substitution can
-never change a column's name.
-*Pinned:* chain goldens.
+**P5 — Retired: automatic chain flattening.** Window marginalization no longer
+rewrites CTE or derived-table projection chains. Author explicit fit/request
+SQL or compose general `SQLTransform` members.
 
-**P6 — Subqueries are provably uncorrelated.** `FROM __THIS__` carries no
-alias and no other relation is in scope, so there is *no syntax* to
-reference the outer row — scalar subqueries run verbatim as fit steps.
-IN/ANY/ALL (per-row membership) refuse.
+**P6 — Retired: alias-based uncorrelatedness.** Authored SQL can express
+supported correlated fit subqueries. Bounded window marginalization keeps
+uncorrelated scalar/EXISTS subqueries over the fit data.
+The [authoring contract](../../sql-transform/docs/contract.md) defines both boundaries.
 
-**P7 — Refusals are construction-time and named.** Everything refused is
-refused at `SQLProjection(...)`/`DuckDBInferFn(...)` construction with an
-error naming the construct — never at fit, never at serve, never silently.
-*Carve-out:* a transform's codomain T is **learned**, so
-refusals that depend on it — an addressed field that does not exist, a
-declared width that disagrees with the fitted one, a per-group codomain
-disagreement, a width-k call used inside an expression — are raised at
-**fit**, by name. Everything syntactic stays construction-time; nothing
-moves to serve time.
-(The corpus's FAILED bucket pins the "never silently" half — control C5.)
+**P7 — Refusals occur at the applicable boundary.** The SQLProjection constructor
+checks syntax and the projection's row-local form. Fit checks learned fields and widths,
+group schemas, nested-column shadowing and params multiplicity.
+DuckDB binding can fail when a fit or batch query executes.
+`FittedProjection.compile()` checks Confit admission separately and returns a fresh function.
+Data-dependent serving traps remain governed by the oracle contract.
+No boundary permits silent changes to the authored computation.
 
-**P8 — the `__` prefix is reserved.** In `sql_transform.model` every
-synthesized name lives under `__` (`__param_0`, `__param_fit`,
-`{name}__x{token}`), so an identifier there is refused at construction —
-relation, CTE or alias. `__FIT__` and `__THIS__` are the exception: they are
-the two parameters, and the only `__` names an author writes.
-*Pinned:* `model/_reserved_test.py`.
+Read request metadata from `fitted.schema` and serving state from
+`fitted.sql`, `fitted.params` and `fitted.udfs`.
+Read backend metadata from the compiled Confit function, not the estimator.
+The current authoring contract governs these fields and refusal timing.
 
-**P8b — `__cf_` is reserved in `sql_transform._marginalize`.** The prefix
-(case-insensitive) is refused in input SQL and declared schemas; all synthesized names live under it, so
-generated and authored names cannot collide.
+**P8 — The `__` prefix is reserved.** Authored relations, common table expressions,
+and output aliases cannot use this prefix, except for `__FIT__` and `__THIS__`.
+Internal fit names use it. Window derivation also uses names chosen to avoid
+authored-name collisions.
+*Pinned:* `_reserved_test.py`.
+
+**P8b — Private ordinals do not enter the public artifact.** Raw estimator
+fit refuses fit columns named `__cf_fit_row` or `__cf_row`, case-insensitively.
+Batch projection input refuses `__cf_row`.
+Derived window names avoid authored-name collisions; there is no blanket
+`__cf_` prefix refusal.
+See the [authoring contract](../../sql-transform/docs/contract.md).
 
 **P9 — The oracle is the parser and the printer.** SQL is parsed and
 printed by DuckDB itself (`json_serialize_sql`/`json_deserialize_sql`);
@@ -88,12 +96,12 @@ are cloned from oracle-serialized templates.
 *Corollary — carrying is not optional.* Measured on 1.5.5,
 `json_deserialize_sql` requires exactly one field: dropping `BASE_TABLE.type`
 is rejected, and dropping `BASE_TABLE.table_name` is **accepted and prints
-different SQL**. A view that forgets a field therefore emits another query
-rather than an error, so every typed node carries every field DuckDB emits for
-its tag, and an unrecognised tag is carried whole — with its children still
-typed, or a `__FIT__` under a node we do not know would be invisible to
-freezing. In `sql_transform.model` this is `_nodes.py`, pinned per DuckDB
-version by `_shapes.json`.
+different SQL**. Dropping a serialized field can therefore change the query instead of raising an error.
+Each typed node retains every serialized field.
+Unknown node types retain their complete contents and typed children.
+The walk can then find `__FIT__` reads under unknown node types.
+The AST data types in `_nodes.py` implement this rule.
+The serialized shapes in `_shapes.json` record the DuckDB version's fields.
 *Corollary — an identifier means what the oracle binds.* DuckDB folds every
 identifier, quoted ones too (unlike Postgres), so wherever the walk compares
 one name to another it folds: CTE keys, the supplied connection's catalog,
@@ -107,37 +115,43 @@ namespace is case-sensitive and is looked up, not bound, so `codes` and
 
 ## Fit
 
-**P10 — The fit plan is an inspectable DAG.** `Marginalized.plan` is a
-topologically ordered list of named steps; SQL steps are plain SQL runnable
-by hand, `kind="fit"` steps produce a params table (join keys +
-`__cf_est`) plus fitted instances. Every intermediate is registered by
-name and inspectable after fit.
+**P10 — Fit follows dependencies.** Fit executes dependent SQL steps after
+their inputs exist. A narrow DISTINCT pick over a frozen carrier runs before
+fit releases that carrier. Only serving-live learned params remain in the artifact.
+An authored query can explicitly retain fit data.
+The public artifact does not expose an intermediate plan or its released tables.
+See the [authoring contract](../../sql-transform/docs/contract.md);
+the planning and execution code is in `_plan.py` and `_program.py`.
 
-**P11 — Fit is deterministic.** Fit runs at `SET threads = 1` (DuckDB's
-parallel window aggregation is not bit-deterministic for floats — measured
-1/500 fuzz drift). Same training table ⇒ bit-identical params, on any
-machine.
+**P11 — Projection execution controls thread count.** Projection fit, probes,
+and batch execution use `threads=1`, then restore the observed setting.
+The original-query gate uses the same thread count on both DuckDB paths.
+This does not promise reproducible estimator fits or bit-exact results across machines.
 
-**P12 — Transformers fit clone-per-group.** The registry object is never
-mutated: each partition fits a `clone()` (deepcopy fallback), keyed by an
-instance id that is *data* in the params table. Captured scope objects are
-snapshotted at construction — later mutation of the variable cannot change
-a constructed projection.
+**P12 — Raw estimators fit clone-per-group.** Each fitted partition owns a
+clone of the captured prototype, with a deepcopy fallback.
+Its params ID selects that instance.
+Rebinding a captured caller name does not replace the captured object.
+Projection fit materializes captured relations into the stored Arrow params mapping.
 
 ## Serving
 
-**P13 — One artifact, two bindings.** A fitted projection is exactly three
-pieces — `serving_sql` + Arrow params tables + UDF objects. `transform`
-binds them to DuckDB (batch); `infer`/`infer_batch` bind the *same three
-pieces* to Confit. No binding has private state (control C3 is this
-property, measured).
+**P13 — One public artifact, separate admission.** A Confit-servable projection
+has four public serving fields: `.sql`, `.schema`, `.params` and `.udfs`.
+`.sql` is unordered serving SQL; `.schema` is the filtered, nullable request schema.
+`.params` stores normalized captured statics and serving-live learned tables.
+DuckDB batch execution and each fresh Confit build use the same params and UDFs.
+Replacing an entry in the stored params mapping affects subsequent execution
+and builds, not an already built function.
+Batch success does not prove Confit admission.
+See the [authoring contract](../../sql-transform/docs/contract.md) and control C3.
 
 **P14 — The one NULL story.** Unseen group ⇒ LEFT JOIN miss ⇒ NULL
 instance id ⇒ NULL output. NULL-ness always flows through join data, never
 through a lookup convention. Distinct from it: an id *present but missing
 from instances* is a broken artifact and raises — never NULL.
-*Pinned:* `_transformers_test.py`, `_serving_test.py`,
-`confit/tests/test_udfs.py`.
+*Pinned:* `_serving_test.py::test_unseen_group_is_null_row_at_a_time`,
+`_raw_test.py`, `confit/tests/test_udfs.py`.
 *Scope — also a **window** rule.* An unseen key in a lifted correlation takes
 whatever **DuckDB's own correlated subquery** returns for a key that is not
 there — `0` for `count`, NULL for `avg`, whatever the author's `CASE` says.
@@ -148,13 +162,15 @@ same count spelled twice.
 Nor is it the aggregate's value on an empty *input*, which is a different
 number for three of DuckDB's 68 aggregates — `entropy` is 0.0 on empty and NULL
 on a miss, because the count-bug repair is applied to `count` alone. P9 settles
-which is right: DuckDB is the oracle. So the probe is a *guaranteed miss*
-rather than an empty scan, and it inherits both behaviours without knowing
-either. Hit-ness is *counted*, never inferred from the value — a present group
-that is legitimately NULL is not a miss, which is exactly what `COALESCE`
-cannot tell apart.
-*Pinned:* `_correlate_test.py::test_an_unseen_key_takes_the_subquerys_own...`,
-`...::test_a_present_group_whose_value_is_null_is_not_a_miss`.
+which is right: DuckDB defines the reference for this authoring computation.
+The probe uses a guaranteed join miss, not an empty scan.
+It measures the correlated subquery's own missing-key result.
+A separate match count distinguishes misses from present groups with NULL results.
+`COALESCE` cannot make that distinction.
+*Pinned:* `_correlate_test.py::test_an_unseen_key_takes_the_subquerys_own_empty_value`,
+`::test_a_present_group_whose_value_is_null_is_not_a_miss`,
+`::test_the_miss_value_is_duckdbs_own_not_the_aggregates_empty_input`, and
+`::test_a_false_guard_means_the_group_is_empty_not_that_the_answer_is_null`.
 
 **P15 — UDFs are pure, deterministic, declared.** A UDF is a pure function
 of its arguments (per-group weights arrive as data via the id argument,
@@ -172,29 +188,12 @@ field reads are scalars.** An addressed field (`t(...).name`, validated
 at fit — the P7 carve-out) serves as a field read over the ONE call,
 evaluated once per row on both paths (DuckDB CSEs the identical pure
 calls into one struct-returning invocation; confit binds each read to one
-SSA lane of one shared-site ecall). A bare transformer call — any width,
-as an item or inside an expression — **refuses at construction** by name:
-it has no scalar reading, and there is no struct output boundary. Bundles (`struct_pack(...)`) are destructured
-at construction into positional feature arguments: no STRUCT or LIST
-value ever crosses the serving output boundary — every output column is
-scalar, and the struct exists transiently inside DuckDB's expression
-evaluation only. The engine's `list | None` boundary serves direct
-`DuckDBInferFn(udfs=...)` users with UNNAMED width-k externs.
+SSA lane of one shared-site ecall).
+The engine's `list | None` boundary also serves direct
+`DuckDBInferFn(udfs=...)` users with unnamed width-k externs.
 An unseen group is NULL per field read.
-*Fit scope.* A transformer call has no windowed form (`tfm(x) OVER w`
-has no oracle reading: a window aggregate returns one value per partition).
-The surface: bare `tfm(bundle).field` is the single sugar
-(global fit-transform); any other fit scope spells the split —
-`tfm_transform(tfm_fit(bundle) OVER (PARTITION BY ...), bundle).field` —
-where `tfm_fit` is a true window aggregate (same θ per partition, θ =
-`Struct<type, id>`) and `tfm_transform` a true scalar (fit-here-apply-
-there: the transform bundle may differ in values, name-keyed against the
-fit bundle). A registered transformer `x` reserves `x_fit`/`x_transform`.
-Fit-side contract: a fit is a multiset aggregate (order-blind,
-seed-fixed, author-signed — P15's family); transformer fits carry no
-reproducibility promise. These fit clauses refuse by name: FILTER, in-call
-ORDER BY (ordered fits), frames, window-clause ORDER BY (running fits), θ
-export.
+The [authoring contract](../../sql-transform/docs/contract.md#4-projection-only-estimators-and-scalar-udfs)
+defines raw BIGINT IDs, struct outputs, FILTER, ordering, and fit-source admission.
 
 **P16a — Names are the type; matching is name-keyed.** A fitted transform
 is `S → T` between named structs: S's field names and types come from the
@@ -206,9 +205,9 @@ OneHotEncoder gaining a category shifts every lane after it) — so a field
 that disappears refuses by name rather than silently rewiring. A codomain
 that differs per group is not a function type and refuses.
 
-**P17 — Serving rows have the training table's shape.** The serving row
-model derives from the training table's arrow schema (real types);
-unmappable columns are opaque and allowed unless referenced.
+**P17 — Serving metadata declares actual request widths.** The fitted
+projection's nullable schema contains the request fields its serving SQL reads.
+Confit checks those declared widths independently.
 
 ## Engine (Confit)
 

@@ -312,6 +312,30 @@ def _rename_functions[N](body: N, renames: dict[str, str]) -> N:
     return rebuild(body, rename, deep=True)
 
 
+def _rename_calls[N](body: N, renames: dict[str, str]) -> N:
+    """Rename unqualified calls whose whole name is in ``renames``, window
+    calls included — the names one execution registered under. Keyed by the
+    folded name, because the oracle prints every function name lowercased."""
+    folded = {k.lower(): v for k, v in renames.items()}
+
+    def rename(node: AstNode) -> AstNode | None:
+        if isinstance(node, Function):
+            new = folded.get(node.function_name)
+            if new is None or node.schema_ or node.catalog:
+                return None
+            return node.model_copy(update={"function_name": new})
+        if isinstance(node, Opaque) and node.fields.get("class") == "WINDOW":
+            new = folded.get(str(node.fields.get("function_name") or ""))
+            if new is None or node.fields.get("schema") or node.fields.get("catalog"):
+                return None
+            return node.model_copy(
+                update={"fields": node.fields | {"function_name": new}}
+            )
+        return None
+
+    return rebuild(body, rename, deep=True)
+
+
 def _list_of(argument: Node) -> Function:
     """``list(arg)``. DuckDB's Python API has no aggregate UDF, so the UDAF
     half is a scalar function over the list DuckDB's own ``list()`` collects.

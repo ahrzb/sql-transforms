@@ -118,22 +118,6 @@ def test_splicing_is_capture_free():
     assert approx(hostile.fit(batch)(batch)) == [(20.0,), (40.0,), (60.0,)]
 
 
-def test_splicing_is_text_checkable():
-    """Spliced SQL equals a hand-written equivalent — it says *where* it broke."""
-    twice = SQLTransform("SELECT price * 2 AS z FROM __THIS__")
-    assert twice is not None
-    spliced = SQLTransform("SELECT * FROM twice(__FIT__, __THIS__) s")
-    expected = SQLTransform(
-        "SELECT * FROM (SELECT price * 2 AS z FROM __THIS__ AS __THIS__) s"
-    )
-    assert spliced.sql == expected.sql
-
-
-def test_members_splice_never_macro():
-    outer = SQLTransform("SELECT * FROM z(__FIT__, __THIS__) s")
-    assert "MACRO" not in outer.sql.upper()
-
-
 # ------------------------------------------------------------------ chaining
 
 

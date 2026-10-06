@@ -38,6 +38,11 @@ class CountingPCA(PCA):
     """PCA counting ``transform()`` calls across every per-group clone."""
 
     calls = 0
+    fits = 0
+
+    def fit(self, X, y=None):
+        type(self).fits += 1
+        return super().fit(X, y)
 
     def transform(self, X):
         type(self).calls += 1
@@ -64,9 +69,11 @@ def _reference(feats, keys):
 
 
 def _fitted_two_fields():
-    p = SQLProjection(
-        TWO_FIELDS, transformers={"pca": CountingPCA(n_components=2)}
+    CountingPCA.fits = 0
+    p = SQLProjection.marginalize(
+        TWO_FIELDS, captured={"pca": CountingPCA(n_components=2)}
     ).fit(TRAIN)
+    assert CountingPCA.fits == 2  # identical inline fits share each group's instance
     CountingPCA.calls = 0  # fit probes transform once per group; not measured
     return p
 
@@ -91,15 +98,19 @@ def test_two_fields_cost_one_call_per_row_on_the_batch_path():
 def test_two_fields_cost_one_call_per_row_on_the_row_path():
     p = _fitted_two_fields()
     rows = TRAIN.to_pylist()
-    got = p.infer_batch(rows)
+    fn = p.compile()
+    got = fn.infer_rows(rows)
     assert CountingPCA.calls == len(rows), (
         f"row path: {CountingPCA.calls} transform() calls for"
         f" {len(rows)} rows — k fields must share one call"
     )
     CountingPCA.calls = 0
-    one = p.infer(rows[0])
+    one = fn.infer_rows([rows[0]])[0]
     assert CountingPCA.calls == 1, "one row, two fields: exactly one call"
     assert one == got[0]
+    CountingPCA.calls = 0
+    assert fn.infer_arrow(TRAIN).to_pylist() == got
+    assert CountingPCA.calls == len(rows)
     # Interleaved groups: values must match the clone-per-group reference —
     # sharing state across the alternating instance ids would corrupt them.
     feats = np.array(
@@ -113,16 +124,16 @@ def test_two_fields_cost_one_call_per_row_on_the_row_path():
 def test_whole_item_and_field_read_share_one_call_per_row():
     # Review round: the whole-item site must share the field read's ecall
     # (P16 single-eval) — the row path used to double-evaluate here.
-    p = SQLProjection(
+    p = SQLProjection.marginalize(
         "SELECT pca(struct_pack(a := a, b := b)) AS e,"
         " pca(struct_pack(a := a, b := b)).pca0 AS x, name FROM __THIS__",
-        transformers={"pca": CountingPCA(n_components=2)},
+        captured={"pca": CountingPCA(n_components=2)},
     ).fit(TRAIN)
     CountingPCA.calls = 0
     out = p.transform(TRAIN)
     assert CountingPCA.calls == TRAIN.num_rows
     CountingPCA.calls = 0
-    one = p.infer(TRAIN.to_pylist()[0])
+    one = p.compile().infer_rows([TRAIN.to_pylist()[0]])[0]
     assert CountingPCA.calls == 1, "whole item + field read: exactly one call"
     assert one["e"]["pca0"] == one["x"]
     assert out.column("e").to_pylist()[0]["pca0"] == out.column("x").to_pylist()[0]
@@ -131,11 +142,11 @@ def test_whole_item_and_field_read_share_one_call_per_row():
 def test_bare_wide_item_costs_one_call_per_row():
     # Slice 5: the bare shape serves the whole struct through the same one
     # call — still exactly one transform() per row on both paths.
-    p = SQLProjection(
+    p = SQLProjection.marginalize(
         "SELECT pca_transform(pca_fit(struct_pack(a := a, b := b))"
         " OVER (PARTITION BY grp), struct_pack(a := a, b := b)) AS e,"
         " name FROM __THIS__",
-        transformers={"pca": CountingPCA(n_components=2)},
+        captured={"pca": CountingPCA(n_components=2)},
     ).fit(TRAIN)
     CountingPCA.calls = 0
     out = p.transform(TRAIN)
@@ -149,7 +160,7 @@ def test_bare_wide_item_costs_one_call_per_row():
             [e["pca0"], e["pca1"]], ref[i], rtol=1e-9, atol=1e-12
         )
     CountingPCA.calls = 0
-    one = p.infer(TRAIN.to_pylist()[0])
+    one = p.compile().infer_rows([TRAIN.to_pylist()[0]])[0]
     assert CountingPCA.calls == 1, "one row, one bare item: exactly one call"
     np.testing.assert_allclose(
         [one["e"]["pca0"], one["e"]["pca1"]], ref[0], rtol=1e-9, atol=1e-12

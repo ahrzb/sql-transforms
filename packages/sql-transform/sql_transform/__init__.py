@@ -1,23 +1,10 @@
-"""SQLProjection — projections over ``__THIS__``, fit once, serve row-at-a-time.
+"""Compositional SQL transforms: bind fit data, then execute requests.
 
-``fit(table)`` marginalizes every window aggregate into materialized params
-tables plus a rewritten ``serving_sql``; transformers fit per group into
-``PythonTransform`` UDFs. One artifact, two bindings: ``transform(table)``
-runs it through DuckDB (batch, the oracle), ``infer``/``infer_batch`` run it
-through Confit (row-at-a-time, bit-exact with the DuckDB path).
+SQLTransform supports general relation computations. SQLProjection adds the
+row-local rule and exposes a fitted artifact for batch execution and Confit.
+Window marginalization is an explicit, bounded authoring convenience.
 """
 
-from __future__ import annotations
-
-from sql_transform._marginalize import (
-    FitStep,
-    Marginalized,
-    MarginalizeError,
-    ParamsSpec,
-    UDFSpec,
-    marginalize,
-)
-from sql_transform._projection import SQLProjection
 from sql_transform._trees import TreeBasedTransform, TreePackError
 from sql_transform._udf import (
     UDF,
@@ -27,21 +14,45 @@ from sql_transform._udf import (
     PythonUDF,
     UDFError,
 )
+from sql_transform.model._ast import normalize
+from sql_transform.model._errors import (
+    CorrelatedFit,
+    KeyNotUnique,
+    NestingTooDeep,
+    NotFitted,
+    NotRowWise,
+    TransformError,
+    UnknownName,
+    WholeTrainingSet,
+)
+from sql_transform.model._foreign import Transform
+from sql_transform.model._program import MAX_DEPTH, Fitted
+from sql_transform.model._projection import FittedProjection, SQLProjection
+from sql_transform.model._transform import SQLTransform, run
 
 __all__ = [
+    "MAX_DEPTH",
     "UDF",
-    "FitStep",
-    "Marginalized",
-    "MarginalizeError",
+    "CorrelatedFit",
+    "Fitted",
+    "FittedProjection",
+    "KeyNotUnique",
     "Named",
+    "NestingTooDeep",
+    "NotFitted",
+    "NotRowWise",
     "OrderSensitive",
-    "ParamsSpec",
     "PythonTransform",
     "PythonUDF",
     "SQLProjection",
+    "SQLTransform",
+    "Transform",
+    "TransformError",
     "TreeBasedTransform",
     "TreePackError",
     "UDFError",
-    "UDFSpec",
-    "marginalize",
+    "UnknownName",
+    "WholeTrainingSet",
+    "normalize",
+    "run",
 ]

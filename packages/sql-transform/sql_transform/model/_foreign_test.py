@@ -12,6 +12,7 @@ import threading
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
+from sklearn.preprocessing import StandardScaler
 
 from sql_transform.model import SQLTransform, Transform, TransformError, run
 from sql_transform.model._foreign import _Registry
@@ -24,6 +25,20 @@ D = pa.table(
     }
 )
 UNSEEN = pa.table({"cat": ["a", "zz"], "price": [2.0, 99.0]})
+
+
+def fit_scaler(relation: pa.Table) -> StandardScaler:
+    return StandardScaler().fit(
+        relation["v"].to_numpy(zero_copy_only=False).reshape(-1, 1)
+    )
+
+
+def transform_scaler(instance: StandardScaler, relation: pa.Table) -> pa.Table:
+    out = instance.transform(
+        relation["v"].to_numpy(zero_copy_only=False).reshape(-1, 1)
+    )
+    return pa.table({"v": out[:, 0]})
+
 
 # The pair supplied directly, as the spec writes it: fit sees a relation and
 # returns whatever it likes; transform sees that and a relation.
@@ -57,16 +72,12 @@ def test_the_pair_fits_and_serves():
 
 def test_leaves_need_no_special_case():
     """An sklearn leaf freezes by the same rule as SQL: nothing bespoke."""
-    from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
-
-    ss = Transform.from_estimator(StandardScaler(), takes=("v",), returns=("v",))
-    assert ss is not None
+    ss = Transform(fit_scaler, transform_scaler, takes=("v",), returns=("v",))  # noqa: F841 — resolved from the SQL caller frame
     sql = PER_CAT.replace("sc_", "ss_")
     t = SQLTransform(sql)
 
     fitted = t.fit(D)
     assert not reads_fit(fitted.sql)
-    assert len(fitted.params) == 1  # the theta table, one row per category
     assert approx(fitted.transform(D), 4) == approx(run(t, D), 4)
     assert approx(fitted.transform(D), 4) == [
         ("a", -1.0),

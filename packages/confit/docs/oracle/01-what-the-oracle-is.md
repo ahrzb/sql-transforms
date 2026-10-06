@@ -123,14 +123,17 @@ through the oracle. Pin-capture scripts are a separate family described by
 
 ## Nearby DuckDB uses with different contracts
 
-**claim: fit-serving-oracle.** `sql_transform`'s fit/serving checks are independent.
-Its projection path uses optimizer-on DuckDB with `SET threads = 1`; training round-trip
-and transformer parity are defined in
-[success measures](../specs/success-measures.md). Fit reproducibility is not part of
-the contract.
+**claim: fit-serving-oracle.** `sql_transform`'s authoring checks have a separate contract.
+Its projection path uses optimizer-on DuckDB with `SET threads = 1`.
+The [authoring contract](../../../sql-transform/docs/contract.md) defines fit,
+composition, decorrelation and bounded window marginalization.
+Fit-data round-trip and transformer parity use the
+[success measures](../specs/success-measures.md).
+Confit serving comparisons still use the optimizer-off oracle.
+Fit reproducibility is not part of the authoring contract.
 
-*Evidence:* `packages/sql-transform/sql_transform/_projection.py` and P11, P16 in
-`packages/confit/docs/properties.md`.
+*Evidence:* `packages/sql-transform/sql_transform/_projection.py`,
+`_marginal_projection_test.py::gate` and `_serving_test.py::serve_gate`.
 
 **claim: dialect-gate-oracle.** Dialect gates have their own pinned targets. Spark L3
 uses ANSI mode, UTC, `local[1]`, and `pins-dialect/spark-ansi.json`; it compares names
@@ -144,5 +147,5 @@ measurement or a universal compatibility claim.
 and `SPARK_MATCH_FLOOR`; `packages/confit/tests/test_corpus_replay.py` (`MATCH_FLOOR`).
 
 DuckDB also supplies the parser/printer used by `sql_transform`; serialized shapes are
-pinned per DuckDB version in `sql_transform/model/_shapes.json`. That role does not make
+pinned per DuckDB version in `sql_transform/_shapes.json`. That role does not make
 parser shape capture a differential-oracle comparison.

@@ -5,11 +5,11 @@ binds one and ``transform`` binds the other. Which half is learned and which
 is live is read off the text — there is no annotation to remember and none to
 forget.
 
-This module is the estimator surface — ``SQLTransform``, the output
-currencies, and the sklearn contract. The compiled text itself lives in
-``_program``: resolution, binding, freezing, ``Fitted``, ``Program``.
+This module exposes ``SQLTransform`` and its output modes. The compiled text
+itself lives in ``_program``: resolution, binding, freezing, ``Fitted``,
+``Program``.
 
-Implements `docs/specs/2026-08-07-datamodel-redesign-design.md`.
+Implements `packages/sql-transform/docs/contract.md`.
 DuckDB is both the parser and the oracle — a construct means what DuckDB
 computes.
 """

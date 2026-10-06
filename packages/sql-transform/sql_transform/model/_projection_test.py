@@ -4,8 +4,7 @@ The refusal cases are a table (`REFUSED`), and `test_every_reason_is_exercised`
 walks `REASONS` looking for gaps, the way `_correlate_test` does for its own —
 a reason nothing exercises is a refusal nobody has named.
 
-Implements the gates of
-`docs/specs/2026-08-11-row-wise-projections-design.md`.
+Executable row-local cases from `packages/sql-transform/docs/contract.md`.
 """
 
 import pyarrow as pa
@@ -91,15 +90,49 @@ def test_params_are_inspectable_and_fit_is_gone_from_the_text():
     assert "__FIT__" not in fitted.sql
 
 
-def test_a_lifted_correlated_subquery_still_serves():
-    """The equality lifting is upstream of the gate; its LEFT JOIN passes."""
-    p = SQLProjection("""
-        SELECT t.store,
-               (SELECT avg(f.price) FROM __FIT__ f WHERE f.store = t.store) AS m
+def test_decorrelation_distinguishes_misses_null_keys_and_false_guards():
+    import duckdb
+
+    fit = pa.table({"g": ["a", "a", None], "v": [10, 20, 7], "enabled": [True] * 3})
+    request = pa.table(
+        {
+            "g": ["NEW", None, "a", "a"],
+            "v": [2, 14, 12, 12],
+            "enabled": [True, True, True, False],
+        }
+    )
+    sql = """
+        SELECT t.g,
+               t.v - (SELECT avg(f.v) FROM __FIT__ f
+                      WHERE f.g IS NOT DISTINCT FROM t.g AND t.enabled) AS d,
+               (SELECT count(*) FROM __FIT__ f
+                WHERE f.g IS NOT DISTINCT FROM t.g AND t.enabled) AS n,
+               (SELECT count(*) FROM __FIT__ f
+                WHERE f.g = t.g AND t.enabled) AS n_eq
         FROM __THIS__ t
-    """)
-    out = p.fit(F).transform(X)
-    assert [r["m"] for r in out.to_pylist()] == [300.0, None, 20.0]
+    """
+    expected = [
+        {"g": "NEW", "d": None, "n": 0, "n_eq": 0},
+        {"g": None, "d": 7.0, "n": 1, "n_eq": 0},
+        {"g": "a", "d": -3.0, "n": 2, "n_eq": 2},
+        {"g": "a", "d": None, "n": 0, "n_eq": 0},
+    ]
+    fitted = SQLProjection(sql).fit(fit)
+    assert fitted.transform(request).to_pylist() == expected
+    with duckdb.connect() as con:
+        con.execute("SET threads = 1")
+        con.execute("PRAGMA disable_optimizer")
+        con.register("__FIT__", fit)
+        con.register("__THIS__", request)
+        original = con.execute(sql).to_arrow_table().to_pylist()
+    assert sorted(original, key=repr) == sorted(expected, key=repr)
+    try:
+        fn = fitted.compile()
+    except ValueError as exc:
+        assert str(exc).startswith("unsupported:")
+    else:
+        assert fn.infer_rows(request.to_pylist()) == expected
+        assert fn.infer_arrow(request).to_pylist() == expected
 
 
 def test_the_input_order_is_the_output_order_not_the_join_order():
@@ -350,19 +383,17 @@ def test_a_label_column_in_fit_is_optional_at_serving():
 
 
 def test_a_foreign_leaf_serves_in_batch_but_refuses_to_compile_by_name():
-    """A Python leaf cannot cross into the row path (no Python there); the
-    refusal says so instead of failing inside Confit."""
+    """Relation-batch callbacks stay separate from scalar serving UDFs."""
     import pyarrow.compute as pc
 
     from sql_transform.model import Transform, TransformError
 
-    sc = Transform(
+    sc = Transform(  # noqa: F841 — captured SQL member
         fit=lambda f: pa.table({"m": [pc.mean(f["v"]).as_py()]}),
         transform=lambda p, t: pa.table({"v": pc.divide(t["v"], p["m"][0])}),
         takes=("v",),
         returns=("v",),
     )
-    assert sc is not None
     p = SQLProjection("""
         SELECT sc_transform(f.theta, struct_pack(v := t.price)).v AS z
         FROM __THIS__ t,
@@ -380,3 +411,98 @@ def test_the_reserved_row_name_is_already_unwritable():
 
     with pytest.raises(TransformError, match="reserved"):
         SQLProjection("SELECT t.price AS __cf_row FROM __THIS__ t")
+
+
+def test_public_artifact_reads_the_same_captured_snapshot_in_every_interface():
+    import pandas as pd
+    from confit import DuckDBInferFn
+
+    dim = pd.DataFrame({"store": ["S1", "S2"], "factor": [2.0, 3.0]})
+    fitted = SQLProjection(
+        "SELECT t.store, t.price * d.factor AS z "
+        "FROM __THIS__ t LEFT JOIN dim d ON t.store = d.store",
+        captured={"dim": dim},
+    ).fit(F)
+    dim.loc[0, "factor"] = 99.0
+    assert fitted.transform(X).to_pylist() == [
+        {"store": "S2", "z": 600.0},
+        {"store": "NEW", "z": None},
+        {"store": "S1", "z": 20.0},
+    ]
+    fitted.params["dim"] = pa.table({"store": ["S1", "S2"], "factor": [4.0, 5.0]})
+    expected = [
+        {"store": "S2", "z": 1000.0},
+        {"store": "NEW", "z": None},
+        {"store": "S1", "z": 40.0},
+    ]
+    public = DuckDBInferFn(
+        sql=fitted.sql,
+        row_tables={"__THIS__": fitted.schema},
+        static_tables=fitted.params,
+        udfs=list(fitted.udfs.values()),
+        shape="map",
+    )
+    assert fitted.transform(X).to_pylist() == expected
+    assert fitted.compile().infer_rows(X.to_pylist()) == expected
+    assert public.infer_rows(X.to_pylist()) == expected
+    assert public.infer_arrow(X).to_pylist() == expected
+
+
+def test_caller_catalog_probes_and_batch_restore_observed_threads():
+    import duckdb
+
+    from sql_transform.model import TransformError
+
+    con = duckdb.connect()
+    try:
+        con.execute("SET threads = 3")
+        con.execute("CREATE TABLE dim AS SELECT 'S1' AS store, 2.0 AS factor")
+        fitted = SQLProjection(
+            "SELECT t.store, t.price * d.factor AS z "
+            "FROM __THIS__ t LEFT JOIN dim d ON t.store = d.store",
+            connection=con,
+        ).fit(F)
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)
+        assert fitted.transform(X).to_pylist() == [
+            {"store": "S2", "z": None},
+            {"store": "NEW", "z": None},
+            {"store": "S1", "z": 20.0},
+        ]
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)
+        with pytest.raises(TransformError, match="captur|catalog"):
+            fitted.compile()
+        with pytest.raises(duckdb.Error):
+            fitted.transform(pa.table({"store": ["S1"]}))
+        assert con.execute("SELECT current_setting('threads')").fetchone() == (3,)
+        assert (
+            con.execute(
+                "SELECT table_name FROM duckdb_tables() WHERE table_name LIKE '%__x%'"
+            ).fetchall()
+            == []
+        )
+    finally:
+        con.close()
+
+
+def test_empty_outer_params_preserve_requests():
+    fitted = SQLProjection(
+        "SELECT t.store, t.price - f.price AS d "
+        "FROM __THIS__ t LEFT JOIN "
+        "(SELECT price FROM __FIT__ WHERE price > 999) f ON true"
+    ).fit(F)
+    assert fitted.transform(X).to_pylist() == [
+        {"store": "S2", "d": None},
+        {"store": "NEW", "d": None},
+        {"store": "S1", "d": None},
+    ]
+
+
+def test_params_star_does_not_require_unused_fit_labels_on_requests():
+    labelled = F.append_column("label", pa.array([True] * F.num_rows))
+    fitted = SQLProjection(
+        "SELECT t.price, p.* FROM __THIS__ t, (SELECT avg(price) AS m FROM __FIT__) p"
+    ).fit(labelled)
+    rows = [{"price": 2.0}, {"price": 7.0}]
+    expected = [{"price": 2.0, "m": 160.0}, {"price": 7.0, "m": 160.0}]
+    assert fitted.transform(pa.Table.from_pylist(rows)).to_pylist() == expected
+    assert fitted.compile().infer_rows(rows) == expected

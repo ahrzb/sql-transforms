@@ -7,11 +7,18 @@ table; a fitted RandomForest gives a pointer.
 
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, Self
+from dataclasses import dataclass, field
+from typing import Any
 
 import pyarrow as pa
 
+from sql_transform._udf import (
+    _ARROW,
+    PythonTransform,
+    UDFError,
+    _as_feature,
+    output_names,
+)
 from sql_transform.model._ast import Connection
 from sql_transform.model._errors import TransformError
 
@@ -22,9 +29,9 @@ THETA_ARROW = pa.struct([("type", pa.string()), ("id", pa.int64())])
 
 
 def _struct_sql(fields: tuple[str, ...]) -> str:
-    for field in fields:
-        if not field.isidentifier():
-            raise TransformError(f"{field!r} is not a usable struct field name")
+    for name in fields:
+        if not name.isidentifier():
+            raise TransformError(f"{name!r} is not a usable struct field name")
     return "STRUCT(" + ", ".join(f"{f} DOUBLE" for f in fields) + ")"
 
 
@@ -91,43 +98,169 @@ def _execute(con: Connection, sql: str, registry: _Registry) -> pa.Table:
         raise
 
 
-def _as_matrix(table: pa.Table, takes: tuple[str, ...]) -> Any:
-    import numpy as np  # noqa: PLC0415
+@dataclass(slots=True)
+class _Estimator:
+    """One authored raw fit scope, with runtime state private to each fit.
 
-    return np.column_stack([table[f].to_numpy(zero_copy_only=False) for f in takes])
-
-
-@dataclass(frozen=True, slots=True)
-class _EstimatorFit:
-    """``from_estimator``'s fit half, as data rather than a closure.
-
-    Cloned per call, so one estimator object backs many groups without any of
-    them sharing learned state — the reason the closure existed.
+    Arrow supplies the actual bundle declaration. Fit and the unchanged
+    PythonTransform then use the same feature conversion, including numeric
+    NULLs as NaN and strings that stay strings.
     """
 
-    estimator: Any
-    takes: tuple[str, ...]
+    prototype: Any
+    feature_names: tuple[str, ...]
+    fit_name: str
+    udf_name: str
+    _takes: pa.Schema | None = field(default=None, init=False)
+    _returns: tuple[str, ...] | None = field(default=None, init=False)
+    _instances: dict[int, Any] = field(default_factory=dict, init=False)
 
-    def __call__(self, relation: pa.Table) -> Any:
-        from sklearn.base import clone  # noqa: PLC0415
+    def fresh(self) -> "_Estimator":
+        return _Estimator(
+            self.prototype, self.feature_names, self.fit_name, self.udf_name
+        )
 
-        return clone(self.estimator).fit(_as_matrix(relation, self.takes))
+    def _fit_batch(self, groups: Any, registry: _Registry) -> pa.Array:
+        import copy  # noqa: PLC0415
 
-
-@dataclass(frozen=True, slots=True)
-class _EstimatorTransform:
-    """``from_estimator``'s transform half. Holds no estimator: the fitted
-    instance arrives through θ."""
-
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
-
-    def __call__(self, instance: Any, relation: pa.Table) -> pa.Table:
         import numpy as np  # noqa: PLC0415
 
-        out = np.asarray(instance.transform(_as_matrix(relation, self.takes)))
-        return pa.table(
-            {name: out[:, i].astype(float) for i, name in enumerate(self.returns)}
+        try:
+            kind = groups.type
+            if not (pa.types.is_list(kind) or pa.types.is_large_list(kind)):
+                raise TransformError(f"{self.fit_name}: fit requires a list of bundles")
+            bundle = kind.value_type
+            if not pa.types.is_struct(bundle):
+                raise TransformError(
+                    f"{self.fit_name}: fit requires a named struct bundle"
+                )
+            names = tuple(f.name for f in bundle)
+            if len({n.lower() for n in names}) != len(names):
+                raise TransformError(
+                    f"{self.fit_name}: case-colliding feature names {list(names)}"
+                )
+            if names != self.feature_names:
+                raise TransformError(
+                    f"{self.fit_name}: expected feature fields "
+                    f"{list(self.feature_names)}, received {list(names)}"
+                )
+            codes: list[str] = []
+            for feature in bundle:
+                ty = feature.type
+                if pa.types.is_integer(ty):
+                    code = "i64"
+                elif pa.types.is_floating(ty):
+                    code = "f64"
+                elif pa.types.is_boolean(ty):
+                    code = "i1"
+                elif pa.types.is_string(ty) or pa.types.is_large_string(ty):
+                    code = "str"
+                else:
+                    raise TransformError(
+                        f"{self.fit_name}: feature {feature.name!r} type {ty} "
+                        "is unsupported; use integer, floating, boolean or string"
+                    )
+                codes.append(code)
+            takes = pa.schema(
+                [(name, _ARROW[code]) for name, code in zip(names, codes, strict=True)]
+            )
+            if self._takes is not None and not takes.equals(self._takes):
+                raise TransformError(
+                    f"{self.fit_name}: different feature schemas within one fit scope"
+                )
+            self._takes = takes
+            ids: list[int | None] = []
+            for group in groups.to_pylist():
+                if not group:
+                    ids.append(None)
+                    continue
+                matrix = np.asarray(
+                    [
+                        [
+                            _as_feature(row[name], code)
+                            for name, code in zip(names, codes, strict=True)
+                        ]
+                        for row in group
+                    ],
+                    dtype=(
+                        object if any(c in ("str", "i1") for c in codes) else np.float64
+                    ),
+                )
+                try:
+                    from sklearn.base import clone  # noqa: PLC0415
+
+                    est = clone(self.prototype)
+                except (ImportError, TypeError):
+                    est = copy.deepcopy(self.prototype)
+                est.fit(matrix)
+                try:
+                    probe = np.asarray(est.transform(matrix[:1]))
+                except (TypeError, ValueError) as exc:
+                    raise TransformError(
+                        f"{self.fit_name}: unsupported transform output shape"
+                    ) from exc
+                if probe.ndim == 1 and probe.shape == (1,):
+                    width = 1
+                elif probe.ndim == 2 and probe.shape[0] == 1 and probe.shape[1] > 0:
+                    width = probe.shape[1]
+                else:
+                    raise TransformError(
+                        f"{self.fit_name}: unsupported transform output shape "
+                        f"{probe.shape}; expected one row of scalar values"
+                    )
+                try:
+                    for value in probe.flat:
+                        float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise TransformError(
+                        f"{self.fit_name}: transform output must contain DOUBLE values"
+                    ) from exc
+                try:
+                    returns = output_names(est, names, width, self.fit_name)
+                except UDFError as exc:
+                    raise TransformError(str(exc)) from exc
+                if len({n.lower() for n in returns}) != len(returns):
+                    raise TransformError(
+                        f"{self.fit_name}: case-colliding output names {list(returns)}"
+                    )
+                if self._returns is not None and returns != self._returns:
+                    raise TransformError(
+                        f"{self.fit_name}: different output shapes per group: "
+                        f"{list(self._returns)} vs {list(returns)}"
+                    )
+                self._returns = returns
+                iid = registry.add(est)
+                self._instances[iid] = est
+                ids.append(iid)
+            return pa.array(ids, type=pa.int64())
+        except Exception as exc:
+            registry.keep(exc)
+            raise
+
+    def register(
+        self, con: Connection, leased_fit_name: str, registry: _Registry
+    ) -> None:
+        con.create_function(
+            leased_fit_name,
+            lambda groups: self._fit_batch(groups, registry),
+            parameters=None,
+            return_type="BIGINT",
+            type="arrow",
+            null_handling="special",
+            side_effects=True,
+        )
+
+    def publish(self) -> PythonTransform:
+        if not self._instances or self._takes is None or self._returns is None:
+            raise TransformError(
+                f"{self.fit_name}: cannot fit on empty or entirely filtered training "
+                "data; the fitted output shape is unlearnable"
+            )
+        return PythonTransform(
+            self.udf_name,
+            self._instances,
+            self._takes,
+            pa.struct([(name, pa.float64()) for name in self._returns]),
         )
 
 
@@ -136,8 +269,8 @@ class Transform:
     """A foreign transform: the ``(fit, transform)`` pair, supplied directly.
 
     ``fit(F) -> instance`` and ``transform(instance, T) -> R``, both over
-    relations. An sklearn transformer is already this pair — see
-    ``from_estimator``.
+    relations. Fit receives a complete aggregate group; transform receives
+    one instance's subset of a single Arrow invocation, not the whole request.
 
     In SQL the pair splits: ``x_fit`` is the UDAF half and ``x_transform`` the
     UDF half, joined by θ, an opaque ``Struct<type, id>`` handle into a
@@ -162,26 +295,6 @@ class Transform:
     def __post_init__(self) -> None:
         _struct_sql(self.takes)  # a bad field name refuses here, not at fit
         _struct_sql(self.returns)
-
-    @classmethod
-    def from_estimator(
-        cls, estimator: Any, takes: tuple[str, ...], returns: tuple[str, ...]
-    ) -> Self:
-        """An sklearn transformer as the pair. Cloned per fit, so one
-        estimator object can back many groups without sharing learned state.
-
-        The halves are module-level objects holding the estimator as data
-        rather than closures over it: a local function is unpicklable, and
-        ``deepcopy`` hid that by treating functions as atomic, so ``clone``
-        worked while anything that actually serialised — ``Pipeline(memory=)``,
-        ``n_jobs>1`` — did not.
-        """
-        return cls(
-            fit=_EstimatorFit(estimator, takes),
-            transform=_EstimatorTransform(takes, returns),
-            takes=takes,
-            returns=returns,
-        )
 
     # -- the two SQL halves ----------------------------------------------------
 
