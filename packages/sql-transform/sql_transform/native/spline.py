@@ -116,17 +116,23 @@ from sql_transform.native._registry import NotNative, rejects, translates
 MAX_BUILD_S = 7.0
 
 
-def _build_estimate(lanes: list[S.Expr], traps: bool) -> float:
-    """The seconds confit takes to build these lanes (warm, release build).
-    confit binds once a value that the body reads more than once (#412),
-    so the build follows the distinct nodes the lanes read, not the text
-    they spell, plus a term in the nodes times the lanes, and a cost per
-    lane where each lane carries a trap (`traps`: `extrapolation="error"`).
-    Fitted on 204 warm builds of one instance over 0.3 s (8 to 128
-    features, degrees 1 to 5, 5 and 8 knots, the five extrapolations, up to
-    1,536 lanes; 0.3 to 15.0 s): each within 0.82 to 1.35 times the
-    estimate (master a7cd5aa, 2026-10-06). Of the 279 configurations, the
-    cap took on none slower than 7.2 s and refused none faster than 7.1 s.
+def _build_estimate(lanes: list[S.Expr], est: Any) -> float:
+    """The seconds confit takes to build these lanes (warm, release build)
+    into the query that reads each output field. confit binds once a value
+    that the body reads more than once (#412), so the build follows the
+    distinct nodes the lanes read, not the text they spell, plus a term in
+    the nodes times the lanes. The input guard adds a term in the lanes
+    times the features: confit builds the guard's tests again at each
+    field read (loops/native/PLANS.md, "Needs from confit"). The guard
+    has a test a feature on NaN and ±inf under `handle_missing="error"`;
+    under `extrapolation="error"`, a test on the knots, whose term is
+    about four times as large, with or without the first.
+    Fitted on 287 warm builds of one instance over 0.3 s (8 to 128
+    features, degrees 1 to 5, 5 and 8 knots, the five extrapolations, up
+    to 1,536 lanes; 16 of them again under `handle_missing="zeros"`; 0.3
+    to 19.0 s): each within 0.89 to 1.28 times the estimate (master
+    6aea15e, 2026-10-06). Of the 355 configurations confit builds, the cap
+    took on none slower than 7.3 s and refused none faster than 6.7 s.
     The estimate is one estimator's: a step's instances compound it
     linearly."""
     seen: set[int] = set()
@@ -137,8 +143,15 @@ def _build_estimate(lanes: list[S.Expr], traps: bool) -> float:
             seen.add(id(e))
             stack.extend(e.children)
     nodes, width = len(seen), len(lanes)
-    trap = 2.66e-4 * width if traps else 0.0
-    return 4.02e-5 * nodes + 2.59e-8 * nodes * width + trap
+    if est.extrapolation == "error":
+        guard = 6.99e-5
+    elif est.handle_missing == "error":
+        guard = 1.83e-5
+    else:
+        guard = 0.0
+    return (
+        3.92e-5 * nodes + 2.38e-8 * nodes * width + guard * width * est.n_features_in_
+    )
 
 
 # A knot gap under this, but not zero, could overflow `1 / gap` in the
@@ -526,7 +539,7 @@ def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         if est.extrapolation == "linear" and degree <= 1:
             degree += 1
         out += lanes if est.include_bias else lanes[:-1]
-    estimate = _build_estimate(out, est.extrapolation == "error")
+    estimate = _build_estimate(out, est)
     if estimate > MAX_BUILD_S:
         raise NotNative(
             f"SplineTransformer: an estimated {estimate:.0f} s build, past"

@@ -85,14 +85,21 @@ from sql_transform.native._registry import NotNative, rejects, translates
 MAX_BUILD_S = 7.0
 
 
-def _case_seconds(lanes: int) -> float:
-    """The estimated build of one CASE per tree, from the lanes."""
-    return 5.1e-4 * lanes + 5.46e-7 * lanes**2
+def _case_seconds(lanes: int, features: int) -> float:
+    """The estimated build of one CASE per tree, from the lanes and the
+    features (the input guard's tests, two a feature)."""
+    return 5.32e-4 * lanes + 7.67e-7 * lanes**2 + 5.32e-5 * lanes * features
 
 
-def _paths_seconds(lanes: int, steps: int) -> float:
-    """The estimated build of the paths, from the lanes and path steps."""
-    return 4.65e-4 * lanes + 2.25e-7 * lanes**2 + 3.65e-5 * steps
+def _paths_seconds(lanes: int, steps: int, features: int) -> float:
+    """The estimated build of the paths, from the lanes, the path steps
+    and the features (the input guard's tests, two a feature)."""
+    return (
+        4.43e-4 * lanes
+        + 2.9e-7 * lanes**2
+        + 4.59e-5 * steps
+        + 5.45e-5 * lanes * features
+    )
 
 
 def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:
@@ -162,10 +169,11 @@ def _spelling(est: Any) -> str:
     whose estimated build is within MAX_BUILD_S. Raises `NotNative` past
     both."""
     lanes = sum(len(c) for c in est.one_hot_encoder_.categories_)
-    case_s = _case_seconds(lanes)
+    features = int(est.n_features_in_)
+    case_s = _case_seconds(lanes, features)
     if case_s <= MAX_BUILD_S:
         return "case"
-    paths_s = _paths_seconds(lanes, _steps(est))
+    paths_s = _paths_seconds(lanes, _steps(est), features)
     if paths_s <= MAX_BUILD_S:
         return "paths"
     raise NotNative(
