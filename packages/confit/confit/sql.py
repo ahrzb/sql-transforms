@@ -29,6 +29,7 @@ hashable.
 
 from __future__ import annotations
 
+import dataclasses
 import decimal
 import math
 import re
@@ -530,6 +531,129 @@ class Alias(Expr):
 
     def to_duckdb(self):
         return self.operand.to_duckdb().alias(self.name)
+
+
+# ------------------------------------------------------------------ lets
+
+# A let read in the texts `shared_texts` renders; confit reserves the name.
+LET_MARKER = "__cf_let"
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class _LetRead(Expr):
+    index: int
+
+    def sql(self) -> str:
+        return f"{LET_MARKER}({self.index})"
+
+
+def _with_children(node: Expr, swap: Any) -> Expr:
+    """`node` with each child `c` replaced by `swap(c)`."""
+
+    def put(v: Any) -> Any:
+        if isinstance(v, Expr):
+            return swap(v)
+        if isinstance(v, tuple):
+            return tuple(put(x) for x in v)
+        return v
+
+    return dataclasses.replace(
+        node, **{f.name: put(getattr(node, f.name)) for f in dataclasses.fields(node)}
+    )
+
+
+def _post_order(roots: list[Expr]) -> list[Expr]:
+    """Every node under `roots` once, each after its children (no
+    recursion: a recurrence can be deep)."""
+    seen: set[int] = set()
+    out: list[Expr] = []
+    for r in roots:
+        if id(r) in seen:
+            continue
+        seen.add(id(r))
+        stack = [(r, iter(r.children))]
+        while stack:
+            node, it = stack[-1]
+            for c in it:
+                if id(c) not in seen:
+                    seen.add(id(c))
+                    stack.append((c, iter(c.children)))
+                    break
+            else:
+                stack.pop()
+                out.append(node)
+    return out
+
+
+def _bindable(node: Expr) -> bool:
+    """A node a let can hold: a scalar whose text means the same wherever
+    it stands. Leaves cost less to repeat; a struct is read by field."""
+    if isinstance(node, Column | Const | Alias | _LetRead):
+        return False
+    if isinstance(node, Cast) and isinstance(node.operand, Column | Const):
+        return False
+    return not (
+        isinstance(node, Call)
+        and node.name.lower() in ("error", "struct_pack", "row", "list_value")
+    )
+
+
+def shared_texts(roots: list[Expr]) -> tuple[list[str], list[str]]:
+    """The texts of `roots` with every subexpression they read more than
+    once declared once, as a let: `(lets, texts)`, where each text reads
+    let `i` as `__cf_let(i)` and each let reads only the ones before it.
+    Spelled out, a read twice in each step of a recurrence doubles the
+    text per step; this stays linear in the nodes. Sharing is by node
+    identity: build a value once and use the object twice."""
+    order = _post_order(roots)
+    reads: dict[int, int] = {}
+    struct_valued: set[int] = set()
+    for node in order:
+        for c in node.children:
+            reads[id(c)] = reads.get(id(c), 0) + 1
+        if isinstance(node, Field):
+            struct_valued.add(id(node.operand))
+    for r in roots:
+        reads[id(r)] = reads.get(id(r), 0) + 1
+    lets: list[str] = []
+    swap: dict[int, Expr] = {}
+    for node in order:
+        named = node.name if isinstance(node, Call) else ""
+        if LET_MARKER in named.lower() or (
+            isinstance(node, Const | Column) and LET_MARKER in node.sql().lower()
+        ):
+            raise ValueError(f"{LET_MARKER} is reserved: {node.sql()}")
+        here = _with_children(node, lambda c: swap[id(c)]) if node.children else node
+        if (
+            reads.get(id(node), 0) >= 2
+            and id(node) not in struct_valued
+            and _bindable(node)
+        ):
+            lets.append(here.sql())
+            here = _LetRead(len(lets) - 1)
+        swap[id(node)] = here
+    return lets, [swap[id(r)].sql() for r in roots]
+
+
+_LET_READ = re.compile(
+    "'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|" + LET_MARKER + r"\((\d+)\)",
+    re.IGNORECASE,
+)
+
+
+def spell_out(text: str, lets: list[str]) -> str:
+    """`text` with every let read replaced by the let's own text, spelled
+    out in turn: what `shared_texts` declared, written in full."""
+    full: list[str] = []
+
+    def sub(t: str) -> str:
+        return _LET_READ.sub(
+            lambda m: full[int(m.group(1))] if m.group(1) is not None else m.group(0), t
+        )
+
+    for let in lets:
+        full.append(sub(let))
+    return sub(text)
 
 
 # ------------------------------------------------------------------ builders

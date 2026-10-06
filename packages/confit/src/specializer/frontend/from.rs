@@ -394,6 +394,10 @@ pub(super) fn bind_from<'a>(
         minted_lanes: std::cell::RefCell::new(ctx.minted_lanes),
         call_siblings: std::cell::RefCell::new(std::collections::HashMap::new()),
         call_words: std::cell::RefCell::new(std::collections::HashMap::new()),
+        lets: std::cell::RefCell::new(Vec::new()),
+        let_vals: std::cell::RefCell::new(std::collections::HashMap::new()),
+        let_reads: std::cell::Cell::new(false),
+        let_inlined: std::cell::RefCell::new(lets::Inlined::default()),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 

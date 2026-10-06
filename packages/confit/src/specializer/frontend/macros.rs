@@ -12,6 +12,15 @@
 //! parameter references, which an expression walk would visit as plain
 //! identifiers. The rule for a parameter reference is the binder's for a
 //! column: a word not after a `.`, not a named argument's name, not a call.
+//!
+//! A body that reads one subexpression in several places can declare it
+//! once, as a let ([`SqlMacro::lets`]): the body and the later lets read it
+//! as `__cf_let(i)`. Spelled out, such a body grows with every read (a
+//! recurrence whose every step reads the previous one twice doubles per
+//! step); declared, each call's lets expand once, beside the query
+//! ([`Expanded::lets`]), and the binder binds each once (`lets.rs`). The
+//! meaning is the body with every let spelled out, which is what DuckDB
+//! runs (`confit.SqlFunction` renders both forms from one expression).
 
 use sqlparser::dialect::GenericDialect;
 use sqlparser::keywords::Keyword;
@@ -26,6 +35,10 @@ pub struct SqlMacro {
     pub name: String,
     pub params: Vec<String>,
     pub body: String,
+    /// The subexpressions the body reads more than once, in order: each
+    /// over the parameters and the lets before it, read as `__cf_let(i)`
+    /// (see the module doc). Empty for a body spelled out.
+    pub lets: Vec<String>,
 }
 
 /// Expansions per query before the pass refuses: a body that calls itself,
@@ -33,7 +46,7 @@ pub struct SqlMacro {
 const MAX_EXPANSIONS: usize = 2_000;
 /// Tokens after expansion: a chain of functions each using its parameter
 /// twice doubles per level, so the bound is checked before each splice.
-const MAX_TOKENS: usize = 4_000_000;
+pub(super) const MAX_TOKENS: usize = 4_000_000;
 
 fn is_ws(t: &Token) -> bool {
     matches!(t, Token::Whitespace(_))
@@ -131,6 +144,19 @@ pub struct Call {
     pub tokens: Vec<Token>,
 }
 
+/// A let read: `__cf_let(i)`, in a function's body and lets for its own
+/// let `i`, and in the expanded query for entry `i` of [`Expanded::lets`].
+/// The name is reserved.
+pub const LET_MARKER: &str = "__cf_let";
+
+/// One let of one call: its function's name and its expansion, `(let)`
+/// with the call's arguments substituted.
+#[derive(Clone, Debug)]
+pub struct Let {
+    pub name: String,
+    pub tokens: Vec<Token>,
+}
+
 /// The expanded query, and the calls it reads fields of. A call read by
 /// several fields (`f(x).a, f(x).b, ...`) is expanded once here rather than
 /// once per read, which made a function with n fields read n times cost n^2
@@ -139,15 +165,59 @@ pub struct Call {
 pub struct Expanded {
     pub tokens: Vec<Token>,
     pub calls: Vec<Call>,
+    /// Every call's lets, numbered as the query reads them.
+    pub lets: Vec<Let>,
+}
+
+/// A body or a let, tokenized once: its tokens, and the positions of the
+/// numbers in its `__cf_let(i)` reads, which a call renumbers.
+struct Text {
+    tokens: Vec<Token>,
+    reads: Vec<(usize, usize)>,
 }
 
 struct State<'m> {
     macros: &'m [SqlMacro],
-    bodies: Vec<Vec<Token>>,
+    bodies: Vec<Text>,
+    lets: Vec<Vec<Text>>,
     rounds: usize,
     tokens: usize,
     calls: Vec<Call>,
     keys: Vec<(usize, String)>,
+    expanded_lets: Vec<Let>,
+}
+
+/// `text` tokenized, with its let reads: `__cf_let(i)` with `i` below
+/// `bound`. Any other use of the reserved name refuses.
+fn text(m: &SqlMacro, what: &str, src: &str, bound: usize) -> Result<Text, PrepareError> {
+    let tokens = tokenize(src)
+        .map_err(|e| PrepareError::Bind(format!("sql function '{}': its {what}: {e}", m.name)))?;
+    let mut reads = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        let Token::Word(w) = t else { continue };
+        if !w.value.eq_ignore_ascii_case(LET_MARKER) {
+            continue;
+        }
+        let read = (|| {
+            let (open, _) = next_solid(&tokens, i).filter(|(_, t)| matches!(t, Token::LParen))?;
+            let (num, n) = next_solid(&tokens, open)?;
+            let Token::Number(n, false) = n else { return None };
+            let n: usize = n.parse().ok().filter(|&n| n < bound)?;
+            next_solid(&tokens, num).filter(|(_, t)| matches!(t, Token::RParen))?;
+            Some((num, n))
+        })();
+        match read {
+            Some(r) => reads.push(r),
+            None => {
+                return Err(unsup(format!(
+                    "sql function '{}': its {what} reads {LET_MARKER} other than one of \
+                     the lets before it",
+                    m.name
+                )))
+            }
+        }
+    }
+    Ok(Text { tokens, reads })
 }
 
 /// Replace every call of a declared SQL function by its body, innermost
@@ -158,36 +228,46 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Expanded, Prepa
         return Ok(Expanded {
             tokens,
             calls: Vec::new(),
+            lets: Vec::new(),
         });
     }
-    let bodies = macros
-        .iter()
-        .map(|m| {
-            // The markers the token rewrites reserve are as invalid in a
-            // body as in the query it lands in.
-            let lower = m.body.to_ascii_lowercase();
-            if m.body.contains('\u{1}')
-                || lower.contains("__glob_pat")
-                || lower.contains(super::structs::SEQ_MARKER)
-                || lower.contains(CALL_MARKER)
-            {
-                return Err(unsup(format!(
-                    "sql function '{}': a reserved marker in its body",
-                    m.name
-                )));
-            }
-            tokenize(&m.body).map_err(|e| {
-                PrepareError::Bind(format!("sql function '{}': its body: {e}", m.name))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    // The markers the token rewrites reserve are as invalid in a body as
+    // in the query it lands in; a let read is the only marker a body has.
+    let reserved = |m: &SqlMacro, src: &str| {
+        let lower = src.to_ascii_lowercase();
+        if src.contains('\u{1}')
+            || lower.contains("__glob_pat")
+            || lower.contains(super::structs::SEQ_MARKER)
+            || lower.contains(CALL_MARKER)
+        {
+            return Err(unsup(format!(
+                "sql function '{}': a reserved marker in its body",
+                m.name
+            )));
+        }
+        Ok(())
+    };
+    let mut bodies = Vec::with_capacity(macros.len());
+    let mut lets = Vec::with_capacity(macros.len());
+    for m in macros {
+        reserved(m, &m.body)?;
+        bodies.push(text(m, "body", &m.body, m.lets.len())?);
+        let mut texts = Vec::with_capacity(m.lets.len());
+        for (i, l) in m.lets.iter().enumerate() {
+            reserved(m, l)?;
+            texts.push(text(m, "let", l, i)?);
+        }
+        lets.push(texts);
+    }
     let mut st = State {
         macros,
         bodies,
+        lets,
         rounds: 0,
         tokens: 0,
         calls: Vec::new(),
         keys: Vec::new(),
+        expanded_lets: Vec::new(),
     };
     let tokens = expand_in(tokens, &mut st)?;
     // A call's expansion may hold calls of its own, read by field or not.
@@ -200,6 +280,7 @@ pub fn expand(tokens: Vec<Token>, macros: &[SqlMacro]) -> Result<Expanded, Prepa
     Ok(Expanded {
         tokens,
         calls: st.calls,
+        lets: st.expanded_lets,
     })
 }
 
@@ -212,11 +293,30 @@ fn read_by_field(toks: &[Token], end: usize) -> bool {
     matches!(next_solid(toks, dot), Some((_, Token::Word(_))))
 }
 
-/// `(body)` with every parameter reference spelled `(argument)`.
-fn substitute(body: &[Token], mac: &SqlMacro, args: &[Vec<Token>]) -> Vec<Token> {
+/// `(body)` with every parameter reference spelled `(argument)`, and its
+/// own let `i` read as the query's let `first + i`. A let is not wrapped:
+/// its text stands at each read as it is.
+fn substitute(
+    text: &Text,
+    mac: &SqlMacro,
+    args: &[Vec<Token>],
+    first: usize,
+    wrap: bool,
+) -> Vec<Token> {
+    let body = &text.tokens;
     let mut rep = Vec::with_capacity(body.len() + 2);
-    rep.push(Token::LParen);
+    if wrap {
+        rep.push(Token::LParen);
+    }
+    let mut reads = text.reads.iter().peekable();
     for (j, t) in body.iter().enumerate() {
+        if let Some(&&(at, i)) = reads.peek() {
+            if at == j {
+                reads.next();
+                rep.push(Token::Number((first + i).to_string(), false));
+                continue;
+            }
+        }
         let param = match t {
             // A quoted name, or a bare one that is not a keyword: a bare
             // `end` is CASE's, never a parameter.
@@ -241,7 +341,9 @@ fn substitute(body: &[Token], mac: &SqlMacro, args: &[Vec<Token>]) -> Vec<Token>
             None => rep.push(t.clone()),
         }
     }
-    rep.push(Token::RParen);
+    if wrap {
+        rep.push(Token::RParen);
+    }
     rep
 }
 
@@ -302,7 +404,23 @@ fn expand_here(toks: &[Token], st: &mut State<'_>) -> Result<Vec<Token>, Prepare
                     macros[m].name
                 )));
             }
-            substitute(&st.bodies[m], mac, &args)
+            // This call's lets take the next numbers; each expands once,
+            // its own calls included, beside the query.
+            let first = st.expanded_lets.len();
+            let reps: Vec<Vec<Token>> = st.lets[m]
+                .iter()
+                .map(|l| substitute(l, mac, &args, first, false))
+                .collect();
+            st.expanded_lets.extend(reps.iter().map(|_| Let {
+                name: mac.name.clone(),
+                tokens: Vec::new(),
+            }));
+            for (i, r) in reps.into_iter().enumerate() {
+                let toks = expand_in(r, st)?;
+                st.tokens += toks.len();
+                st.expanded_lets[first + i].tokens = toks;
+            }
+            substitute(&st.bodies[m], mac, &args, first, true)
         };
         if by_field {
             let id = match seen {
@@ -361,7 +479,83 @@ mod tests {
             name: name.into(),
             params: params.iter().map(|p| p.to_string()).collect(),
             body: body.into(),
+            lets: Vec::new(),
         }
+    }
+
+    fn mac_lets(name: &str, params: &[&str], body: &str, lets: &[&str]) -> SqlMacro {
+        SqlMacro {
+            lets: lets.iter().map(|l| l.to_string()).collect(),
+            ..mac(name, params, body)
+        }
+    }
+
+    #[test]
+    fn a_let_expands_once_beside_the_query() {
+        let m = [mac_lets("f", &["x"], "__cf_let(0) * __cf_let(0)", &["x + 1"])];
+        let e = expand(tokenize("SELECT f(a) FROM t").unwrap(), &m).unwrap();
+        assert_eq!(text(&e.tokens), "SELECT (__cf_let(0) * __cf_let(0)) FROM t");
+        assert_eq!(e.lets.len(), 1);
+        assert_eq!(e.lets[0].name, "f");
+        assert_eq!(text(&e.lets[0].tokens), "(a) + 1");
+    }
+
+    #[test]
+    fn each_call_numbers_its_lets_after_the_last() {
+        let m = [mac_lets(
+            "f",
+            &["x"],
+            "__cf_let(1) + __cf_let(0)",
+            &["x * 2", "__cf_let(0) - x"],
+        )];
+        let e = expand(tokenize("SELECT f(a), f(b) FROM t").unwrap(), &m).unwrap();
+        assert_eq!(
+            text(&e.tokens),
+            "SELECT (__cf_let(1) + __cf_let(0)), (__cf_let(3) + __cf_let(2)) FROM t"
+        );
+        let lets: Vec<String> = e.lets.iter().map(|l| text(&l.tokens)).collect();
+        assert_eq!(lets, ["(a) * 2", "__cf_let(0) - (a)", "(b) * 2", "__cf_let(2) - (b)"]);
+    }
+
+    #[test]
+    fn a_call_inside_a_let_expands_with_its_own_lets() {
+        let m = [
+            mac_lets("g", &["y"], "__cf_let(0) / __cf_let(0)", &["y + 1"]),
+            mac_lets("f", &["x"], "__cf_let(0) * __cf_let(0)", &["g(x)"]),
+        ];
+        let e = expand(tokenize("SELECT f(a) FROM t").unwrap(), &m).unwrap();
+        assert_eq!(text(&e.tokens), "SELECT (__cf_let(0) * __cf_let(0)) FROM t");
+        let lets: Vec<String> = e.lets.iter().map(|l| text(&l.tokens)).collect();
+        assert_eq!(lets, ["(__cf_let(1) / __cf_let(1))", "((a)) + 1"]);
+    }
+
+    #[test]
+    fn a_let_read_must_name_an_earlier_let() {
+        for (body, lets) in [
+            ("__cf_let(1)", vec!["x"]),
+            ("__cf_let(0)", vec!["__cf_let(0)"]),
+            ("__cf_let", vec![]),
+            ("__cf_let(a)", vec!["x"]),
+        ] {
+            let m = [mac_lets("f", &["x"], body, &lets)];
+            assert!(
+                matches!(run("SELECT f(a) FROM t", &m), Err(PrepareError::Unsupported(_))),
+                "{body} {lets:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_doubling_chain_of_lets_stays_linear() {
+        // Each step reads the one before twice: spelled out, 2^40 reads.
+        let lets: Vec<String> = std::iter::once("x".to_string())
+            .chain((1..40).map(|i| format!("__cf_let({}) + __cf_let({})", i - 1, i - 1)))
+            .collect();
+        let lets: Vec<&str> = lets.iter().map(String::as_str).collect();
+        let m = [mac_lets("f", &["x"], "__cf_let(39)", &lets)];
+        let e = expand(tokenize("SELECT f(a) FROM t").unwrap(), &m).unwrap();
+        assert_eq!(e.lets.len(), 40);
+        assert!(e.lets.iter().map(|l| l.tokens.len()).sum::<usize>() < 40 * 16);
     }
 
     #[test]

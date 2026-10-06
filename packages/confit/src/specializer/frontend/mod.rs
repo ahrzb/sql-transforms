@@ -53,6 +53,7 @@ mod typing;
 mod decimal;
 pub mod macros;
 mod calls;
+mod lets;
 mod lists;
 mod naming;
 
@@ -155,6 +156,10 @@ pub fn frontend(
         // Reserved for the SQL function call marker.
         return Err(unsup(format!("reserved identifier {}", macros::CALL_MARKER)));
     }
+    if sql.to_ascii_lowercase().contains(macros::LET_MARKER) {
+        // Reserved for the SQL function let marker.
+        return Err(unsup(format!("reserved identifier {}", macros::LET_MARKER)));
+    }
     if sql.contains('\u{1}') {
         // Reserved for the star-filter rewrite marker.
         return Err(unsup("control character U+0001 in SQL"));
@@ -165,7 +170,11 @@ pub fn frontend(
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     // SQL functions first, so their bodies pass through the same rewrites
     // as the query text they land in.
-    let macros::Expanded { tokens, calls } = macros::expand(tokens, macros)?;
+    let macros::Expanded {
+        tokens,
+        calls,
+        lets,
+    } = macros::expand(tokens, macros)?;
     let rewrite = |tokens| {
         super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
             super::rewrite::rewrite_parenless_replace(super::rewrite::rewrite_from_colon_aliases(
@@ -187,6 +196,19 @@ pub fn frontend(
         })
         .collect::<Result<Vec<_>, PrepareError>>()?;
     let _calls = calls::Installed::new(calls);
+    // Each let parses once; its reads bind against it.
+    let lets = lets
+        .into_iter()
+        .map(|l| {
+            let tokens = rewrite(l.tokens.clone());
+            let e = parse_deep(|| Parser::new(&dialect).with_recursion_limit(PARSE_DEPTH).with_tokens(tokens).parse_expr())
+                .map_err(|e| {
+                    PrepareError::Bind(format!("sql function '{}': a let: {e}", l.name))
+                })?;
+            Ok((l.name, l.tokens, e))
+        })
+        .collect::<Result<Vec<_>, PrepareError>>()?;
+    let _lets = lets::Installed::new(lets::table(lets));
     let statements = parse_deep(|| Parser::new(&dialect).with_recursion_limit(PARSE_DEPTH).with_tokens(tokens).parse_statements())
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     let [statement] = statements.as_slice() else {
@@ -207,7 +229,7 @@ pub fn frontend(
         models,
         bind_eval,
     };
-    let q = bind_query(query, &env, &[])?;
+    let q = bind_query(query, &env, &[]).map_err(lets::spell_out_error)?;
     Ok((
         Plan { stages: q.stages },
         q.joins,
@@ -239,6 +261,8 @@ struct BoundSelect {
     joins: Vec<JoinSpec>,
     pred: Option<SExpr>,
     project: Vec<(String, SExpr)>,
+    /// What the projection reads through `SKind::Let` (see `lets.rs`).
+    lets: Vec<SExpr>,
     out_cols: Vec<Col>,
     wide_outs: Vec<super::WideOut>,
     ctx: QueryCtx,
@@ -391,6 +415,11 @@ fn bind_query<'q>(
             return Err(null_refusal());
         }
     }
+    for e in b.lets.iter_mut() {
+        if over_null(e) {
+            return Err(null_refusal());
+        }
+    }
     let mut level_exprs: Vec<&mut SExpr> = Vec::new();
     level_exprs.extend(b.pred.as_mut());
     for spec in b.joins.iter_mut() {
@@ -406,12 +435,16 @@ fn bind_query<'q>(
     for (_, e) in b.project.iter_mut() {
         into_level(e, off);
     }
+    for e in b.lets.iter_mut() {
+        into_level(e, off);
+    }
     let null_cols = b.project.iter().map(|(_, e)| matches!(e.kind, SKind::NullOf)).collect();
     let mut stages = inner.stages;
     stages.push(Stage {
         joins: (off..off + b.joins.len() as u32).collect(),
         pred: b.pred,
         project: b.project,
+        lets: b.lets,
     });
     let mut joins = inner.joins;
     joins.extend(b.joins);
@@ -445,6 +478,7 @@ fn bind_request_level(
             joins: (0..b.joins.len() as u32).collect(),
             pred: b.pred,
             project: b.project,
+            lets: b.lets,
         }],
         joins: b.joins,
         out_cols: b.out_cols,
@@ -599,7 +633,22 @@ fn bind_select(
         });
         Ok(())
     };
+    // A projection `share.rs` lowers reads lets as `SKind::Let`.
+    binder.let_reads.set(!env.many);
     for item in &select.projection {
+        // An unaliased item is named once, after its text with the lets in
+        // it spelled out: what that spells out counts toward the query's
+        // budget (`lets::spend_name`).
+        let mut named: Option<String> = None;
+        let mut name_of = |e: &SqlExpr| -> Result<String, PrepareError> {
+            if let Some(n) = &named {
+                return Ok(n.clone());
+            }
+            lets::spend_name(e)?;
+            let n = default_name(e);
+            named = Some(n.clone());
+            Ok(n)
+        };
         // unnest(udf(...)) expands IN PLACE, before any other item
         // handling, and an alias on it is ignored — the oracle's own
         // expansion (measured).
@@ -619,7 +668,7 @@ fn bind_select(
             // named extern's output struct.
             let base = match item {
                 SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
-                _ => default_name(e),
+                _ => name_of(e)?,
             };
             if let Some((lanes, names)) = binder.struct_pack_lanes(e, &base)? {
                 push_wide(&mut out_cols, &mut exprs, &mut wide_outs, base, lanes, names)?;
@@ -628,12 +677,12 @@ fn bind_select(
         }
         match item {
             SelectItem::UnnamedExpr(e) => {
-                if let Some((lanes, names)) = binder.wide_extern_lanes(e, &default_name(e))? {
+                if let Some((lanes, names)) = binder.wide_extern_lanes(e, &name_of(e)?)? {
                     push_wide(
                         &mut out_cols,
                         &mut exprs,
                         &mut wide_outs,
-                        default_name(e),
+                        name_of(e)?,
                         lanes,
                         names,
                     )?;
@@ -646,12 +695,7 @@ fn bind_select(
                         push_item(&mut out_cols, &mut exprs, name, ex)?;
                     }
                 } else {
-                    push_item(
-                        &mut out_cols,
-                        &mut exprs,
-                        default_name(e),
-                        fold(binder.expr(e)?),
-                    )?
+                    push_item(&mut out_cols, &mut exprs, name_of(e)?, fold(binder.expr(e)?))?
                 }
             }
             SelectItem::ExprWithAlias { expr, alias } => {
@@ -714,6 +758,21 @@ fn bind_select(
             SelectItem::ExprWithAliases { .. } => return Err(unsup("multi-alias SELECT item")),
         };
     }
+    binder.let_reads.set(false);
+    // An unaliased item is named after its text, which reads a let as the
+    // let's own text.
+    for name in out_cols
+        .iter_mut()
+        .map(|c| &mut c.name)
+        .chain(wide_outs.iter_mut().map(|w| &mut w.name))
+    {
+        if let Some(full) = lets::spell_out_text(name) {
+            *name = full;
+        }
+        if let Some(f) = lets::named_let(name) {
+            return Err(lets::unaliased_past_cap(&f));
+        }
+    }
     if exprs.is_empty() {
         // Pinned text: an EXCLUDE-all star that empties the projection.
         return Err(PrepareError::Bind(
@@ -746,10 +805,18 @@ fn bind_select(
         .map(|c| c.name.clone())
         .zip(exprs)
         .collect::<Vec<_>>();
+    // Only the projection reads lets. A WHERE reads their values: what it
+    // bound itself does, and a lateral alias it reads carries the
+    // projection's reads.
+    let lets = binder.lets.take();
+    if let Some(pred) = filter.as_mut() {
+        lets::inline(pred, &lets, &mut binder.let_inlined.borrow_mut(), lets::Cost::Reads)?;
+    }
     Ok(BoundSelect {
         joins,
         pred: filter,
         project,
+        lets,
         out_cols,
         wide_outs,
         ctx: binder.into_ctx(),
@@ -890,6 +957,16 @@ struct Binder<'a> {
     call_words: std::cell::RefCell<
         std::collections::HashMap<usize, std::rc::Rc<std::collections::HashSet<String>>>,
     >,
+    /// The values this level reads through `SKind::Let` (see `lets.rs`).
+    lets: std::cell::RefCell<Vec<SExpr>>,
+    /// Per let and scope: what its reads answer.
+    let_vals: std::cell::RefCell<std::collections::HashMap<lets::LetKey, lets::LetVal>>,
+    /// Whether a let read answers `SKind::Let`: while binding the
+    /// projection of a stage `share.rs` lowers. Anywhere else it answers
+    /// the value.
+    let_reads: std::cell::Cell<bool>,
+    /// The values of `lets`, inlined, for the reads outside the projection.
+    let_inlined: std::cell::RefCell<lets::Inlined>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.

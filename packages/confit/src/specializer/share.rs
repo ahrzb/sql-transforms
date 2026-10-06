@@ -33,9 +33,15 @@ pub struct Shared {
 }
 
 /// The projection's shared subexpressions, or `None` when nothing is
-/// evaluated twice.
-pub fn share(items: &[SExpr]) -> Option<Shared> {
+/// evaluated twice. `lets` are the values the items read through
+/// [`SKind::Let`] (`frontend/lets.rs`): each is interned once, where it is
+/// read, so the DAG is the one the text spelled out would give.
+pub fn share(items: &[SExpr], lets: &[SExpr]) -> Option<Shared> {
     let mut dag = Dag::default();
+    for e in lets {
+        let id = dag.intern(e.clone());
+        dag.lets.push(id);
+    }
     let roots: Vec<u32> = items.iter().map(|e| dag.intern(e.clone())).collect();
     let n = dag.nodes.len();
 
@@ -87,7 +93,7 @@ pub fn share(items: &[SExpr]) -> Option<Shared> {
             }
         }
     }
-    if !shared.iter().any(|s| *s) {
+    if !shared.iter().any(|s| *s) && lets.is_empty() {
         return None;
     }
 
@@ -127,6 +133,8 @@ struct Node {
 struct Dag {
     nodes: Vec<Node>,
     index: HashMap<u64, Vec<u32>>,
+    /// Per let, its node.
+    lets: Vec<u32>,
 }
 
 impl Dag {
@@ -198,6 +206,9 @@ impl Dag {
     }
 
     fn intern_here(&mut self, mut e: SExpr) -> u32 {
+        if let SKind::Let(k) = e.kind {
+            return self.lets[k as usize];
+        }
         let mut children = Vec::new();
         let mut free = true;
         let mut size = 1u32;

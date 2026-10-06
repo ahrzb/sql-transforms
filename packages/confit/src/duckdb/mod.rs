@@ -805,11 +805,26 @@ fn parse_udfs(
         // A SQL function: its body replaces each call before parsing, so it
         // never becomes an extern. Its parameter types are already spelled in
         // the body (`confit.SqlFunction` casts each reference), so only the
-        // names cross.
-        if b.hasattr("sql_body")? {
-            let body: String = b.getattr("sql_body")?.extract().map_err(|_| {
-                build_err(format!("bind error: sql function '{name}': `sql_body` must be a str"))
-            })?;
+        // names cross. One that reads a subexpression in several places
+        // declares it once (`sql_lets`, read by `sql_let_body`); the
+        // spelled-out `sql_body` is then DuckDB's alone, and not read here.
+        let declared = b.hasattr("sql_lets")?;
+        if declared || b.hasattr("sql_body")? {
+            let str_attr = |attr: &str| -> PyResult<String> {
+                b.getattr(attr)?.extract().map_err(|_| {
+                    build_err(format!("bind error: sql function '{name}': `{attr}` must be a str"))
+                })
+            };
+            let (body, lets) = if declared {
+                let lets: Vec<String> = b.getattr("sql_lets")?.extract().map_err(|_| {
+                    build_err(format!(
+                        "bind error: sql function '{name}': `sql_lets` must be a sequence of str"
+                    ))
+                })?;
+                (str_attr("sql_let_body")?, lets)
+            } else {
+                (str_attr("sql_body")?, Vec::new())
+            };
             let params: Vec<String> = b
                 .getattr("takes")
                 .and_then(|t| t.getattr("names"))
@@ -819,7 +834,12 @@ fn parse_udfs(
                         "bind error: sql function '{name}': `takes` must be a pyarrow Schema"
                     ))
                 })?;
-            macros.push(SqlMacro { name, params, body });
+            macros.push(SqlMacro {
+                name,
+                params,
+                body,
+                lets,
+            });
             continue;
         }
         let (_take_names, take_tys) = parse_takes(&name, &b.getattr("takes").map_err(|_| {

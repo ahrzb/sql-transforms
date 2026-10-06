@@ -53,7 +53,7 @@ A query calls functions passed in `udfs=`. `confit.functions` names the kinds:
 
 | class | defined by | how the engine serves it |
 |---|---|---|
-| `SqlFunction` | a SQL expression over its parameters | substitutes the arguments into the body, as DuckDB's macro does |
+| `SqlFunction` | a SQL expression over its parameters | substitutes the arguments into the body, as DuckDB's macro does. A value that the body reads more than once expands once for each call. |
 | `ExternFunction` | a Python callable | calls it (or folds a call over constants at bind) |
 | `Ensemble(ExternFunction)` | the reference walk of its packed tree tables | scores the tables natively, bit-equal to the walk |
 

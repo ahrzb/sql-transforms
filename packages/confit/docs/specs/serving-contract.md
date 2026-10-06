@@ -147,7 +147,17 @@ macro; a call is replaced by its body with the arguments substituted, as
 DuckDB binds a macro), `ExternFunction` (a callable) and `Ensemble` (packed
 tree tables plus their reference walk), each with a `register` that is its
 oracle definition (`tests/test_functions.py`, `tests/test_sql_functions.py`).
-An object exposing `sql_body` is a SQL function. The protocol is specified by
+An object exposing `sql_body` is a SQL function. It can also expose
+`sql_lets` and `sql_let_body`, and confit then reads these two attributes
+instead of `sql_body`. `sql_lets` is a list of SQL texts. Each text is a value
+that the body reads more than once. `sql_let_body` and each later text read
+value `i` as `__cf_let(i)`. Confit expands each value once for each call, so a
+recurrence whose steps read the step before twice does not double in size at
+each step. The definition does not change: `sql_body` is `sql_let_body` with
+each `__cf_let(i)` replaced by the text of value `i`, and DuckDB runs
+`sql_body` (`tests/test_sql_function_lets.py`). Confit reads each value as one
+operand, as if it were in parentheses. So each text must also be one operand
+where it stands in `sql_body`. `SqlFunction` writes each value as one operand. The protocol is specified by
 `packages/confit/confit/_engine.pyi` and exercised by `test_udfs.py` and
 `test_tree_predict.py`.
 

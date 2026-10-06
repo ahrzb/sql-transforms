@@ -73,6 +73,25 @@ Follow-ups from the shared-subexpression work:
 
 Delivered:
 
+- A value a SQL function body reads more than once binds once
+  (`SqlFunction.sql_lets` / `sql_let_body`, `frontend/lets.rs`): each call
+  expands it once, the binder binds it once per scope, and `share.rs`
+  interns it where it is read, so it is computed once per row where it
+  cannot trap (the same DAG as the text spelled out). A value that can trap
+  binds again at each read, so each read traps where DuckDB's does; a read
+  in WHERE, JOIN ON or a `shape='many'` projection, and the name of an
+  unaliased read, take the value whole. What those spell out counts toward
+  one more 4M budget per query (`lets::spend`), so many reads under the cap
+  each still refuse together (known-limitations §1). Release build, one container: SplineTransformer
+  at degree 5, 7 knots, 32 features builds in 2.2 s (refused at the token
+  cap before: 11 MB spelled out), 64 features in 4.5 s; degree 3, 8 knots,
+  64 features in 2.3 s (4.0 s with lets off); `periodic` at degree 5, 32
+  features in 1.2 s (7.0 s). The native repro `h = h * (2 - h)` builds at
+  depth 100 in 0.01 s (depth 18 refused after 2.6 s, 21 after 53 s). A
+  CASE per tree read by each of its lanes (RandomTreesEmbedding shape, 100
+  trees of depth 5, 2,286 lanes) builds in 0.85 s (4.1 s). Serving time is
+  unchanged within noise. Asked by the native loop for SplineTransformer
+  and RandomTreesEmbedding.
 - `cbrt` is DuckDB's bit for bit on Linux: the kernel calls glibc's, looked
   up in `libm.so.6` (the toolchain's own `cbrt`, which both `f64::cbrt` and
   an `extern "C"` declaration reached, differed on about half of 100,001
@@ -85,10 +104,7 @@ Delivered:
   later item's blocks). The SplineTransformer-shaped repro (320 struct
   lanes, 9-arm CASE polynomials) builds in 1.4-1.5 s at 4, 8, 16 or 32
   parameters (2.9 s at 4 and 4.3 s at 32 before); QuantileTransformer
-  serves its 3-instance step in 1,135 µs. Open from the same request: a
-  value bound once in a SQL function body (de Boor reads each round twice,
-  so a lane's text doubles per degree; 32 features at degree 5 pass the
-  4M-token cap).
+  serves its 3-instance step in 1,135 µs.
 - Sharing (#363) no longer hoists what only CASE arms hold: a subexpression
   is shared when evaluated unconditionally and more than once, or twice
   behind one gate (the CASE conditions on its path, hash-consed, so a
