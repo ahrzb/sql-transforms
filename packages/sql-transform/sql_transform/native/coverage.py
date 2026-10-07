@@ -2,13 +2,14 @@
 
     uv run python -m sql_transform.native.coverage --write
 
-regenerates the table in loops/native/coverage.md; `coverage_test.py` fails
-while the file is stale. For the milestone reports, `--modules` prints the
-counts per sklearn module and `--bounds` the KPI `nonzero_ulp_bounds`.
-Every transformer sklearn lists is in exactly one row: native (in the
-catalog, with its bound), composition (served by composing entries, not
-an entry of its own; "served" when the catalog composes it), out of
-scope (with the reason, from loops/native/goal.md "Scope"), or not yet.
+regenerates the table in packages/sql-transform/spec/native/coverage.md;
+`coverage_test.py` fails while the file is stale. For the milestone reports,
+`--modules` prints the counts per sklearn module and `--bounds` the KPI
+`nonzero_ulp_bounds`. Every transformer sklearn lists is in exactly one row:
+native (in the catalog, with its bound), composition (served by composing
+entries, not an entry of its own; "served" when the catalog composes it), out
+of scope (with the reason, from claim: catalog-scope in
+spec/native/catalog-contract.md), or not yet.
 A composition the catalog serves that sklearn does not list as a
 transformer (`Pipeline`, not a `TransformerMixin`) gets a row of its own,
 outside the counts.
@@ -23,7 +24,7 @@ from sklearn.utils import all_estimators
 
 from sql_transform.native._registry import Entry, catalog
 
-DOC = Path(__file__).parents[4] / "loops" / "native" / "coverage.md"
+DOC = Path(__file__).parents[2] / "spec" / "native" / "coverage.md"
 BEGIN, END = "<!-- coverage:begin -->", "<!-- coverage:end -->"
 
 # Served by composing the entries of their parts.
@@ -37,7 +38,7 @@ COMPOSITIONS = {
     "VotingRegressor": "averages parts' predictions",
 }
 
-# Outside the catalog by goal.md "Scope", each with its reason.
+# Outside the catalog by claim: catalog-scope, each with its reason.
 OUT_OF_SCOPE = {
     "DictVectorizer": "input is dicts, not a row of columns",
     "FeatureHasher": "input is dicts or token lists, not a row of columns",
@@ -90,7 +91,7 @@ def rows() -> list[tuple[str, str, str]]:
     native = {c.__name__: e for c, e in catalog().items()}
     out = []
     for name in sorted(_classes()):
-        # A composition stays one, served or not (goal.md, "Scope"); served,
+        # A composition stays one, served or not (claim: catalog-scope); served,
         # it composes bit-exact entries only (compose.py).
         if name in COMPOSITIONS:
             note = COMPOSITIONS[name]
@@ -159,7 +160,9 @@ def write() -> None:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--write", action="store_true", help="regenerate loops/native/coverage.md"
+        "--write",
+        action="store_true",
+        help="regenerate packages/sql-transform/spec/native/coverage.md",
     )
     p.add_argument(
         "--modules", action="store_true", help="print the counts per sklearn module"

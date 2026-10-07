@@ -5,7 +5,7 @@ the parameters, not a pointer — and ``p_transform(θ, bundle)`` becomes the
 residual's expressions over struct reads. Nothing is registered: no Python in
 the row path, and the artifact's size is visible in the params table.
 
-Executable SQL leaf cases from `packages/sql-transform/docs/contract.md`.
+Executable SQL leaf cases from `packages/sql-transform/spec/composition.md`.
 """
 
 import pyarrow as pa

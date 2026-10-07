@@ -1,6 +1,6 @@
 """A projection as a leaf: both halves spliced as SQL, θ as data.
 
-SQL leaf composition follows `packages/sql-transform/docs/contract.md`.
+SQL leaf composition follows `packages/sql-transform/spec/composition.md`.
 
 ``p_fit(bundle)`` rewrites to a struct of the projection's own aggregates —
 grouped by whatever GROUP BY surrounds it, or windowed per-field when the

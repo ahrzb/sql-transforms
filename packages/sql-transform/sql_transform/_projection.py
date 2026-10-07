@@ -10,7 +10,7 @@ what serves. The levels that carry the batch's rows (the *spine*) must be pure
 projection over joins; a level that reads only params is free, because it is a
 constant table at serving.
 
-Implements `packages/sql-transform/docs/contract.md`.
+Implements `packages/sql-transform/spec/projections.md`.
 """
 
 import sys

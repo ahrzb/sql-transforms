@@ -13,9 +13,9 @@ into confit SQL functions, checked against the fitted estimator itself (the
 "twin"). Your ticket is ONE family: one module, one PR.
 
 Read `loops/native/README.md` (the cycle you follow, steps 3-7, and
-"Tickets and review"), `loops/native/goal.md`, and the existing family
-modules (`scalers.py`, `impute.py`, `select.py`, `encode.py`) before writing
-code.
+"Tickets and review"), `packages/sql-transform/spec/native/catalog-contract.md`,
+and the existing family modules (`scalers.py`, `impute.py`, `select.py`,
+`encode.py`) before writing code.
 
 ## What you must not touch
 - `packages/confit/` and `loops/confit/`. If the family needs a confit
@@ -29,7 +29,7 @@ code.
 ## Files other workers change at the same time
 - `catalog_test.py`: append your `FIXTURES` rows as your own block.
 - `__init__.py`: one import line for your module.
-- `loops/native/coverage.md`: regenerate it
+- `packages/sql-transform/spec/native/coverage.md`: regenerate it
   (`uv run --no-sync python -m sql_transform.native.coverage --write`),
   never edit it by hand.
 - `loops/native/PLANS.md`: edit only your family's item (remove it from

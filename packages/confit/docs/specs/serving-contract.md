@@ -169,3 +169,130 @@ call differently (`tests/test_udfs.py::udf_check` and
 `::test_a_udf_may_not_take_a_builtin_name`). Where DuckDB cannot execute a model
 operation, the independent reference and bounds are specified under
 [C4: transformer parity](success-measures.md#transformer-parity-c4).
+
+### Tree tables
+
+A UDF that exposes `tree_tables()` is scored natively. sql-transform's
+`TreeBasedTransform` is one packer ([tree models](../../../sql-transform/spec/python/tree-models.md)).
+
+#### The compare grid
+
+Both of the above are sklearn's semantics, and neither is universal — so a
+transform says which floating-point grid its comparisons live on, as the third
+member of `tree_tables()`:
+
+```python
+def tree_tables(self):
+    return nodes, models, "float32"
+```
+
+A class
+wrapping a library that compares in float64 skips the threshold rewrite and
+declares `"float64"`, and the engine then converts its integer features
+exactly rather than narrowing them.
+
+Without the field the narrowing would fire for every model, which would make
+the wire format quietly sklearn-specific: a float64-grid packer would get its
+integer features narrowed anyway, silently losing precision above `2**24` that
+it had every right to keep. The threshold rewrite is skippable by a packer;
+the conversion is not, so the engine has to be told.
+
+**It is required, not defaulted.** The packer that would get this wrong is
+exactly the one that never thought about it, and a default would be the same
+trap with an extra step.
+
+**It belongs to the TRANSFORM, not to an instance inside it.** `score(id, ..)`
+takes the instance id from a row, so it is a runtime value, while the
+conversion is chosen once when the query is lowered. A per-instance grid could
+only be honoured with a per-row branch.
+
+That opcode adds no float32 TYPE — its lane is f64 out, the same way
+`ftoi.nearest` is a rounding mode and not an integer type. The engine still
+computes in exactly `i64` / `f64` / string / bool, and no cast lands on the
+row path.
+
+#### Writing a packer
+
+For a library `TreeBasedTransform` does not know, write your own transform
+class. The whole protocol is four attributes and one method — the engine never
+sees sklearn, and never calls `__call__` on a class that has `tree_tables`.
+
+```python
+class XGBTransform:
+    name = "score"
+    # names + types in one declaration; the features bind by position
+    takes = pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
+    returns = pa.float64()
+    instances = {0: booster}    # presence is what adds the leading id argument
+
+    def tree_tables(self):
+        return nodes_table, header_table, "float64"   # or "float32" if your
+        # thresholds were rewritten onto sklearn's grid — see above
+```
+
+**`nodes`** — one row per node, grouped by model then tree:
+
+| column | type | |
+|---|---|---|
+| `model_id` | int64 | dense from 0; a model's rows are contiguous |
+| `tree_id` | int64 | a tree's rows are contiguous |
+| `node_id` | int64 | dense from 0 **within each tree** |
+| `feature` | int32 | `-1` marks a leaf |
+| `threshold` | float64 | `feature <= threshold` goes left |
+| `left`, `right` | int32 | tree-local node ids, `-1` on a leaf |
+| `missing_left` | bool | where `NaN` goes, per node |
+| `value` | float64 | the leaf's contribution |
+
+**`models`** — one row per model:
+
+| column | type | |
+|---|---|---|
+| `model_id` | int64 | dense from 0 |
+| `base` | float64 | seeds the accumulator for `sum`, added after for `mean` |
+| `agg` | string | `"sum"` or `"mean"` |
+| `link` | string | `"identity"` or `"sigmoid"` |
+
+int32 and int64 are both accepted for the id, child and feature columns.
+A NULL anywhere in either table is a build error naming the row.
+
+Decoding walks the pyarrow buffers directly — a 100k-node forest costs no
+Python objects.
+
+#### Build-time refusals
+
+Each names the offending row or field, before any data flows:
+
+- a child index out of range, or a child that does not follow its parent
+  (that ordering is what makes traversal provably terminate);
+- a node unreachable from its tree's root;
+- a leaf with children, or a split node missing one;
+- `feature` beyond the declared width;
+- a node id out of dense order;
+- an unknown `agg` or `link` spelling;
+- non-dense or non-contiguous `model_id`, a model with no nodes, an empty
+  model table;
+- instance ids that are not dense from 0;
+- a call passing the wrong number of arguments, or a non-numeric one;
+- two declared UDFs whose names collide case-insensitively, whichever kinds
+  they are;
+- a declared UDF whose name is a builtin (`least`, `round`, `upper`, …): the
+  binder matches the builtin catalogue before it consults the declared UDFs,
+  while DuckDB lets a registered function shadow its own builtin, so the two
+  engines would answer the same SQL differently;
+- a `tree_tables()` that raises or does not return
+  `(nodes, models, compare_grid)`.
+
+#### Which backend runs it
+
+The kernel is native Rust either way: the interpreter calls it directly,
+Cranelift emits a call to an `extern "C"` shim over the same routine. Scoring
+cost is identical; only the surrounding row code differs.
+
+Note that `DuckDBInferFn` **discards the Cranelift compile error and falls
+back to the interpreter silently**. If you are measuring, assert the engine:
+
+```python
+assert fn.backend == "cranelift"
+```
+
+`SPECIALIZER_FORCE_INTERP=1` pins the interpreter.

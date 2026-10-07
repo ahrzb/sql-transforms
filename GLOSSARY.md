@@ -238,6 +238,34 @@ _Avoid_: skip list, allowlist
 A test that compares two spellings of the same query, which must give the
 same answer.
 
+## Documents
+
+**Spec**:
+The description of what a package does now, in the package's `spec/`
+folder. It holds no plans, proposals or history.
+_Avoid_: design doc
+
+**Claim**:
+One named rule in a spec, written as `**claim: <name>.**`. It ends with an
+Evidence line that names the tests that pin it.
+
+**RFC**:
+A complete proposed design, with the options weighed. It waits for the
+owner's review before it changes a spec.
+_Avoid_: proposal (for an RFC)
+
+**Record**:
+A document that is kept as written: a closed decision, an applied RFC, a
+research lesson or a changelog entry. Only its links change, when a target
+moves.
+
+**Decision record**:
+A file that asks the owner one question, or holds the owner's ruling. A loop
+keeps its records in its `decisions/` folder. `sql-transform` keeps open and
+postponed records in `packages/sql-transform/plan/decisions/`, and closed
+records in `packages/sql-transform/records/decisions/`.
+_Avoid_: ADR, owner question (without a record)
+
 ## Loops
 
 **Loop**:
@@ -266,11 +294,6 @@ _Avoid_: task, job
 **Wave**:
 A set of tickets that the supervisor starts at the same time.
 _Avoid_: batch, round
-
-**Decision record**:
-A file in a loop's `decisions/` folder. An open record asks the owner a
-question. A closed record holds the owner's ruling.
-_Avoid_: ADR, owner question (without a record)
 
 **Need**:
 A capability that one loop asks the other loop to make.

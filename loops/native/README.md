@@ -3,9 +3,9 @@
 This loop grows the native catalog (`sql_transform.native`). The catalog
 turns fitted sklearn transformers into functions that confit serves. The
 loop adds one family in each cycle. It continues until every transformer in
-scope in [coverage.md](coverage.md) is native.
+scope in [coverage.md](../../packages/sql-transform/spec/native/coverage.md) is native.
 
-- [goal.md](goal.md) says what a catalog entry must equal, and the scope.
+- [goal.md](goal.md) says what done means. The [catalog contract](../../packages/sql-transform/spec/native/catalog-contract.md) says what a catalog entry must equal, and the scope.
 - [PLANS.md](PLANS.md) lists open work, with the most valuable item first.
 - [tickets.md](tickets.md) is the board. It shows what is in progress and
   who has each ticket.
@@ -13,7 +13,7 @@ scope in [coverage.md](coverage.md) is native.
   prompt.
 - [decisions/](decisions/README.md) holds the questions for the owner and
   the rulings in force.
-- [coverage.md](coverage.md) is the scoreboard. A script generates it.
+- [coverage.md](../../packages/sql-transform/spec/native/coverage.md) is the scoreboard. A script generates it.
 - [report-format.md](report-format.md) gives the shape of a milestone
   report. [reports/](reports/) holds the reports.
 
@@ -104,11 +104,13 @@ the capability.
 - One PR holds one family, and one module holds one family.
 - Register exact classes only, because a subclass may override `transform`.
 - Write a decision record in `decisions/open/` only for a question about
-  the contract or the scope in goal.md. The loop makes the implementation
-  choices.
+  the contract or the scope in the
+  [catalog contract](../../packages/sql-transform/spec/native/catalog-contract.md).
+  The loop makes the implementation choices.
 - Text that the owner reads follows the `simple-english` skill and uses the
   terms in [GLOSSARY.md](../../GLOSSARY.md). This is a report, a decision
-  record, this README, goal.md or report-format.md.
+  record, this README, goal.md, report-format.md or the native pages of the
+  package spec.
 
 ## Tickets and review
 
@@ -122,7 +124,7 @@ modules, so their tickets are almost independent.
 **Where tickets come from,** in this order:
 
 1. PLANS "Next".
-2. The easiest "not yet" rows of [coverage.md](coverage.md).
+2. The easiest "not yet" rows of [coverage.md](../../packages/sql-transform/spec/native/coverage.md).
 3. The configurations that a merged family left `NotNative`, after confit
    delivers what they wait on.
 
@@ -142,7 +144,7 @@ under PLANS "Needs from confit".
 - `catalog_test.py` (`FIXTURES`): each ticket adds its rows in its own
   block. A conflict there is mechanical. Keep both sides.
 - `__init__.py`: a new family adds one import line.
-- [coverage.md](coverage.md): a script generates it. Never resolve a
+- [coverage.md](../../packages/sql-transform/spec/native/coverage.md): a script generates it. Never resolve a
   conflict in it by hand. Regenerate it after you merge master.
 - [PLANS.md](PLANS.md): a worker changes only its own family's item, and
   adds to "Needs from confit".
@@ -165,14 +167,14 @@ blocking or optional.
       in `decisions/open/`, not code.
 - [ ] Nothing changed outside the family module, its fixtures,
       `__init__.py`, PLANS and coverage, unless the ticket said so.
-- [ ] The gate is green. The PR regenerated [coverage.md](coverage.md) and
+- [ ] The gate is green. The PR regenerated [coverage.md](../../packages/sql-transform/spec/native/coverage.md) and
       did not edit it by hand.
 - [ ] Each new item under "Needs from confit" has a reproduction.
 
 **After each merge,** do these steps:
 
 1. Merge master into the other open branches, and regenerate
-   [coverage.md](coverage.md) in each.
+   [coverage.md](../../packages/sql-transform/spec/native/coverage.md) in each.
 2. Update the board ([tickets.md](tickets.md)).
 3. Send each new need to the confit loop's session.
 4. At the end of a wave, write the milestone report yourself. A worker never

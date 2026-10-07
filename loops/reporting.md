@@ -65,7 +65,8 @@ needs_from_other_loop: [cse-within-call]
 
 - **Native:**
   - `coverage_native`, `coverage_partial`, `coverage_notnative` and
-    `coverage_not_yet`. These come from the regenerated `coverage.md`.
+    `coverage_not_yet`. These come from the regenerated
+    `packages/sql-transform/spec/native/coverage.md`.
   - `nonzero_ulp_bounds`.
   - `families_merged_since_last`.
   - `widest_build_s`, `widest_serve_us_per_64` and `twin_us_per_64`. These

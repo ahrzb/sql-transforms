@@ -119,7 +119,7 @@ sql-transform's `TreeBasedTransform` packs these scikit-learn models:
 `GradientBoostingRegressor`. Its tests require scikit-learn parity at `==` on
 the raw doubles. sql-transform builds on Confit, and Confit never imports
 sql-transform (`tests/test_package_boundary.py`). See
-[serving fitted models](../../docs/serving-fitted-models.md).
+[tree models](../sql-transform/spec/python/tree-models.md).
 
 ## Building SQL
 

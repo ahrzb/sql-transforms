@@ -25,10 +25,9 @@ report, and it holds fixed keys that the owner's tracker reads. With this
 key, a report maps to its folder without a lookup table.
 
 > **Migration (2026-10-05).** Each loop moved its own files here from its old
-> place. The native loop has moved. The folder `packages/sql-transform/docs/native/`
-> now keeps only a pointer to [`native/`](native/README.md). The confit loop
-> has moved. The file `packages/confit/docs/loop/README.md` now keeps only a
-> pointer to [`confit/`](confit/README.md).
+> place. The native loop has moved. The confit loop has moved. The file
+> `packages/confit/docs/loop/README.md` now keeps only a pointer to
+> [`confit/`](confit/README.md).
 
 ## Shared rules
 
@@ -51,7 +50,7 @@ folder then knows both.
 ```
 <loop>/
   README.md        how the loop runs: its cycle, then "Tickets and review"
-  goal.md          what done means, and the scope
+  goal.md          what done means, and the scope or a link to it
   PLANS.md         open work, highest value first
   tickets.md       the board: what is in flight (workers.md, "The board")
   worker-brief.md  this loop's part of a worker's prompt
@@ -59,8 +58,9 @@ folder then knows both.
   reports/         YYYY-MM-DD-<slug>.md, per reporting.md
 ```
 
-A loop adds the files that only it needs. The native loop adds `coverage.md`,
-which a script generates, and `report-format.md`.
+A loop adds the files that only it needs. The native loop adds
+`report-format.md`. Its scoreboard is a product file, so it is in the package
+spec: `packages/sql-transform/spec/native/coverage.md`.
 
 ## Between the loops
 

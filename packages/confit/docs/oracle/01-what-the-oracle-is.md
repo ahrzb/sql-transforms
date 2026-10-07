@@ -125,7 +125,7 @@ through the oracle. Pin-capture scripts are a separate family described by
 
 **claim: fit-serving-oracle.** `sql_transform`'s authoring checks have a separate contract.
 Its projection path uses optimizer-on DuckDB with `SET threads = 1`.
-The [authoring contract](../../../sql-transform/docs/contract.md) defines fit,
+The [sql-transform spec](../../../sql-transform/spec/README.md) defines fit,
 composition, decorrelation and bounded window marginalization.
 Fit-data round-trip and transformer parity use the
 [success measures](../specs/success-measures.md).

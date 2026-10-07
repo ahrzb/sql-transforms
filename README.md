@@ -160,7 +160,7 @@ mise tasks                                # all mise tasks
 
 | Path | Contents |
 |---|---|
-| `packages/sql-transform` | The authoring package and the native catalog (`sql_transform.native`) |
+| `packages/sql-transform` | The authoring package and the native catalog (`sql_transform.native`), with their spec, research, plans and records |
 | `packages/confit` | The serving engine: Rust source in `src`, the Python package in `confit`, tests, and docs |
 | `docs/specs` | The index of the current system specification |
 | `benchmarks` | Serving and transform benchmarks |
@@ -171,9 +171,9 @@ mise tasks                                # all mise tasks
 
 - [System specification](docs/specs/README.md): the index of the current
   specification, by topic.
-- [Authoring contract](packages/sql-transform/docs/contract.md): the
-  sql-transform API, fit, composition, estimators, and the
-  [unsupported forms and their explicit alternatives](packages/sql-transform/docs/contract.md#8-unsupported-forms-and-explicit-alternatives).
+- [sql-transform spec](packages/sql-transform/spec/README.md): the
+  sql-transform API, fit, composition, estimators, the native catalog, and
+  the [unsupported forms and their explicit alternatives](packages/sql-transform/spec/unsupported-forms.md).
 - [Serving contract](packages/confit/docs/specs/serving-contract.md): the
   Confit API, shapes, types, and UDFs.
 - [Known limitations](packages/confit/docs/known-limitations.md): the

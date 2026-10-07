@@ -1,7 +1,7 @@
 # Decisions
 
 This folder holds one decision record for each question of contract or
-scope ([goal.md](../goal.md)) to the owner. A record states the question,
+scope ([catalog contract](../../../packages/sql-transform/spec/native/catalog-contract.md)) to the owner. A record states the question,
 the options, the provisional choice that the loop works under, and the
 evidence. After the owner rules, the record states the ruling.
 
@@ -31,5 +31,5 @@ evidence. After the owner rules, the record states the ruling.
 
 When the owner rules on a question, move its record from `open/` to
 `closed/`. If the ruling is "not now", move it to `postponed/`, and name the
-condition that opens it again. If goal.md or the specs state the whole
-ruling, remove the record.
+condition that opens it again. If the catalog contract or another spec
+states the whole ruling, remove the record.

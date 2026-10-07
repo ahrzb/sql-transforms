@@ -3,7 +3,7 @@
 The refusal table (`REFUSED`) exercises the named reasons in `REASONS`;
 a reason nothing exercises is a refusal nobody has named.
 
-Executable row-local cases from `packages/sql-transform/docs/contract.md`.
+Executable row-local cases from `packages/sql-transform/spec/projections.md`.
 """
 
 import pyarrow as pa

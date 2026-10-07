@@ -9,7 +9,7 @@ This module exposes ``SQLTransform`` and its output modes. The compiled text
 itself lives in ``_program``: resolution, binding, freezing, ``Fitted``,
 ``Program``.
 
-Implements `packages/sql-transform/docs/contract.md`.
+Implements `packages/sql-transform/spec/general-transforms.md`.
 DuckDB is both the parser and the oracle — a construct means what DuckDB
 computes.
 """

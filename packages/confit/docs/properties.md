@@ -8,7 +8,7 @@ property is pinned (test).
 Layers follow the authored transform: fit → serving → engine.
 
 The [system specification](../../../docs/specs/README.md) organizes the current
-contracts by topic. The [authoring contract](../../sql-transform/docs/contract.md)
+contracts by topic. The [sql-transform spec](../../sql-transform/spec/README.md)
 defines authoring syntax, fit behavior and the public artifact.
 These properties record checks, not a second authoring specification.
 
@@ -24,7 +24,7 @@ supported correlated fit subqueries into fit queries and queries over params.
 Confit checks serving admission separately.
 *Pinned:* the original-query gate in `_marginal_projection_test.py::gate`,
 the freezing tests in `_walk_test.py`, and correlation tests in `_correlate_test.py`.
-The [authoring contract](../../sql-transform/docs/contract.md) defines the admitted forms.
+The [sql-transform spec](../../sql-transform/spec/README.md) defines the admitted forms.
 
 **P2 — Window marginalization is bounded convenience.** Admitted window values
 depend on partition keys and, where needed, order values.
@@ -60,7 +60,7 @@ SQL or compose general `SQLTransform` members.
 **P6 — Retired: alias-based uncorrelatedness.** Authored SQL can express
 supported correlated fit subqueries. Bounded window marginalization keeps
 uncorrelated scalar/EXISTS subqueries over the fit data.
-The [authoring contract](../../sql-transform/docs/contract.md) defines both boundaries.
+The [unsupported forms](../../sql-transform/spec/unsupported-forms.md) and [window marginalization](../../sql-transform/spec/marginalization.md) define both boundaries.
 
 **P7 — Refusals occur at the applicable boundary.** The SQLProjection constructor
 checks syntax and the projection's row-local form. Fit checks learned fields and widths,
@@ -86,7 +86,7 @@ fit refuses fit columns named `__cf_fit_row` or `__cf_row`, case-insensitively.
 Batch projection input refuses `__cf_row`.
 Derived window names avoid authored-name collisions; there is no blanket
 `__cf_` prefix refusal.
-See the [authoring contract](../../sql-transform/docs/contract.md).
+See the [sql-transform spec](../../sql-transform/spec/python/estimator-data.md).
 
 **P9 — The oracle is the parser and the printer.** SQL is parsed and
 printed by DuckDB itself (`json_serialize_sql`/`json_deserialize_sql`);
@@ -120,7 +120,7 @@ their inputs exist. A narrow DISTINCT pick over a frozen carrier runs before
 fit releases that carrier. Only serving-live learned params remain in the artifact.
 An authored query can explicitly retain fit data.
 The public artifact does not expose an intermediate plan or its released tables.
-See the [authoring contract](../../sql-transform/docs/contract.md);
+See the [sql-transform spec](../../sql-transform/spec/projections.md);
 the planning and execution code is in `_plan.py` and `_program.py`.
 
 **P11 — Projection execution controls thread count.** Projection fit, probes,
@@ -144,7 +144,7 @@ DuckDB batch execution and each fresh Confit build use the same params and UDFs.
 Replacing an entry in the stored params mapping affects subsequent execution
 and builds, not an already built function.
 Batch success does not prove Confit admission.
-See the [authoring contract](../../sql-transform/docs/contract.md) and control C3.
+See the [sql-transform spec](../../sql-transform/spec/transform-model.md) and control C3.
 
 **P14 — The one NULL story.** Unseen group ⇒ LEFT JOIN miss ⇒ NULL
 instance id ⇒ NULL output. NULL-ness always flows through join data, never
@@ -192,7 +192,7 @@ SSA lane of one shared-site ecall).
 The engine's `list | None` boundary also serves direct
 `DuckDBInferFn(udfs=...)` users with unnamed width-k externs.
 An unseen group is NULL per field read.
-The [authoring contract](../../sql-transform/docs/contract.md#4-projection-only-estimators-and-scalar-udfs)
+The [sql-transform spec](../../sql-transform/spec/python/estimators.md)
 defines raw BIGINT IDs, struct outputs, FILTER, ordering, and fit-source admission.
 
 **P16a — Names are the type; matching is name-keyed.** A fitted transform
