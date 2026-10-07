@@ -239,8 +239,8 @@ def kernel_distance(func: Any) -> int | None:
 def _bound(est: Any) -> int:
     """The estimator's own bound: its function's, 0 for the rest. A bounded
     function whose kernel probe reads 0 on this platform is bit-exact here
-    (loops/native/goal.md, "The contract"), so its bound is 0 and
-    `to_native` serves it by default."""
+    (spec/native/catalog-contract.md, claim: entry-same-answer), so its bound
+    is 0 and `to_native` serves it by default."""
     try:
         b = _BOUNDS.get(est.func, 0)
     except TypeError:  # an unhashable callable, which the entry refuses

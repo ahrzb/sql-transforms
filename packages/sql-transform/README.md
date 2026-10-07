@@ -11,8 +11,8 @@ transform then reads only the request table and those params tables.
   does not depend on other requests. A fitted projection can compile to a
   [Confit](../confit) function.
 
-The [authoring contract](docs/contract.md) is the specification of this
-package. The [glossary](../../GLOSSARY.md) defines the terms.
+The [spec](spec/README.md) states what this package does now. The
+[glossary](../../GLOSSARY.md) defines the terms.
 
 To install the package, follow the [install steps](../../README.md#install)
 in the repository README. `compile()` needs the `confit` package, which the
@@ -39,7 +39,8 @@ assert fitted.transform(requests).to_pydict() == {"d": [-3.0, 7.0]}
 
 Fit freezes each fit query that does not depend on the requests into a params
 table. Fit also rewrites supported correlated subqueries over `__FIT__` into
-queries over params tables. The contract calls this decorrelation.
+queries over params tables. The spec calls this
+[decorrelation](spec/fit/decorrelation.md).
 
 ## Serve a projection with Confit
 
@@ -144,12 +145,12 @@ With `strict=True`, `to_native` raises `NotNative` if no catalog entry
 serves the fitted transformer. Native selection is always explicit. The twin
 of a catalog entry is the `PythonTransform` that calls the fitted estimator.
 Each catalog entry must stay within its parity bound against its twin. The
-[native catalog README](../../loops/native/README.md) lists the entries and
+[native catalog coverage](spec/native/coverage.md) lists the entries and
 their bounds.
 
 `TreeBasedTransform` packs fitted scikit-learn tree regressors into tables
 that Confit scores natively. See
-[serving fitted models](../../docs/serving-fitted-models.md).
+[tree models](spec/python/tree-models.md).
 
 ## Marginalize window SQL
 
@@ -169,8 +170,8 @@ assert fitted.transform(requests).to_pydict() == {
 
 `projection.source` shows the explicit fit and request SQL that
 `marginalize` derived. The ordinary `SQLProjection` constructor does not
-marginalize window SQL. The contract lists the
-[window forms that `marginalize` accepts](docs/contract.md#7-bounded-window-marginalization).
+marginalize window SQL. The spec lists the
+[window forms that `marginalize` accepts](spec/marginalization.md).
 
 ## Public interface
 
@@ -186,7 +187,7 @@ marginalize window SQL. The contract lists the
 
 ## Unsupported forms
 
-The contract lists the
-[unsupported forms and their explicit alternatives](docs/contract.md#8-unsupported-forms-and-explicit-alternatives).
-[Unsupported decorrelation](../../docs/decorrelation-unsupported.md) lists the
+The spec lists the
+[unsupported forms and their explicit alternatives](spec/unsupported-forms.md).
+[Decorrelation refusals](spec/fit/decorrelation-refusals.md) lists the
 correlated subqueries that fit refuses, and the reasons.

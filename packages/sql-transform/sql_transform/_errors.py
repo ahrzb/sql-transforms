@@ -15,7 +15,8 @@ class CorrelatedFit(TransformError):
     The equality case is lifted to a ``GROUP BY`` and served as a keyed table
     (`_correlate`). What is left raises this, and ``reason`` says which of the
     named shapes it is — the set of reasons is the refusal list, kept short on
-    purpose and written down in ``docs/decorrelation-unsupported.md``.
+    purpose and written down in
+    ``packages/sql-transform/spec/fit/decorrelation-refusals.md``.
 
     ``reason`` is required so every refusal identifies its unsupported shape.
     """

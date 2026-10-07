@@ -11,6 +11,9 @@ cannot see a serving key that fit never saw, and that is where every
 interesting divergence lives.
 """
 
+import re
+from pathlib import Path
+
 import duckdb
 import pyarrow as pa
 import pytest
@@ -269,7 +272,9 @@ def test_the_inequality_refusal_names_the_way_out():
         )
     assert caught.value.reason == "not-an-equality"
     assert "CTE" in str(caught.value)
-    assert "docs/decorrelation-unsupported.md" in str(caught.value)
+    cited = re.search(r"See (\S+\.md)$", str(caught.value))
+    assert cited is not None
+    assert (Path(__file__).resolve().parents[3] / cited.group(1)).is_file()
 
 
 @pytest.mark.parametrize(

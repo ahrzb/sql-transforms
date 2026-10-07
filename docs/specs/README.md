@@ -12,11 +12,13 @@ The native catalog supplies explicit native implementations of supported fitted 
 
 | Topic | Current specification |
 | --- | --- |
-| Transform authoring | [Authoring contract](../../packages/sql-transform/docs/contract.md): fit/request SQL, composition, freezing, callbacks, estimators, artifacts, connections, and bounded window marginalization |
+| Transform authoring | [sql-transform spec](../../packages/sql-transform/spec/README.md): fit/request SQL, composition, freezing, decorrelation, callbacks, estimators, tree models, artifacts, connections and window marginalization |
 | Confit serving | [Serving contract](../../packages/confit/docs/specs/serving-contract.md): public engine interfaces, row shapes, types, UDFs, and admission |
 | SQL compatibility | [Oracle](../../packages/confit/docs/oracle/README.md): fixed reference, comparison rules, ordering, errors, and permitted numerical bounds |
-| Native catalog | [Native contract](../../loops/native/goal.md) and [native catalog](../../loops/native/README.md): explicit conversion and parity requirements |
+| Native catalog | [Native catalog contract](../../packages/sql-transform/spec/native/catalog-contract.md) and [coverage](../../packages/sql-transform/spec/native/coverage.md): explicit conversion and parity requirements |
 | Verification | [Success measures](../../packages/confit/docs/specs/success-measures.md) and [properties](../../packages/confit/docs/properties.md): controls and their test evidence |
+
+`sql-transform` keeps its [research](../../packages/sql-transform/research/README.md), [plan](../../packages/sql-transform/plan/README.md) and [records](../../packages/sql-transform/records/README.md) next to its spec.
 
 Authoring admission, row-local projection checks, and Confit admission are separate.
 A successful batch transform does not imply that Confit can serve it.

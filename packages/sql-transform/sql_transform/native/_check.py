@@ -254,8 +254,8 @@ def check(
 
     Where the step raises on a row (sklearn rejecting an input it
     validates), the native twin must trap, and nowhere else: its input
-    guard (loops/native/goal.md, "Where the twin raises"). The one twin
-    error that is not validation the ruling lists is let through
+    guard (spec/native/catalog-contract.md, claim: entry-traps-where-twin-raises).
+    The one twin error that is not validation the ruling lists is let through
     (`_tolerated`). A native error must be one of its traps, the guard's
     or an unknown id's (`is_trap`). Where both trap on every row, nothing
     is compared and `check` raises: such rows prove nothing. Returns the

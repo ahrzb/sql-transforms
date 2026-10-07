@@ -2,9 +2,9 @@
 
 Each spells one numpy operation in the order numpy performs it, so an entry
 built from them is bit-exact with its twin wherever the twin performs that
-same sequence (loops/native/goal.md, "Parity"). The order functions are
-generic over `+` and `*`: run on Python floats they ARE numpy's arithmetic,
-which `_helpers_test.py` checks against numpy itself.
+same sequence (spec/native/catalog-contract.md, claim: entry-same-answer). The
+order functions are generic over `+` and `*`: run on Python floats they ARE
+numpy's arithmetic, which `_helpers_test.py` checks against numpy itself.
 """
 
 from __future__ import annotations

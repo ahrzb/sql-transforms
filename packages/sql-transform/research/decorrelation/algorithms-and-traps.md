@@ -1,12 +1,14 @@
 # Decorrelation: a working reference
 
+**Status:** fact base. Measured on DuckDB 1.5.5, 2026-08-08.
+
 A technical reference for anyone building a rewrite that turns a correlated
 subquery into a pre-computed table. Written for the `__FIT__` case but the
 mechanics are the marginalizer's too — a window aggregate over the training
 support and a correlated aggregate over it are the same object under different
 syntax, and the same four decades of corrections apply to both.
 
-Companion to `2026-08-08-decorrelation-survey.md`, which decides *whether* to
+Companion to the [type-JA survey](../../records/research/decorrelation/type-ja-survey.md), which decides *whether* to
 build the type-JA case. This one is the machinery.
 
 All DuckDB results are 1.5.5, measured 2026-08-08.

@@ -1,9 +1,9 @@
 """The two parameters, freezing, and ``fit``/``transform``.
 
-These cases exercise the current authoring contract's freezing and execution
-rules (`packages/sql-transform/docs/contract.md`). The
-ordered-frame gate is written first, deliberately: it pins a result that looks
-like a bug and must not be "corrected".
+These cases exercise the spec's freezing and execution rules
+(`packages/sql-transform/spec/fit/freezing.md`). The ordered-frame gate is
+written first, deliberately: it pins a result that looks like a bug and must
+not be "corrected".
 """
 
 import pyarrow as pa

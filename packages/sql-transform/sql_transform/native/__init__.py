@@ -8,12 +8,12 @@
 
 `step` is a `PythonTransform`: fitted instances keyed by id, called as
 `name(id, features...)`. A translation is a drop-in replacement: same name,
-same call, same result (loops/native/goal.md says what "same" means). Where no
-translation exists, `to_native` hands back the step unchanged, which is
-always correct to serve, only slower. By default only a bit-exact
-translation serves; `to_native(step, allow_bound=True)` also serves one
-within a parity bound above 0 of its twin, which can change a prediction
-(`_registry.py` says why).
+same call, same result (packages/sql-transform/spec/native/catalog-contract.md
+says what "same" means). Where no translation exists, `to_native` hands back
+the step unchanged, which is always correct to serve, only slower. By default
+only a bit-exact translation serves; `to_native(step, allow_bound=True)` also
+serves one within a parity bound above 0 of its twin, which can change a
+prediction (`_registry.py` says why).
 
 The catalog is one module per family (`scalers.py`, `impute.py`,
 `select.py`, `function.py`, `polynomial.py`, `spline.py`, `encode.py`,

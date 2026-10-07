@@ -93,8 +93,8 @@ _FAN_OUT = (
 )
 
 
-# Named refusal codes and explanations; docs/decorrelation-unsupported.md
-# describes the unsupported shapes and their explicit SQL alternatives.
+# Named refusal codes and explanations;
+# packages/sql-transform/spec/fit/decorrelation-refusals.md describes each one.
 REASONS: dict[str, str] = {
     "not-a-scalar-subquery": (
         "it is not a scalar subquery — EXISTS, IN and the quantified "
@@ -133,7 +133,7 @@ HINTS: dict[str, str] = {
         "If you need it, marginalize it yourself: a CTE over __FIT__ that "
         "aggregates to one row per lookup coordinate, joined to __THIS__ — "
         "then the retained rows are a subquery you wrote. "
-        "See docs/decorrelation-unsupported.md"
+        "See packages/sql-transform/spec/fit/decorrelation-refusals.md"
     ),
 }
 

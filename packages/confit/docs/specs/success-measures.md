@@ -19,7 +19,7 @@ Missing implementation is not an exception to a requirement.
 be bit-exact equal to the original authored computation. For windows, compare the original
 SQL with `__THIS__` bound to that data at `SET threads = 1` on both DuckDB paths.
 Keep schemas, signed zero and NaN comparisons exact. Transformer columns use C4.
-The [authoring contract](../../../sql-transform/docs/contract.md) defines the fit model.
+The [sql-transform spec](../../../sql-transform/spec/transform-model.md) defines the fit model.
 
 Gate: `packages/sql-transform/sql_transform/_marginal_projection_test.py::gate`
 and `::test_fuzz_differential`. `MARGINALIZE_FUZZ_N` controls the depth
@@ -48,7 +48,7 @@ not a proven complete inventory.
 **kpi: binding-parity.** A Confit-servable fitted projection exposes `.sql`,
 `.schema`, `.params` and `.udfs`. DuckDB batch execution and both Confit
 interfaces must agree value-for-value from these four public fields.
-The [authoring contract](../../../sql-transform/docs/contract.md) defines this artifact.
+The [sql-transform spec](../../../sql-transform/spec/projections.md) defines this artifact.
 Projection admission and Confit admission are separate.
 A batch-only query does not establish binding parity.
 

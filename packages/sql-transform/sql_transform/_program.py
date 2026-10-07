@@ -7,9 +7,9 @@ none to forget.
 
 This is the sole executor shared by ``SQLTransform`` and ``SQLProjection``,
 held as a value rather than inherited. The authoring rules live in
-``packages/sql-transform/docs/contract.md``. Resolution, fit freezing, raw
-estimator fitting, learned UDF publishing, and registration leases share
-this execution path.
+``packages/sql-transform/spec/``. Resolution, fit freezing, raw estimator
+fitting, learned UDF publishing, and registration leases share this execution
+path.
 
 ``compile`` takes ``scope`` as a parameter rather than reading the stack:
 each public class reads its own caller with ``sys._getframe(1)`` and passes

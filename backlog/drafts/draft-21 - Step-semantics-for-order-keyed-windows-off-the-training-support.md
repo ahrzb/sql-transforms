@@ -71,7 +71,7 @@ architecture. Per family:
 ## The second consumer: correlated `__FIT__` subqueries (folded in 2026-08-11)
 
 The same mechanism answers a refusal that has nothing to do with windows.
-`docs/decorrelation-unsupported.md` refuses `not-an-equality` — and points
+`packages/sql-transform/spec/fit/decorrelation-refusals.md` refuses `not-an-equality` — and points
 here — because a `GROUP BY` reproduces the equivalence classes of `=` and
 nothing else:
 
@@ -112,7 +112,7 @@ observable the peer-class rule predicts, reached by a different route.
 **What it costs.** The params table is one row per distinct *(key, order
 value)*. On a continuous order key nothing ties, so that is `|F|` rows with
 the columns renamed — the training set, shipped. Sound and disclosing are
-independent here, which is exactly the case `docs/decorrelation-unsupported.md`
+independent here, which is exactly the case `packages/sql-transform/spec/fit/decorrelation-refusals.md`
 defers to DRAFT-20's declared byte budget. Admitting this shape is what makes
 that budget due.
 

@@ -19,7 +19,7 @@ This includes labels in the otherwise protected helper for user-defined function
 
 The system specification now organizes current behavior by topic.
 Its entry point is [`docs/specs/README.md`](../../../../docs/specs/README.md).
-The authoring chapter is [`contract.md`](../../../../packages/sql-transform/docs/contract.md).
+The authoring chapter is [`contract.md`](../../../../packages/sql-transform/spec/README.md).
 These chapters define fit/request SQL, composition, supported interfaces, fitted artifacts, and refusals.
 Other linked chapters define Confit serving, the oracle comparison contract, native conversion, and verification controls.
 

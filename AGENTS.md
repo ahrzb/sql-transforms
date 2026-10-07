@@ -12,7 +12,15 @@ rules in [`loops/README.md`](loops/README.md).
 2. **Terms.** [`GLOSSARY.md`](GLOSSARY.md) holds the project's terms. Use
    them when you name a concept of the project.
 3. **Questions for the owner.** Ask the owner only through a decision
-   record. Before you ask, read the loop's `decisions/closed/` and
-   `decisions/postponed/`. If the question is new, write it in
-   `decisions/open/` and list it in the next report. Do not name an owner
-   question that has no record.
+   record. Do not name an owner question that has no record.
+   - In a loop, use the loop's `decisions/` folder. First read its
+     `closed/` and `postponed/` records. Write a new question in `open/`,
+     and list it in the loop's next report.
+   - For `sql-transform` work outside a loop, follow its
+     [decision guide](packages/sql-transform/plan/decisions/README.md).
+4. **Package documents.** `packages/sql-transform/` keeps its documents in
+   four folders: `spec/` (what the package does now), `research/` (sourced
+   facts), `plan/` (draft RFCs, open decisions and open work) and `records/`
+   (closed decisions, applied RFCs, research lessons and the changelog, kept
+   as written). The README of each folder gives its rules. Do not commit an
+   implementation plan.
