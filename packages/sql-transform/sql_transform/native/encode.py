@@ -10,6 +10,14 @@ categories, `drop`, `encoded_missing_value`, `handle_unknown`, target
 means), the translation asks the fitted estimator: it transforms one probe
 row per class, reads the feature's block, and spells each lane as a CASE
 over the classes. The values are the twin's own, so the entry is bit-exact.
+A feature's probe rows go to `transform` in one call (`_probes`). Each
+call builds every feature's table of categories again
+(`sklearn/utils/_encode.py`, `_map_to_integer`), so a call a row cost
+about (features x categories)^2 checks: `to_native` of `OrdinalEncoder`
+over 32 string features of 125 categories took 40.8 s in 4,098 calls on
+master 44052cf, and takes 1.3 s in 130 calls, about four a feature (first
+in the process, release build, 2026-10-14). Over 32 of 500 it takes
+5.1 s, of which the trial build takes 2.5 s.
 
 Where the twin raises (an unknown category under `handle_unknown="error"`,
 or a missing value it did not fit), the input guard traps: one test a
@@ -155,7 +163,9 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     offset = 0
     for j, (xj, t) in enumerate(zip(x, types, strict=True)):
         string = t == pa.string()
-        rows = [(c, _probe(est, base, j, c, dtype)) for c in classes[j]]
+        rows = list(
+            zip(classes[j], _probes(est, base, j, classes[j], dtype), strict=True)
+        )
         # A boolean feature's classes are all it can be handed: no value
         # is unknown, and the ELSE is never met.
         unknown = (
@@ -165,7 +175,9 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         )
         if booleans:
             known = [c for c in classes[j] if not _missing(c)]
-            rows_b = [(c, _probe(est, bits, j, c, np.bool_)) for c in known]
+            rows_b = list(
+                zip(known, _probes(est, bits, j, known, np.bool_), strict=True)
+            )
         raises = t != pa.bool_() and unknown is None
         if raises and all(got is None for _, got in rows):
             raise NotNative(
@@ -220,16 +232,47 @@ def _probe(
     """The twin's whole output row for `base` with feature `j` set to `v`,
     handed as the step's list or as an array of `dtype`, or None where the
     twin raises."""
-    row = list(base)
-    row[j] = v
-    arg = [row] if dtype is None else np.array([row], dtype=dtype)
-    try:
-        with warnings.catch_warnings():  # an unknown category, by design
-            warnings.simplefilter("ignore")
-            got = np.asarray(est.transform(arg), dtype=np.float64)
-    except ValueError:
-        return None
-    return [float(v) for v in got.reshape(-1)]
+    return _probes(est, base, j, [v], dtype)[0]
+
+
+def _probes(
+    est: Any, base: list[Any], j: int, values: list[Any], dtype: Any = None
+) -> list[list[float] | None]:
+    """`_probe` for each of `values`, in few calls of `transform`: the
+    values that are not missing in one call, and a missing one alone (the
+    twin raises on it where it did not fit it). Where a call raises, each
+    half of its rows goes to a call of its own, down to the rows that
+    raise. The twin answers each row on its own: its block depends only on
+    the row's values, and the rows hand `transform` the same types."""
+    rows = []
+    for v in values:
+        row = list(base)
+        row[j] = v
+        rows.append(row)
+    out: list[list[float] | None] = [None] * len(rows)
+
+    def run(idx: list[int]) -> None:
+        if not idx:
+            return
+        arg = [rows[i] for i in idx]
+        try:
+            with warnings.catch_warnings():  # an unknown category, by design
+                warnings.simplefilter("ignore")
+                got = est.transform(arg if dtype is None else np.array(arg, dtype))
+        except ValueError:
+            if len(idx) > 1:
+                run(idx[: len(idx) // 2])
+                run(idx[len(idx) // 2 :])
+            return
+        got = np.asarray(got, dtype=np.float64).reshape(len(idx), -1)
+        for i, r in zip(idx, got, strict=True):
+            out[i] = [float(v) for v in r]
+
+    run([i for i, v in enumerate(values) if not _missing(v)])
+    for i, v in enumerate(values):
+        if _missing(v):
+            run([i])
+    return out
 
 
 def _lane(

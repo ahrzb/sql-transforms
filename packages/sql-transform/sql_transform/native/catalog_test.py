@@ -1325,6 +1325,44 @@ def test_an_encoder_refuses_a_feature_whose_every_value_raises(make):
         to_native(step, strict=True)
 
 
+@pytest.mark.parametrize("beside", [None, "number", "string"])
+@pytest.mark.parametrize(
+    "make",
+    [
+        OrdinalEncoder,
+        lambda: OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+        TargetEncoder,
+    ],
+    ids=["ordinal", "onehot", "target"],
+)
+def test_an_encoder_answers_a_probe_row_as_alone(make, beside):
+    # `_probes` hands `transform` a feature's probe rows in one call and,
+    # where it raises, each half in a call of its own: each row answers as
+    # in a call of its own, the rows that raise (an unfitted False or NaN,
+    # an unknown value under OrdinalEncoder) included.
+    from sql_transform.native.encode import (
+        _classes,
+        _first_classes,
+        _probe,
+        _probes,
+        _unknown,
+    )
+
+    X, types = _encoder_fit(beside, hole=True)
+    est = make().fit(X, np.array([0, 1] * 4))
+    base = _first_classes(est, types)
+    dtype = np.float64 if beside is None else None
+    raised = 0
+    for j, t in enumerate(types):
+        values = _classes(est.categories_[j], t)
+        if t != pa.bool_():
+            values = [*values, _unknown(values, t == pa.string())]
+        alone = [_probe(est, base, j, v, dtype) for v in values]
+        assert repr(_probes(est, base, j, values, dtype)) == repr(alone)
+        raised += alone.count(None)
+    assert raised > 0 or make is not OrdinalEncoder
+
+
 def test_a_null_id_is_a_null_struct():
     # The whole struct, as DuckDB reads it from each definition (confit
     # serves field reads, which are NULL either way).
