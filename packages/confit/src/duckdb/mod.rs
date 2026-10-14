@@ -8,6 +8,7 @@
 //! way out.
 
 mod arrow;
+mod avg;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1476,6 +1477,9 @@ enum Acc {
     /// The sum, the sum of the absolute values, and whether a value was not
     /// NULL.
     Sum(i128, u128, bool),
+    /// The sum, the sum of the absolute values, and the count of the values
+    /// that are not NULL.
+    Avg(i128, u128, u64),
 }
 
 impl Acc {
@@ -1484,6 +1488,7 @@ impl Acc {
             plan::AggFunc::CountStar | plan::AggFunc::Count => Acc::Count(0),
             plan::AggFunc::Min | plan::AggFunc::Max => Acc::Extreme(None, false),
             plan::AggFunc::Sum => Acc::Sum(0, 0, false),
+            plan::AggFunc::Avg => Acc::Avg(0, 0, 0),
         }
     }
 }
@@ -1521,9 +1526,9 @@ fn agg_in(
 ///
 /// The aggregates run here, at build, so no request can trap in them. A
 /// result that could depend on the order of the rows refuses the build by
-/// name: a sum whose absolute values add up past the result's range (a
-/// partial sum could overflow in some order, where DuckDB traps), and a
-/// DOUBLE min or max that ties values with other bits.
+/// name: a sum or avg whose absolute values add up past the range of the sum
+/// DuckDB keeps (a partial sum could overflow in some order, where DuckDB
+/// traps), and a DOUBLE min or max that ties values with other bits.
 fn materialize_aggs(
     py: Python<'_>,
     table: &Py<PyAny>,
@@ -1546,6 +1551,7 @@ fn materialize_aggs(
             AggFunc::Min => "min",
             AggFunc::Max => "max",
             AggFunc::Sum => "sum",
+            AggFunc::Avg => "avg",
         };
         format!("{f}({arg})")
     };
@@ -1619,6 +1625,15 @@ fn materialize_aggs(
                     *abs = abs.checked_add(x.unsigned_abs()).ok_or_else(over)?;
                     *any = true;
                 }
+                Acc::Avg(sum, abs, n) => {
+                    let AggIn::Int(x) = v else {
+                        return Err(build_err("internal: an avg over a non-integer"));
+                    };
+                    let over = || avg_over(&spec.table, &label(i));
+                    *sum = sum.checked_add(x).ok_or_else(over)?;
+                    *abs = abs.checked_add(x.unsigned_abs()).ok_or_else(over)?;
+                    *n += 1;
+                }
             }
         }
     }
@@ -1669,6 +1684,21 @@ fn materialize_aggs(
                         _ => ScalarVal::I128(sum),
                     })
                 }
+                Acc::Avg(_, _, 0) => None,
+                Acc::Avg(sum, abs, n) => {
+                    // DuckDB sums into a BIGINT where it finalizes in
+                    // `double`, into a HUGEINT elsewhere.
+                    let src = aggs[i].src;
+                    let limit = if plan::avg_in_long_double(src) {
+                        i128::MAX as u128
+                    } else {
+                        i64::MAX as u128
+                    };
+                    if abs > limit {
+                        return Err(avg_over(&spec.table, &label(i)));
+                    }
+                    Some(ScalarVal::F64(avg::finalize(src, sum, n)))
+                }
             };
             match (vc.map.nullable, val) {
                 (true, None) => vals.extend(exec::null_val_slots(ty)),
@@ -1685,6 +1715,17 @@ fn materialize_aggs(
         entries.push((keys, vals));
     }
     Ok(StaticData::Map(entries))
+}
+
+/// The refusal of an `avg` whose absolute values add up past the range of
+/// the sum DuckDB keeps for it: a partial sum can overflow in some order of
+/// the additions, where DuckDB traps.
+fn avg_over(table: &str, label: &str) -> PyErr {
+    build_err(format!(
+        "unsupported: static table '{table}': {label} over the rows of one key adds \
+         absolute values past the range of the sum that DuckDB keeps for it, so a partial \
+         sum can overflow in some order of the additions"
+    ))
 }
 
 /// A declared tree transform: the two Arrow tables its `tree_tables()` handed

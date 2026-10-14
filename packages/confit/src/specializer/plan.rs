@@ -149,7 +149,26 @@ pub enum AggFunc {
     Min,
     Max,
     Sum,
+    /// A DOUBLE: the exact sum over the count, rounded the way DuckDB
+    /// finalizes it for the argument's type ([`avg_in_long_double`],
+    /// `duckdb/avg.rs`).
+    Avg,
 }
+
+/// Whether DuckDB finalizes `avg` over a column of `src` in C `long double`
+/// (DuckDB 1.5.5's `avg.cpp`, and measured): every integer type and DECIMAL
+/// but SMALLINT and a DECIMAL of width 4 or less, which sum into a BIGINT and
+/// finalize in `double`. TINYINT and the unsigned types up to UINTEGER reach
+/// the BIGINT overload through a cast, UBIGINT the HUGEINT one.
+pub fn avg_in_long_double(src: Ty) -> bool {
+    !matches!(src, Ty::I16 | Ty::Dec(..=4, _))
+}
+
+/// Whether the platform's C `long double` is the x87 extended format that
+/// `duckdb/avg.rs` computes: measured on x86_64 Linux only. Elsewhere it is
+/// IEEE binary128 or plain `double`, and an `avg` that DuckDB finalizes in it
+/// refuses.
+pub const LONG_DOUBLE_IS_X87: bool = cfg!(all(target_arch = "x86_64", target_os = "linux"));
 
 /// Per-lane SEGMENT paths for a lane set with struct trees over it: a
 /// plain column's path is its own (whole) name — dots included, a name is

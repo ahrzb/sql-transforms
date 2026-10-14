@@ -16,7 +16,7 @@
 //! join runs after the FROM joins of its level.
 
 use super::*;
-use super::super::plan::{Agg, AggFunc, AggTable};
+use super::super::plan::{self, Agg, AggFunc, AggTable};
 use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
 
 /// The subquery's one static table, as its WHERE and its aggregate see it.
@@ -186,8 +186,8 @@ pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareE
 fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "a scalar subquery with {what} -- served: (SELECT count(*) | count(c) | min(c) | \
-         max(c) | sum(c) FROM s WHERE s.k = <outer expression> AND ...) over one static \
-         table"
+         max(c) | sum(c) | avg(c) FROM s WHERE s.k = <outer expression> AND ...) over one \
+         static table"
     ))
 }
 
@@ -358,6 +358,7 @@ impl Binder<'_> {
             Some("min") => AggFunc::Min,
             Some("max") => AggFunc::Max,
             Some("sum") => AggFunc::Sum,
+            Some("avg") => AggFunc::Avg,
             _ => return Err(form_refusal(&format!("the aggregate {}", f.name))),
         };
         if f.uses_odbc_syntax
@@ -422,6 +423,30 @@ impl Binder<'_> {
                     "No function matches the given name and argument types 'sum(VARCHAR)'"
                         .into(),
                 ))
+            }
+            (AggFunc::Avg, Some(t)) if t.is_integer() || matches!(t, Ty::Dec(..)) => {
+                if plan::avg_in_long_double(t) && !plan::LONG_DOUBLE_IS_X87 {
+                    return Err(unsup(format!(
+                        "avg over {} in a scalar subquery on this platform -- DuckDB \
+                         finalizes it in C long double, and confit computes only the x87 \
+                         format of x86_64 Linux",
+                        duck_ty_name(t)
+                    )));
+                }
+                Ty::F64
+            }
+            (AggFunc::Avg, Some(Ty::F64)) => {
+                return Err(unsup(
+                    "avg over a DOUBLE column in a scalar subquery -- the order of the \
+                     additions changes the answer, and its comparison bound waits on a \
+                     decision",
+                ))
+            }
+            (AggFunc::Avg, Some(t @ (Ty::I1 | Ty::Str))) => {
+                return Err(PrepareError::Bind(format!(
+                    "No function matches the given name and argument types 'avg({})'",
+                    duck_ty_name(t)
+                )))
             }
             (_, t) => {
                 return Err(form_refusal(&format!(
