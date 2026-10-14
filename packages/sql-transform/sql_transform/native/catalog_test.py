@@ -1278,6 +1278,43 @@ def test_an_ordinal_guard_finds_many_strings_by_one_search(monkeypatch, kind, he
     assert check(step, native, rows) >= len(cats)
 
 
+@pytest.mark.parametrize("kind", ["ordinal", "ordinal-missing", "onehot"])
+def test_an_encoder_guard_finds_a_run_of_integers_by_a_range(kind):
+    # Numbers in a run of RUN_FROM or more consecutive integers are found
+    # by `a <= x <= b` and `floor(x) = x`, the others by equality. A number
+    # between two of a run's, a fraction, an integer just past a run's end,
+    # NaN and ±inf are none of them; -0.0 is 0.0, and NaN is one where it
+    # was fitted.
+    cats = [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 7.0, 9.0, 10.0, 11.0, 12.0, 2.5]
+    cats.append(2.0**53)
+    X = np.array([[c] for c in cats + ([np.nan] if kind == "ordinal-missing" else [])])
+    est = (
+        OneHotEncoder(sparse_output=False) if kind == "onehot" else OrdinalEncoder()
+    ).fit(X)
+    width = np.asarray(est.transform(X[:1])).shape[1]
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64())]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(width)]),
+    )
+    native = to_native(step, strict=True)
+    assert native.sql_body.count("floor(") == 1
+    values = [
+        *cats,
+        *[None, math.nan, math.inf, -math.inf, 1e300, -0.0, 0.5, -2.5],
+        *[1e-300, -5e-324, 2.5 + 2**-51, -4.0, 3.0, 6.0, 8.0, 13.0],
+        *[2.0**53 - 1, 2.0**53 + 2],
+    ]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.float64()),
+        }
+    )
+    assert check(step, native, rows) >= len(cats) + 1
+
+
 def test_a_onehot_output_field_tests_its_category_alone():
     # Under handle_unknown="error" the ELSE answers the largest group, 0:
     # every other value it meets traps in the input guard, whose one test

@@ -8,15 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Numeric categories as ranges in the encoders' guard.** The guard
-   tests a numeric feature with an IN list of its categories, one
-   comparison a category: `OrdinalEncoder` over 32 features of 125
-   integer categories builds in 5.2 s, against 0.66 s for strings, which
-   search (release build, master b4b8d03 with confit #430). A run of
-   consecutive integers a..b is `x >= a AND x <= b AND floor(x) = x`,
-   exact on doubles (NaN and ±inf fail the range; -0.0 is 0), in three
-   comparisons whatever the run.
-2. **`QuantileTransformer`'s cap as a build estimate.**
+1. **`QuantileTransformer`'s cap as a build estimate.**
    `quantile.MAX_QUANTILES` caps the quantiles summed over the features at
    8,000, where the builds of 2026-10-05 took 6.2-8.0 s. On reading 5's
    machine one feature at 8,000 builds in 8.5 s with reading 4's code and
@@ -25,7 +17,7 @@ Easiest first; each is one family, one PR.
    seconds on (quantiles, features) as `trees.py` and `spline.py` do, and
    refuse past 7 s. `isotonic.MAX_THRESHOLDS` (8,000 thresholds, 5.8 s on
    2026-10-05) is the same kind of cap.
-3. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
+2. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
    probes each part on its own input, so a later step's tests read the
    outputs of the step before (a `PolynomialFeatures` product can overflow
    to ±inf), and confit binds each value read twice once (#412). The
