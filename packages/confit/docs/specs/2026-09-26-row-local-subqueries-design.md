@@ -160,8 +160,9 @@ output row. It is not once per original request row.
 
 Under `many`, a query with a join has one stage. Confit refuses a join in a
 query with more than one stage, by name (`a subquery under a shape='many'
-join`). One stage can have any number of joins: they lower as nested loops,
-one for each join ([multiplicity pins](2026-07-28-stageB-multiplicity-pins.md)).
+join`). One stage can have any number of joins, with a self-join only as the
+first join. They lower as nested loops, one for each join
+([multiplicity pins](2026-07-28-stageB-multiplicity-pins.md)).
 Joins at two stages under `many` would compose multiplicities across a level,
 and they are out of scope.
 

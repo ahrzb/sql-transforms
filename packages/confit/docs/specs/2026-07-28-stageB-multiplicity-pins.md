@@ -70,7 +70,7 @@ refuses ORDER BY.
   In a self-join, DuckDB with the optimizer off evaluates the keys of the
   second copy of the request table for every request of the batch. Confit
   evaluates a later join only for the rows that reach it. So a trap in
-  those keys can differ.
+  those keys can differ between DuckDB and confit.
 - The corpus replay (`tests/test_corpus_replay.py`) retries with
   `shape='many'` only on the named multiplicity refusals, so the
   default-shape refusals stay proven.

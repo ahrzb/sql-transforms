@@ -107,7 +107,7 @@ DuckDB 1.5.5.
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
-| Under `shape='many'`: a self-join after another join, a join in a query with a subquery | 2 inside, refused | refused by name; without a subquery, any number of joins serves |
+| Under `shape='many'`: a self-join after another join, a join in a query with a subquery | 2 inside, refused | refused by name; without a subquery, any number of joins serves, with a self-join only as the first join |
 | Casts into DECIMAL from DOUBLE/VARCHAR/BOOLEAN, DECIMAL join key expressions against a non-DOUBLE key, `IN`/`BETWEEN` capped at 38 digits | 2 inside, refused | named rejection; decimal expressions otherwise serve exactly |
 | `f32` row columns, lists, `UHUGEINT` | 2 inside, refused | type not served |
 | A struct value in a derived table or a CTE, a CASE over structs of different types, `IS NULL` over a struct that the query builds | 2 inside, refused | DuckDB serves them. A derived table carries scalar columns only. Confit does not convert struct types to a common type, and does not build the fields only to test the struct. |
