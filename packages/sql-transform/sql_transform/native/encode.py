@@ -36,21 +36,30 @@ IN list. Since confit #430 its guard runs once a row, not at each field
 read of a struct output. Over 8 to 32 features, the search took 1.3 to
 2.4 times as long as the IN list to build, and 0.8 to 1.4 times as long
 to serve a row.
+
+Every encoder finds a number among the categories in a run of RUN_FROM
+or more consecutive integers by a range: `a <= x <= b` and
+`floor(x) = x`, four operations whatever the run (`_runs`). Over 32
+features of the integers 0 to 124, `OrdinalEncoder` built in 4.6 s with
+the IN lists and served a row in 482 us. With the ranges it builds in
+0.74 s, about as fast as without a guard (0.70 to 0.80 s under
+`handle_unknown="use_encoded_value"`), and serves a row in 163 us.
+
 Warm builds of `to_native`'s trial build and us a row over 2,000-row
-batches, string features unless the row says, struct returns (release
-build, master b4b8d03 with confit #430, 2026-10-14; the twin over 1,000
-rows):
+batches, string features unless the row says (the numbers are integers),
+struct returns (release build, the dev shell's CPython 3.14.7, master
+de5b226 with the ranges, 2026-10-14; the twin over 1,000 rows):
 
     encoder, features x categories   fields   build     serve        twin
-    OneHotEncoder, 8 x 10                80   0.03 s     7 us    1,262 us
-    OneHotEncoder, 8 x 50               400   0.18 s    86 us    2,351 us
-    OneHotEncoder, 8 x 50 numbers       400   0.20 s    67 us    2,364 us
-    OneHotEncoder, 8 x 125            1,000   0.46 s   237 us    3,807 us
-    OneHotEncoder, 16 x 125           2,000   1.2 s    455 us    7,545 us
-    OrdinalEncoder, 8 x 125               8   0.12 s    55 us    2,346 us
-    OrdinalEncoder, 32 x 125             32   0.66 s   283 us    8,535 us
-    OrdinalEncoder, 32 x 500             32   2.9 s  1,066 us   26,653 us
-    OrdinalEncoder, 32 x 125 numbers     32   5.2 s    477 us    6,071 us
+    OneHotEncoder, 8 x 10                80   0.04 s    10 us    1,523 us
+    OneHotEncoder, 8 x 50               400   0.19 s    88 us    2,552 us
+    OneHotEncoder, 8 x 50 numbers       400   0.14 s    42 us    2,547 us
+    OneHotEncoder, 8 x 125            1,000   0.51 s   256 us    4,338 us
+    OneHotEncoder, 16 x 125           2,000   1.3 s    516 us    8,189 us
+    OrdinalEncoder, 8 x 125               8   0.15 s    65 us    2,430 us
+    OrdinalEncoder, 32 x 125             32   0.59 s   266 us    9,089 us
+    OrdinalEncoder, 32 x 500             32   2.6 s  1,016 us   25,820 us
+    OrdinalEncoder, 32 x 125 numbers     32   0.74 s   163 us    5,895 us
 
 The classes follow the feature's declared type, which fixes what the step
 hands `transform`: a string or None, a float or NaN, or a boolean or NaN
@@ -59,7 +68,9 @@ hands `transform`: a string or None, a float or NaN, or a boolean or NaN
 
 from __future__ import annotations
 
+import functools
 import math
+import operator
 import warnings
 from typing import Any
 
@@ -77,6 +88,9 @@ from sql_transform.native._registry import NotNative, rejects, translates
 SEARCH_PAST = 100
 # Separators for that search: the first that no string holds.
 _SEPARATORS = ("\x1f", "\x1e", "\x1d", "\x1c")
+# From this many consecutive integers on, the numbers a test finds `xj`
+# among are a range (`_runs`), not an equality with each.
+RUN_FROM = 4
 
 
 def _widths(est: Any, n: int) -> list[int]:
@@ -339,12 +353,54 @@ def _among(xj: S.Expr, string: bool, present: list[Any], search: bool) -> S.Expr
     An `xj` that holds no separator, wrapped in it, is found there exactly
     when it is one of the strings: the match starts at a separator, where a
     string starts, and its last character is the next separator, where that
-    string ends. An `xj` that holds one is none of them."""
+    string ends. An `xj` that holds one is none of them. Numbers in a run
+    of RUN_FROM or more consecutive integers are found by a range
+    (`_runs`), the others by equality."""
     if search and string and len(present) > SEARCH_PAST:
         sep = next((s for s in _SEPARATORS if not any(s in c for c in present)), None)
         if sep is not None:
             joined = S.lit(sep + sep.join(present) + sep)
             wrapped = S.fn("concat", S.lit(sep), xj, S.lit(sep))
             return S.fn("contains", joined, wrapped) & ~S.fn("contains", xj, S.lit(sep))
-    lits = [S.lit(c) if string else f64(c) for c in present]
-    return xj == lits[0] if len(lits) == 1 else xj.isin(*lits)
+    tests = []
+    if not string:
+        runs, present = _runs(present)
+        if runs:
+            inside = [(xj >= f64(a)) & (xj <= f64(b)) for a, b in runs]
+            tests.append(
+                (S.fn("floor", xj) == xj) & functools.reduce(operator.or_, inside)
+            )
+    if present:
+        lits = [S.lit(c) if string else f64(c) for c in present]
+        tests.append(xj == lits[0] if len(lits) == 1 else xj.isin(*lits))
+    return functools.reduce(operator.or_, tests)
+
+
+def _runs(present: list[Any]) -> tuple[list[tuple[float, float]], list[Any]]:
+    """The runs of RUN_FROM or more consecutive integers among the numbers
+    `present`, each as its least and its greatest, and the other numbers in
+    their order. Every integer within 2**53 of zero is a double, so a double
+    `x` is one of a run's exactly when `a <= x <= b` and `floor(x) = x`.
+    NaN fails `x <= b`, as DuckDB orders NaN above every number, ±inf fails
+    the range, and -0.0 is 0.0, as in sklearn's matching."""
+    ints = sorted(
+        {float(v) + 0.0 for v in present if _integral(v)}  # -0.0 is 0.0
+    )
+    runs: list[tuple[float, float]] = []
+    start = 0
+    for i in range(1, len(ints) + 1):
+        if i == len(ints) or ints[i] != ints[i - 1] + 1.0:
+            if i - start >= RUN_FROM:
+                runs.append((ints[start], ints[i - 1]))
+            start = i
+    rest = [
+        v
+        for v in present
+        if not (_integral(v) and any(a <= float(v) <= b for a, b in runs))
+    ]
+    return runs, rest
+
+
+def _integral(v: Any) -> bool:
+    """`v` is an integer within 2**53 of zero."""
+    return float(v).is_integer() and abs(float(v)) <= 2.0**53
