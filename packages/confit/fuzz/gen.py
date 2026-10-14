@@ -1360,6 +1360,94 @@ def _many_joins(mrng, query, rows, statics, env, tags) -> bool:
     return True
 
 
+def _comma_keys(crng, query, rows, statics, env, tags) -> bool:
+    """Join one or two more static tables to the outer query as comma tables
+    (a CROSS JOIN at the end of FROM), with their key terms in the WHERE,
+    from a generator of its own so no other seed's draws move. The key terms
+    mix in a random order with the WHERE's other terms, and maybe with a
+    term or a key that can trap. DuckDB filters the cross product with the
+    terms in written order, and confit probes with the key terms: it refuses
+    an order where the two trap on different rows (`check_comma_order`).
+    Each new table keeps one row per key value, so the default shape serves.
+    """
+    b = query.body
+    if b.frm != "__THIS__" or b.sub is not None:
+        return False
+    if any(j.kind not in ("INNER", "LEFT", "CROSS") for j in b.joins):
+        return False
+    joined = [j.table for j in b.joins if j.table in statics]
+    # A row column a joined table also has is ambiguous bare: qualify it.
+    heads = {n.lower() for t in joined for n in statics[t][0]}
+    jenv = Env(
+        [
+            ("__THIS__" if t is None and c.split(".")[0].lower() in heads else t, c, ty)
+            for t, c, ty in env.cols
+        ]
+        + [(t, c, ty) for t in joined for c, ty, _ in leaves(statics[t][0])],
+        env.udfs,
+        env.tree,
+    )
+    terms = [] if b.where is None else [b.where]
+    added = 0
+    for _ in range(crng.choice([1, 1, 2])):
+        taken = {k.lower() for k in statics}
+        name = next(f"k{i}" for i in range(len(statics) + 1) if f"k{i}" not in taken)
+        for _ in range(4):
+            sch = {
+                f"{name}{c}": spec
+                for c, spec in _schema(crng, crng.randrange(1, 4), static=True).items()
+            }
+            on = _equi_on(crng, jenv, name, sch)
+            if on is not None:
+                break
+        if on is None:
+            break
+        eq = on if on.op == "=" else on.lhs
+        probe, key = eq.lhs, eq.rhs
+        srows = _rows(crng, sch, crng.randrange(0, 6))
+        if "." not in key.name and "." not in probe.name:
+            src = rows if probe.table in (None, "__THIS__") else statics[probe.table][1]
+            seen = [r[probe.name] for r in src if r[probe.name] is not None]
+            storage = sch[key.name].rstrip("?")
+            lo, hi = INT_RANGE.get(storage, (None, None))
+            seen = [v for v in seen if lo is None or lo <= v <= hi]
+            for r in srows:
+                if seen and crng.random() < 0.5:
+                    r[key.name] = crng.choice(seen)
+            uniq: dict = {}
+            for r in srows:
+                uniq.setdefault(repr(r[key.name]), r)
+            srows = list(uniq.values())
+            # A key that can trap: an int probe through an addition that
+            # overflows for a value above 0.
+            if storage.startswith("int") and crng.random() < 0.3:
+                eq = Bin("=", Bin("+", probe, Lit(2**63 - 1, "int")), key)
+        statics[name] = (sch, srows)
+        b.joins.append(Join("CROSS", name, None))
+        terms.append(eq)
+        if on is not eq and on.op == "AND":
+            terms.append(on.rhs)
+        jenv = Env(
+            jenv.cols + [(name, c, t) for c, t, _ in leaves(sch)], env.udfs, env.tree
+        )
+        added += 1
+    if added == 0:
+        return False
+    ints = [(t, c) for t, c, ty in jenv.cols if ty == "int" and "." not in c]
+    if ints and crng.random() < 0.5:
+        t, c = crng.choice(ints)
+        trap = Bin("+", Lit(2**63 - 1, "int"), Col(c, t, "int"))
+        terms.append(Bin(">", trap, Lit(0, "int")))
+    crng.shuffle(terms)
+    where = terms[0]
+    for t in terms[1:]:
+        where = Bin("AND", where, t)
+    b.where = where
+    b.items.append((expr(crng, jenv, crng.choice(TYPES), 2), f"ck{len(b.items)}"))
+    tags.append("comma-keys")
+    return True
+
+
 def _sql_functions(frng, query, statics, env, udfs, tags) -> None:
     """Declare one or two SQL functions and call each in an item of its own
     in the outer query (one of them maybe twice), from a generator of its
@@ -1635,6 +1723,11 @@ def gen(seed: int) -> Case:
     if seed % 31 == 29:
         mrng = random.Random(seed * 7919 + 6)  # noqa: S311
         many_joins = _many_joins(mrng, query, rows, statics, env, tags)
+    # 41 and 22 keep every seed that a test pins out of this gate too.
+    comma_keys = False
+    if seed % 41 == 22 and not many_joins:
+        crng = random.Random(seed * 7919 + 7)  # noqa: S311
+        comma_keys = _comma_keys(crng, query, rows, statics, env, tags)
     if seed % 7 == 3:
         _decimal_join_key(drng, query, row_schema, rows, dname, statics, tags)
     if seed % 11 == 6:
@@ -1656,6 +1749,8 @@ def gen(seed: int) -> Case:
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
     if many_joins:
         shape = "many"
+    if comma_keys:
+        shape = crng.choice([None, "many"])
     output = rng.choice([None] * 4 + ["dict", "model"])
     if shape:
         tags.append(f"shape={shape}")

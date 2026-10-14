@@ -98,11 +98,6 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
-4. **A comma join's trapping WHERE term before its key.**
-   `FROM t, s WHERE (9223372036854775807 + s.z) > 0 AND t.pid = s.id` traps
-   on DuckDB, which filters the cross product one term at a time; confit
-   takes `t.pid = s.id` as the join key and answers no rows (found
-   2026-10-14, every shape). With the key first, both answer no rows.
 
 ## For the native catalog
 
@@ -443,6 +438,22 @@ The first five are ruled, in this order; the rest follow.
   `can_trap`, which knows that DOUBLE arithmetic cannot trap, is a widening
   with its own question of evaluation order (`may_trap`'s comment):
   measure it first.
+- **Comma-join term order over-refuses.** `check_comma_order`
+  (`src/specializer/frontend/from.rs`) refuses a WHERE term written before a
+  key term when `can_trap` says it can trap. On the 2,000 seeds in
+  9600008..9684714 that the generator picks (22 mod 41, not 29 mod 31; 1,644
+  get the tag `comma-keys`) it refuses 297 cases that agreed before (AGREE or
+  AGREE_TRAP): 206 name the generator's BIGINT-max addition, 25 other integer
+  arithmetic, a UDF or ln/sin/cos/pow, and 66 only LIKE and string functions
+  (`replace`, `ltrim`, `upper`, `reverse`, `length`, `strpos`, `concat`,
+  `repeat`, `lpad`), many of them constant. To serve more, each measured on
+  DuckDB 1.5.5 first: (1) `can_trap` learns the LIKE and string forms that
+  cannot fail, and `fold` folds constant LIKE and string calls; (2) a prefix
+  of WHERE terms that read only the request row runs before the probe
+  (DuckDB evaluates such a term over every pair, with one answer for all the
+  static rows; an empty static table is the `empty-static-trap-timing`
+  exclusion); (3) under `shape='many'`, a refused order runs as DuckDB runs
+  it, a loop over every static row with the WHERE terms in written order.
 - **Wrapped-query refusals** the metamorphic suite allowlists
   (rewrite tolerances in `fuzz/exclusions.py`): a struct- or list-valued column inside a
   derived table (about 13% of generated queries when wrapped) and a subquery

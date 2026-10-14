@@ -278,7 +278,7 @@ pub(super) fn bind_from<'a>(
     // output columns are `in_cols`.
     driving: Driving,
     ctx: QueryCtx,
-) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
+) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>, Vec<CommaTerm>), PrepareError> {
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
     let n_plain = in_cols.len() - structs.iter().map(|s| s.leaf_count()).sum::<usize>();
@@ -617,8 +617,10 @@ pub(super) fn bind_from<'a>(
     if let Some(sel) = &select.selection {
         collect_conjuncts(sel, &mut conjuncts);
     }
-    let mut consumed = vec![false; conjuncts.len()];
-    for rel in comma_rels {
+    // Per conjunct: the comma table (its position among them) that took it
+    // as a probe key, and whether that key can trap.
+    let mut consumed: Vec<Option<(usize, bool)>> = vec![None; conjuncts.len()];
+    for (pos, rel) in comma_rels.iter().enumerate() {
         if !rel.joins.is_empty() {
             return Err(unsup("JOIN attached to a comma-joined relation"));
         }
@@ -644,7 +646,7 @@ pub(super) fn bind_from<'a>(
         let mut keys = Vec::new();
         let mut key_cols = Vec::new();
         for (ci, c) in conjuncts.iter().enumerate() {
-            if consumed[ci] {
+            if consumed[ci].is_some() {
                 continue;
             }
             let SqlExpr::BinaryOp {
@@ -676,13 +678,23 @@ pub(super) fn bind_from<'a>(
             let Ok(key) = binder.expr(dyn_side) else {
                 continue;
             };
-            keys.push(promote_key(fold(key), st, col)?);
+            let key = promote_key(fold(key), st, col)?;
+            // Whether the key can trap as DuckDB evaluates it: an earlier
+            // table's key column reads its static value (`classify_keys`),
+            // not the key it matched, which already ran on this row.
+            binder.classify_keys.set(true);
+            let named = binder.expr(dyn_side);
+            binder.classify_keys.set(false);
+            let traps = named.map_or(true, |n| {
+                promote_key(fold(n), st, col).map_or(true, |k| can_trap(&k))
+            });
+            consumed[ci] = Some((pos, traps));
+            keys.push(key);
             // A comma equi-conjunct is always plain `=`.
             key_cols.push(JoinKey {
                 src: KeySrc::Lane(col),
                 cmp: KeyCmp::Eq,
             });
-            consumed[ci] = true;
         }
         let val_cols = val_cols_for(st, &key_cols, &keys);
         binder.joins.push(ScopeJoin {
@@ -717,7 +729,7 @@ pub(super) fn bind_from<'a>(
     } else {
         let mut acc: Option<SqlExpr> = None;
         for (ci, c) in conjuncts.iter().enumerate() {
-            if consumed[ci] {
+            if consumed[ci].is_some() {
                 continue;
             }
             acc = Some(match acc {
@@ -727,7 +739,95 @@ pub(super) fn bind_from<'a>(
         }
         acc
     };
-    Ok((binder, specs, leftover))
+    // The terms up to the last key, for `check_comma_order`: a term after
+    // every key is evaluated over the same rows on both engines.
+    let last_key = consumed.iter().rposition(Option::is_some);
+    let terms = conjuncts[..last_key.map_or(0, |k| k + 1)]
+        .iter()
+        .zip(&consumed)
+        .map(|(c, &key)| CommaTerm {
+            term: (*c).clone(),
+            key,
+        })
+        .collect();
+    Ok((binder, specs, leftover, terms))
+}
+
+/// A WHERE term of a query with comma tables, in written order: a probe key
+/// of the comma table at `key.0` (its position among them; `key.1` says
+/// whether the key can trap), or a term that stays in the WHERE.
+pub(super) struct CommaTerm {
+    term: SqlExpr,
+    key: Option<(usize, bool)>,
+}
+
+/// DuckDB (optimizer off) plans comma tables as a cross product under the
+/// WHERE: the terms run in written order, each over the rows of the product
+/// that passed the terms before it. Confit probes each comma table with its
+/// key terms instead, and evaluates the other terms over the matched rows.
+/// The two trap on the same rows when (1) each other term that can trap
+/// comes after every key, and (2) each key that can trap comes after the
+/// keys of the earlier comma tables, all of them, and after nothing else.
+/// So a key that cannot trap and a term that cannot trap go anywhere. The
+/// other orders refuse by name (measured, 1.5.5:
+/// `tests/test_duckdb_wave4_joins.py`, the comma term order pins).
+///
+/// `terms` ends at the last key (`bind_from`). It runs once the WHERE has
+/// bound, so a term that reads a SELECT alias binds here too.
+pub(super) fn check_comma_order(
+    binder: &Binder<'_>,
+    terms: &[CommaTerm],
+) -> Result<(), PrepareError> {
+    for (at, t) in terms.iter().enumerate() {
+        match t.key {
+            Some((table, true)) => {
+                let earlier = |u: &CommaTerm| u.key.is_some_and(|(i, _)| i < table);
+                let all = terms.iter().filter(|u| earlier(u)).count();
+                if at != all || !terms[..at].iter().all(earlier) {
+                    return Err(unsup(format!(
+                        "comma join key term '{}' out of order (it can trap: DuckDB \
+                         evaluates it over the rows that pass the WHERE terms before \
+                         it, confit over the rows that match the keys of the earlier \
+                         comma tables; write the key terms first, in FROM order, or \
+                         use JOIN ... ON)",
+                        t.term
+                    )));
+                }
+            }
+            Some(_) => {}
+            None => {
+                if term_can_trap(binder, &t.term)? {
+                    return Err(unsup(format!(
+                        "comma join WHERE term '{}' before a key term (it can trap: \
+                         DuckDB evaluates it over every row pair, confit over the \
+                         pairs that the keys match; write the key terms first, or use \
+                         JOIN ... ON)",
+                        t.term
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a WHERE term can trap where DuckDB evaluates it in a comma join.
+/// A key column reads its static table here (`classify_keys`): DuckDB reads
+/// the static value, which cannot trap. DuckDB's planner moves the upper
+/// half of `x BETWEEN lo AND hi` to the end of the WHERE (see
+/// `where_conjuncts`), after every key, so only the lower half counts.
+fn term_can_trap(binder: &Binder<'_>, term: &SqlExpr) -> Result<bool, PrepareError> {
+    binder.classify_keys.set(true);
+    let bound = binder.expr_or_null(term);
+    binder.classify_keys.set(false);
+    let Some(bound) = bound? else {
+        return Ok(false);
+    };
+    let bound = bool_context(bound, "WHERE predicate")?;
+    Ok(match &bound.kind {
+        SKind::And { a, .. } if is_between(term) => can_trap(&fold((**a).clone())),
+        _ => can_trap(&fold(bound)),
+    })
 }
 
 /// `left.c = right.c AND ...` over `names`, as SQL: the residual a
