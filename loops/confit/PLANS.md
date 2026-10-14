@@ -98,11 +98,6 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
-4. **A comma join's trapping WHERE term before its key.**
-   `FROM t, s WHERE (9223372036854775807 + s.z) > 0 AND t.pid = s.id` traps
-   on DuckDB, which filters the cross product one term at a time; confit
-   takes `t.pid = s.id` as the join key and answers no rows (found
-   2026-10-14, every shape). With the key first, both answer no rows.
 
 ## For the native catalog
 

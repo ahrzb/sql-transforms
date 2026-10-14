@@ -11,6 +11,16 @@ keyless N-row joins) is in `2026-07-28-stageB-multiplicity-pins.md`.
   residuals; a three-way comma == nested INNER. Row ORDER of cross products
   is an artifact (flips with the projection shape), so comparison is by
   multiset.
+- The WHERE terms of a comma join split freely for the ROWS, not for the
+  traps. Optimizer off, DuckDB filters the cross product with the terms in
+  written order, each over the pairs that passed the terms before it (the
+  upper half of a BETWEEN moved to the end, as for any WHERE). confit probes
+  each comma table with its key terms and runs the other terms over the
+  matched pairs. So confit refuses by name a term that can trap before a
+  key term, and a key term that can trap anywhere but right after the key
+  terms of the earlier comma tables; any other order serves
+  (`check_comma_order`; pins in `tests/test_duckdb_wave4_joins.py`,
+  measured 2026-10-14).
 - Cross join to a 1-row static: output rowcount == driving rowcount; a
   0-row static annihilates (INNER semantics). LEFT JOIN ON TRUE to an empty
   table keeps rows. confit serves a keyless comma table as an empty-key

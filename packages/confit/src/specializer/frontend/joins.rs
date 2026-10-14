@@ -238,7 +238,7 @@ pub(super) fn bind_residual(
 }
 
 /// `x BETWEEN lo AND hi`, under any parentheses; not NOT BETWEEN.
-fn is_between(mut e: &SqlExpr) -> bool {
+pub(super) fn is_between(mut e: &SqlExpr) -> bool {
     while let SqlExpr::Nested(inner) = e {
         e = inner;
     }

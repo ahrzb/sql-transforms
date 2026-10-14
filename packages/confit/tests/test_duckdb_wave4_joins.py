@@ -18,6 +18,7 @@ from test_duckdb_interpreter import duck_check, static
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+from confit.oracle import Oracle, Trap  # noqa: E402
 from fuzz.parity import assert_parity  # noqa: E402
 
 R = static(
@@ -311,3 +312,230 @@ def test_unclassifiable_residual_names_the_classifier(residual):
             L_ROWS,
             {"r": R},
         )
+
+
+# --- Comma joins: the order of the WHERE terms -------------------------------
+# DuckDB (optimizer off) joins comma tables as a cross product, then runs the
+# WHERE terms in written order, each over the row pairs that passed the terms
+# before it. Confit probes each comma table with its key terms, then runs the
+# other terms over the matched pairs. The traps agree when a term that can trap
+# comes after every key term, and a key term that can trap comes right after
+# the key terms of the earlier comma tables. The other orders refuse by name
+# (`check_comma_order` in src/specializer/frontend/from.rs).
+
+BIG = 9223372036854775807  # the largest BIGINT: `BIG + 1` overflows
+PC = {"pid": "int", "c": "int"}
+S = static({"id": "int", "z": "int"}, [{"id": 5, "z": 0}, {"id": 6, "z": 1}])
+S1 = static({"x": "int"}, [{"x": 5}])
+S2 = static({"y": "int"}, [{"y": 7}])
+S3 = static({"y": "int"}, [{"y": 5}])
+
+
+def _comma_sql(where: str, statics: dict) -> str:
+    return f"SELECT pid FROM {', '.join(['__THIS__', *statics])} WHERE {where}"
+
+
+def _duck(sql: str, rows: list[dict], statics: dict) -> str | int:
+    """DuckDB's answer: "trap", or its row count."""
+    with Oracle() as o:
+        o.table("__THIS__", "pid BIGINT, c BIGINT", [(r["pid"], r["c"]) for r in rows])
+        for name, t in statics.items():
+            o.load(name, t)
+        got = o.try_answer(sql)
+    return "trap" if isinstance(got, Trap) else got.num_rows
+
+
+COMMA_REFUSED = [
+    # A term that can trap before a key: DuckDB evaluates it over every pair,
+    # so the pair with s.id = 6 overflows. Confit's key matches no pair.
+    pytest.param(
+        f"({BIG} + s.z) > 0 AND pid = s.id",
+        [{"pid": 1, "c": 0}],
+        {"s": S},
+        "trap",
+        id="term-before-key",
+    ),
+    pytest.param(
+        f"({BIG} + c) > 0 AND pid = s.id",
+        [{"pid": 1, "c": 1}],
+        {"s": S},
+        "trap",
+        id="row-term-before-key",
+    ),
+    pytest.param(
+        f"(s.z = 0 OR ({BIG} + s.z) > 0) AND pid = s.id",
+        [{"pid": 1, "c": 0}],
+        {"s": S},
+        "trap",
+        id="or-term-before-key",
+    ),
+    # BETWEEN's lower half stays in place; NOT BETWEEN is one term.
+    pytest.param(
+        f"({BIG} + s.z) BETWEEN 0 AND 10 AND pid = s.id",
+        [{"pid": 1, "c": 0}],
+        {"s": S},
+        "trap",
+        id="between-lower-half",
+    ),
+    pytest.param(
+        f"s.z NOT BETWEEN -1 AND ({BIG} + s.z) AND pid = s.id",
+        [{"pid": 1, "c": 0}],
+        {"s": S},
+        "trap",
+        id="not-between",
+    ),
+    # Between two keys of one table: DuckDB evaluates it where the first key
+    # matched (s.id = 6, s.z = 1). Confit's two keys together match no row.
+    pytest.param(
+        f"pid = s.id AND ({BIG} + s.z) > 0 AND c = s.z",
+        [{"pid": 6, "c": 0}],
+        {"s": S},
+        "trap",
+        id="term-between-keys",
+    ),
+    # A key that can trap after another term: DuckDB evaluates it only where
+    # the term before it passed, here nowhere. Confit evaluates it per row.
+    pytest.param(
+        f"c > 0 AND (pid + {BIG}) = s.id",
+        [{"pid": 1, "c": 0}],
+        {"s": S},
+        0,
+        id="key-after-term",
+    ),
+    pytest.param(
+        f"pid = s.id AND (c + {BIG}) = s.z",
+        [{"pid": 1, "c": 1}],
+        {"s": S},
+        0,
+        id="key-after-key",
+    ),
+    # A key that can trap before the key of an earlier comma table: DuckDB
+    # evaluates it for every pair. Confit evaluates it where s1 matched.
+    pytest.param(
+        f"(c + {BIG}) = s2.y AND pid = s1.x",
+        [{"pid": 1, "c": 1}],
+        {"s1": S1, "s2": S2},
+        "trap",
+        id="key-before-earlier-key",
+    ),
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(("where", "rows", "statics", "duck"), COMMA_REFUSED)
+def test_a_comma_join_refuses_a_term_order_that_traps_on_other_rows(
+    where, rows, statics, duck, shape
+):
+    sql = _comma_sql(where, statics)
+    # What DuckDB answers, against what confit's key-first plan would answer:
+    # no rows where DuckDB traps, a trap where DuckDB answers no rows.
+    assert _duck(sql, rows, statics) == duck
+    v = assert_parity(
+        sql, static(PC, rows), statics=statics, shape=shape, expect="REFUSED"
+    )
+    assert "comma join" in v.detail
+
+
+COMMA_SERVED = [
+    # Terms after the keys, and terms that cannot trap, go anywhere.
+    pytest.param(
+        f"pid = s.id AND ({BIG} + s.z) > 0",
+        [{"pid": 5, "c": 0}, {"pid": 1, "c": 1}],
+        {"s": S},
+        "AGREE",
+        id="term-after-key",
+    ),
+    pytest.param(
+        f"pid = s.id AND ({BIG} + c) > 0",
+        [{"pid": 5, "c": 0}, {"pid": 1, "c": 1}],
+        {"s": S},
+        "AGREE",
+        id="row-term-after-key",
+    ),
+    pytest.param(
+        f"pid = s.id AND c = s.z AND ({BIG} + s.z) > 0",
+        [{"pid": 6, "c": 0}, {"pid": 5, "c": 0}],
+        {"s": S},
+        "AGREE",
+        id="term-after-two-keys",
+    ),
+    pytest.param(
+        "s.z > 0 AND pid = s.id",
+        [{"pid": 6, "c": 0}, {"pid": 5, "c": 0}],
+        {"s": S},
+        "AGREE",
+        id="term-that-cannot-trap",
+    ),
+    pytest.param(
+        "(1e308 * s.z) > 0 AND pid = s.id",
+        [{"pid": 6, "c": 0}, {"pid": 5, "c": 0}],
+        {"s": S},
+        "AGREE",
+        id="double-term",
+    ),
+    # DuckDB's planner moves BETWEEN's upper half to the end of the WHERE.
+    # Its optimizer evaluates it over every row of s, and traps: confit
+    # follows the reading without the optimizer (DIVERGE_OPT).
+    pytest.param(
+        f"s.z BETWEEN -1 AND ({BIG} + s.z) AND pid = s.id",
+        [{"pid": 1, "c": 0}, {"pid": 5, "c": 0}],
+        {"s": S},
+        "DIVERGE_OPT",
+        id="between-upper-half",
+    ),
+    # A key that can trap, first: both engines evaluate it for every row.
+    # DuckDB's optimizer moves `c > 0` before it, and answers no rows.
+    pytest.param(
+        f"(pid + {BIG}) = s.id AND c > 0",
+        [{"pid": 1, "c": 0}],
+        {"s": S},
+        "DIVERGE_OPT",
+        id="trapping-key-first",
+    ),
+    pytest.param(
+        f"(c + {BIG}) = s.z AND pid = s.id",
+        [{"pid": 1, "c": 1}],
+        {"s": S},
+        "DIVERGE_OPT",
+        id="trapping-key-before-key",
+    ),
+    # Right after the key of the earlier comma table: both engines evaluate
+    # it where s1 matched.
+    pytest.param(
+        f"pid = s1.x AND (c + {BIG}) = s2.y",
+        [{"pid": 1, "c": 1}, {"pid": 5, "c": 0}, {"pid": 5, "c": 7 - BIG}],
+        {"s1": S1, "s2": S2},
+        "AGREE",
+        id="keys-in-from-order",
+    ),
+    # A key that reads the key column of an earlier comma table reads its
+    # static value on DuckDB, which cannot trap: it goes anywhere.
+    pytest.param(
+        f"(c + {BIG}) = s1.x AND c < 0 AND s1.x = s3.y",
+        [{"pid": 1, "c": 5 - BIG}, {"pid": 2, "c": 0}],
+        {"s1": S1, "s3": S3},
+        "AGREE",
+        id="key-reads-an-earlier-key",
+    ),
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(("where", "rows", "statics", "expect"), COMMA_SERVED)
+def test_a_comma_join_serves_a_term_order_that_traps_on_the_same_rows(
+    where, rows, statics, expect, shape
+):
+    sql = _comma_sql(where, statics)
+    assert_parity(sql, static(PC, rows), statics=statics, shape=shape, expect=expect)
+
+
+def test_join_on_serves_the_refused_comma_order():
+    # The refusal's advice: under JOIN ... ON, DuckDB runs the WHERE over the
+    # joined rows, as confit does. So the term that traps under the comma
+    # join (above) is not evaluated here.
+    assert_parity(
+        f"SELECT pid FROM __THIS__ JOIN s ON pid = s.id WHERE ({BIG} + s.z) > 0",
+        static(PC, [{"pid": 1, "c": 0}, {"pid": 5, "c": 0}]),
+        statics={"s": S},
+        expect="AGREE",
+    )

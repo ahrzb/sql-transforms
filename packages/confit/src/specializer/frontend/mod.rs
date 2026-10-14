@@ -664,7 +664,7 @@ fn bind_select(
     driving: Driving,
     ctx: QueryCtx,
 ) -> Result<BoundSelect, PrepareError> {
-    let (binder, joins, leftover_where) = bind_from(
+    let (binder, joins, leftover_where, comma_terms) = bind_from(
         select,
         env.this_name,
         in_cols,
@@ -926,6 +926,7 @@ fn bind_select(
         // so the filter keeps its operands and its traps.
         filter = Some(pred);
     }
+    check_comma_order(&binder, &comma_terms)?;
 
     let mut sqlnull = vec![false; exprs.len()];
     for i in sqlnull_at {
