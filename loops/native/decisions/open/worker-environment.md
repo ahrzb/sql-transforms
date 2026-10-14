@@ -59,9 +59,9 @@ loop and the confit loop).
 **Facts since #428 (2026-10-14).** The owner's PR #428 runs each cloud
 session in a Nix dev shell. Nix is a package manager, and the dev shell is
 a shell whose tools, such as uv and CPython, come from Nix, at the
-versions that `flake.nix` and `flake.lock` pin. At the start of each session, a hook
-(`.claude/hooks/session-start.sh`) enters the dev shell. Then it installs
-the project's Python packages with `uv sync`.
+versions that `flake.nix` and `flake.lock` pin. At the start of each
+session, a hook (`.claude/hooks/session-start.sh`) enters the dev shell.
+Then it installs the project's Python packages with `uv sync`.
 [docs/cloud-environment.md](../../../../docs/cloud-environment.md) gives a
 setup script for the cloud environment.
 
