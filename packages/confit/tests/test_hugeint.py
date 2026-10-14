@@ -180,6 +180,22 @@ def test_an_overflow_traps_on_both_engines(expr):
     assert_parity(f"SELECT {expr} AS o FROM __THIS__", ROWS, expect="AGREE_TRAP")
 
 
+def test_a_product_of_exactly_minus_two_to_the_127_traps():
+    # DuckDB's Hugeint::TryMultiply multiplies the magnitudes and fails when
+    # the top bit of the product is set, so -2^63 * 2^64 traps though -2^127
+    # is a HUGEINT (nightly seeds 6065493, 7511938).
+    t = pa.table({"h": pa.array([3, -(2**63), None], pa.int64())})
+    for expr in (
+        "CAST(h AS HUGEINT) * 18446744073709551616",
+        "18446744073709551616 * CAST(h AS HUGEINT)",
+    ):
+        assert_parity(f"SELECT {expr} AS o FROM __THIS__", t, expect="AGREE_TRAP")
+    # One less in magnitude fits.
+    assert_parity(
+        "SELECT CAST(h AS HUGEINT) * 18446744073709551615 AS o FROM __THIS__", t
+    )
+
+
 @pytest.mark.parametrize(
     "expr, why",
     [

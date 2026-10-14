@@ -18,7 +18,14 @@ pub fn hugeint_arith(op: BinOp, a: i128, b: i128) -> Result<i128, String> {
     let r = match op {
         BinOp::Hadd => a.checked_add(b),
         BinOp::Hsub => a.checked_sub(b),
-        BinOp::Hmul => a.checked_mul(b),
+        // `Hugeint::TryMultiply` multiplies the magnitudes and fails when
+        // the top bit of the product is set, so a product of exactly
+        // -2^127 overflows unless an operand is -2^127 itself (times 1):
+        // `18446744073709551616 * -9223372036854775808` traps (nightly seed
+        // 6065493).
+        BinOp::Hmul => a
+            .checked_mul(b)
+            .filter(|&r| r != i128::MIN || a == i128::MIN || b == i128::MIN),
         BinOp::Hdiv => a.checked_div(b),
         BinOp::Hrem => a.checked_rem(b),
         BinOp::Hand => Some(a & b),
@@ -393,5 +400,23 @@ mod tests {
         assert!(hugeint_arith(BinOp::Hrem, i128::MIN, -1).is_err());
         assert_eq!(hugeint_arith(BinOp::Hdiv, -7, 2), Ok(-3));
         assert_eq!(hugeint_arith(BinOp::Hrem, -7, 2), Ok(-1));
+    }
+
+    #[test]
+    fn a_product_of_minus_two_to_the_127_overflows_unless_an_operand_is_it() {
+        let (two64, min64) = (1i128 << 64, i64::MIN as i128);
+        assert_eq!(
+            hugeint_arith(BinOp::Hmul, two64, min64).unwrap_err(),
+            format!("Overflow in multiplication of INT128 ({two64} * {min64})!")
+        );
+        assert!(hugeint_arith(BinOp::Hmul, min64, two64).is_err());
+        assert!(hugeint_arith(BinOp::Hmul, -two64, -min64).is_err());
+        assert_eq!(hugeint_arith(BinOp::Hmul, i128::MIN, 1), Ok(i128::MIN));
+        assert_eq!(hugeint_arith(BinOp::Hmul, 1, i128::MIN), Ok(i128::MIN));
+        assert_eq!(hugeint_arith(BinOp::Hmul, i128::MIN, 0), Ok(0));
+        assert!(hugeint_arith(BinOp::Hmul, i128::MIN, -1).is_err());
+        assert!(hugeint_arith(BinOp::Hmul, -(1i128 << 126), 2).is_err());
+        let big = (1i128 << 62) - 1;
+        assert_eq!(hugeint_arith(BinOp::Hmul, -two64, big), Ok(-two64 * big));
     }
 }

@@ -35,6 +35,14 @@ the cases here, confit traps on a different error first, so that exclusion does 
 
   The eighth case (seed 4667128) has no trap, and the oracle agrees with confit. Only the optimizer-on
   reading runs out of time. That case does not need a ruling, so the loop handles it in its work plan.
+- The eight nightlies from 2026-10-07 to 2026-10-14 (seeds 5000000 to 8199999) had 43 TIMEOUT cases in a
+  run of DuckDB. The loop has the seeds of 26 of them. In 24 of the 26, confit traps on both backends, and
+  the query has `lpad` or `repeat`: 5302968, 5416440, 5517213, 5652903, 5710437, 5827768, 5907077,
+  6242314, 6385245, 6434710, 6654683, 6710997, 6854666, 6994881, 7015472, 7157597, 7257342, 7345367,
+  7429356, 7570725, 7830621, 7964417, 8021654 and 8151365. Run again on b4b8d03, 21 of the 24 run out of
+  time again. The other 3 (6654683, 6710997, 8021654) finish in time with the verdict AGREE_TRAP. So the
+  time that the oracle needs is near the limit. In the last 2 cases (5068704, 7731793), confit returns no
+  rows, and only the optimizer-on reading runs out of time, as in seed 4667128.
 
 **Options.**
 1. **Exclude with a witness.** The campaign marks the case EXCLUDED if all of these are true:

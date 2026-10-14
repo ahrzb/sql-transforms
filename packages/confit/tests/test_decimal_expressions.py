@@ -128,6 +128,45 @@ def test_a_decimal_operator_over_null_is_an_adoptable_null(expr):
     assert_parity(_q(expr), ROWS, expect="AGREE")
 
 
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # A builtin's DECIMAL overload over a constant NULL DECIMAL binds
+        # SQLNULL as the operators do, typed or folded (nightly seeds
+        # 5923305, 6186379)...
+        "- abs(CAST(NULL AS DECIMAL(4,1)))",
+        "abs(CASE WHEN FALSE THEN -28.066 END) - NULL",
+        "ceil(CASE WHEN FALSE THEN -23.902 END) - NULL",
+        "abs(floor(CASE WHEN FALSE THEN -23.902 END))",
+        "round(CASE WHEN FALSE THEN 2.5 END, 1) - NULL",
+        "coalesce(abs(CASE WHEN FALSE THEN -28.066 END), 2)",
+        # ...and so does a CASE or COALESCE whose every part binds it
+        # (nightly seeds 5248694, 6686677).
+        "trunc(CASE WHEN a > 0 THEN 53.832 * NULL END)",
+        "trunc(CASE WHEN a > 0 THEN abs(CASE WHEN FALSE THEN 1.5 END) END)",
+        "abs(coalesce(0.5 * NULL, NULL))",
+        # A NULL of a committed type, or a DECIMAL that reads a column,
+        # keeps its type.
+        "abs(coalesce(a * NULL, NULL))",
+        "trunc(CASE WHEN a > 0 THEN abs(NULL) END)",
+        "abs(CASE WHEN a > 0 THEN 2.5 END)",
+    ],
+)
+def test_a_builtin_over_a_constant_null_decimal_is_an_adoptable_null(expr):
+    assert_parity(_q(expr), ROWS, expect="AGREE")
+
+
+def test_a_null_decimal_builtin_passes_up_a_level_as_sqlnull():
+    # DuckDB types the subquery column SQLNULL, so `i1 - i1` is BIGINT
+    # (nightly seed 5923305).
+    sql = (
+        "SELECT (CASE WHEN a > 0 THEN i1 ELSE (i1 - i1) + (i1 - i1) END) AS x "
+        "FROM (SELECT a, abs(CASE WHEN FALSE THEN -28.066 END) AS i1"
+        " FROM __THIS__) AS sub"
+    )
+    assert_parity(sql, ROWS, expect="AGREE")
+
+
 def test_a_decimal_remainder_by_zero_is_null():
     assert_parity(_q("a % 0.0"), ROWS, expect="AGREE")
 

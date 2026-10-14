@@ -56,7 +56,8 @@ pub fn is_builtin(name: &str) -> bool {
 /// The builtins DuckDB overloads for DECIMAL itself, returning a DECIMAL
 /// (extension/core_functions/scalar/math/numeric.cpp); every other numeric
 /// builtin reads a DECIMAL as DOUBLE.
-const DECIMAL_OVERLOADS: &[&str] = &["abs", "ceil", "ceiling", "floor", "trunc", "round"];
+pub(super) const DECIMAL_OVERLOADS: &[&str] =
+    &["abs", "ceil", "ceiling", "floor", "trunc", "round"];
 
 impl Binder<'_> {
     /// One argument of a call whose foldable NULL argument makes it NULL,
@@ -1535,7 +1536,14 @@ impl Binder<'_> {
                     // type. A non-NULL result stays a run-time call; the
                     // value is the same either way.
                     let site = self.fresh_site();
-                    if let Some(Ok(lanes)) = self.site_bind_fold(site, ext as usize, spec, &args) {
+                    // Over arguments that read a column, DuckDB runs it per
+                    // row (see `args_closed`).
+                    let folded = if self.args_closed(f, site) {
+                        self.site_bind_fold(site, ext as usize, spec, &args)
+                    } else {
+                        None
+                    };
+                    if let Some(Ok(lanes)) = folded {
                         if lanes.is_none_or(|l| l.first().is_none_or(Option::is_none)) {
                             return Ok(null_of(spec.rets[0]));
                         }

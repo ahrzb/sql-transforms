@@ -204,55 +204,20 @@ pub(super) fn bind_residual(
         let named = binder.expr(c);
         binder.classify_keys.set(false);
         let named = fold(named?);
-        let (mut right, mut left, mut known) = (false, false, true);
-        scan_residual(&named, j, &mut right, &mut left, &mut known);
-        // A comparison whose operands each read one side only is a JOIN
-        // CONDITION on DuckDB: each operand is evaluated over its whole
-        // table (the static one at build, the row one per probe row),
-        // matched or not, so a trap in it fires for rows no key matches
-        // (measured, 1.5.5 optimizer off: `t.k = s.k AND t.v < s.w * 2`
-        // traps on an overflowing `s.w` with no key match, INNER and LEFT;
-        // nightly seed 4291817). The hit-guarded lowering evaluates a
-        // residual per matched pair only. An operand reading both sides,
-        // or a comparison under OR, is evaluated per pair on DuckDB too.
-        if let SKind::Cmp { a, b, .. } = &named.kind {
-            let side = |x: &SExpr| {
-                let (mut r, mut l, mut k) = (false, false, true);
-                scan_residual(x, j, &mut r, &mut l, &mut k);
-                (r, l, k)
-            };
-            let ((ra, la, ka), (rb, lb, kb)) = (side(a), side(b));
-            let split = ka && kb && ((ra && !la && lb && !rb) || (la && !ra && rb && !lb));
-            if split && (can_trap(a) || can_trap(b)) {
-                return Err(unsup(format!(
-                    "JOIN ON condition '{c}' (a comparison between the two sides \
-                     with trapping ops: DuckDB evaluates each side over its whole \
-                     table, matched or not)"
-                )));
+        // DuckDB binds `x BETWEEN lo AND hi` as `x >= lo AND x <= hi`, and
+        // its join planner splits those two like any two conjuncts, so each
+        // half takes the rules below on its own: a trapping static `x`
+        // traps over the whole static table, matched or not (measured,
+        // 1.5.5 optimizer off, INNER and LEFT; nightly seed 6738617). NOT
+        // BETWEEN stays one condition, evaluated per pair (measured).
+        let parts = match (&bound.kind, &named.kind) {
+            (SKind::And { a: ba, b: bb }, SKind::And { a: na, b: nb }) if is_between(c) => {
+                vec![(&**ba, &**na), (&**bb, &**nb)]
             }
-        }
-        let total = !may_trap(&bound);
-        if !(total || (left && right && known)) {
-            // Two different refusals wear one condition, and the message
-            // has to name the one that actually binds. An unrecognised
-            // node is always the cause where there is one: the scan does
-            // not descend into it, so the sides it reports are the sides
-            // OUTSIDE that node and cannot be used to tell the reader
-            // which rule applies. Only where every node was recognised is
-            // the trapping single-side rule the honest answer.
-            return Err(unsup(if known {
-                format!(
-                    "JOIN ON condition '{c}' (single-side residual with \
-                     trapping ops: DuckDB's scan-pushed evaluation order \
-                     differs)"
-                )
-            } else {
-                format!(
-                    "JOIN ON condition '{c}' (contains an expression the \
-                     residual classifier does not recognise, so which side \
-                     it reads is unknown)"
-                )
-            }));
+            _ => vec![(&bound, &named)],
+        };
+        for (bound, named) in parts {
+            check_residual(c, j, bound, named)?;
         }
         acc = Some(match acc {
             None => bound,
@@ -270,6 +235,71 @@ pub(super) fn bind_residual(
         });
     }
     Ok(acc)
+}
+
+/// `x BETWEEN lo AND hi`, under any parentheses; not NOT BETWEEN.
+fn is_between(mut e: &SqlExpr) -> bool {
+    while let SqlExpr::Nested(inner) = e {
+        e = inner;
+    }
+    matches!(e, SqlExpr::Between { negated: false, .. })
+}
+
+/// The evaluation-order rules of one residual conjunct `c` of join `j`
+/// ([`bind_residual`]): `bound` is its binding, `named` the binding that
+/// keeps key reads on the static side.
+fn check_residual(c: &SqlExpr, j: u32, bound: &SExpr, named: &SExpr) -> Result<(), PrepareError> {
+    let (mut right, mut left, mut known) = (false, false, true);
+    scan_residual(named, j, &mut right, &mut left, &mut known);
+    // A comparison whose operands each read one side only is a JOIN
+    // CONDITION on DuckDB: each operand is evaluated over its whole
+    // table (the static one at build, the row one per probe row),
+    // matched or not, so a trap in it fires for rows no key matches
+    // (measured, 1.5.5 optimizer off: `t.k = s.k AND t.v < s.w * 2`
+    // traps on an overflowing `s.w` with no key match, INNER and LEFT;
+    // nightly seed 4291817). The hit-guarded lowering evaluates a
+    // residual per matched pair only. An operand reading both sides,
+    // or a comparison under OR, is evaluated per pair on DuckDB too.
+    if let SKind::Cmp { a, b, .. } = &named.kind {
+        let side = |x: &SExpr| {
+            let (mut r, mut l, mut k) = (false, false, true);
+            scan_residual(x, j, &mut r, &mut l, &mut k);
+            (r, l, k)
+        };
+        let ((ra, la, ka), (rb, lb, kb)) = (side(a), side(b));
+        let split = ka && kb && ((ra && !la && lb && !rb) || (la && !ra && rb && !lb));
+        if split && (can_trap(a) || can_trap(b)) {
+            return Err(unsup(format!(
+                "JOIN ON condition '{c}' (a comparison between the two sides \
+                 with trapping ops: DuckDB evaluates each side over its whole \
+                 table, matched or not)"
+            )));
+        }
+    }
+    let total = !may_trap(bound);
+    if !(total || (left && right && known)) {
+        // Two different refusals wear one condition, and the message
+        // has to name the one that actually binds. An unrecognised
+        // node is always the cause where there is one: the scan does
+        // not descend into it, so the sides it reports are the sides
+        // OUTSIDE that node and cannot be used to tell the reader
+        // which rule applies. Only where every node was recognised is
+        // the trapping single-side rule the honest answer.
+        return Err(unsup(if known {
+            format!(
+                "JOIN ON condition '{c}' (single-side residual with \
+                 trapping ops: DuckDB's scan-pushed evaluation order \
+                 differs)"
+            )
+        } else {
+            format!(
+                "JOIN ON condition '{c}' (contains an expression the \
+                 residual classifier does not recognise, so which side \
+                 it reads is unknown)"
+            )
+        }));
+    }
+    Ok(())
 }
 
 /// Bind a JOIN ... ON condition. Equalities (and IS NOT DISTINCT FROM)

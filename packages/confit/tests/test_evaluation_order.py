@@ -218,6 +218,35 @@ def test_a_static_only_trapping_conjunct_through_the_key_column_refuses():
     assert "single-side residual" in v.detail
 
 
+@pytest.mark.parametrize(
+    "join, cond, expect",
+    [
+        # DuckDB binds BETWEEN as two comparisons, and its planner splits
+        # them like any two conjuncts: the static side of each runs over the
+        # whole static table, so the row that no request matches traps
+        # (nightly seed 6738617). confit evaluates per matched pair.
+        ("JOIN", "(s0.v * 9223372036854775807) BETWEEN c1 AND 7", "REFUSED"),
+        ("LEFT JOIN", "(s0.v * 9223372036854775807) BETWEEN c1 AND 7", "REFUSED"),
+        ("JOIN", "c1 BETWEEN (s0.v * 9223372036854775807) AND 7", "REFUSED"),
+        # NOT BETWEEN stays one condition, evaluated per matched pair.
+        ("JOIN", "(s0.v * 9223372036854775807) NOT BETWEEN c1 AND 7", "AGREE"),
+        ("LEFT JOIN", "(s0.v * 9223372036854775807) NOT BETWEEN c1 AND 7", "AGREE"),
+    ],
+)
+def test_a_between_in_a_join_splits_like_duckdbs_planner(join, cond, expect):
+    statics = {
+        "s0": _static({"k": "int", "v": "int"}, [{"k": 1, "v": 1}, {"k": 2, "v": 2}])
+    }
+    v = assert_parity(
+        f"SELECT s0.v AS o FROM __THIS__ {join} s0 ON (c0 = s0.k) AND {cond}",
+        JROWS,
+        statics=statics,
+        expect=expect,
+    )
+    if expect == "REFUSED":
+        assert "trapping ops" in v.detail, v.detail
+
+
 @pytest.mark.parametrize("shape", [None, "filter"])
 def test_a_double_key_projects_the_static_sides_bits(shape):
     # 0.0 matches -0.0, and the key column projects the static value

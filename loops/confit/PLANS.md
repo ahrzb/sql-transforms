@@ -83,43 +83,26 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    their 65 gated cases have seeds (issue #435 and the shard logs; the rest
    are only in the run artifacts, which the proxy does not serve). Each
    DIVERGE and OPT_EMULATED case replays the same on b4b8d03 and on 24674cd
-   (before #430). Live, to fix next, each with a pin:
-   - A HUGEINT product of exactly -2^127 traps in DuckDB unless an operand
-     is -2^127 (`Hugeint::TryMultiply`), and `exec/hugeint.rs`
-     (`hugeint_arith`) returns it: `18446744073709551616 *
-     -9223372036854775808` (6065493, 6112137, 6263288, 6349920, 6917565,
-     7511938).
-   - BETWEEN in a join's ON clause: DuckDB binds it as two comparisons and
-     the join planner splits the conjuncts, so a conjunct over the static
-     side alone filters the whole static table and traps whatever matches.
-     `frontend/joins.rs` (`bind_residual`) keeps the BETWEEN per matching
-     pair (6738617). NOT BETWEEN is one per-pair condition in DuckDB too.
-   - A field read of a SQL function whose body is NULL under a constant
-     condition (`CASE WHEN TRUE THEN NULL ELSE struct_pack(...) END`):
-     struct_extract over a foldable NULL has no complete return type, so
-     DuckDB types the field SQLNULL, and confit gives it the declared field
-     type (`outputs::DuckNulls`; 5397716, 6212474, 7430849, 7843947).
-   - A pure UDF over an argument that reads a column but has one value
-     (`udf0(5, 91.693 - -1.75, coalesce(8, c1))`): `frontend/udf.rs`
-     (`try_extern_bind_fold`) asks `bind_foldable` of the bound argument and
-     folds the call at bind, typing its NULL as SQLNULL; DuckDB's binder
-     sees a column, runs the UDF per row and keeps the declared type
-     (5144477, 6949338).
-   - A function or operator over a SQLNULL-typed argument that is not the
-     NULL literal (`trunc(CASE WHEN c1 THEN 53.832 * NULL END)`,
-     `abs(coalesce(0.5 * NULL, NULL))`, `ceil(<all-NULL CASE>) - NULL`):
-     DuckDB's default NULL handling gives the chosen overload's return type
-     when it is complete (BIGINT here), while confit binds the argument as a
-     committed INTEGER NULL and answers INTEGER (5248694, 5923305, 6186379,
-     6686677).
+   (before #430). Its five live classes are fixed and pinned in
+   `test_fuzz_smoke.py`: a HUGEINT product of exactly -2^127 traps unless an
+   operand is -2^127, as `Hugeint::TryMultiply` does (6065493, 6112137,
+   6263288, 6349920, 6917565, 7511938); BETWEEN in a join's ON clause is
+   checked as its two comparisons, which DuckDB's planner splits like any
+   two conjuncts (6738617); a field read over a closed value that evaluates
+   to NULL, such as a SQL function whose body is NULL under a constant
+   condition, types SQLNULL (`binds_to_null`; 5397716, 6212474, 7430849,
+   7843947); a pure UDF whose arguments name a column runs per row, since
+   DuckDB's binder folds by the text (`args_closed`; 5144477, 6949338); and
+   a DECIMAL builtin over a constant NULL DECIMAL, or an all-NULL CASE or
+   COALESCE whose parts are operators that bind SQLNULL, binds SQLNULL
+   (`null_part`; 5248694, 5923305, 6186379, 6686677).
 
    Not confit defects: TIMEOUT 6154334 is `levenshtein` over two strings of
    131,068 characters (DuckDB 73 s, confit 55 s; confit runs first, so the
    20 s limit stops confit); 5068704 and 7731793 are the bracket item above;
    24 of the 26 DuckDB TIMEOUTs with seeds are the open oracle-TIMEOUT
    record's mechanism, and the two OPT_EMULATED cases (7242549, 7829571)
-   are the all-NULL-key record's. Add these seeds to those two records as
-   evidence.
+   are the all-NULL-key record's. Their seeds are in those two records.
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
@@ -184,9 +167,12 @@ Open, low priority (the catalog builds within its caps):
   in a block) can pass the 24-bit index. Smaller wide encoders get the
   named refusal. Reproduction:
   `/mnt/project-files/transforms-loop/confit-wide-encoder-verifier.py`
-  (master e1f15b9 with #429's `encode.py`). Measure it again with the
-  change that dropped the repeated guard copies, which makes such a
-  function smaller.
+  (master e1f15b9 with #429's `encode.py`). Since #430 dropped the
+  repeated guard copies, the reproduction builds (1.2 s, the native loop on
+  master b4b8d03, 2026-10-14), and no catalog step that the native loop
+  measured meets the verifier error. The gap in `check_size` stays: a
+  function that Cranelift's optimizer grows past the index still stops
+  with a verifier error.
 
 - **Closed 2026-10-06: a trap in one field of a SQL function's struct
   costs each field read** (repros in `/mnt/project-files/transforms-loop/`).
@@ -453,6 +439,15 @@ The first five are ruled, in this order; the rest follow.
   `b`); parse it with the integer kernels at the family's type instead.
   Beside UBIGINT/HUGEINT such members refuse by name for this reason.
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
+- A JOIN ON residual that reads the static side only refuses when
+  `may_trap` says it can trap, and `may_trap` counts all arithmetic, DOUBLE
+  included, though DuckDB answers a DOUBLE division by zero with ±inf
+  (measured). So `(0.5e0 / s0.f) >= 0.75` refuses, and since BETWEEN in a
+  join's ON clause is checked as its two comparisons, so does
+  `(0.5e0 / s0.f) BETWEEN 0.75 AND x` (seed 9047919, served before). Using
+  `can_trap`, which knows that DOUBLE arithmetic cannot trap, is a widening
+  with its own question of evaluation order (`may_trap`'s comment):
+  measure it first.
 - **Wrapped-query refusals** the metamorphic suite allowlists
   (rewrite tolerances in `fuzz/exclusions.py`): a struct- or list-valued column inside a
   derived table (about 13% of generated queries when wrapped) and a subquery

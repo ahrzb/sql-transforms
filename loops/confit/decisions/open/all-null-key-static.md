@@ -28,6 +28,14 @@ rows, and the join key is NULL in each row. The campaign gave the case the verdi
 verdict means that confit agrees with the optimizer-on reading but not with the oracle. Other cases of this
 kind get the verdict DIVERGE_TRAP: confit traps, and the oracle returns rows.
 
+The eight nightlies from 2026-10-07 to 2026-10-14 found two more such cases, both with the verdict
+OPT_EMULATED:
+
+- Seed 7242549 joins on `i0 = s0.c0.f2`. The key is NULL in each of the three static rows. Confit traps on
+  the overflow of `c0 * 35`, and the oracle returns no rows.
+- Seed 7829571 joins on `i1 = s0.c1.f1`. The one static row has a NULL key. Confit traps on
+  `sqrt(-2.0e0)`, and the oracle returns no rows.
+
 **Options.**
 1. **Extend the ruling.** The ruling added an exclusion to `fuzz/exclusions.py`. This option makes the
    exclusion also cover an INNER join on a key whose static table has no row with a non-NULL key. The
