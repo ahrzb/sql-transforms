@@ -57,6 +57,7 @@ mod lets;
 mod lists;
 mod naming;
 mod outputs;
+mod subquery;
 
 use self::refusal::*;
 
@@ -138,6 +139,9 @@ pub fn frontend(
         // APPENDS these to the lane list before lowering; see
         // `Binder::minted_lanes` for the write-side invariant.
         Vec<super::plan::InputLane>,
+        // The static tables grouped for scalar subqueries: join `j` with
+        // `table >= statics.len()` reads entry `table - statics.len()`.
+        Vec<super::plan::AggTable>,
     ),
     PrepareError,
 > {
@@ -259,6 +263,7 @@ pub fn frontend(
         q.wide_outs,
         q.ctx.model_refs,
         q.ctx.minted_lanes,
+        q.ctx.aggs,
     ))
 }
 
@@ -678,6 +683,8 @@ fn bind_select(
         driving,
         ctx,
     )?;
+    let mut joins = joins;
+    binder.subqueries.set(true);
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
@@ -762,6 +769,7 @@ fn bind_select(
     // A projection `share.rs` lowers reads lets as `SKind::Let`.
     binder.let_reads.set(!env.many);
     binder.projection_lets.set(!env.many);
+    binder.in_select.set(true);
     // The entries of `exprs` that bind DuckDB's SQLNULL.
     let mut sqlnull_at: Vec<usize> = Vec::new();
     for (item, written) in select.projection.iter().zip(written) {
@@ -852,6 +860,7 @@ fn bind_select(
                     }
                     continue;
                 }
+                binder.bound_subquery.set(false);
                 let v = binder.expr_or_null(expr)?;
                 if v.is_none() {
                     sqlnull_at.push(exprs.len());
@@ -863,6 +872,9 @@ fn bind_select(
                     .bound_aliases
                     .borrow_mut()
                     .push((alias.value.clone(), e.clone()));
+                if binder.bound_subquery.get() || subquery::has_subquery(&binder, expr)? {
+                    binder.subquery_aliases.borrow_mut().push(alias.value.clone());
+                }
                 push_item(&mut out_cols, &mut exprs, alias.value.clone(), e)?
             }
             SelectItem::Wildcard(opts) => {
@@ -896,6 +908,7 @@ fn bind_select(
     }
     binder.let_reads.set(false);
     binder.projection_lets.set(false);
+    binder.in_select.set(false);
     binder.whole_item.set(false);
     if exprs.is_empty() {
         // Pinned text: an EXCLUDE-all star that empties the projection.
@@ -927,6 +940,8 @@ fn bind_select(
         filter = Some(pred);
     }
     check_comma_order(&binder, &comma_terms)?;
+    // The scalar subqueries' hidden joins, after the FROM joins they may read.
+    joins.extend(binder.agg_joins.take());
 
     let mut sqlnull = vec![false; exprs.len()];
     for i in sqlnull_at {
@@ -1013,6 +1028,14 @@ struct Binder<'a> {
     /// Aliases already bound this pass, in SELECT order (frontend() fills
     /// this as it walks the projection; RefCell keeps `expr(&self)` intact).
     bound_aliases: std::cell::RefCell<Vec<(String, SExpr)>>,
+    /// The bound aliases whose item holds a subquery. DuckDB refuses a read
+    /// of one in the SELECT list, and WHERE reads it (measured 1.5.5).
+    subquery_aliases: std::cell::RefCell<Vec<String>>,
+    /// Set while the SELECT list binds.
+    in_select: std::cell::Cell<bool>,
+    /// Set by each scalar subquery that binds, so that an item whose
+    /// subquery stands in a form `walk_expr` does not enter still counts.
+    bound_subquery: std::cell::Cell<bool>,
     /// Program regex table under construction; indices are baked
     /// into ReMatch/ReExtract/ReReplace nodes.
     regexes: std::cell::RefCell<Vec<super::ir::ReSpec>>,
@@ -1116,6 +1139,25 @@ struct Binder<'a> {
     /// Set while a projection item that is one column reference binds:
     /// the one place a column of `null_cols` binds.
     whole_item: std::cell::Cell<bool>,
+    /// The caller's static tables, which a scalar subquery reads.
+    statics: &'a [StaticTable],
+    /// The request table's registered name, which a scalar subquery may
+    /// not read.
+    request_table: String,
+    /// Whether a scalar subquery may bind here: in the SELECT list and the
+    /// WHERE, once every FROM join is in `joins`, so that its hidden join
+    /// numbers after them.
+    subqueries: std::cell::Cell<bool>,
+    /// The hidden LEFT joins of this level's scalar subqueries, in the
+    /// order they first bound; they run after the FROM joins
+    /// (`subquery.rs`).
+    agg_joins: std::cell::RefCell<Vec<JoinSpec>>,
+    /// Each scalar subquery bound at this level and what it reads, so that
+    /// binding the same text again reads the same join.
+    agg_reads: std::cell::RefCell<Vec<(sqlparser::ast::Query, SExpr)>>,
+    /// The grouped static tables of the whole query, handed between levels
+    /// like `minted_lanes`: append-only, so a join's table index never moves.
+    agg_tables: std::cell::RefCell<Vec<super::plan::AggTable>>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.
@@ -1130,6 +1172,7 @@ struct QueryCtx {
     model_refs: Vec<u32>,
     sites: u32,
     minted_lanes: Vec<super::plan::InputLane>,
+    aggs: Vec<super::plan::AggTable>,
 }
 
 /// What a query level reads.
@@ -1150,6 +1193,7 @@ impl Binder<'_> {
             model_refs: self.model_refs.into_inner(),
             sites: self.sites.get(),
             minted_lanes: self.minted_lanes.into_inner(),
+            aggs: self.agg_tables.into_inner(),
         }
     }
 }

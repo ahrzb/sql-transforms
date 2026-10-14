@@ -392,9 +392,25 @@ The first five are ruled, in this order; the rest follow.
   the fan-out loop); struct keys whose field-name sets differ refuse where
   DuckDB serves a constant-empty join.
 - **Per-row aggregation over matched static rows** (correlated scalar
-  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Next: the scalar
-  subquery with the aggregates that need no ruling (`count`, `min`, `max`,
-  integer and DECIMAL `sum`) over one static table, keyed by equalities.
+  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Served: a scalar
+  subquery with one `count`, `min`, `max`, or integer, BOOLEAN or DECIMAL
+  `sum` over one static table, keyed by `=` or IS NOT DISTINCT FROM between a
+  bare column of the table and an outer expression that cannot trap. It binds
+  as a hidden LEFT join to a table grouped at build
+  (`src/specializer/frontend/subquery.rs`, `AggTable` in `plan.rs`; claim
+  `scalar-subquery-as-join`; `tests/test_scalar_subquery.py`; generator gate
+  33 mod 43, tag `scalar-subquery`; 2,400 gated seeds, 0 findings besides 10
+  DIVERGE_OPT of the known trap-elision class). Still refused by name: `avg`
+  (DuckDB divides in long double), DOUBLE `sum` (decision below), DISTINCT,
+  an expression over the aggregate, several aggregates, a WHERE term that is
+  not a key (a static predicate traps on unmatched rows), an outer side that
+  can trap or reads a joined table, a VARCHAR key against another type, a
+  subquery in FROM, in JOIN ON or inside the subquery, the request table, and
+  a scalar subquery under `shape='many'` in a two-level query. Next, in this
+  order: static predicates that cannot trap; outer sides that can trap (they
+  trap only when the static table has rows, which the build knows); an
+  expression over the aggregate; `avg` over integer and DECIMAL after
+  measuring DuckDB's long-double rounding.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
@@ -405,9 +421,10 @@ The first five are ruled, in this order; the rest follow.
   on the owner: [decisions/open/join-group-by-per-request.md](decisions/open/join-group-by-per-request.md)
   and the DOUBLE `sum`/`avg` domains of the float-reduction bound,
   [decisions/open/double-sum-bound.md](decisions/open/double-sum-bound.md).
-- **Scalar/correlated/`IN` subqueries, a CTE referenced twice, set
-  operations.** Blanket bans today; only batch-dependent forms are out of
-  scope. Row-local derived tables and CTEs are in Next.
+- **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
+  set operations.** Refused today, except the scalar subquery above; only
+  batch-dependent forms are out of scope. Row-local derived tables and CTEs
+  are in Next.
 - **float32** (needs f32 arithmetic, not widening), **temporal types**
   (columns, casts, literals, functions; opaque temporal join keys could use a
   key-only lane), **BLOB**.

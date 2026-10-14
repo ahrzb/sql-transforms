@@ -355,6 +355,16 @@ fn function(f: &sqlparser::ast::Function) -> Option<String> {
     }
     let name = f.name.to_string();
     let lower = name.trim_matches('"').to_ascii_lowercase();
+    // DuckDB's transformer makes `count(*)` the function count_star.
+    if let FunctionArguments::List(l) = &f.args {
+        if lower == "count"
+            && l.duplicate_treatment.is_none()
+            && l.clauses.is_empty()
+            && matches!(l.args.as_slice(), [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)])
+        {
+            return Some("count_star()".to_string());
+        }
+    }
     let args = args_of(f)?;
     Some(match lower.as_str() {
         "coalesce" | "ifnull" => format!("COALESCE({args})"),
@@ -596,8 +606,54 @@ fn print(e: &SqlExpr) -> Option<String> {
         SqlExpr::Position { expr, r#in } => {
             format!("main.\"position\"({}, {})", print(r#in)?, print(expr)?)
         }
+        SqlExpr::Subquery(q) => format!("({})", select_text(q)?),
         _ => return None,
     })
+}
+
+/// DuckDB's text of a subquery of the form that `subquery.rs` serves: one
+/// SELECT item over one table, maybe a WHERE (`SelectNode::ToString`).
+fn select_text(q: &sqlparser::ast::Query) -> Option<String> {
+    if q.with.is_some() || q.order_by.is_some() || q.limit_clause.is_some() {
+        return None;
+    }
+    let SetExpr::Select(s) = q.body.as_ref() else {
+        return None;
+    };
+    let grouped = match &s.group_by {
+        sqlparser::ast::GroupByExpr::Expressions(g, m) => !g.is_empty() || !m.is_empty(),
+        sqlparser::ast::GroupByExpr::All(_) => true,
+    };
+    if s.distinct.is_some() || grouped || s.having.is_some() {
+        return None;
+    }
+    let item = match s.projection.as_slice() {
+        [SelectItem::UnnamedExpr(e)] => print(e)?,
+        [SelectItem::ExprWithAlias { expr, alias }] => {
+            format!("{} AS {}", print(expr)?, ident(&alias.value))
+        }
+        _ => return None,
+    };
+    let [twj] = s.from.as_slice() else {
+        return None;
+    };
+    if !twj.joins.is_empty() {
+        return None;
+    }
+    let (name, alias) = plain_table(&twj.relation).ok()??;
+    let mut table = name.0.iter().map(|p| ident(p)).collect::<Vec<_>>().join(".");
+    if let Some(a) = alias {
+        table += &format!(" AS {}", ident(&a.name.value));
+        if !a.columns.is_empty() {
+            let cols: Vec<String> = a.columns.iter().map(|c| ident(&c.name.value)).collect();
+            table += &format!("({})", cols.join(", "));
+        }
+    }
+    let mut out = format!("SELECT {item} FROM {table}");
+    if let Some(w) = &s.selection {
+        out += &format!(" WHERE {}", print(w)?);
+    }
+    Some(out)
 }
 
 /// DuckDB's output name for an unaliased item that is not a bare column

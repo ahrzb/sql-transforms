@@ -57,11 +57,15 @@ Aggregating frozen rows matched by one request row is inside it, as is reducing
 a list stored in that row. Queries reading no request table are outside it.
 The rationale is in the [scope decision](../../../../loops/confit/decisions/closed/static-only-queries.md).
 
-Syntax is not the scope test. The frontend also refuses CTEs, subqueries, set
-operations, `HAVING`, `QUALIFY`, named windows, `OFFSET`/`FETCH`/`TOP`, multiple
-statements, table functions in `FROM`, `rowid`, `FULL OUTER JOIN`, and scalar calls
-with aggregate/window modifiers. A CTE, for example, can describe a row-local
-computation; such a use is inside the model even though the frontend refuses it.
+Confit also refuses these forms: a CTE read twice, the subqueries that the
+[restriction inventory](#restriction-inventory-by-class) does not list as
+served, set operations, `HAVING`, `QUALIFY`, named windows,
+`OFFSET`/`FETCH`/`TOP`, multiple statements, table functions in `FROM`,
+`rowid`, `FULL OUTER JOIN`, and calls of scalar functions with `FILTER`,
+`OVER`, `IGNORE NULLS` or `WITHIN GROUP`. Some of these forms are inside the
+model, because the answer for one request does not depend on other requests.
+For example, a CTE read twice can describe a row-local computation. So the
+syntax of a form does not decide whether it is inside the model.
 
 | Restriction | Rule | Ground |
 |---|---|---|
@@ -105,9 +109,11 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
+| A scalar subquery with one aggregate over one static table, keyed by equalities with the outer query ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate over the static rows that one request matches, read through a join to a table that confit computes at build |
+| A scalar subquery of another form, for example with `avg`, a DOUBLE `sum`, or an expression over the aggregate. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
-| Under `shape='many'`: a self-join after another join, a join in a query with a subquery | 2 inside, refused | refused by name; without a subquery, any number of joins serves, with a self-join only as the first join |
+| Under `shape='many'`: (1) a self-join after another join; (2) a join or a scalar subquery over a static table, in a query that also has a derived table or a CTE | 2 inside, refused | refused by name; without a derived table or a CTE, any number of joins serves, with a self-join only as the first join |
 | A comma join whose WHERE has a term that can trap before a key term, or a key term that can trap out of order | 2 inside, refused | DuckDB evaluates the WHERE terms in written order over the cross product, and confit probes with the key terms first; refused by name; key terms first, or `JOIN ... ON`, serve |
 | Casts into DECIMAL from DOUBLE/VARCHAR/BOOLEAN, DECIMAL join key expressions against a non-DOUBLE key, `IN`/`BETWEEN` capped at 38 digits | 2 inside, refused | named rejection; decimal expressions otherwise serve exactly |
 | `f32` row columns, lists, `UHUGEINT` | 2 inside, refused | type not served |
@@ -128,6 +134,56 @@ DuckDB 1.5.5.
 The campaign reports refusals by DuckDB's outcome for the same query (claim:
 refusal-outcome-reporting): a refusal whose query DuckDB rejects is class 4 by
 measurement, whatever its message prefix.
+
+### Scalar subqueries over a static table
+
+**claim: scalar-subquery-as-join.** Confit serves a scalar subquery with one
+aggregate over one static table `s`:
+
+```sql
+SELECT t.id, (SELECT sum(s.v) FROM s WHERE s.k = t.k) AS total FROM __THIS__ AS t
+```
+
+The aggregate is `count(*)`, `count` of a column or of a constant that is not
+NULL, `min` or `max` of a column, or `sum` of an integer, BOOLEAN or DECIMAL
+column. Each term of the WHERE compares a column of `s` with an expression of
+the outer query, by `=` or `IS NOT DISTINCT FROM`. The WHERE can also be
+absent. Confit refuses the subquery if an outer expression can trap. It also
+refuses an outer expression that reads a table that the outer query joins.
+
+At build, confit puts the rows of `s` into groups with equal keys and computes
+the aggregate of each group. A request reads the aggregate of the group that it
+matches, through a LEFT join. If a request matches no group, it reads 0 for
+`count` and NULL for the other aggregates.
+
+The oracle evaluates the WHERE of the subquery in written order, for each
+pair of a distinct outer value and a row of `s`. It evaluates the argument of
+the aggregate for the matched rows only. The pins at the end of
+`tests/test_scalar_subquery.py` record these facts. The order of evaluation
+matters only where an evaluation can trap. In a served subquery, no WHERE term
+can trap, and the argument of the aggregate is a column. Only a `sum` can
+overflow, and confit computes it at build, where the first case below refuses
+the build. So the order of evaluation cannot change the answer.
+
+Confit also refuses the build, with an error that names the reason, in two
+cases that depend on the rows of `s`:
+
+- The absolute values of a group add up past the range of the result of `sum`
+  (HUGEINT, a 128-bit integer, or a DECIMAL with 38 digits). Then a partial
+  sum can overflow in some order of the additions.
+- A DOUBLE `min` or `max` finds two values that compare as equal but have
+  different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
+  of the oracle depends on the order of the rows.
+
+A SELECT item can read the alias of an earlier item. The oracle rejects such
+a read if the earlier item holds a subquery. Its error starts with
+`Alias "c" referenced in a SELECT clause - but the expression has a subquery`,
+and confit gives the same error. A WHERE can read such an alias in the oracle
+and in confit.
+
+Evidence: `tests/test_scalar_subquery.py`, and campaign cases. The generator of
+random SQL that the campaign uses (`fuzz/gen.py`) adds this form to the case of
+each seed with remainder 33 modulo 43, and tags that case `scalar-subquery`.
 
 ## UDF and model boundary
 

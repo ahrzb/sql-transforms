@@ -125,6 +125,21 @@ pub struct StaticSpec {
     pub table: String,
     pub keys: Vec<StaticKey>,
     pub vals: Vec<StaticVal>,
+    /// Set for the grouped table of a scalar subquery
+    /// ([`plan::AggTable`]): one entry per GROUP of the source rows that
+    /// share their converted keys, not one per row, and value `i` is
+    /// `aggs[i]` over the group. Each `vals[i]` then holds the aggregate's
+    /// layout and its argument's path (empty for `count(*)`).
+    pub aggs: Option<Vec<AggVal>>,
+}
+
+/// One aggregate of a grouped static table at the boundary.
+#[derive(Debug)]
+pub struct AggVal {
+    pub func: plan::AggFunc,
+    /// The argument column's type in the source table (`count(*)`: BIGINT,
+    /// unread).
+    pub src: ir::Ty,
 }
 
 /// One join of the bound plan, as the exclusion rules read it
@@ -242,20 +257,44 @@ pub fn prepare_full(
     macros: &[frontend::macros::SqlMacro],
     cranelift: bool,
 ) -> Result<Prepared, PrepareError> {
-    let (plan, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
+    let (plan, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes, aggs) =
         frontend::frontend(
             sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
             macros,
         )?;
-    let one_row_blocker = one_row_blocker(&plan, &joins, statics);
+    // The catalog the plan's joins index: the caller's tables, then the
+    // tables grouped for scalar subqueries (`plan::AggTable`), whose joins
+    // index past the caller's.
+    let catalog: std::borrow::Cow<[plan::StaticTable]> = if aggs.is_empty() {
+        std::borrow::Cow::Borrowed(statics)
+    } else {
+        std::borrow::Cow::Owned(
+            statics
+                .iter()
+                .cloned()
+                .chain(aggs.iter().map(|a| a.table.clone()))
+                .collect(),
+        )
+    };
+    let agg_of = |j: &plan::JoinSpec| {
+        (!j.batch)
+            .then(|| j.table.checked_sub(statics.len()))
+            .flatten()
+            .map(|i| &aggs[i])
+    };
+    let one_row_blocker = one_row_blocker(&plan, &joins, &catalog);
     let join_facts = joins
         .iter()
         .map(|j| JoinFact {
-            kind: match j.kind {
-                plan::JoinKind::Inner => "inner",
-                plan::JoinKind::Left => "left",
+            kind: match (agg_of(j), j.kind) {
+                (Some(_), _) => "aggregate",
+                (None, plan::JoinKind::Inner) => "inner",
+                (None, plan::JoinKind::Left) => "left",
             },
-            static_name: (!j.batch).then(|| statics[j.table].name.clone()),
+            static_name: (!j.batch).then(|| match agg_of(j) {
+                Some(a) => statics[a.source].name.clone(),
+                None => statics[j.table].name.clone(),
+            }),
             keys: j.key_cols.len(),
             residual: j.residual.is_some(),
         })
@@ -267,8 +306,22 @@ pub fn prepare_full(
     let mut input_lanes = plan::input_lanes(in_cols, structs);
     input_lanes.extend(minted_lanes);
     let all_in: Vec<ir::Col> = input_lanes.iter().map(plan::InputLane::col).collect();
+    // Under shape='many' the joins run in a query of one level (`lower.rs`).
+    // A query whose only joins are those of its scalar subqueries names
+    // none, so the refusal says where they come from.
+    if many
+        && plan.stages.len() > 1
+        && !joins.is_empty()
+        && joins.iter().all(|j| agg_of(j).is_some())
+    {
+        return Err(PrepareError::Unsupported(
+            "a subquery under a shape='many' join (confit runs a scalar subquery over a static \
+             table as a join)"
+                .to_string(),
+        ));
+    }
     let mut program = lower::lower(
-        &plan, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
+        &plan, &joins, &catalog, &all_in, out_cols, regexes, udfs, "run", many, models,
         &model_refs,
     )?;
     // A program Cranelift cannot number refuses here, before canonicalize,
@@ -308,7 +361,11 @@ pub fn prepare_full(
                     table: String::new(),
                     keys: Vec::new(),
                     vals: Vec::new(),
+                    aggs: None,
                 };
+            }
+            if let Some(a) = agg_of(j) {
+                return agg_spec(j, a, &statics[a.source], &catalog[j.table]);
             }
             let t = &statics[j.table];
             let paths = plan::lane_paths(&t.cols, &t.structs);
@@ -360,6 +417,7 @@ pub fn prepare_full(
                         },
                     })
                     .collect(),
+                aggs: None,
             }
         })
         .collect();
@@ -401,6 +459,56 @@ fn verified(program: &ir::Program) -> Result<(), PrepareError> {
             msgs.join("; ")
         ))
     })
+}
+
+/// The recipe of a grouped table ([`plan::AggTable`]): each key reads the
+/// source lane it groups by, and each value is an aggregate over a group.
+fn agg_spec(
+    j: &plan::JoinSpec,
+    a: &plan::AggTable,
+    source: &plan::StaticTable,
+    grouped: &plan::StaticTable,
+) -> StaticSpec {
+    let paths = plan::lane_paths(&source.cols, &source.structs);
+    let keys = j
+        .key_cols
+        .iter()
+        .zip(plan::map_keys(&j.keys, &j.key_cols))
+        .zip(&j.keys)
+        .map(|((c, map), probe)| {
+            let plan::KeySrc::Lane(l) = c.src else {
+                unreachable!("a grouped table's keys are lanes")
+            };
+            StaticKey {
+                path: paths[a.keys[l as usize] as usize].clone(),
+                present: false,
+                map,
+                probe_ty: probe.ty,
+            }
+        })
+        .collect();
+    let n_keys = a.keys.len() as u32;
+    let mut vals = Vec::new();
+    let mut aggs = Vec::new();
+    for (&c, map) in j.val_cols.iter().zip(plan::map_vals(&grouped.cols, &j.val_cols)) {
+        let agg = a.aggs[(c - n_keys) as usize];
+        vals.push(StaticVal {
+            path: agg.arg.map_or_else(Vec::new, |l| paths[l as usize].clone()),
+            present: false,
+            map,
+        });
+        aggs.push(AggVal {
+            func: agg.func,
+            src: agg.arg.map_or(ir::Ty::I64, |l| source.cols[l as usize].ty.ty),
+        });
+    }
+    StaticSpec {
+        batch: false,
+        table: source.name.clone(),
+        keys,
+        vals,
+        aggs: Some(aggs),
+    }
 }
 
 /// The static exactly-one-row proof behind `shape="map"`, over every stage:

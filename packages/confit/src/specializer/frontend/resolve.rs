@@ -755,6 +755,18 @@ impl Binder<'_> {
                         .rev()
                         .find(|(a, _)| a.eq_ignore_ascii_case(name))
                     {
+                        if self.in_select.get()
+                            && self
+                                .subquery_aliases
+                                .borrow()
+                                .iter()
+                                .any(|a| a.eq_ignore_ascii_case(name))
+                        {
+                            return Err(PrepareError::Bind(format!(
+                                "Alias \"{name}\" referenced in a SELECT clause - but the \
+                                 expression has a subquery. This is not yet supported."
+                            )));
+                        }
                         return self.null_col(Resolved::Lane(e.clone()));
                     }
                 }

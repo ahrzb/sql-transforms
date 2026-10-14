@@ -115,6 +115,42 @@ impl StaticTable {
     }
 }
 
+/// A static table computed at build from a static table of the caller: one
+/// row per group of the source rows that share their key values, with one
+/// column per aggregate. It backs the hidden LEFT join of a correlated scalar
+/// subquery (`(SELECT sum(s.v) FROM s WHERE s.k = t.k)`, see
+/// `frontend/subquery.rs`): a request reads the row of the group it matches,
+/// and a request that matches no group reads the aggregate of no rows.
+#[derive(Clone)]
+pub struct AggTable {
+    /// The grouped table as the catalog sees it: one lane per key, in key
+    /// order, then one lane per aggregate.
+    pub table: StaticTable,
+    /// The source table's index in the caller's catalog.
+    pub source: usize,
+    /// Per key lane: the source lane it groups by.
+    pub keys: Vec<u32>,
+    /// Per aggregate lane: what it computes over a group.
+    pub aggs: Vec<Agg>,
+}
+
+/// One aggregate of an [`AggTable`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Agg {
+    pub func: AggFunc,
+    /// The source lane it reads; `None` for `count(*)`.
+    pub arg: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AggFunc {
+    CountStar,
+    Count,
+    Min,
+    Max,
+    Sum,
+}
+
 /// Per-lane SEGMENT paths for a lane set with struct trees over it: a
 /// plain column's path is its own (whole) name — dots included, a name is
 /// not a path — and a leaf lane's is `[struct, field, ...]` from its tree.

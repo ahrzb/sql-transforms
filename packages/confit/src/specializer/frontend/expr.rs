@@ -465,6 +465,7 @@ impl Binder<'_> {
                 self.compound(parts)
             }
             SqlExpr::Nested(inner) => self.expr(inner),
+            SqlExpr::Subquery(q) => self.scalar_subquery(q),
             SqlExpr::Value(v) => literal(&v.value),
             // DuckDB puts << >> & | in ONE flat left-associative tier;
             // sqlparser tiers them (& above << >> above |), so 4|1&1 would
