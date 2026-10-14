@@ -1321,15 +1321,19 @@ impl Binder<'_> {
                         )))
                     }
                 };
+                let bs = self.expr_or_null(s)?.map(|b| str_only(&name, b)).transpose()?;
                 let o = self.regex_options(opts, false)?;
+                // The pattern compiles at bind whatever the subject is
+                // (measured: `regexp_matches(NULL, 'a(')` is DuckDB's bind
+                // error).
+                let full = name == "regexp_full_match";
+                let re = self.regex_pattern(p, o, full)?;
                 // A NULL subject keeps the call a node (see `typed_null`).
-                let Some(bs) = self.expr_or_null(s)? else {
+                let Some(bs) = bs else {
                     return self.typed_null(s, Ty::I1);
                 };
-                let full = name == "regexp_full_match";
-                let bs = str_only(&name, bs)?;
-                match self.regex_pattern(p, o, full)? {
-                    None => Ok(null_of(Ty::I1)),
+                match re {
+                    None => self.regex_null_pattern(s, bs, Ty::I1),
                     Some(re) => Ok(SExpr {
                         nullable: bs.nullable,
                         kind: SKind::ReMatch {
@@ -1354,20 +1358,25 @@ impl Binder<'_> {
                         )))
                     }
                 };
+                let bs = self.expr_or_null(s)?.map(|b| str_only(&name, b)).transpose()?;
                 let o = self.regex_options(opts, false)?;
-                // A NULL subject keeps the call a node (see `typed_null`).
-                let Some(bs) = self.expr_or_null(s)? else {
-                    return self.typed_null(s, Ty::Str);
-                };
-                let bs = str_only(&name, bs)?;
                 // Group index: constant, flat 0..9 range check unrelated to
-                // the pattern; NULL group -> '' for non-NULL subjects.
+                // the pattern; NULL group (`None`) -> '' for non-NULL
+                // subjects.
                 let group = match group {
-                    None => 0u32,
+                    None => Some(0u32),
+                    // A group whose text reads a column is no constant
+                    // there, also where our binder drops the column
+                    // (`coalesce(1, a)`).
+                    Some(g) if !DuckNulls::new(self).closed(g)? => {
+                        return Err(PrepareError::Bind(
+                            "Group specification field must be a constant!".into(),
+                        ))
+                    }
                     Some(g) => match self.expr_or_null(g)? {
-                        None => return Ok(empty_for_nonnull(bs)),
+                        None => None,
                         Some(bg) => match bg.kind {
-                            SKind::Lit(Lit::I64(n)) if (0..=9).contains(&n) => n as u32,
+                            SKind::Lit(Lit::I64(n)) if (0..=9).contains(&n) => Some(n as u32),
                             SKind::Lit(Lit::I64(_)) => {
                                 return Err(PrepareError::Bind(
                                     "Group index must be between 0 and 9!".into(),
@@ -1381,18 +1390,32 @@ impl Binder<'_> {
                         },
                     },
                 };
-                match self.regex_pattern(p, o, false)? {
-                    None => Ok(null_of(Ty::Str)),
-                    Some(re) => Ok(SExpr {
-                        nullable: bs.nullable,
-                        kind: SKind::ReExtract {
-                            re,
-                            group,
-                            a: Box::new(bs),
-                        },
-                        ty: Ty::Str,
-                    }),
-                }
+                // DuckDB checks the options, then the group, then compiles
+                // the pattern, whatever the subject and the group are; at
+                // run time a NULL subject or pattern answers NULL before a
+                // NULL group answers '' (measured: `regexp_extract(NULL,
+                // 'a', 99)` and `regexp_extract(s, 'a(', NULL)` are errors,
+                // `regexp_extract(s, NULL, NULL)` is NULL).
+                let re = self.regex_pattern(p, o, false)?;
+                // A NULL subject keeps the call a node (see `typed_null`).
+                let Some(bs) = bs else {
+                    return self.typed_null(s, Ty::Str);
+                };
+                let Some(re) = re else {
+                    return self.regex_null_pattern(s, bs, Ty::Str);
+                };
+                let Some(group) = group else {
+                    return Ok(empty_for_nonnull(bs));
+                };
+                Ok(SExpr {
+                    nullable: bs.nullable,
+                    kind: SKind::ReExtract {
+                        re,
+                        group,
+                        a: Box::new(bs),
+                    },
+                    ty: Ty::Str,
+                })
             }
             "regexp_replace" => {
                 let (s, p, r, opts) = match args[..] {
@@ -1404,26 +1427,53 @@ impl Binder<'_> {
                         )))
                     }
                 };
-                // Pinned asymmetry: for regexp_replace ANY NULL argument
-                // (including the options string) -> NULL result.
+                // Pinned asymmetry: regexp_replace has the default NULL
+                // handling, so after the overload resolves (each argument
+                // VARCHAR), DuckDB's binder makes the call a NULL constant
+                // when an argument is NULL, before it reads the options or
+                // compiles the pattern (measured, 1.5.5: `regexp_replace(s,
+                // NULL, 'x', 'zz')` and `regexp_replace(CASE WHEN FALSE THEN
+                // 'q' END, 'a(', 'x')` are NULL, `regexp_replace(s, CAST(NULL
+                // AS INTEGER), 'x')` is a bind error).
+                let bs = self.expr_or_null(s)?.map(|b| str_only(&name, b)).transpose()?;
+                let bp = self.expr_or_null(p)?;
+                let br = self.expr_or_null(r)?;
+                let bo = opts.map(|o| self.expr_or_null(o)).transpose()?.flatten();
+                for b in [&bp, &br, &bo].into_iter().flatten() {
+                    if b.ty != Ty::Str {
+                        return Err(PrepareError::Bind(format!(
+                            "no function matches {name} with a {} argument",
+                            b.ty.name()
+                        )));
+                    }
+                }
+                let nulls = DuckNulls::new(self);
+                let mut parts = vec![(s, &bs), (p, &bp), (r, &br)];
+                if let Some(o) = opts {
+                    parts.push((o, &bo));
+                }
+                for (a, b) in parts {
+                    let null = match b {
+                        None => true,
+                        Some(b) => {
+                            matches!(b.kind, SKind::NullOf) || (folds_to_null(b) && nulls.closed(a)?)
+                        }
+                    };
+                    if null {
+                        return Ok(null_of(Ty::Str));
+                    }
+                }
                 let Some(o) = self.regex_options_nullable(opts)? else {
                     return Ok(null_of(Ty::Str));
                 };
-                let Some(bs) = self.expr_or_null(s)? else {
+                let bs = bs.expect("a NULL subject folds the call");
+                let Some(br) = br else {
                     return Ok(null_of(Ty::Str));
                 };
-                let bs = str_only(&name, bs)?;
-                let Some(br) = self.expr_or_null(r)? else {
-                    return Ok(null_of(Ty::Str));
-                };
-                if matches!(br.kind, SKind::NullOf) && br.ty == Ty::Str {
-                    // CAST(NULL AS VARCHAR) replacement — NULL result.
-                    return Ok(null_of(Ty::Str));
-                }
                 let SKind::Lit(Lit::Str(rw)) = br.kind else {
                     return Err(unsup("non-constant regexp_replace replacement"));
                 };
-                let Some((re, group_count)) = self.regex_pattern_counted(p, o, false)? else {
+                let Some((re, group_count)) = self.regex_compile(p, bp, o, false)? else {
                     return Ok(null_of(Ty::Str));
                 };
                 match super::super::retrans::translate_rewrite(&rw, group_count, o.global) {

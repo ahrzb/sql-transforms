@@ -127,7 +127,7 @@ fn is_null_test(inner: SExpr) -> SExpr {
 
 /// A NULL of `to` that evaluates `read`, which reads a column: an SQLNULL
 /// DuckDB cannot fold, where it keeps a type (see `Binder::typed_null`).
-fn null_reading(read: SExpr, to: Ty) -> SExpr {
+pub(super) fn null_reading(read: SExpr, to: Ty) -> SExpr {
     SExpr {
         kind: SKind::Case {
             arms: vec![(is_null_test(read), null_of(to))],
