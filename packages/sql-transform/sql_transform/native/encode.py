@@ -10,6 +10,9 @@ or unknown. So rather than restating sklearn's rules (infrequent categories,
 translation asks the fitted estimator: it transforms one probe row per
 class, reads the feature's block, and spells each output field as a CASE
 over the classes. The values are the twin's own, so the entry is bit-exact.
+`OneHotEncoder(sparse_output=True)`, the default, returns the matrix that
+`sparse_output=False` makes dense with `.toarray()`; the step and the probes
+make it dense too (`_udf._dense`), so the entry serves both.
 A feature's probe rows go to `transform` in one call (`_probes`). Each call
 builds every feature's table of categories again
 (`sklearn/utils/_encode.py`, `_map_to_integer`), so a call a row cost about
@@ -79,6 +82,7 @@ import pyarrow as pa
 from confit import sql as S
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, TargetEncoder
 
+from sql_transform._udf import _dense
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, rejects, translates
 
@@ -152,8 +156,6 @@ def _first_classes(est: Any, types: list[pa.DataType]) -> list[Any]:
 
 @translates(OneHotEncoder, OrdinalEncoder, TargetEncoder, base=_first_classes)
 def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
-    if getattr(est, "sparse_output", False):
-        raise NotNative("OneHotEncoder(sparse_output=True): the output is sparse")
     classes = [_classes(est.categories_[j], t) for j, t in enumerate(types)]
     base = _first_classes(est, types)
     widths = _widths(est, len(x))
@@ -281,7 +283,7 @@ def _probes(
                 run(idx[: len(idx) // 2])
                 run(idx[len(idx) // 2 :])
             return
-        got = np.asarray(got, dtype=np.float64).reshape(len(idx), -1)
+        got = np.asarray(_dense(got), dtype=np.float64).reshape(len(idx), -1)
         for i, r in zip(idx, got, strict=True):
             out[i] = [float(v) for v in r]
 

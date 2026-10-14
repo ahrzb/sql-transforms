@@ -60,7 +60,7 @@ from sklearn.preprocessing import (
 )
 from threadpoolctl import threadpool_limits
 
-from sql_transform._udf import PythonTransform
+from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native import (
     NotNative,
     ParityError,
@@ -148,6 +148,8 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
         MissingIndicator,
         lambda: MissingIndicator(features="all"),
         lambda: MissingIndicator(missing_values=-1.0, error_on_new=False),
+        lambda: MissingIndicator(sparse=True),
+        lambda: MissingIndicator(features="all", sparse=True),
     ],
     VarianceThreshold: [VarianceThreshold],
     SelectKBest: [lambda: SelectKBest(k=1), lambda: SelectKBest(f_regression, k=1)],
@@ -199,6 +201,9 @@ FIXTURES: dict[type, list[Callable[[], Any]]] = {
             sparse_output=False, min_frequency=3, handle_unknown="infrequent_if_exist"
         ),
         lambda: OneHotEncoder(sparse_output=False, drop="if_binary"),
+        # The default output is sparse, which the step reads dense.
+        OneHotEncoder,
+        lambda: OneHotEncoder(handle_unknown="ignore", drop="if_binary"),
     ],
     TargetEncoder: [TargetEncoder, lambda: TargetEncoder(target_type="continuous")],
 }
@@ -247,6 +252,12 @@ FIXTURES[KBinsDiscretizer] += [
     ),
 ]
 
+# encode="onehot", the default: a sparse output, which the step reads dense.
+FIXTURES[KBinsDiscretizer] += [
+    KBinsDiscretizer,
+    lambda: KBinsDiscretizer(n_bins=3, strategy="uniform", dtype=np.float32),
+]
+
 # QuantileTransformer: the fits have 5 to 60 rows, so n_quantiles_ is the
 # row count past it; few distinct values (kind 4) make runs of equal
 # quantiles. quantile_test.py serves the default 1,000 quantiles.
@@ -287,16 +298,17 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 
 
 # SplineTransformer: degrees 0 to 4, 2 to 8 knots of each kind, the five
-# extrapolations, both biases and both missing modes (degree 5 is in
-# test_spline_at_the_knots). Constant columns make equal knots (all of them
-# under "uniform", runs under "quantile", where few-valued columns do too,
-# and a zero period under "periodic"); a column only missing makes NaN
-# knots under "quantile". Rows at and beside the knots are in
-# test_spline_at_the_knots. From degree 2 the steps take at most
-# SPLINE_FEATURES features. Every width the generator draws builds in a few
-# seconds since confit #387 (spline.py, `_build_estimate`), but the
-# family's gate share grows with it: 31 s on 4 workers at 8 features, 49 s
-# at 16, 60 s without the limit (2026-10-06). The 200-seed sweep
+# extrapolations, both biases, both missing modes and both outputs (degree 5
+# is in test_spline_at_the_knots). Constant columns make equal knots (all of
+# them under "uniform", runs under "quantile", where few-valued columns do
+# too, and a zero period under "periodic"); a column only missing makes NaN
+# knots under "quantile", which stay Python when the output is sparse
+# (sparse_test.py), so no sparse one fits "quantile" knots under "zeros". Rows
+# at and beside the knots are in test_spline_at_the_knots. From degree 2 the
+# steps take at most SPLINE_FEATURES features. Every width the generator draws
+# builds in a few seconds since confit #387 (spline.py, `_build_estimate`),
+# but the family's gate share grows with it: 31 s on 4 workers at 8 features,
+# 49 s at 16, 60 s without the limit (2026-10-06). The 200-seed sweep
 # (NATIVE_SEEDS=200, loops/native/report-format.md) covers every width.
 SPLINE_FEATURES = 8
 FIXTURES[SplineTransformer] = [
@@ -308,6 +320,13 @@ FIXTURES[SplineTransformer] = [
         degree=1, n_knots=3, extrapolation="linear", include_bias=False
     ),
     lambda: SplineTransformer(degree=1, n_knots=2, extrapolation="periodic"),
+    lambda: SplineTransformer(sparse_output=True),
+    lambda: SplineTransformer(
+        degree=0, n_knots=3, extrapolation="continue", sparse_output=True
+    ),
+    lambda: SplineTransformer(
+        degree=1, n_knots=2, extrapolation="periodic", sparse_output=True
+    ),
     *(
         narrow(f, SPLINE_FEATURES)
         for f in [
@@ -338,6 +357,24 @@ FIXTURES[SplineTransformer] = [
             _spline_with_knots(degree=3, extrapolation="periodic", include_bias=False),
             lambda: SplineTransformer(
                 degree=3, n_knots=6, extrapolation="periodic", handle_missing="zeros"
+            ),
+            lambda: SplineTransformer(
+                degree=3, n_knots=6, extrapolation="continue", sparse_output=True
+            ),
+            lambda: SplineTransformer(
+                degree=2,
+                n_knots=4,
+                knots="quantile",
+                extrapolation="linear",
+                sparse_output=True,
+            ),
+            _spline_with_knots(degree=2, extrapolation="continue", sparse_output=True),
+            lambda: SplineTransformer(
+                degree=2,
+                n_knots=4,
+                extrapolation="linear",
+                handle_missing="zeros",
+                sparse_output=True,
             ),
         ]
     ),
@@ -430,6 +467,11 @@ FIXTURES[Pipeline] = [
             ("bin", Binarizer()),
         ]
     ),
+    # A sparse step hands the next one a sparse matrix of 0s and 1s.
+    lambda: make_pipeline(OneHotEncoder(handle_unknown="ignore"), MaxAbsScaler()),
+    lambda: make_pipeline(
+        KBinsDiscretizer(n_bins=3, strategy="uniform"), Binarizer(), Normalizer()
+    ),
 ]
 
 
@@ -513,6 +555,21 @@ FIXTURES[ColumnTransformer] = [
         ],
         remainder="passthrough",
     ),
+    # A sparse stack, which drops -0.0, and a weighted sparse part.
+    lambda: ColumnTransformer(
+        [
+            ("enc", OneHotEncoder(handle_unknown="ignore"), _string_cols),
+            ("neg", FunctionTransformer(np.negative, validate=True), _number_cols),
+        ],
+        sparse_threshold=1.0,
+    ),
+    lambda: ColumnTransformer(
+        [
+            ("enc", OneHotEncoder(handle_unknown="ignore"), _string_cols),
+            ("num", StandardScaler(), _number_cols),
+        ],
+        transformer_weights={"enc": -2.0},
+    ),
 ]
 
 FIXTURES[FeatureUnion] = [
@@ -543,6 +600,13 @@ FIXTURES[FeatureUnion] = [
             ("bins", KBinsDiscretizer(n_bins=3, encode="onehot-dense")),
             ("poly", PolynomialFeatures(include_bias=False)),
         ]
+    ),
+    lambda: FeatureUnion(
+        [
+            ("bins", KBinsDiscretizer(n_bins=3)),
+            ("neg", FunctionTransformer(np.negative)),
+        ],
+        transformer_weights={"bins": -1.0},
     ),
 ]
 
@@ -618,7 +682,7 @@ FIXTURES[PowerTransformer] = [
     positive(_pinned_box_cox),
 ]
 
-# RandomTreesEmbedding: dense output only (trees.py). One tree to 30, depth
+# RandomTreesEmbedding: both outputs (trees.py). One tree to 30, depth
 # 1 to 5 (the default) and unbounded, min_samples_leaf above 1, and
 # max_leaf_nodes (best-first growth). The trees allow NaN, so the
 # generator puts holes in the fit data (columns partly and wholly
@@ -659,6 +723,8 @@ FIXTURES[RandomTreesEmbedding] = [
         sparse_output=False,
         random_state=6,
     ),
+    lambda: RandomTreesEmbedding(n_estimators=3, max_depth=3, random_state=7),
+    lambda: RandomTreesEmbedding(n_estimators=10, random_state=8),
 ]
 
 # A string feature's fitted values, and the unseen ones serving adds.
@@ -889,7 +955,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
                     rng, kinds, types, holes, marker, positive, regression
                 )
                 est = cls_factory().fit(X, y)
-                w = np.asarray(est.transform(X[:1])).reshape(1, -1).shape[1]
+                w = np.asarray(_dense(est.transform(X[:1]))).reshape(1, -1).shape[1]
                 if k and w != width:
                     break
                 instances[k], width = est, w
@@ -1116,7 +1182,7 @@ def test_an_encoder_reads_a_string_feature_missing_at_fit(make):
     X[:, 0] = None
     X[:, 1] = ["a", "b", "a", "b", None, "a", "b", "a"]
     est = make().fit(X, np.array([0, 1, 0, 1, 0, 1, 1, 0]))
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     step = PythonTransform(
         "tf",
         {0: est},
@@ -1186,7 +1252,7 @@ def test_an_encoder_reads_a_boolean_feature(make, beside, hole, dtype):
     X, types = _encoder_fit(beside, hole)
     est = make().fit(X, np.array([0, 1] * 4))
     assert est.categories_[1].dtype == dtype
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     step = PythonTransform(
         "tf",
         {0: est},
@@ -1221,7 +1287,7 @@ def test_an_encoder_reads_a_boolean_row_by_its_dtype(make):
     # row (none) may not; the entry follows each.
     X = np.array([[np.nan, 1.0], [np.nan, 0.0], [np.nan, 1.0], [np.nan, 0.0]])
     est = make().fit(X, np.array([0.5, 1.5, 2.0, -1.0]))
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     takes = pa.schema([("x0", pa.bool_()), ("x1", pa.bool_())])
     step = PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), width))
     rows = pa.table(
@@ -1256,7 +1322,7 @@ def test_an_ordinal_guard_finds_many_strings_by_one_search(monkeypatch, kind, he
     est = (
         OneHotEncoder(sparse_output=False) if kind == "onehot" else OrdinalEncoder()
     ).fit(X)
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     step = PythonTransform(
         "tf",
         {0: est},
@@ -1291,7 +1357,7 @@ def test_an_encoder_guard_finds_a_run_of_integers_by_a_range(kind):
     est = (
         OneHotEncoder(sparse_output=False) if kind == "onehot" else OrdinalEncoder()
     ).fit(X)
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     step = PythonTransform(
         "tf",
         {0: est},
@@ -1351,7 +1417,7 @@ def test_an_encoder_refuses_a_feature_whose_every_value_raises(make):
     X[:, 0] = np.nan
     X[:, 1] = ["a", "b", "a", "b"]
     est = make().fit(X)
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     step = PythonTransform(
         "tf",
         {0: est},
@@ -1455,7 +1521,7 @@ def test_a_reordered_translation_is_caught(monkeypatch):
 
 
 def _kbins_step(est: Any) -> PythonTransform:
-    width = np.asarray(est.transform(np.zeros((1, 2)))).shape[1]
+    width = np.asarray(_dense(est.transform(np.zeros((1, 2))))).shape[1]
     return PythonTransform(
         "tf",
         {0: est},
@@ -1491,26 +1557,6 @@ def test_kbins_counts_equal_edges_as_numpy_does(encode):
     )
     step = _kbins_step(est)
     assert check(step, to_native(step, strict=True), rows) == n
-
-
-@pytest.mark.parametrize(
-    "make, why",
-    [
-        (lambda: KBinsDiscretizer(encode="onehot"), "sparse"),
-    ],
-    ids=["onehot"],
-)
-def test_kbins_refuses(make, why):
-    X = np.random.default_rng(0).normal(size=(20, 2))
-    est = make().fit(X)
-    step = PythonTransform(
-        "tf",
-        {0: est},
-        pa.schema([("x0", pa.float64()), ("x1", pa.float64())]),
-        pa.float64(),
-    )
-    with pytest.raises(NotNative, match=why):
-        to_native(step, strict=True)
 
 
 @pytest.mark.parametrize(
@@ -1900,16 +1946,30 @@ SPLINE_AT_KNOTS = [
 
 
 @pytest.mark.parametrize(
-    "params",
-    SPLINE_AT_KNOTS,
-    ids=lambda p: "-".join(str(v) for v in p.values()),
+    "params, sparse",
+    [
+        pytest.param(
+            p,
+            sparse,
+            id="-".join([*(str(v) for v in p.values()), "sparse" * sparse or "dense"]),
+        )
+        for p in SPLINE_AT_KNOTS
+        for sparse in (False, True)
+        # Stays Python (sparse_test.py).
+        if not (
+            sparse
+            and p["degree"] == 0
+            and p["extrapolation"] in ("constant", "periodic")
+        )
+    ],
 )
-def test_spline_at_the_knots(params):
+def test_spline_at_the_knots(params, sparse):
     # Three features: spread ones, and one whose quantile knots repeat
     # (few distinct values). `_find_interval` must land where scipy's does
     # on each knot, and the extrapolations take over past the ends; under
     # "linear" at degree 0 or 1 the twin's range narrows from the second
-    # feature on, and again from the third.
+    # feature on, and again from the third. The sparse output
+    # (`sparse_output=True`) keeps no `0.0 * h` terms.
     rng = np.random.default_rng(7)
     X = np.column_stack(
         [
@@ -1918,7 +1978,7 @@ def test_spline_at_the_knots(params):
             rng.exponential(5.0, 30),
         ]
     )
-    est = SplineTransformer(**params).fit(X)
+    est = SplineTransformer(**params, sparse_output=sparse).fit(X)
     width = est.n_features_out_
     step = PythonTransform(
         "tf",
@@ -1966,7 +2026,6 @@ def test_a_periodic_spline_answers_infinity_as_its_twin(degree, n_knots):
 @pytest.mark.parametrize(
     "params, reason",
     [
-        ({"sparse_output": True}, r"sparse_output=True"),
         # From the second feature on the twin continues two output fields of
         # one: a row below raises, a row above writes the previous
         # feature's.
@@ -1975,7 +2034,7 @@ def test_a_periodic_spline_answers_infinity_as_its_twin(degree, n_knots):
             "feature 1 continues 2 output fields of 1",
         ),
     ],
-    ids=["sparse", "linear-past-the-fields"],
+    ids=["linear-past-the-fields"],
 )
 def test_spline_refuses(params, reason):
     X = np.column_stack([np.arange(10.0), np.arange(10.0) ** 2])
@@ -2351,16 +2410,6 @@ def test_trees_trap_where_the_twin_raises():
     got = _serve(query(step), rows, to_native(step, strict=True))
     assert not isinstance(got[0], Exception)
     assert "the fitted estimator rejects" in str(got[1])
-
-
-def test_trees_refuse_a_sparse_output():
-    X = np.random.default_rng(0).normal(size=(20, 2))
-    est = RandomTreesEmbedding(n_estimators=2).fit(X)
-    step = PythonTransform(
-        "tf", {0: est}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
-    )
-    with pytest.raises(NotNative, match=r"sparse_output=True"):
-        to_native(step, strict=True)
 
 
 def _tree_step(est: RandomTreesEmbedding, n_features: int) -> PythonTransform:

@@ -41,6 +41,37 @@ boolean is a DOUBLE, with NULL read as NaN. A string stays a string.
 
 *Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_an_encoder_reads_a_string_feature_missing_at_fit`.
 
+**claim: entry-sparse-outputs.** **Sparse outputs.** The twin reads a
+sparse output as its dense array
+([claim: sparse-output-dense](../python/estimator-data.md)). The entry
+gives that dense answer.
+
+- Inside a `Pipeline`, a step with a sparse output hands the next step the
+  sparse matrix. The next step then uses its own code for a sparse input,
+  and that code can answer differently from its code for a dense input.
+- So the entry serves such a `Pipeline` only if both of these conditions
+  are true:
+  1. Each step that has a sparse output, except the last step, hands on
+     only 0s and 1s.
+  2. Each step that is handed such a sparse matrix of 0s and 1s answers it
+     as it answers the dense array of the same values.
+- If a `Pipeline` does not meet these conditions, `to_native` returns the
+  step unchanged ([claim: to-native-best-effort](catalog-contract.md)).
+  `to_native(step, strict=True)` raises `NotNative`, which names the step
+  of the `Pipeline` and the reason.
+- The twin never reads -0.0 from a sparse output, because `.toarray()`
+  adds each stored value to 0.0. But a step inside a `Pipeline`,
+  `ColumnTransformer` or `FeatureUnion` can compute -0.0. So the entry
+  adds 0.0 to each output field of a `Pipeline`, `ColumnTransformer` or
+  `FeatureUnion` that has a sparse output. Adding 0.0 changes -0.0 into
+  0.0 and keeps every other value.
+- A `ColumnTransformer` or `FeatureUnion` can multiply the output of a
+  part by a weight (`transformer_weights`). If that part has a sparse
+  output, the entry also adds 0.0 to each output field of the part, after
+  the weight.
+
+*Evidence:* `native/sparse_test.py::test_a_sparse_output_is_served_on_every_row`, `native/sparse_test.py::test_a_sparse_output_that_stays_python_says_why`.
+
 **claim: entry-same-instance-ids.** **The same instance ids.** If the
 instance id is NULL, the entry answers NULL. For a struct return, this is a
 NULL struct. An id that the step does not know raises an error.

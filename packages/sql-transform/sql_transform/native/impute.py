@@ -30,8 +30,9 @@ def _missing(est: Any, x: list[S.Expr]) -> list[S.Expr]:
 
 
 def _indicate(miss: list[S.Expr], features: Any) -> list[S.Expr]:
-    # The mask's columns as 1.0 / 0.0: a boolean array, which the step reads
-    # as floats.
+    # The mask's columns as 1.0 / 0.0: a boolean array (a sparse one under
+    # `MissingIndicator(sparse=True)`, which the step makes dense), read as
+    # floats.
     return [S.case(miss[int(f)], f64(1.0)).otherwise(f64(0.0)) for f in features]
 
 
@@ -78,8 +79,6 @@ def _indicator(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Ex
     # sklearn: the mask's columns that had a missing value at fit
     # (features="missing-only"; with error_on_new a new one raises in the
     # twin), or all of them, as booleans.
-    if est.sparse is True:
-        raise NotNative("MissingIndicator(sparse=True): the output is sparse")
     if est._precomputed:
         raise NotNative("a MissingIndicator fitted on a mask transforms masks")
     miss = _missing(est, x)

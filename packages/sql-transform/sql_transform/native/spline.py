@@ -65,6 +65,27 @@ broadcast (or, with one output field, assigns nothing): an sklearn bug, not
 validation, where the entry answers 0.0
 (decisions/closed/tolerated-differences.md, the ruling lists it).
 
+Sparse. Under `sparse_output=True` the twin builds each feature's block
+with scipy's `BSpline.design_matrix`, which stores the recurrence's `k + 1`
+basis values as they are, and the step makes the block dense
+(`_udf._dense`): `0.0 + h[a]`, or under `periodic` the two folded bases'
+sum, which the dense sum's order matches. So no output field keeps the
+`0.0 * h` terms, where the dense twin keeps them: under `continue`, where a
+basis value overflows past the knots, the dense twin answers NaN and the
+sparse one the basis value. The step stays Python where the sparse twin
+parts from the dense one otherwise (`_sparse_parts`): at degree 0 under
+`constant` (above the knots it answers the basis at the last knot) and
+`periodic` (it raises on every row); under `handle_missing="zeros"` over
+two or more features with `continue`, `error` or `periodic` (sklearn sets a
+NaN's output fields to 0.0 in the first feature only, and the others read
+the basis at 0.0); and over knots that are NaN (the design matrix raises).
+Where the sparse twin raises on ±inf (`handle_missing="zeros"`), the input
+guard's probe finds it. The sweep that found these parts compared the two
+twins a row a call on 3,840 configurations (degrees 0 to 5, 2 to 6 knots,
+the five extrapolations, `include_bias`, both knot strategies, both
+`handle_missing`, 1 and 3 features) at every knot and its neighbours, ±0,
+±1e12, ±1e155, ±1e300, ±inf and NaN: no other row parted (2026-10-14).
+
 Widths. The recurrence reads each round's values twice, so an output field's
 text doubles per degree (about 3 KB of SQL per output field at degree 3, 8
 knots, 33 KB at degree 5); `continue` keeps three times that (its outer
@@ -398,6 +419,11 @@ def _bare(x: S.Expr) -> S.Expr:
 
 def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]:
     if np.isnan(np.asarray(spl.t, dtype=np.float64)).all():
+        if est.sparse_output:
+            raise NotNative(
+                f"SplineTransformer(sparse_output=True): feature {j}'s knots are"
+                " NaN, where scipy's design matrix raises on every row"
+            )
         if est.extrapolation == "error":
             raise NotNative(
                 f"SplineTransformer(extrapolation='error'): feature {j}'s knots"
@@ -416,7 +442,8 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
     n = len(t) - k - 1
     n_splines = c.shape[1]
     gaps = np.diff(np.asarray(t))
-    every = bool(((gaps > 0) & (gaps < _TINY_GAP)).any())
+    # A sparse output stores the basis values alone: no `0.0 * h` terms.
+    every = bool(((gaps > 0) & (gaps < _TINY_GAP)).any()) and not est.sparse_output
     ext = est.extrapolation
     lo, hi = t[k], t[n]
     zero = f64(0.0)
@@ -436,7 +463,7 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
         return [_field(head, arms, xv) for arms in fields]
 
     if ext in ("continue", "error"):
-        unbounded = {k, n - 1} if ext == "continue" else set()
+        unbounded = {k, n - 1} if ext == "continue" and not est.sparse_output else set()
         fields = _arms(t, k, c, x, unbounded, every)
         head = [(nan, zero)]
         if ext == "error":
@@ -507,6 +534,31 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
     ]
 
 
+def _sparse_parts(est: Any) -> None:
+    """`NotNative` where the twin of `sparse_output=True` answers other
+    than the dense twin the entry spells (module docstring, "Sparse")."""
+    name = f"SplineTransformer(sparse_output=True, degree={est.degree}"
+    ext = est.extrapolation
+    if est.degree == 0 and ext == "constant":
+        raise NotNative(
+            f"{name}, extrapolation='constant'): above the knots the twin"
+            " answers the basis at the last knot, where the entry answers 0.0"
+        )
+    if est.degree == 0 and ext == "periodic":
+        raise NotNative(
+            f"{name}, extrapolation='periodic'): the twin raises on every row"
+        )
+    if (
+        est.handle_missing == "zeros"
+        and ext in ("continue", "error", "periodic")
+        and est.n_features_in_ > 1
+    ):
+        raise NotNative(
+            f"{name}, extrapolation={ext!r}, handle_missing='zeros'): the twin"
+            " answers 0.0 for a NaN in the first feature only"
+        )
+
+
 def _inside(est: Any, types: list[pa.DataType]) -> list[Any]:
     """The input guard's probe row: each feature at its first inner knot,
     `t[k]`, inside the knots `extrapolation="error"` raises past (1.0
@@ -521,11 +573,7 @@ def _inside(est: Any, types: list[pa.DataType]) -> list[Any]:
 @translates(SplineTransformer, base=_inside)
 def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     if est.sparse_output:
-        raise NotNative(
-            "SplineTransformer(sparse_output=True): the output is sparse,"
-            " and the Python step does not densify it yet"
-            " (decisions/closed/sparse-outputs.md)"
-        )
+        _sparse_parts(est)
     if not bspline_is_scipys():
         raise NotNative(
             "SplineTransformer: this platform's scipy BSpline does not round as"

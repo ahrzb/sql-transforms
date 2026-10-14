@@ -19,6 +19,7 @@ from sql_transform._udf import (
     PythonTransform,
     UDFError,
     _as_feature,
+    _dense,
     output_names,
 )
 
@@ -188,7 +189,7 @@ class _Estimator:
                     est = copy.deepcopy(self.prototype)
                 est.fit(matrix)
                 try:
-                    probe = np.asarray(est.transform(matrix[:1]))
+                    probe = np.asarray(_dense(est.transform(matrix[:1])))
                 except (TypeError, ValueError) as exc:
                     raise TransformError(
                         f"{self.fit_name}: unsupported transform output shape"
