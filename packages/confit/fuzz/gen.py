@@ -22,6 +22,7 @@ from drifting apart.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import decimal
 import random
@@ -452,6 +453,26 @@ class Like(Node):
 
     def swap(self, i, new):
         self.e = new
+
+
+@dataclass
+class ScalarSub(Node):
+    """A scalar subquery with one aggregate over one static table:
+    `(SELECT func(arg) FROM table [AS alias] WHERE alias.col = outer AND
+    ...)`. Its kids are the outer sides of the WHERE terms."""
+
+    func: str  # count | min | max | sum | avg
+    arg: str | None  # a column of `table`; None is `*`
+    table: str
+    keys: list[tuple[str, str, Node]]  # (column of `table`, operator, outer side)
+    alias: str | None = None
+
+    def kids(self):
+        return [o for _, _, o in self.keys]
+
+    def swap(self, i, new):
+        c, op, _ = self.keys[i]
+        self.keys[i] = (c, op, new)
 
 
 @dataclass
@@ -953,6 +974,15 @@ def rexpr(e: Node) -> str:
     if isinstance(e, Like):
         n = "NOT " if e.neg else ""
         return f"({rexpr(e.e)} {n}LIKE '{e.pat}')"
+    if isinstance(e, ScalarSub):
+        scope = _ident(e.alias or e.table)
+        frm = _ident(e.table) + (f" AS {_ident(e.alias)}" if e.alias else "")
+        arg = "*" if e.arg is None else f"{scope}.{_ident(e.arg)}"
+        terms = " AND ".join(
+            f"{scope}.{_ident(c)} {op} {rexpr(o)}" for c, op, o in e.keys
+        )
+        where = f" WHERE {terms}" if terms else ""
+        return f"(SELECT {e.func}({arg}) FROM {frm}{where})"  # noqa: S608
     raise TypeError(e)
 
 
@@ -1448,6 +1478,99 @@ def _comma_keys(crng, query, rows, statics, env, tags) -> bool:
     return True
 
 
+# The storage of a scalar subquery's key column for an outer column of each
+# semantic type: the same type, and the casts DuckDB makes between widths.
+_SUB_KEY = {
+    "int": ("int8", "int16", "int32", "int64", "double"),
+    "float": ("double", "int64"),
+    "str": ("string",),
+    "bool": ("bool",),
+}
+
+
+def _as_storage(v, storage: str):
+    """`v` as a value of `storage`, or None where it has none."""
+    if storage == "double":
+        return float(v)
+    if storage in INT_RANGE:
+        if isinstance(v, float):
+            if v != v or abs(v) == float("inf") or v != int(v):
+                return None
+            v = int(v)
+        lo, hi = INT_RANGE[storage]
+        return v if lo <= v <= hi else None
+    return v
+
+
+def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
+    """Add one or two items to the outer query that read a scalar subquery
+    with one aggregate over a new static table, and maybe a WHERE term that
+    reads one, from a generator of its own so no other seed's draws move.
+    Each WHERE term of a subquery compares a key column of the table with a
+    column of the request table. About half of the table's keys come from
+    that column, repeats included, so a request matches several rows. A few
+    subqueries take a form that confit refuses by name: avg, a DOUBLE sum,
+    IS NOT DISTINCT FROM under shape='many', an outer side that can trap."""
+    b = query.body
+    if b.frm != "__THIS__" or b.sub is not None or b.group_by:
+        return False
+    outer = [(c, t) for c, t, _ in leaves(row_schema) if "." not in c and t in _SUB_KEY]
+    taken = {k.lower() for k in statics} | {c.lower() for c in row_schema}
+    name = next(f"a{i}" for i in range(len(taken) + 1) if f"a{i}" not in taken)
+    # (key column, its storage, outer column, outer type), then the values.
+    keys = []
+    for j in range(qrng.choice([0, 1, 1, 1, 2]) if outer else 0):
+        oc, ot = qrng.choice(outer)
+        spec = qrng.choice(_SUB_KEY[ot]) + qrng.choice(["", "?"])
+        keys.append((f"{name}k{j}", spec, oc, ot))
+    sch = {k: spec for k, spec, _, _ in keys}
+    for j in range(qrng.randrange(1, 4)):
+        sch[f"{name}v{j}"] = qrng.choice(SCALARS + DECIMALS) + qrng.choice(["", "?"])
+    srows = _rows(qrng, sch, qrng.choice([0, 1, 3, 5, 8]))
+    for kc, spec, oc, _ in keys:
+        seen = [_as_storage(r[oc], spec.rstrip("?")) for r in rows if r[oc] is not None]
+        seen = [v for v in seen if v is not None]
+        for r in srows:
+            if seen and qrng.random() < 0.5:
+                r[kc] = qrng.choice(seen)
+    statics[name] = (sch, srows)
+    scope = f"{name}x" if qrng.random() < 0.25 else None
+
+    def sub(func=None) -> ScalarSub:
+        arg = None if qrng.random() < 0.3 else qrng.choice(list(sch))
+        if func is None:
+            r = qrng.random()
+            func = "count" if arg is None or r < 0.15 else "min" if r < 0.45 else "max"
+            if arg is not None and r >= 0.75:
+                func = "sum" if r < 0.95 else "avg"
+        if func != "count" and arg is None:
+            arg = qrng.choice(list(sch))
+        terms = []
+        for kc, _, oc, ot in qrng.sample(keys, qrng.randrange(0, len(keys) + 1)):
+            o: Node = Col(oc, "__THIS__" if b.joins else None, ot)
+            if ot == "int" and qrng.random() < 0.1:
+                o = Bin("+", o, Lit(1, "int"))  # can trap: confit refuses
+            op = "IS NOT DISTINCT FROM" if qrng.random() < 0.15 else "="
+            terms.append((kc, op, o))
+        return ScalarSub(func, arg, name, terms, scope)
+
+    for _ in range(qrng.choice([1, 1, 2])):
+        s = sub()
+        r = qrng.random()
+        if r < 0.15:
+            item: Node = IsNull(s, neg=qrng.random() < 0.5)
+        elif r < 0.3:
+            item = Bin("IS NOT DISTINCT FROM", s, copy.deepcopy(s))
+        else:
+            item = s
+        b.items.append((item, f"sq{len(b.items)}"))
+    if qrng.random() < 0.2:
+        term = Bin(">", sub("count"), Lit(0, "int"))
+        b.where = term if b.where is None else Bin("AND", b.where, term)
+    tags.append("scalar-subquery")
+    return True
+
+
 def _sql_functions(frng, query, statics, env, udfs, tags) -> None:
     """Declare one or two SQL functions and call each in an item of its own
     in the outer query (one of them maybe twice), from a generator of its
@@ -1745,6 +1868,11 @@ def gen(seed: int) -> Case:
     if seed % 17 == 2:
         srng = random.Random(seed * 7919 + 4)  # noqa: S311
         _struct_values(srng, query, row_schema, statics, env, tags)
+    # After every pass that changes a type: its keys read the final row
+    # schema. 43 and 33 keep every seed that a test pins out of this gate.
+    if seed % 43 == 33:
+        qrng = random.Random(seed * 7919 + 8)  # noqa: S311
+        _scalar_subqueries(qrng, query, row_schema, rows, statics, tags)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
     if many_joins:

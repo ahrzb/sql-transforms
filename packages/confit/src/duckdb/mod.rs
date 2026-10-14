@@ -1095,6 +1095,239 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
         .collect()
 }
 
+/// The value at a column's SEGMENT PATH in one `to_pylist` row of static
+/// table `table`. A struct leaf's path walks the row's nested dicts; a plain
+/// column is one segment, dots and all — a name is never split. A NULL
+/// struct anywhere on the way down makes every lane below it NULL, which is
+/// exactly the nullability the catalogue derived for those leaves.
+fn row_value<'py>(
+    row: &pyo3::Bound<'py, PyDict>,
+    path: &[String],
+    table: &str,
+) -> PyResult<pyo3::Bound<'py, PyAny>> {
+    let missing = || {
+        build_err(format!(
+            "static table '{table}' row is missing column '{}'",
+            path.join(".")
+        ))
+    };
+    let mut cur = row
+        .get_item(path.first().expect("non-empty").as_str())?
+        .ok_or_else(missing)?;
+    for seg in &path[1..] {
+        if cur.is_none() {
+            return Ok(cur);
+        }
+        cur = cur
+            .cast::<PyDict>()
+            .map_err(|_| missing())?
+            .get_item(seg.as_str())?
+            .ok_or_else(missing)?;
+    }
+    Ok(cur)
+}
+
+/// One build row's map key, per its `StaticSpec` recipe, read through `get`
+/// (a column's SEGMENT path to its value): `None` when the row can match no
+/// probe (a NULL `=` key, or a value no probe of the key's type equals).
+fn build_keys<'py>(
+    spec: &StaticSpec,
+    get: &dyn Fn(&[String]) -> PyResult<pyo3::Bound<'py, PyAny>>,
+) -> PyResult<Option<Vec<KeyBits>>> {
+    let mut keys = Vec::with_capacity(spec.keys.len());
+    for k in &spec.keys {
+        let present = k.present;
+        let name = k.path.join(".");
+        let name = name.as_str();
+        let v = get(&k.path)?;
+        // `None` means "this build row can never equal any probe" — a
+        // non-integral DECIMAL against an integer key lane. Dropping it
+        // is the established, semantics-preserving move (a NULL `=` key
+        // drops the same way, just below).
+        let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<Option<KeyBits>> {
+            // A PRESENCE key reads the struct NODE, not a value:
+            // reaching here at all means the node is non-NULL, and the
+            // NULL case is handled by the plain / INDF arms below
+            // exactly as it is for any other key.
+            if present {
+                return Ok(Some(KeyBits::I1(true)));
+            }
+            let is_dec = |v: &pyo3::Bound<'_, PyAny>| -> PyResult<bool> {
+                Ok(v.get_type().name()?.to_string_lossy() == "Decimal")
+            };
+            // A VARCHAR build key against a numeric probe: DuckDB casts
+            // the VARCHAR to the probe's type, with CAST's parse
+            // (measured: ' 3' matches 3). A value that cannot convert
+            // errors on EVERY query there, zero request rows included,
+            // so it fails the build.
+            if (ty.is_integer() || ty == Ty::F64) && v.is_instance_of::<pyo3::types::PyString>() {
+                let s: String = v.extract()?;
+                use crate::specializer::exec::kernels::{duck_stof, duck_stoi};
+                // Parsed at the PROBE's own type, not the key lane's: an
+                // unsigned probe takes the unsigned sign rule and its
+                // range ('-1' and '-0.4' fail against UBIGINT and
+                // UTINYINT alike), whatever lane the key rides.
+                let p = k.probe_ty;
+                let parsed = if ty == Ty::F64 {
+                    None
+                } else if p.is_unsigned() || p.is_wide() {
+                    crate::specializer::exec::hugeint::duck_ston(&s, p)
+                } else {
+                    duck_stoi(&s)
+                        .filter(|i| p.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i)))
+                        .map(i128::from)
+                };
+                let kb = if ty == Ty::F64 {
+                    duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
+                } else if ty.lane() == Ty::I128 {
+                    parsed.map(KeyBits::I128)
+                } else {
+                    parsed.map(|i| KeyBits::I64(i as i64))
+                };
+                return match kb {
+                    Some(kb) => Ok(Some(kb)),
+                    None => Err(build_err(format!(
+                        "static table '{}' key column '{name}' value '{s}' cannot \
+                         convert to {} -- DuckDB errors on every query",
+                        spec.table,
+                        match k.probe_ty {
+                            Ty::F64 => "DOUBLE",
+                            Ty::I8 => "TINYINT",
+                            Ty::I16 => "SMALLINT",
+                            Ty::I32 => "INTEGER",
+                            Ty::U8 => "UTINYINT",
+                            Ty::U16 => "USMALLINT",
+                            Ty::U32 => "UINTEGER",
+                            Ty::U64 => "UBIGINT",
+                            Ty::I128 => "HUGEINT",
+                            _ => "BIGINT",
+                        }
+                    ))),
+                };
+            }
+            Ok(Some(match ty {
+                Ty::I1 => KeyBits::I1(v.extract()?),
+                // A DECIMAL build key against an INTEGER probe: DuckDB
+                // casts the integer UP to the decimal, exactly
+                // (ImplicitCastBigint, cast_rules.cpp:96-107), so
+                // equality is decidable here — integral and in range,
+                // or the row cannot match.
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 if is_dec(v)? => {
+                    let (m, s) = decimal_parts(
+                        v,
+                        &format!("static table '{}' key column '{name}'", spec.table),
+                    )?;
+                    match rescale(m, s, 0).and_then(|x| i64::try_from(x).ok()) {
+                        Some(i) => KeyBits::I64(i),
+                        None => return Ok(None),
+                    }
+                }
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => KeyBits::I64(v.extract().map_err(|_| {
+                    build_err(format!(
+                        "unsupported: static table '{}' key column '{name}' value \
+                         outside int64 range (uint64/decimal128 payloads)",
+                        spec.table
+                    ))
+                })?),
+                // A DECIMAL build key against a DOUBLE probe: only
+                // decimal->double is a legal implicit cast, so the
+                // DECIMAL side casts DOWN and the comparison is LOSSY.
+                // Reproduce the loss with DuckDB's own algorithm rather
+                // than hide it (cell D2).
+                Ty::F64 if is_dec(v)? => {
+                    let (m, s) = decimal_parts(
+                        v,
+                        &format!("static table '{}' key column '{name}'", spec.table),
+                    )?;
+                    KeyBits::F64(
+                        crate::specializer::exec::kernels::dec_to_f64(m, s).to_bits(),
+                    )
+                }
+                // The i128 lane: an integer build value at the key's
+                // common type, exactly (`promote_key` already made it
+                // one that holds both sides).
+                Ty::I128 | Ty::U64 if is_dec(v)? => {
+                    let (m, s) = decimal_parts(
+                        v,
+                        &format!("static table '{}' key column '{name}'", spec.table),
+                    )?;
+                    let (lo, hi) = ty.int_range128().expect("an integer width");
+                    match rescale(m, s, 0).filter(|i| (lo..=hi).contains(i)) {
+                        Some(i) => KeyBits::I128(i),
+                        None => return Ok(None),
+                    }
+                }
+                Ty::I128 | Ty::U64 => {
+                    let i: i128 = v.extract().map_err(|_| {
+                        build_err(format!(
+                            "unsupported: static table '{}' key column '{name}' value {v} \
+                             is not an integer",
+                            spec.table
+                        ))
+                    })?;
+                    let (lo, hi) = ty.int_range128().expect("an integer width");
+                    if !(lo..=hi).contains(&i) {
+                        return Ok(None);
+                    }
+                    KeyBits::I128(i)
+                }
+                Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
+                Ty::Str => KeyBits::Str(v.extract()?),
+                // A DECIMAL probe lane is already the common type
+                // (frontend::joins::promote_key): a decimal build value
+                // rescales up into it exactly, an integer one is scaled.
+                Ty::Dec(p, to) if is_dec(v)? => {
+                    let (m, s) = decimal_parts(
+                        v,
+                        &format!("static table '{}' key column '{name}'", spec.table),
+                    )?;
+                    match rescale(m, s, to) {
+                        Some(x) => KeyBits::Dec(x, p, to),
+                        None => return Ok(None),
+                    }
+                }
+                Ty::Dec(p, to) => {
+                    let i: i128 = v.extract()?;
+                    match rescale(i, 0, to) {
+                        Some(x) => KeyBits::Dec(x, p, to),
+                        None => return Ok(None),
+                    }
+                }
+            }))
+        };
+        let ty = k.map.ty;
+        match k.map.cmp {
+            // IS NOT DISTINCT FROM key: (validity, payload) pair; NULL
+            // is an ordinary key value, stored as (false, type default)
+            // — exactly the probe side's masked encoding.
+            plan::KeyCmp::NotDistinct => {
+                if v.is_none() {
+                    keys.extend(exec::null_key_slots(ty));
+                } else {
+                    let Some(kb) = convert(&v, ty)? else {
+                        return Ok(None);
+                    };
+                    keys.push(KeyBits::I1(true));
+                    keys.push(kb);
+                }
+            }
+            // A NULL `=` key never matches anything, so the row is not
+            // in the map at all — the per-site half of the plain-key
+            // rule, which the slot layout deliberately does not own.
+            plan::KeyCmp::Eq => {
+                if v.is_none() {
+                    return Ok(None);
+                }
+                let Some(kb) = convert(&v, ty)? else {
+                    return Ok(None);
+                };
+                keys.push(kb);
+            }
+        }
+    }
+    Ok(Some(keys))
+}
+
 /// One map static from a pyarrow Table, per its `StaticSpec` recipe: rows
 /// with a NULL `=` key are dropped (a NULL never equi-matches) while a NULL
 /// IS NOT DISTINCT FROM key is an ordinary (false, default) key pair, a
@@ -1103,6 +1336,9 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
 /// float expression converts here (the declared key type is the
 /// expression's).
 fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyResult<StaticData> {
+    if let Some(aggs) = &spec.aggs {
+        return materialize_aggs(py, table, spec, aggs);
+    }
     let rows = table.bind(py).call_method0("to_pylist")?;
     // `to_pylist` hands `decimal.Decimal` for a DECIMAL column (the ordinary
     // fit path — sum(BIGINT) params are decimal128(38,0)), and it becomes
@@ -1111,7 +1347,7 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
     // f64 could not hold refused ordinary ones — 2^63+1 is a plain
     // sum(BIGINT), referenced or not.
     let mut entries = Vec::new();
-    'row: for item in rows.try_iter()? {
+    for item in rows.try_iter()? {
         let row = item?;
         let row = row.cast::<PyDict>().map_err(|_| {
             build_err(format!(
@@ -1119,225 +1355,10 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                 spec.table
             ))
         })?;
-        // A struct leaf's SEGMENT PATH walks the row's nested dicts; a plain
-        // column is one segment, dots and all — a name is never split. A
-        // NULL struct anywhere on the way down makes every lane below it
-        // NULL, which is exactly the nullability the catalogue derived for
-        // those leaves.
-        let get = |path: &[String]| -> PyResult<pyo3::Bound<'_, PyAny>> {
-            let missing = || {
-                build_err(format!(
-                    "static table '{}' row is missing column '{}'",
-                    spec.table,
-                    path.join(".")
-                ))
-            };
-            let mut cur = row
-                .get_item(path.first().expect("non-empty").as_str())?
-                .ok_or_else(missing)?;
-            for seg in &path[1..] {
-                if cur.is_none() {
-                    return Ok(cur);
-                }
-                cur = cur
-                    .cast::<PyDict>()
-                    .map_err(|_| missing())?
-                    .get_item(seg.as_str())?
-                    .ok_or_else(missing)?;
-            }
-            Ok(cur)
+        let get = |path: &[String]| row_value(&row, path, &spec.table);
+        let Some(keys) = build_keys(spec, &get)? else {
+            continue;
         };
-        let mut keys = Vec::with_capacity(spec.keys.len());
-        for k in &spec.keys {
-            let present = k.present;
-            let name = k.path.join(".");
-            let name = name.as_str();
-            let v = get(&k.path)?;
-            // `None` means "this build row can never equal any probe" — a
-            // non-integral DECIMAL against an integer key lane. Dropping it
-            // is the established, semantics-preserving move (a NULL `=` key
-            // drops the same way, just below).
-            let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<Option<KeyBits>> {
-                // A PRESENCE key reads the struct NODE, not a value:
-                // reaching here at all means the node is non-NULL, and the
-                // NULL case is handled by the plain / INDF arms below
-                // exactly as it is for any other key.
-                if present {
-                    return Ok(Some(KeyBits::I1(true)));
-                }
-                let is_dec = |v: &pyo3::Bound<'_, PyAny>| -> PyResult<bool> {
-                    Ok(v.get_type().name()?.to_string_lossy() == "Decimal")
-                };
-                // A VARCHAR build key against a numeric probe: DuckDB casts
-                // the VARCHAR to the probe's type, with CAST's parse
-                // (measured: ' 3' matches 3). A value that cannot convert
-                // errors on EVERY query there, zero request rows included,
-                // so it fails the build.
-                if (ty.is_integer() || ty == Ty::F64) && v.is_instance_of::<pyo3::types::PyString>() {
-                    let s: String = v.extract()?;
-                    use crate::specializer::exec::kernels::{duck_stof, duck_stoi};
-                    // Parsed at the PROBE's own type, not the key lane's: an
-                    // unsigned probe takes the unsigned sign rule and its
-                    // range ('-1' and '-0.4' fail against UBIGINT and
-                    // UTINYINT alike), whatever lane the key rides.
-                    let p = k.probe_ty;
-                    let parsed = if ty == Ty::F64 {
-                        None
-                    } else if p.is_unsigned() || p.is_wide() {
-                        crate::specializer::exec::hugeint::duck_ston(&s, p)
-                    } else {
-                        duck_stoi(&s)
-                            .filter(|i| p.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i)))
-                            .map(i128::from)
-                    };
-                    let kb = if ty == Ty::F64 {
-                        duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
-                    } else if ty.lane() == Ty::I128 {
-                        parsed.map(KeyBits::I128)
-                    } else {
-                        parsed.map(|i| KeyBits::I64(i as i64))
-                    };
-                    return match kb {
-                        Some(kb) => Ok(Some(kb)),
-                        None => Err(build_err(format!(
-                            "static table '{}' key column '{name}' value '{s}' cannot \
-                             convert to {} -- DuckDB errors on every query",
-                            spec.table,
-                            match k.probe_ty {
-                                Ty::F64 => "DOUBLE",
-                                Ty::I8 => "TINYINT",
-                                Ty::I16 => "SMALLINT",
-                                Ty::I32 => "INTEGER",
-                                Ty::U8 => "UTINYINT",
-                                Ty::U16 => "USMALLINT",
-                                Ty::U32 => "UINTEGER",
-                                Ty::U64 => "UBIGINT",
-                                Ty::I128 => "HUGEINT",
-                                _ => "BIGINT",
-                            }
-                        ))),
-                    };
-                }
-                Ok(Some(match ty {
-                    Ty::I1 => KeyBits::I1(v.extract()?),
-                    // A DECIMAL build key against an INTEGER probe: DuckDB
-                    // casts the integer UP to the decimal, exactly
-                    // (ImplicitCastBigint, cast_rules.cpp:96-107), so
-                    // equality is decidable here — integral and in range,
-                    // or the row cannot match.
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 if is_dec(v)? => {
-                        let (m, s) = decimal_parts(
-                            v,
-                            &format!("static table '{}' key column '{name}'", spec.table),
-                        )?;
-                        match rescale(m, s, 0).and_then(|x| i64::try_from(x).ok()) {
-                            Some(i) => KeyBits::I64(i),
-                            None => return Ok(None),
-                        }
-                    }
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 => KeyBits::I64(v.extract().map_err(|_| {
-                        build_err(format!(
-                            "unsupported: static table '{}' key column '{name}' value \
-                             outside int64 range (uint64/decimal128 payloads)",
-                            spec.table
-                        ))
-                    })?),
-                    // A DECIMAL build key against a DOUBLE probe: only
-                    // decimal->double is a legal implicit cast, so the
-                    // DECIMAL side casts DOWN and the comparison is LOSSY.
-                    // Reproduce the loss with DuckDB's own algorithm rather
-                    // than hide it (cell D2).
-                    Ty::F64 if is_dec(v)? => {
-                        let (m, s) = decimal_parts(
-                            v,
-                            &format!("static table '{}' key column '{name}'", spec.table),
-                        )?;
-                        KeyBits::F64(
-                            crate::specializer::exec::kernels::dec_to_f64(m, s).to_bits(),
-                        )
-                    }
-                    // The i128 lane: an integer build value at the key's
-                    // common type, exactly (`promote_key` already made it
-                    // one that holds both sides).
-                    Ty::I128 | Ty::U64 if is_dec(v)? => {
-                        let (m, s) = decimal_parts(
-                            v,
-                            &format!("static table '{}' key column '{name}'", spec.table),
-                        )?;
-                        let (lo, hi) = ty.int_range128().expect("an integer width");
-                        match rescale(m, s, 0).filter(|i| (lo..=hi).contains(i)) {
-                            Some(i) => KeyBits::I128(i),
-                            None => return Ok(None),
-                        }
-                    }
-                    Ty::I128 | Ty::U64 => {
-                        let i: i128 = v.extract().map_err(|_| {
-                            build_err(format!(
-                                "unsupported: static table '{}' key column '{name}' value {v} \
-                                 is not an integer",
-                                spec.table
-                            ))
-                        })?;
-                        let (lo, hi) = ty.int_range128().expect("an integer width");
-                        if !(lo..=hi).contains(&i) {
-                            return Ok(None);
-                        }
-                        KeyBits::I128(i)
-                    }
-                    Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
-                    Ty::Str => KeyBits::Str(v.extract()?),
-                    // A DECIMAL probe lane is already the common type
-                    // (frontend::joins::promote_key): a decimal build value
-                    // rescales up into it exactly, an integer one is scaled.
-                    Ty::Dec(p, to) if is_dec(v)? => {
-                        let (m, s) = decimal_parts(
-                            v,
-                            &format!("static table '{}' key column '{name}'", spec.table),
-                        )?;
-                        match rescale(m, s, to) {
-                            Some(x) => KeyBits::Dec(x, p, to),
-                            None => return Ok(None),
-                        }
-                    }
-                    Ty::Dec(p, to) => {
-                        let i: i128 = v.extract()?;
-                        match rescale(i, 0, to) {
-                            Some(x) => KeyBits::Dec(x, p, to),
-                            None => return Ok(None),
-                        }
-                    }
-                }))
-            };
-            let ty = k.map.ty;
-            match k.map.cmp {
-                // IS NOT DISTINCT FROM key: (validity, payload) pair; NULL
-                // is an ordinary key value, stored as (false, type default)
-                // — exactly the probe side's masked encoding.
-                plan::KeyCmp::NotDistinct => {
-                    if v.is_none() {
-                        keys.extend(exec::null_key_slots(ty));
-                    } else {
-                        let Some(kb) = convert(&v, ty)? else {
-                            continue 'row;
-                        };
-                        keys.push(KeyBits::I1(true));
-                        keys.push(kb);
-                    }
-                }
-                // A NULL `=` key never matches anything, so the row is not
-                // in the map at all — the per-site half of the plain-key
-                // rule, which the slot layout deliberately does not own.
-                plan::KeyCmp::Eq => {
-                    if v.is_none() {
-                        continue 'row;
-                    }
-                    let Some(kb) = convert(&v, ty)? else {
-                        continue 'row;
-                    };
-                    keys.push(kb);
-                }
-            }
-        }
         let mut vals = Vec::with_capacity(spec.vals.len());
         for vc in &spec.vals {
             let name = vc.path.join(".");
@@ -1409,6 +1430,256 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                     )));
                 }
                 vals.push(convert(&v, ty)?);
+            }
+        }
+        entries.push((keys, vals));
+    }
+    Ok(StaticData::Map(entries))
+}
+
+/// One value an aggregate reads, as the source column holds it: an integer
+/// of any width or a DECIMAL's scaled integer, a DOUBLE, a VARCHAR or a
+/// BOOLEAN.
+#[derive(Clone)]
+enum AggIn {
+    Int(i128),
+    F64(f64),
+    Str(String),
+    Bool(bool),
+}
+
+impl AggIn {
+    /// DuckDB's order: numeric, byte-wise for VARCHAR, and for DOUBLE NaN
+    /// above everything and -0.0 equal to 0.0 (`exec::duck_fcmp`).
+    fn cmp(&self, other: &AggIn) -> std::cmp::Ordering {
+        match (self, other) {
+            (AggIn::Int(a), AggIn::Int(b)) => a.cmp(b),
+            (AggIn::F64(a), AggIn::F64(b)) => exec::duck_fcmp(*a, *b),
+            (AggIn::Str(a), AggIn::Str(b)) => a.cmp(b),
+            (AggIn::Bool(a), AggIn::Bool(b)) => a.cmp(b),
+            _ => unreachable!("one aggregate reads one type"),
+        }
+    }
+
+    /// Whether two values DuckDB's order calls equal differ in their bits:
+    /// -0.0 and 0.0, or two NaN payloads.
+    fn other_bits(&self, other: &AggIn) -> bool {
+        matches!((self, other), (AggIn::F64(a), AggIn::F64(b)) if a.to_bits() != b.to_bits())
+    }
+}
+
+/// The state of one aggregate over one group.
+enum Acc {
+    Count(i64),
+    /// The extreme so far, and whether a value that ties it has other bits.
+    Extreme(Option<AggIn>, bool),
+    /// The sum, the sum of the absolute values, and whether a value was not
+    /// NULL.
+    Sum(i128, u128, bool),
+}
+
+impl Acc {
+    fn new(func: plan::AggFunc) -> Acc {
+        match func {
+            plan::AggFunc::CountStar | plan::AggFunc::Count => Acc::Count(0),
+            plan::AggFunc::Min | plan::AggFunc::Max => Acc::Extreme(None, false),
+            plan::AggFunc::Sum => Acc::Sum(0, 0, false),
+        }
+    }
+}
+
+/// The value of one source cell as aggregate `agg` reads it; `None` for
+/// NULL.
+fn agg_in(
+    v: &pyo3::Bound<'_, PyAny>,
+    agg: &crate::specializer::AggVal,
+    what: &str,
+) -> PyResult<Option<AggIn>> {
+    if v.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(match agg.src {
+        Ty::I1 => AggIn::Bool(v.extract()?),
+        Ty::F64 => AggIn::F64(v.extract()?),
+        Ty::Str => AggIn::Str(v.extract()?),
+        Ty::Dec(p, s) => {
+            let (m, vs) = decimal_parts(v, what)?;
+            AggIn::Int(rescale(m, vs, s).ok_or_else(|| {
+                build_err(format!("{what} holds {v}, which does not fit its declared decimal128({p}, {s})"))
+            })?)
+        }
+        t if t.is_integer() => AggIn::Int(v.extract()?),
+        t => return Err(build_err(format!("internal: an aggregate over {}", t.name()))),
+    }))
+}
+
+/// One grouped static of a scalar subquery (`plan::AggTable`), per its
+/// `StaticSpec` recipe: the source rows grouped by their converted keys, one
+/// entry per group, valued by the group's aggregates. A row `build_keys`
+/// drops can match no request, so no group holds it. With no keys there is
+/// one group, empty or not: an uncorrelated aggregate always has its row.
+///
+/// The aggregates run here, at build, so no request can trap in them. A
+/// result that could depend on the order of the rows refuses the build by
+/// name: a sum whose absolute values add up past the result's range (a
+/// partial sum could overflow in some order, where DuckDB traps), and a
+/// DOUBLE min or max that ties values with other bits.
+fn materialize_aggs(
+    py: Python<'_>,
+    table: &Py<PyAny>,
+    spec: &StaticSpec,
+    aggs: &[crate::specializer::AggVal],
+) -> PyResult<StaticData> {
+    use plan::AggFunc;
+    let rows = table.bind(py).call_method0("to_pylist")?;
+    let fresh = || aggs.iter().map(|a| Acc::new(a.func)).collect::<Vec<_>>();
+    let mut groups: std::collections::BTreeMap<Vec<KeyBits>, Vec<Acc>> = Default::default();
+    if spec.keys.is_empty() {
+        groups.insert(Vec::new(), fresh());
+    }
+    let label = |i: usize| {
+        let agg = &aggs[i];
+        let arg = spec.vals[i].path.join(".");
+        let f = match agg.func {
+            AggFunc::CountStar => return "count(*)".to_string(),
+            AggFunc::Count => "count",
+            AggFunc::Min => "min",
+            AggFunc::Max => "max",
+            AggFunc::Sum => "sum",
+        };
+        format!("{f}({arg})")
+    };
+    for item in rows.try_iter()? {
+        let row = item?;
+        let row = row.cast::<PyDict>().map_err(|_| {
+            build_err(format!(
+                "static table '{}': to_pylist row is not a dict",
+                spec.table
+            ))
+        })?;
+        let get = |path: &[String]| row_value(&row, path, &spec.table);
+        let Some(mut keys) = build_keys(spec, &get)? else {
+            continue;
+        };
+        // One group per key class: -0.0 and 0.0 are one DOUBLE key, as are
+        // all NaNs (the probe canonicalizes the same way).
+        for kb in keys.iter_mut() {
+            if let KeyBits::F64(bits) = kb {
+                *bits = exec::canon_f64_bits(f64::from_bits(*bits));
+            }
+        }
+        let accs = groups.entry(keys).or_insert_with(fresh);
+        for (i, (acc, agg)) in accs.iter_mut().zip(aggs).enumerate() {
+            if agg.func == AggFunc::CountStar {
+                if let Acc::Count(n) = acc {
+                    *n += 1;
+                }
+                continue;
+            }
+            let what = format!("static table '{}' column '{}'", spec.table, spec.vals[i].path.join("."));
+            let Some(v) = agg_in(&get(&spec.vals[i].path)?, agg, &what)? else {
+                continue;
+            };
+            match acc {
+                Acc::Count(n) => *n += 1,
+                Acc::Extreme(cur, tie) => {
+                    let better = |c: std::cmp::Ordering| match agg.func {
+                        AggFunc::Min => c.is_lt(),
+                        _ => c.is_gt(),
+                    };
+                    match cur {
+                        None => *cur = Some(v),
+                        Some(c) => {
+                            let ord = v.cmp(c);
+                            if better(ord) {
+                                *cur = Some(v);
+                                *tie = false;
+                            } else if ord.is_eq() && v.other_bits(c) {
+                                *tie = true;
+                            }
+                        }
+                    }
+                }
+                Acc::Sum(sum, abs, any) => {
+                    let x = match v {
+                        AggIn::Int(x) => x,
+                        AggIn::Bool(b) => i128::from(b),
+                        _ => return Err(build_err("internal: a sum over a non-integer")),
+                    };
+                    let over = || {
+                        build_err(format!(
+                            "unsupported: static table '{}': {} over the rows of one key \
+                             adds absolute values past the range of its result, so a partial \
+                             sum can overflow in some order of the additions",
+                            spec.table,
+                            label(i)
+                        ))
+                    };
+                    *sum = sum.checked_add(x).ok_or_else(over)?;
+                    *abs = abs.checked_add(x.unsigned_abs()).ok_or_else(over)?;
+                    *any = true;
+                }
+            }
+        }
+    }
+    let mut entries = Vec::with_capacity(groups.len());
+    for (keys, accs) in groups {
+        let mut vals = Vec::with_capacity(spec.vals.len() * 2);
+        for (i, (acc, vc)) in accs.into_iter().zip(&spec.vals).enumerate() {
+            let ty = vc.map.ty;
+            let val = match acc {
+                Acc::Count(n) => Some(ScalarVal::I64(n)),
+                Acc::Extreme(None, _) => None,
+                Acc::Extreme(Some(_), true) => {
+                    return Err(build_err(format!(
+                        "unsupported: static table '{}': {} over the rows of one key ties \
+                         DOUBLE values with other bits (-0.0 and 0.0, or two NaNs), and \
+                         which one DuckDB answers depends on the order of the rows",
+                        spec.table,
+                        label(i)
+                    )))
+                }
+                Acc::Extreme(Some(v), false) => Some(match (v, ty) {
+                    (AggIn::Int(x), Ty::I64) => ScalarVal::I64(x as i64),
+                    (AggIn::Int(x), Ty::I128) => ScalarVal::I128(x),
+                    (AggIn::Int(x), Ty::Dec(p, s)) => ScalarVal::Dec(x, p, s),
+                    (AggIn::F64(x), _) => ScalarVal::F64(x),
+                    (AggIn::Str(x), _) => ScalarVal::Str(x),
+                    (AggIn::Bool(x), _) => ScalarVal::I1(x),
+                    (_, t) => return Err(build_err(format!("internal: an extreme as {}", t.name()))),
+                }),
+                Acc::Sum(_, _, false) => None,
+                Acc::Sum(sum, abs, true) => {
+                    // DuckDB sums into a HUGEINT, or a DECIMAL(38, s).
+                    let limit = match ty {
+                        Ty::Dec(..) => 10u128.pow(38) - 1,
+                        _ => i128::MAX as u128,
+                    };
+                    if abs > limit {
+                        return Err(build_err(format!(
+                            "unsupported: static table '{}': {} over the rows of one key \
+                             adds absolute values past the range of its result, so a partial \
+                             sum can overflow in some order of the additions",
+                            spec.table,
+                            label(i)
+                        )));
+                    }
+                    Some(match ty {
+                        Ty::Dec(p, s) => ScalarVal::Dec(sum, p, s),
+                        _ => ScalarVal::I128(sum),
+                    })
+                }
+            };
+            match (vc.map.nullable, val) {
+                (true, None) => vals.extend(exec::null_val_slots(ty)),
+                (true, Some(v)) => {
+                    vals.push(ScalarVal::I1(true));
+                    vals.push(v);
+                }
+                (false, Some(v)) => vals.push(v),
+                (false, None) => {
+                    return Err(build_err("internal: a NULL count"));
+                }
             }
         }
         entries.push((keys, vals));
@@ -2137,9 +2408,11 @@ impl DuckDBInferFn {
 
     /// Facts of the bound plan, for the exclusion rules
     /// (`fuzz/exclusions.py`): `{"joins": [{"kind", "static", "keys",
-    /// "residual", "rows"}, ...]}`. `kind` is "inner" or "left" (a CROSS
-    /// JOIN is inner with zero keys); `static` is None for a self-join;
-    /// `rows` is the static table's raw row count.
+    /// "residual", "rows"}, ...]}`. `kind` is "inner", "left" (a CROSS
+    /// JOIN is inner with zero keys) or "aggregate" (the hidden join of a
+    /// scalar subquery, whose `static` is the table the subquery reads);
+    /// `static` is None for a self-join; `rows` is the static table's raw
+    /// row count.
     #[getter]
     fn plan_facts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let joins = PyList::empty(py);

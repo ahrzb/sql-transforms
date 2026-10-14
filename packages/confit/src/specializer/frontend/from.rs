@@ -378,6 +378,9 @@ pub(super) fn bind_from<'a>(
             })
             .collect(),
         bound_aliases: std::cell::RefCell::new(Vec::new()),
+        subquery_aliases: std::cell::RefCell::new(Vec::new()),
+        in_select: std::cell::Cell::new(false),
+        bound_subquery: std::cell::Cell::new(false),
         regexes: std::cell::RefCell::new(ctx.regexes),
         udfs,
         bind_eval,
@@ -406,6 +409,12 @@ pub(super) fn bind_from<'a>(
             Driving::Request => Vec::new(),
         },
         whole_item: std::cell::Cell::new(false),
+        statics,
+        request_table: this_name.to_string(),
+        subqueries: std::cell::Cell::new(false),
+        agg_joins: std::cell::RefCell::new(Vec::new()),
+        agg_reads: std::cell::RefCell::new(Vec::new()),
+        agg_tables: std::cell::RefCell::new(ctx.aggs),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 

@@ -99,17 +99,21 @@ The engine serves **row-at-a-time feature transforms**. Whole-relation
 constructs are out of scope because their output shape is not
 one-row-in/one-row-out. Syntax is not the scope test, though: the refusals
 below are listed by the syntax that triggers them, and only the forms that
-depend on sibling request rows are outside the model. A row-local CTE,
-subquery or set operation is inside the model although this engine refuses it — the
+depend on sibling request rows are outside the model. This engine refuses
+some row-local forms that are inside the model: set operations, a CTE read
+twice, and subqueries of the forms that it does not serve. The
 [restriction inventory](specs/serving-contract.md#restriction-inventory-by-class)
-classifies each family.
+says whether each form is inside the model.
 
 - Aggregation: `GROUP BY`, `HAVING`, `sum`/`count`/`avg`/... →
-  `aggregate function ... (aggregation is not served)`
+  `aggregate function ... (aggregation is not served)`. This engine serves a
+  scalar subquery with one aggregate over a static table
+  ([serving contract](specs/serving-contract.md#scalar-subqueries-over-a-static-table)).
 - `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT` — row-independent transforms
   don't reorder or deduplicate.
-- CTEs (`WITH`), `UNION`/`INTERSECT`/`EXCEPT`, subqueries, multiple
-  statements.
+- A CTE read twice, `UNION`/`INTERSECT`/`EXCEPT`, multiple statements.
+- Subqueries, except a derived table, a CTE read once and the scalar
+  subquery above.
 - Table functions in FROM (`range(...)`) — there is no base table.
 - `rowid` pseudo-column — rows have no stable identity in a stream.
 - `FULL OUTER JOIN` — emits rows that no input row produced.
