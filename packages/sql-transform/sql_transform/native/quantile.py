@@ -74,20 +74,12 @@ from sklearn.preprocessing import QuantileTransformer
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import NotNative, translates
 
-# The most quantiles served per estimator, summed over its features. One
-# tree builds about linearly in its leaves (one feature, warm: 0.5-0.6 s
-# at 1,000 quantiles, 1.3-1.4 s at 2,000, 2.7-3.2 s at 4,000, 6.4-6.9 s at
-# 8,000, where both searches as two trees took 1.4-1.6, 4.7-4.8 and 23-24
-# s up to 4,000), and so does an estimator in its total: 8,000 quantiles
-# as 4,000 over two features build in 6.8-7.5 s, 2,000 over four in
-# 6.6-7.1 s, 1,000 over eight in 6.9-7.1 s, 100 over 80 in 6.2-6.4 s, 10
-# over 800 in 7.8-8.0 s (the first build in a process within 10% of
-# these), against 7.0 s for the old caps' slowest, 1,000 over four. Fits
-# with runs build faster: fewer leaves outweigh their arms. Serving 64
-# rows is 25 times faster than the twin at 1,000 over one feature, 2 times
-# at 8,000 over one, 3 at 1,000 over eight, 13 at 10 over 800 (release
-# build, one container, 2026-10-05).
-MAX_QUANTILES = 8000
+# The longest build the entry takes on for one estimator, in seconds, by
+# `_build_estimate` (as trees.py's and spline.py's caps). Serving 64 rows
+# is 25 times faster than the twin at 1,000 quantiles over one feature, 2
+# times at 8,000 over one, 3 at 1,000 over eight, 13 at 10 over 800
+# (release build, one container, 2026-10-05).
+MAX_BUILD_S = 7.0
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
 # `slope * (x - start) + value`, or `value` at `start` when `exact`.
@@ -209,9 +201,39 @@ def _tree(x: S.Expr, leaves: list[_Leaf]) -> S.Expr:
     )
 
 
-def _feature(x: S.Expr, q: np.ndarray, r: np.ndarray) -> S.Expr:
-    n = len(q)
-    if n == 1:
+def _leaves_of(q: np.ndarray, r: np.ndarray) -> list[_Leaf]:
+    """The leaves of one feature's tree: none for one quantile, a feature
+    missing everywhere at fit, or `q[0] == q[-1]` (`_feature` answers those
+    without a tree)."""
+    if len(q) == 1 or np.isnan(q).all():
+        return []
+    if np.isnan(q).any() or not (q[:-1] <= q[1:]).all():
+        raise NotNative(
+            "QuantileTransformer: quantiles unsorted or partly NaN, where"
+            " numpy's interp search answers by its guess"
+        )
+    return _leaves(q, r)
+
+
+def _build_estimate(leaves: int, arms: int, features: int) -> float:
+    """The seconds confit takes to build the entry (warm, release build),
+    from `n`, the leaves of its trees plus 0.4 times their exact arms, and
+    the features. The build is about linear in `n`, however the features
+    split it (8,000 leaves as 1, 2, 8 or 16 trees: 6.5 to 7.8 s), with a
+    term in `n` squared past that, and a term in the features squared from
+    the struct return (800 features of one leaf: 5.7 s as a struct, 1.1 s
+    as a list). Fitted on the slower of the two returns over 59 builds of
+    0.3 to 17 s (1 to 800 features, 10 to 8,000 quantiles, fits of
+    continuous values and of integers, whose runs of equal quantiles leave
+    fewer leaves with more arms; master 94d7bb1, 2026-10-14): each within
+    0.85 to 1.23 times the estimate. The cap took on none slower than 7.8 s
+    and refused none faster than 8.3 s."""
+    n = leaves + 0.4 * arms
+    return 6.51e-4 * n + 2.44e-8 * n**2 + 8.17e-6 * features**2
+
+
+def _feature(x: S.Expr, q: np.ndarray, leaves: list[_Leaf]) -> S.Expr:
+    if len(q) == 1:
         # numpy's one-point interp answers fp[0] for any number: 0.0 from
         # 0.5 * (0.0 - -0.0), the bounds answering 0.0 as well.
         return S.case(isnan(x), x).otherwise(f64(0.0))
@@ -219,12 +241,6 @@ def _feature(x: S.Expr, q: np.ndarray, r: np.ndarray) -> S.Expr:
         # A feature missing everywhere at fit: every search lands on a NaN
         # line, and NaN is no bound.
         return f64(math.nan)
-    if np.isnan(q).any() or not (q[:-1] <= q[1:]).all():
-        raise NotNative(
-            "QuantileTransformer: quantiles unsorted or partly NaN, where"
-            " numpy's interp search answers by its guess"
-        )
-    leaves = _leaves(q, r)
     # Below q[0] the two interps answer r[0] and -r[0], above q[-1] r[-1]
     # and -r[-1]: 0.0 and 1.0, as the bounds do at q[0] and q[-1] (the
     # lower bound last). NaN first: DuckDB orders it above every number.
@@ -242,20 +258,26 @@ def _quantile(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             f"QuantileTransformer(output_distribution={est.output_distribution!r}):"
             " scipy's norm.ppf has no SQL twin"
         )
-    q, n = est.n_quantiles_, len(x)
-    if q * n > MAX_QUANTILES:
+    r = np.asarray(est.references_, dtype=np.float64)
+    qs = [np.asarray(est.quantiles_[:, i], dtype=np.float64) for i in range(len(x))]
+    # Each feature's tree has a leaf for each distinct quantile but the
+    # last (`_pieces`). Counting them first refuses a wide fit before its
+    # leaves are made, at about 4.5 us each; the arms only add.
+    leaves = sum(len(np.unique(q)) - 1 for q in qs)
+    trees, arms = [], 0
+    if _build_estimate(leaves, 0, len(qs)) <= MAX_BUILD_S:
+        trees = [_leaves_of(q, r) for q in qs]
+        arms = sum(at is not None for t in trees for _, _, at in t)
+    estimate = _build_estimate(leaves, arms, len(qs))
+    if estimate > MAX_BUILD_S:
         raise NotNative(
-            f"QuantileTransformer with {q} quantiles over {n} features:"
-            f" {q * n} quantiles, past the {MAX_QUANTILES} confit builds in"
-            " seconds"
+            f"QuantileTransformer: an estimated {estimate:.0f} s build, past"
+            f" {MAX_BUILD_S:.0f} s ({est.n_quantiles_:,} quantiles over"
+            f" {len(x)} features)"
         )
     if not interp_is_numpys():
         raise NotNative(
             "QuantileTransformer: this platform's np.interp does not round as"
             " numpy's unfused C loop, which the entry follows"
         )
-    r = np.asarray(est.references_, dtype=np.float64)
-    return [
-        _feature(xi, np.asarray(est.quantiles_[:, i], dtype=np.float64), r)
-        for i, xi in enumerate(x)
-    ]
+    return [_feature(xi, q, t) for xi, q, t in zip(x, qs, trees, strict=True)]

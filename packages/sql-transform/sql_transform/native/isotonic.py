@@ -59,13 +59,11 @@ from sql_transform.native.quantile import interp_is_numpys
 # `slope * (x - start) + value`, or `value` at `start` when `exact`.
 _Piece = tuple[float, float, float, bool]
 
-# The most thresholds served. One CASE tree over the thresholds builds in
-# about 0.7 ms a threshold, a little worse than linear: 1,000 in 0.5 s,
-# 4,000 in 2.4 s, 8,000 in 5.8 s, 20,000 in 22 s. Serving 64 rows takes
-# 37 us at the widest fixture (51 thresholds) and 366 us at 8,000,
-# against the twin's 5,400 us (release build, master f2ef184,
-# 2026-10-05).
-MAX_THRESHOLDS = 8000
+# The longest build the entry takes on for one estimator, in seconds, by
+# `_build_estimate` (as quantile.py's cap). Serving 64 rows takes 37 us at
+# the widest fixture (51 thresholds) and 366 us at 8,000, against the
+# twin's 5,400 us (release build, master f2ef184, 2026-10-05).
+MAX_BUILD_S = 7.0
 
 
 def _pieces(xp: np.ndarray, fp: np.ndarray) -> list[_Piece]:
@@ -83,6 +81,17 @@ def _pieces(xp: np.ndarray, fp: np.ndarray) -> list[_Piece]:
         exact = not math.isfinite(slope) or (y0 == 0.0 and math.copysign(1.0, y0) < 0)
         out.append((x0, slope, y0, exact))
     return out
+
+
+def _build_estimate(pieces: int) -> float:
+    """The seconds confit takes to build the entry (warm, release build),
+    from the pieces of its one CASE tree, a little worse than linear.
+    Fitted on 20 builds of 0.3 to 11 s (900 to 16,000 thresholds,
+    `out_of_bounds` "clip" and "raise"; master 94d7bb1, 2026-10-14): each
+    within 0.94 to 1.10 times the estimate, which reaches 7 s at about
+    11,700 thresholds. The cap took on none slower than 6.2 s and refused
+    none faster than 7.4 s."""
+    return 3.47e-4 * pieces + 2.17e-8 * pieces**2
 
 
 def _leaf(x: S.Expr, piece: _Piece) -> S.Expr:
@@ -124,10 +133,11 @@ def _isotonic(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         # `f_` repeats the one value, with no bounds check; the twin raises
         # on NaN.
         return [f64(fp[0])]
-    if len(xp) > MAX_THRESHOLDS:
+    estimate = _build_estimate(len(xp) - 1)
+    if estimate > MAX_BUILD_S:
         raise NotNative(
-            f"IsotonicRegression with {len(xp)} thresholds: past the"
-            f" {MAX_THRESHOLDS} confit builds in about 6 s"
+            f"IsotonicRegression: an estimated {estimate:.0f} s build, past"
+            f" {MAX_BUILD_S:.0f} s ({len(xp):,} thresholds)"
         )
     if getattr(est.f_, "_call", None) is not interp1d._call_linear_np:
         raise NotNative(

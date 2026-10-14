@@ -114,7 +114,7 @@ from sql_transform.native._helpers import SameTree, f64, isnan
 from sql_transform.native._registry import NotNative, rejects, translates
 
 # The longest build the entry takes on (seconds, warm, release), as
-# quantile.py's and isotonic.py's caps (about 7 s and 6 s).
+# quantile.py's and isotonic.py's caps.
 MAX_BUILD_S = 7.0
 
 
