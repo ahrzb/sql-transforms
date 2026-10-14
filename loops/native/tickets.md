@@ -40,10 +40,23 @@ not one test a feature joined by OR. The widest bench `Pipeline` builds in
 0.9 to 1.2 s, 2.4 to 2.7 s before, and serves 64 rows in 5.4 ms, 6.4 ms
 before. The OR of its tests cost most of the build: with 240 bound values
 in place of 1,069, it built as slowly. The native bench now fails where a
-step serves more slowly than its twin. The loop runs from the "Transforms
-Loop" project thread.
+step serves more slowly than its twin. T36 (#455) reads a sparse output
+dense, as `.toarray()` makes it, at the serve call, the fit probe and the
+catalog's probes (`_udf._dense`, decisions/closed/sparse-outputs.md).
+The defaults of `OneHotEncoder`, `KBinsDiscretizer` and
+`RandomTreesEmbedding`, `MissingIndicator(sparse=True)`, a sparse
+`SplineTransformer`, and a `Pipeline`, `ColumnTransformer` or
+`FeatureUnion` with a sparse output are served, under both of sklearn's
+sparse containers. A step handed a sparse matrix by an earlier one runs
+its own sparse branch: it is served where measured to answer the 0/1
+matrix as dense (an imputer filling a stored 1 with 49.0, then scaled,
+parted in 36 of 40 rows). A sparse spline stays Python at degree 0 under
+`constant` or `periodic`, under `handle_missing="zeros"` over two or more
+features with `continue`, `error` or `periodic`, and over NaN knots; no
+other of 1,440 sparse spline configurations parted from the step. The
+loop runs from the "Transforms Loop" project thread.
 
-Next: PLANS "Ruled 2026-10-06, to build" in order: the densified sparse
-outputs, then the families on the parity bound.
+Next: PLANS "Ruled 2026-10-06, to build": the families on the parity
+bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.

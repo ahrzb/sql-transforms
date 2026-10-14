@@ -61,7 +61,7 @@ import pyarrow as pa
 from confit import DuckDBInferFn, Function, SqlFunction
 from confit import sql as S
 
-from sql_transform._udf import PythonTransform
+from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native._helpers import SameTree, f64, isnan
 
 Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
@@ -316,12 +316,13 @@ def _container(hand: str, row: list[Any]) -> Any:
 
 
 def _answer(est: Any, arg: Any) -> np.ndarray | None:
-    """`est.transform(arg)`, or None where it raises: whatever it raises,
-    the step raises."""
+    """`est.transform(arg)` as the step reads it (a sparse output
+    densified), or None where it raises: whatever it raises, the step
+    raises."""
     try:
         with warnings.catch_warnings(), np.errstate(all="ignore"):
             warnings.simplefilter("ignore")
-            return np.asarray(est.transform(arg))
+            return np.asarray(_dense(est.transform(arg)))
     except Exception:  # noqa: BLE001 — any error is the twin raising
         return None
 

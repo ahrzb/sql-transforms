@@ -18,11 +18,7 @@ default, and a bound above 0 serves only on the caller's request (it can
 flip HistGradientBoosting labels on repeated training values). T19 built
 that request, `to_native(step, allow_bound=True)`. In order:
 
-1. **Densify sparse outputs** (sparse-outputs.md): one helper at
-   `_udf.py:314`, `_projection.py:352`, `model/_foreign.py:128` and
-   `native/encode.py:110`; then drop the sparse guards of OneHotEncoder,
-   KBinsDiscretizer, MissingIndicator and SplineTransformer (not degree 0).
-2. **Families on the parity bound.** Since T24 a family declares its error
+1. **Families on the parity bound.** Since T24 a family declares its error
    scale, `translates(cls, scale=ErrorScale(k, s, tau, g))`, and
    `native.check` holds each row to it (`_registry.ErrorScale` says what
    each operand is). The first family also lists its error scale in the
@@ -39,7 +35,7 @@ that request, `to_native(step, allow_bound=True)`. In order:
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
      not served until a normwise S is derived.
-3. **Still open for the owner:** a bounded step inside a composition
+2. **Still open for the owner:** a bounded step inside a composition
    (decisions/open/bounded-steps-in-compositions.md). `compose.py` keeps
    refusing one meanwhile.
 
@@ -167,19 +163,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `MinMaxScaler(clip=True)` with a NaN `feature_range` bound.
 - `SimpleImputer` fitted on object data (strings), whose output is not a
   float the step can return; a `missing_values` that is neither NaN nor a
-  number (`None`, `pd.NA`, a string); `MissingIndicator(sparse=True)`.
+  number (`None`, `pd.NA`, a string).
 - A selector that keeps no feature, or whose `get_support()` raises (as
   its `transform` would).
 - An encoder whose twin raises on every value of a feature: a string
   feature fitted only on NaN, which sklearn does not match to the None
   that the step hands. Every call raises in Python too.
-- `OneHotEncoder(sparse_output=True)`, the default: a sparse output, which
-  the Python step does not serve either (it reads a row with `float()`,
-  and a sparse row is not a float). A note for the step, not the catalog.
-- `KBinsDiscretizer(encode="onehot")`, the default: a sparse output, as
-  for `OneHotEncoder` above. Bin edges that are not sorted numbers
-  (searchsorted's answer is then its search order's), which no strategy
-  fits on finite data.
+- `KBinsDiscretizer` bin edges that are not sorted numbers (searchsorted's
+  answer is then its search order's), which no strategy fits on finite
+  data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. A fit whose build is estimated past 7 s
   (`quantile._build_estimate`, from the leaves and the features): 10
@@ -221,13 +213,27 @@ Configurations a translator declines (`NotNative`), each with its ground:
   the next step). A `set_output` container between steps is not examined
   yet. A composition before the last step of a `Pipeline` that is a
   `ColumnTransformer`'s part: the twin hands it an object array, and the
-  input guard does not probe what it hands on.
+  input guard does not probe what it hands on. A sparse step hands the
+  next one a sparse matrix, which it reads by its own sparse branch
+  (T36, `compose._SPARSE_READERS`): a step that is not known to answer
+  the 0/1 matrix as its dense array (`QuantileTransformer`, which maps
+  only the stored values; a `FunctionTransformer` with a `func`;
+  `Binarizer` with a negative threshold; anything else outside the
+  readers), and a sparse step before the last that hands on values other
+  than 0 and 1 (a sparse `SplineTransformer`, a scaler, `Normalizer`, an
+  imputer that fills a stored 1 with another value): measured to part by
+  an ulp or more.
 - A step whose twin raises on the input guard's probe row: each feature
   at 1.0, False or an empty string, or the row its family gives
   (`Entry.base`, a fitted category or knot). Nothing is left to probe
   from.
-- `SplineTransformer(sparse_output=True)`: a sparse output
-  (decisions/closed/sparse-outputs.md). `extrapolation="linear"` at
+- `SplineTransformer(sparse_output=True)` where its twin parts from the
+  dense one (T36, spline.py "Sparse"): at degree 0 under `constant`
+  (above the knots it answers the basis at the last knot) and `periodic`
+  (it raises on every row); under `handle_missing="zeros"` over two or
+  more features with `continue`, `error` or `periodic` (sklearn zeroes a
+  NaN's output fields in the first feature only); over NaN knots (scipy's
+  design matrix raises). `extrapolation="linear"` at
   `degree=0, n_knots=2` over two or more features: the twin's running
   `degree` (spline.py) continues two output fields of one from the second
   feature on, and writes a row above the knots into the previous feature's
@@ -243,8 +249,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   with a feature whose knots are NaN: the twin raises on every number
   there.
 - A `ColumnTransformer` or `FeatureUnion` with a part that is not a
-  catalog entry, or one registered with a bound; a sparse output
-  (`sparse_output_`); a `set_output` container (the step's
+  catalog entry, or one registered with a bound; a `set_output` container (the step's
   `transform(...)[0]` misreads a DataFrame row); a string column passed
   through (the step's `float()`); column names, which need a DataFrame,
   and a scalar column, which hands the part a 1-D array. In a
@@ -275,9 +280,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   nor the last tied operand, so `greatest`/`least` (the first) part from
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
-- `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
-  output (decisions/closed/sparse-outputs.md). A forest whose build is
-  estimated past 7 s (`trees._build_estimate`): over 8 features, past
+- `RandomTreesEmbedding`: a forest whose build is estimated past 7 s (`trees._build_estimate`): over 8 features, past
   about 5,990 output fields, such as 300 trees of depth 5 (6,961 fields,
   9.8 s) and 3 unbounded trees over 2,000 rows (8.4 s). Since T28, 160
   trees of depth 5, 100 trees of depth 6 and one unbounded tree over

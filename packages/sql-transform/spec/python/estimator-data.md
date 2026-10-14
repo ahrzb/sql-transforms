@@ -47,6 +47,18 @@ Different scopes can learn different widths from the same prototype.
 
 *Evidence:* `_named_outputs_test.py::test_refit_that_drops_a_field_refuses_by_name`, `_named_outputs_test.py::test_per_group_shape_disagreement_refuses`, `_named_outputs_test.py::test_wide_call_in_list_extract_refuses_when_bound`.
 
+**claim: sparse-output-dense.** `PythonTransform` reads a sparse output as its dense array.
+Some transformers return a scipy sparse matrix or sparse array, for example the default `OneHotEncoder()`.
+`PythonTransform` makes such an output dense with `.toarray()`, at fit and for each request row.
+So the output fields, their names and their values are those of the dense configuration, such as `OneHotEncoder(sparse_output=False)`.
+A sparse output stores only some of its values, and every other value is 0.0.
+`.toarray()` adds each stored value to 0.0, so a stored -0.0 reads 0.0.
+The setting `sparse_interface` of `sklearn.set_config` (new in scikit-learn 1.9) picks the type of a sparse output.
+Its values are `"spmatrix"` (a sparse matrix, the default) and `"sparray"` (a sparse array).
+Each Python thread has its own copy of this setting, and `PythonTransform` serves both types.
+
+*Evidence:* `_sparse_outputs_test.py::test_a_field_read_names_an_output_field_of_a_sparse_encoder`, `_sparse_outputs_test.py::test_an_encoder_of_one_output_field_serves_it`, `_sparse_outputs_test.py::test_a_sparse_output_serves_as_its_dense_configuration`.
+
 ## Fit order
 
 **claim: fit-order-and-ties.** FILTER and in-call ORDER BY belong on the fit item.

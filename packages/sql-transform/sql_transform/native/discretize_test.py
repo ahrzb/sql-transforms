@@ -13,7 +13,7 @@ import pyarrow as pa
 import pytest
 from sklearn.preprocessing import KBinsDiscretizer
 
-from sql_transform._udf import PythonTransform
+from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native import check, to_native
 from sql_transform.native.discretize import _f32_cut
 
@@ -217,7 +217,7 @@ GROUPS = {
 def test_the_entry_answers_its_twin_at_every_cutpoint(group, encode):
     edges = GROUPS[group]
     est = _fitted([edges, list(reversed(edges))[1:]], encode)
-    width = np.asarray(est.transform(np.zeros((1, 2)))).shape[1]
+    width = np.asarray(_dense(est.transform(np.zeros((1, 2))))).shape[1]
     xs = [x for e in edges for x in _probes(e)]
     xs += [0.0, -0.0, 1e300, -1e300, np.inf, -np.inf]
     compared = _served(_step(est, width), [xs, list(reversed(xs))])
@@ -262,7 +262,7 @@ def test_fitted_edges_are_answered_at_their_cutpoints(cfg, seed):
     with warnings.catch_warnings():  # narrow bins dropped
         warnings.simplefilter("ignore")
         est = KBinsDiscretizer(n_bins=5, dtype=np.float32, **cfg).fit(X)
-    width = np.asarray(est.transform(X[:1])).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).shape[1]
     cols = [
         [x for e in est.bin_edges_[j][1:-1] for x in _probes(float(e))]
         for j in range(3)

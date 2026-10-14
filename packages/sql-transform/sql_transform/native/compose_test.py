@@ -25,13 +25,13 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 
-from sql_transform._udf import PythonTransform
+from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native import NotNative, check, to_native
 
 
 def _step(est, X: np.ndarray, types: list[pa.DataType]) -> PythonTransform:
     est.fit(X, np.arange(len(X)) % 2)
-    width = np.asarray(est.transform(X[:1])).reshape(1, -1).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1]))).reshape(1, -1).shape[1]
     return PythonTransform(
         "tf",
         {0: est},
@@ -159,16 +159,11 @@ def _strings() -> tuple[np.ndarray, list[pa.DataType]]:
             " output is int64",
         ),
         (
-            lambda: make_pipeline(OneHotEncoder(), MaxAbsScaler()),
-            "step 'onehotencoder': OneHotEncoder.sparse_output=True.: the output"
-            " is sparse",
-        ),
-        (
             lambda: Pipeline([("skip", "passthrough")]),
             "passthrough steps over a string feature",
         ),
     ],
-    ids=["int-output", "inner-refusal", "passthrough-strings"],
+    ids=["int-output", "passthrough-strings"],
 )
 def test_a_pipeline_over_strings_names_what_it_refuses(make, reason):
     X, types = _strings()
@@ -209,7 +204,7 @@ def _bits(est, beside: bool = False) -> tuple[PythonTransform, pa.Table]:
         rows = {**rows, "x2": pa.array([2.5, -0.0, None, 4.0, 1.0])}
     est.fit(X, np.arange(len(X)) % 2)
     # The width from a float row: a boolean one may raise (`np.negative`).
-    width = np.asarray(est.transform(X[:1].astype(float))).shape[1]
+    width = np.asarray(_dense(est.transform(X[:1].astype(float)))).shape[1]
     step = PythonTransform(
         "tf",
         {0: est},
@@ -445,12 +440,6 @@ class _MyScaler(StandardScaler):
         ),
         (
             lambda: ColumnTransformer(
-                [("s", OneHotEncoder(), [0])], sparse_threshold=1.0
-            ),
-            r"the output is sparse \(sparse_output_\)",
-        ),
-        (
-            lambda: ColumnTransformer(
                 [("s", OneHotEncoder(dtype=np.float32, sparse_output=False), [0])],
                 transformer_weights={"s": 0.5},
             ),
@@ -525,7 +514,6 @@ class _MyScaler(StandardScaler):
         "ct-object-func",
         "ct-object-func-nested",
         "ct-container",
-        "ct-sparse",
         "ct-float32-weight",
         "ct-integer-weight",
         "ct-inexact-weight",

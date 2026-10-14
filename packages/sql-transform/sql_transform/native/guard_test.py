@@ -31,7 +31,7 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 
-from sql_transform._udf import PythonTransform
+from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native import Entry, NotNative, ParityError, check, to_native
 from sql_transform.native._check import TRAP_QUERIES, _definition, _serve
 from sql_transform.native._helpers import F32_INF, f64
@@ -318,7 +318,7 @@ DOMAINS = {
 def test_a_family_traps_past_its_domain(family):
     make, types, values, traps = DOMAINS[family]
     est = make()
-    width = np.asarray(est.transform([list(values[0])])).reshape(1, -1).shape[1]
+    width = np.asarray(_dense(est.transform([list(values[0])]))).reshape(1, -1).shape[1]
     step = _step(est, types, width)
     native = to_native(step, strict=True, allow_bound=True)
     rows = _rows(step, values)

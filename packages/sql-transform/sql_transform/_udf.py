@@ -23,6 +23,7 @@ transformers already are (an object with fit/transform, window syntax).
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -313,7 +314,7 @@ class PythonTransform(UDF):
                 " different fits"
             ) from None
         vals = [_as_feature(f, t) for f, t in zip(feats, self.take_types, strict=True)]
-        row = est.transform([vals])[0]
+        row = _dense(est.transform([vals]))[0]
         out = tuple(float(v) for v in _flatten_row(row))
         width = len(self.return_types)
         if len(out) != width:
@@ -450,6 +451,18 @@ def _as_feature(value: Any, ty: str) -> Any:
     if value is None:
         return float("nan")
     return value if ty == "i1" else float(value)
+
+
+def _dense(out: Any) -> Any:
+    """A ``transform`` output as the step reads it: a scipy sparse matrix
+    or array becomes its dense array, ``.toarray()``, which adds each
+    stored value to 0.0 (a stored -0.0 reads 0.0); any other output stays
+    as it is (loops/native/decisions/closed/sparse-outputs.md, the
+    ruling). sklearn picks the sparse container per thread
+    (``sparse_interface``), so the step reads both. A sparse output means
+    scipy is loaded: this does not import it."""
+    sp = sys.modules.get("scipy.sparse")
+    return out.toarray() if sp is not None and sp.issparse(out) else out
 
 
 def _flatten_row(row: Any) -> list:

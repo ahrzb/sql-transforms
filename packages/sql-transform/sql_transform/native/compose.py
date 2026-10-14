@@ -36,16 +36,27 @@ import pyarrow as pa
 from confit import sql as S
 from sklearn.compose import ColumnTransformer
 from sklearn.compose._column_transformer import _is_empty_column_selection
-from sklearn.impute import MissingIndicator
+from sklearn.ensemble import RandomTreesEmbedding
+from sklearn.feature_selection import SelectorMixin
+from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import (
+    Binarizer,
     FunctionTransformer,
+    KBinsDiscretizer,
+    MaxAbsScaler,
+    Normalizer,
     OneHotEncoder,
     OrdinalEncoder,
+    PolynomialFeatures,
+    RobustScaler,
+    SplineTransformer,
+    StandardScaler,
     TargetEncoder,
 )
 from sklearn.utils._indexing import _determine_key_type, _safe_indexing
 
+from sql_transform._udf import _dense
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import (
     NotNative,
@@ -87,6 +98,96 @@ def _float64_out(est: Any) -> str | None:
     return None
 
 
+# Sparse outputs (decisions/closed/sparse-outputs.md, the ruling). The
+# step reads a sparse output dense (`_udf._dense`), but inside a `Pipeline`
+# a sparse step hands the next step the sparse matrix, and the next step
+# then runs its own sparse branch, where the entries follow the dense one.
+# Measured on each catalog entry that fits on a sparse matrix, one row a
+# call (sklearn 1.9, 2026-10-14): handed the 0/1 matrix of `OneHotEncoder`,
+# `KBinsDiscretizer` or `RandomTreesEmbedding`, each of `_SPARSE_READERS`
+# answers as on its dense array, but `QuantileTransformer` maps the stored
+# values only (under `output_distribution="normal"` a 0 keeps 0.0, where
+# its dense map answers -5.2), a `FunctionTransformer` applies its `func`
+# to the matrix (`np.negative` leaves a 0 at 0.0, not -0.0, and `np.exp`
+# raises), and `Binarizer` under a negative threshold raises. Handed real
+# values (a sparse `SplineTransformer`'s, or an imputer's fill of a stored
+# 1), the scalers, `Normalizer` and `PolynomialFeatures` part from their
+# dense answers by an ulp or more, so a sparse step before the last hands
+# on 0s and 1s only (`_ones`). The step reads a stored -0.0 (an imputer's
+# `fill_value=-0.0`) as 0.0, so each output field of a sparse `Pipeline`
+# is `x + 0.0`.
+_SPARSE_READERS = (
+    SelectorMixin,
+    Binarizer,
+    MaxAbsScaler,
+    StandardScaler,
+    RobustScaler,
+    Normalizer,
+    PolynomialFeatures,
+    SimpleImputer,
+    MissingIndicator,
+    RandomTreesEmbedding,
+    FunctionTransformer,
+)
+
+
+def _sparse(est: Any, sparse_in: bool = False) -> bool:
+    """`est.transform` returns a scipy sparse matrix, handed a dense row
+    (or a sparse matrix: `sparse_in`). An encoder, discretizer, embedding,
+    spline or indicator says so by its parameter, a `ColumnTransformer` by
+    `sparse_output_` (set at fit), a `FeatureUnion` by a part's, a
+    `Pipeline` by its last step's; any other step keeps a sparse input
+    sparse (`_reads_sparse` refuses the rest)."""
+    if isinstance(est, Pipeline):
+        for _, _, step in est._iter(with_final=True, filter_passthrough=True):
+            sparse_in = _sparse(step, sparse_in)
+        return sparse_in
+    if isinstance(est, ColumnTransformer):
+        return bool(est.sparse_output_)
+    if isinstance(est, FeatureUnion):
+        return any(_sparse(part) for _, part, _ in _parts(est))
+    if isinstance(est, OneHotEncoder | RandomTreesEmbedding | SplineTransformer):
+        return bool(est.sparse_output)
+    if isinstance(est, KBinsDiscretizer):
+        return est.encode == "onehot"
+    if isinstance(est, MissingIndicator):
+        return est.sparse is True or (est.sparse == "auto" and sparse_in)
+    return sparse_in
+
+
+def _reads_sparse(step: Any) -> str | None:
+    """Why `step` does not answer a sparse matrix of 0s and 1s as its
+    dense array, or None when it does (above)."""
+    if not isinstance(step, _SPARSE_READERS):
+        return "is handed a sparse matrix, which it is not known to read as dense"
+    if isinstance(step, FunctionTransformer) and step.func is not None:
+        return "is handed a sparse matrix, to which it applies its func"
+    if isinstance(step, Binarizer) and step.threshold < 0:
+        return "is handed a sparse matrix, on which a negative threshold raises"
+    return None
+
+
+def _ones(step: Any) -> bool:
+    """`step`'s output, where sparse, holds only 0s and 1s: an encoder's,
+    a discretizer's or an embedding's from any row, and a reader's from
+    the sparse 0/1 matrix it is handed (the only sparse matrix a step
+    before the last hands on)."""
+    if isinstance(step, OneHotEncoder | KBinsDiscretizer | RandomTreesEmbedding):
+        return True
+    if isinstance(step, SimpleImputer):
+        # A sparse fit refuses `missing_values=0`: on 0s and 1s the imputer
+        # fills a stored 1 alone, with the feature's statistic.
+        m = step.missing_values
+        fills = np.asarray(step.statistics_, dtype=np.float64)
+        fills = fills[~np.isnan(fills)]
+        return not (isinstance(m, numbers.Number) and m == 1) or bool(
+            np.isin(fills, (0.0, 1.0)).all()
+        )
+    return isinstance(step, SelectorMixin | Binarizer | PolynomialFeatures) or (
+        isinstance(step, FunctionTransformer) and step.func is None
+    )
+
+
 @translates(Pipeline, composes=True)
 def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # `transform_input` transforms fit metadata only; `memory` and
@@ -96,6 +197,7 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         raise NotNative(f"Pipeline(transform_input={est.transform_input!r})")
     entries = catalog()
     steps = list(est._iter(with_final=True, filter_passthrough=True))
+    sparse = False
     for k, (_, name, step) in enumerate(steps):
         entry = entries.get(type(step))
         if entry is None:
@@ -112,6 +214,15 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
             raise NotNative(
                 f"Pipeline step {name!r}: {type(step).__name__} is not the last"
                 f" step and {why}, not float64"
+            )
+        why = _reads_sparse(step) if sparse else None
+        if why:
+            raise NotNative(f"Pipeline step {name!r}: {type(step).__name__} {why}")
+        sparse = _sparse(step, sparse)
+        if sparse and k < len(steps) - 1 and not _ones(step):
+            raise NotNative(
+                f"Pipeline step {name!r}: {type(step).__name__} is not the last"
+                " step and hands on a sparse matrix of values other than 0 and 1"
             )
     if not steps and pa.string() in types:
         # Every step passes: the step's float() of a string raises.
@@ -143,7 +254,7 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         types = [pa.bool_() if booleans else pa.float64()] * len(x)
         if k < len(steps) - 1:
             hand = _next_hand(name, step, hand, booleans)
-    return x
+    return [o + f64(0.0) for o in x] if sparse else x
 
 
 def _next_hand(name: str, step: Any, hand: str, booleans: bool) -> str:
@@ -173,7 +284,7 @@ def on_booleans(est: Any, n: int) -> np.dtype | None:
     try:
         with warnings.catch_warnings(), np.errstate(all="ignore"):
             warnings.simplefilter("ignore")
-            return np.asarray(est.transform(np.zeros((1, n), dtype=bool))).dtype
+            return np.asarray(_dense(est.transform(np.zeros((1, n), dtype=bool)))).dtype
     except Exception:  # noqa: BLE001 — the twin raises it too
         return None
 
@@ -191,18 +302,25 @@ def on_booleans(est: Any, n: int) -> np.dtype | None:
 #   axis=1)`, its columns as resolved at fit (a callable's result, a
 #   slice, indices, a boolean mask; names need a DataFrame). A
 #   "passthrough" is a fitted identity `FunctionTransformer` there, so it
-#   hands back its object columns as they are. `_hstack` is `np.hstack`,
-#   or a sparse matrix when `sparse_output_` (set at fit).
+#   hands back its object columns as they are. `_hstack` is `np.hstack`
+#   over the parts, a sparse part made dense (`.toarray()`), or, when
+#   `sparse_output_` (set at fit), `sparse.hstack` over the parts as
+#   `check_array` makes them numbers.
 # - `FeatureUnion.transform`: each part of `_iter()` (skipping "drop"; a
 #   "passthrough" is an identity `FunctionTransformer`, which hands back
 #   the list itself) is handed the whole row, the list; `_hstack` is
-#   `xp.concat(axis=1)` (numpy's concatenate), or sparse when a part's
-#   output is.
+#   `xp.concat(axis=1)` (numpy's concatenate), or `sparse.hstack` when a
+#   part's output is sparse.
 #
 # The step reads the stacked row with `float()`, so a part's output fields
 # keep their values whatever dtype the stack takes (float64, or object
 # beside a passthrough), and a weight is `x * w` in doubles: the twin's
-# product of a float64 (or Python float) by the weight.
+# product of a float64 (or Python float) by the weight. A sparse matrix
+# stores no zero, -0.0 included, and the step makes it dense by adding each
+# stored value to 0.0 (`_udf._dense`): where the stack is sparse, and where
+# a sparse part is weighted (`res * w` scales the stored values only), each
+# output field is `x + 0.0`, which is `x` but for a -0.0, which it makes
+# 0.0 (in DuckDB and confit alike).
 
 
 def _passes(part: Any) -> bool:
@@ -321,9 +439,11 @@ def _part(
     x: list[S.Expr],
     types: list[pa.DataType],
     hand: str,
+    stack: bool,
 ) -> list[S.Expr]:
     """One part's output fields over its own features, weighted; the twin
-    hands it its row as `hand`."""
+    hands it its row as `hand`, and stacks the parts sparse (`stack`) or
+    dense."""
     where = f"{owner} part {name!r}"
     entry = catalog().get(type(part))
     if entry is None:
@@ -343,7 +463,11 @@ def _part(
         out = translate_part(part, x, types, hand)
     except NotNative as e:
         raise NotNative(f"{where}: {e}") from None
-    return out if w is None else [o * f64(w) for o in out]
+    if w is not None:
+        out = [o * f64(w) for o in out]
+    if stack or (w is not None and _sparse(part)):
+        out = [o + f64(0.0) for o in out]
+    return out
 
 
 def _refuse_container(est: Any) -> None:
@@ -357,8 +481,6 @@ def _refuse_container(est: Any) -> None:
 def _column_transformer(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:
-    if est.sparse_output_:
-        raise NotNative("ColumnTransformer: the output is sparse (sparse_output_)")
     _refuse_container(est)
     n = len(x)
     if est.n_features_in_ != n:
@@ -404,6 +526,7 @@ def _column_transformer(
             [x[i] for i in cols],
             [types[i] for i in cols],
             hand,
+            bool(est.sparse_output_),
         )
     return out
 
@@ -412,10 +535,13 @@ def _column_transformer(
 def _union(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     _refuse_container(est)
     weights = est.transformer_weights or {}
+    parts = _parts(est)
+    stack = any(_sparse(part) for _, part, _ in parts)
     out: list[S.Expr] = []
-    for name, part, _ in _parts(est):
+    for name, part, _ in parts:
         if _passes(part) and weights.get(name) is not None:
             # It hands back the step's list, and `list * w` raises.
             raise NotNative(f"FeatureUnion part {name!r}: a weighted passthrough")
-        out += _part("FeatureUnion", name, part, weights.get(name), x, types, handed())
+        w = weights.get(name)
+        out += _part("FeatureUnion", name, part, w, x, types, handed(), stack)
     return out

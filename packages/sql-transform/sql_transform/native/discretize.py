@@ -6,9 +6,12 @@ as a number or a one-hot block (sklearn 1.9,
 raise), then per feature
 `np.searchsorted(bin_edges_[j][1:-1], x_j, side="right")`: the number of
 inner edges at or below `x_j`, stored as a float64. With
-`encode="onehot-dense"` that bin goes through the fitted `_encoder`, a
-`OneHotEncoder` over `np.arange(n_bins_[j])`, so output field `k` of feature
-`j` is 1.0 when `x_j` falls in bin `k`, else 0.0. The strategy (`uniform`,
+`encode="onehot-dense"` or `"onehot"` that bin goes through the fitted
+`_encoder`, a `OneHotEncoder` over `np.arange(n_bins_[j])`, so output
+field `k` of feature `j` is 1.0 when `x_j` falls in bin `k`, else 0.0.
+Under `"onehot"` the encoder's output is sparse: the matrix that
+`"onehot-dense"` makes dense with `.toarray()`, as the step does
+(`_udf._dense`). The strategy (`uniform`,
 `quantile` and its `quantile_method`, `kmeans`) and `n_bins` only shape
 `bin_edges_`, so the entry reads the edges and nothing else.
 
@@ -110,10 +113,6 @@ def _onehot(x: S.Expr, edges: list[float]) -> list[S.Expr]:
 
 @translates(KBinsDiscretizer)
 def _kbins(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
-    if est.encode not in ("ordinal", "onehot-dense"):
-        raise NotNative(
-            f"KBinsDiscretizer(encode={est.encode!r}): the output is sparse"
-        )
     narrow = est.dtype is not None and np.dtype(est.dtype) == np.float32
     if est.dtype is not None and not narrow and np.dtype(est.dtype) != np.float64:
         raise NotNative(f"KBinsDiscretizer(dtype={np.dtype(est.dtype).name})")

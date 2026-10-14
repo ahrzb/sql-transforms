@@ -16,7 +16,9 @@
    other parameters the defaults) maps tree t's leaf onto its block:
    `categories_[t]`, tree t's leaf ids sorted, an output field each, 1.0 at
    the leaf's output field and 0.0 elsewhere, as float64. Every leaf holds a
-   training sample, so every leaf is a category.
+   training sample, so every leaf is a category. Under `sparse_output=True`
+   (the default) the block is sparse, and the step makes it dense
+   (`_udf._dense`): the same values.
 
 Output field k of tree t is 1.0 when the row lands on leaf k of tree t, else
 0.0: the test cast to DOUBLE (`CAST(test AS DOUBLE)`, which builds faster
@@ -125,10 +127,6 @@ def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:
 
 @translates(RandomTreesEmbedding)
 def _embed(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
-    if est.sparse_output:
-        raise NotNative(
-            "RandomTreesEmbedding(sparse_output=True): the output is sparse"
-        )
     cats = est.one_hot_encoder_.categories_
     if len(cats) != len(est.estimators_):
         raise NotNative(
