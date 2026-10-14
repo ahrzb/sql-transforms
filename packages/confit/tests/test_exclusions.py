@@ -77,6 +77,32 @@ def test_a_canary_is_still_excused(rule, seed):
         assert v.raw, "an excused case keeps its raw verdict"
 
 
+@pytest.mark.parametrize(
+    "rule, seed",
+    [
+        pytest.param(r, s, id=f"{r.id}-{s}")
+        for r in X.RULES
+        if r.post is not None
+        for s in r.canaries
+    ],
+)
+def test_a_canary_is_excused_before_the_bracket_too(rule, seed, monkeypatch):
+    """The campaign worker settles the verdict without the bracket while the
+    case holds the reused database, so a witness that reads DuckDB then
+    reads a database of its own (`oracle._take`)."""
+    monkeypatch.setattr(oracle._Reuse, "on", True)
+    monkeypatch.setattr(oracle._Reuse, "con", None)
+    monkeypatch.setattr(oracle._Reuse, "served", 0)
+    monkeypatch.setattr(oracle._Reuse, "held", False)
+    sent = []
+    try:
+        line = oracle.run_case_json(seed, report=False, baseline=sent.append)
+    finally:
+        oracle._discard()
+    got = [(x["kind"], x["klass"]) for x in [*sent, line]]
+    assert got == [("EXCLUDED", rule.id)] * 2, got
+
+
 class _Pair:
     """A UDF with a two-field struct output, the derived-table refusal's
     trigger."""

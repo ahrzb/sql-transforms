@@ -248,6 +248,60 @@ def test_opt_emulated_is_final_and_no_self_leg_replaces_it(monkeypatch):
     assert v.kind == "OPT_EMULATED", v
 
 
+def test_the_baseline_verdict_is_sent_before_the_bracket_reading(monkeypatch, capsys):
+    """The campaign worker sends the verdict without the bracket first, so a
+    bracket reading that runs long costs only its label (`fuzz.runner`).
+    Planted: the optimizer-on reading answers no rows, so the bracket makes
+    the baseline's AGREE a DIVERGE_OPT. The boundary legs ran once, for the
+    baseline verdict, and the line went out with DuckDB's phase marked."""
+    seed = _row_path_agree_seed(monkeypatch, nonempty=True)
+    events = []
+    real_on, real_exec, real_legs = (
+        oracle.Oracle.optimizer_on,
+        oracle._exec,
+        oracle._extra_legs,
+    )
+
+    def optimizer_on(self):
+        events.append("bracket")
+        return real_on(self)
+
+    def bracket_empties(con, sql):
+        out, phase, err = real_exec(con, sql)
+        if events[-1:] == ["bracket"] and out is not None:
+            out = out.slice(0, 0)
+        return out, phase, err
+
+    def legs(*a):
+        events.append("legs")
+        return real_legs(*a)
+
+    def send(first):
+        err = capsys.readouterr().err.splitlines()
+        marks = [ln.split()[1] for ln in err if ln.startswith(oracle.PHASE_MARK)]
+        events.append((first["kind"], marks[-1]))
+
+    monkeypatch.setattr(oracle.Oracle, "optimizer_on", optimizer_on)
+    monkeypatch.setattr(oracle, "_exec", bracket_empties)
+    monkeypatch.setattr(oracle, "_extra_legs", legs)
+    line = oracle.run_case_json(seed, report=False, baseline=send)
+    assert events == ["legs", ("AGREE", "oracle"), "bracket"], events
+    assert line["kind"] == "DIVERGE_OPT", line
+
+
+def test_a_line_sent_before_the_bracket_changes_nothing(monkeypatch):
+    """With or without the line before the bracket, a case's line is the
+    in-process one, and the boundary legs run once."""
+    seed = _row_path_agree_seed(monkeypatch)
+    whole = oracle.run_case_json(seed)
+    calls, sent = [], []
+    real = oracle._extra_legs
+    monkeypatch.setattr(oracle, "_extra_legs", lambda *a: calls.append(1) or real(*a))
+    line = oracle.run_case_json(seed, report=False, baseline=sent.append)
+    assert sent == [whole] and line == whole
+    assert len(calls) == 1
+
+
 def test_a_refusal_keeps_the_oracle_outcome_it_already_computed():
     """REFUSED carries what the baseline reading did with the same query —
     served rows, rejected it at bind/build, or trapped at run time — so the
@@ -314,6 +368,7 @@ def reused(monkeypatch):
     monkeypatch.setattr(oracle._Reuse, "on", True)
     monkeypatch.setattr(oracle._Reuse, "con", None)
     monkeypatch.setattr(oracle._Reuse, "served", 0)
+    monkeypatch.setattr(oracle._Reuse, "held", False)
     yield oracle._Reuse
     oracle._discard()
 
@@ -387,6 +442,20 @@ def test_a_reused_oracle_reads_the_next_baseline_with_the_optimizer_off(reused):
     oracle._give_back(con, [], [])
     again = oracle._take()
     assert again is con and not optimized(again)
+    oracle._give_back(again, [], [])
+
+
+def test_a_reading_while_a_case_holds_the_oracle_gets_a_fresh_one(reused):
+    """The worker settles the baseline verdict while its case holds the
+    reused database, and an exclusion's witness reads DuckDB then. That
+    reading must not take, and empty, the database the bracket still needs."""
+    con = oracle._take()
+    inner = oracle._take()
+    assert inner is not con
+    oracle._give_back(inner, [], [])
+    oracle._give_back(con, [], [])
+    again = oracle._take()
+    assert again is con
     oracle._give_back(again, [], [])
 
 

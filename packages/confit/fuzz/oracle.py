@@ -421,6 +421,7 @@ class _Reuse:
     on = False
     con: Oracle | None = None
     served = 0
+    held = False  # a case has it now, between `_take` and `_give_back`
 
 
 def reuse_oracle() -> None:
@@ -430,18 +431,22 @@ def reuse_oracle() -> None:
 
 def _take() -> Oracle:
     """The oracle a case loads into, optimizer off: a fresh one, or this
-    process's reused one."""
-    if not _Reuse.on:
+    process's reused one. A reading taken while a case holds the reused one
+    gets a fresh one: the worker settles its baseline verdict between the
+    two readings, and an exclusion's witness reads DuckDB too."""
+    if not _Reuse.on or _Reuse.held:
         return Oracle()
     if _Reuse.con is not None and _Reuse.served < _Reuse.CASES:
         try:
             _Reuse.con.execute("PRAGMA disable_optimizer")
             _Reuse.served += 1
+            _Reuse.held = True
             return _Reuse.con
         except Exception:  # noqa: BLE001, S110 -- unusable: a fresh one below
             pass
     _discard()
     _Reuse.con, _Reuse.served = Oracle(), 1
+    _Reuse.held = True
     return _Reuse.con
 
 
@@ -458,6 +463,7 @@ def _give_back(con: Oracle, tables: list[str], udfs: list[tuple[str, bool]]) -> 
     if con is not _Reuse.con:
         con.close()
         return
+    _Reuse.held = False
     try:
         for name in tables:
             con.execute(f'DROP TABLE IF EXISTS "{name}"')
@@ -520,10 +526,11 @@ def _exec(con, sql):
         return None, phase, f"{type(e).__name__}: {e}"
 
 
-def _duck_run(sql, case: G.Case, udf_objs, *, bracket: bool = True):
+def _duck_run(sql, case: G.Case, udf_objs, *, bracket: bool = True, baseline=None):
     """Both readings, on ONE connection: `(optimizer_off, optimizer_on)`.
     Without the `bracket` only the baseline runs, as `(optimizer_off, None)`:
-    what a refusal's report needs.
+    what a refusal's report needs. `baseline`, when given, gets the baseline
+    reading before the bracket runs (`run_case`).
 
     Sharing the connection is not just a saving (the tables materialise once,
     so the second execute is nearly free) — it is also what makes the pair
@@ -543,6 +550,8 @@ def _duck_run(sql, case: G.Case, udf_objs, *, bracket: bool = True):
         off = _exec(con, sql)
         if not bracket:
             return off, None
+        if baseline is not None:
+            baseline(off)
         con.optimizer_on()
         return off, _exec(con, sql)
     finally:
@@ -631,13 +640,19 @@ def refusal_outcome(case: G.Case) -> str:
     return _oracle_outcome(off)
 
 
-def run_case(case: G.Case, *, report: bool = True) -> Verdict:
+def run_case(case: G.Case, *, report: bool = True, baseline=None) -> Verdict:
     """One case's verdict: build both backends, run both DuckDB readings,
     classify, then the boundary legs.
 
     A REFUSED verdict carries `refusal_outcome` unless `report` is off, in
     which case its `oracle` is left empty for the caller to fill (the
     campaign worker does, under its own budget).
+
+    `baseline`, when given, gets the verdict without the bracket before the
+    optimizer-on reading runs: the verdict as if that reading answered like
+    the baseline. The campaign worker sends it, so that a bracket reading
+    that runs long costs only its label (`fuzz.runner`). The verdict
+    returned is the same either way, and the boundary legs run once.
 
     Refusals, traps and disagreements all come back AS a Verdict. An
     exception escaping here is the oracle's own bug, and `run_case_json`
@@ -752,7 +767,6 @@ def run_case(case: G.Case, *, report: bool = True) -> Verdict:
 
     # DuckDB runs after confit, so an excluded case never waits on it.
     _phase("oracle")
-    duck_off, duck_on = _duck_run(sql, case, udf_objs)
 
     # --- compare, against each reading -----------------------------------
     def against(duck) -> Verdict:
@@ -808,53 +822,88 @@ def run_case(case: G.Case, *, report: bool = True) -> Verdict:
             return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", t)
         return Verdict("AGREE", "", "", t)
 
-    v_off, v_on = against(duck_off), against(duck_on)
-    agreed = ("AGREE", "AGREE_TRAP")
-    if "UNSHIPPED" in (v_off.kind, v_on.kind):
-        # An unshipped width outranks the optimizer bracket: neither reading
-        # was value-compared, so neither can be evidence for or against a
-        # plan-rewrite pass.
-        v = v_off if v_off.kind == "UNSHIPPED" else v_on
-    elif v_off.kind in agreed and v_on.kind not in agreed:
-        # Eager semantics agree with us; a pass changes what the USER sees.
-        v = Verdict(
-            "DIVERGE_OPT",
-            v_on.klass,
-            f"agrees with optimizer-off DuckDB, not with optimizer-on: {v_on.detail}",
-            v_on.tags,
-        )
-    elif v_on.kind in agreed and v_off.kind not in agreed:
-        # We answer like a plan-rewrite pass and unlike the oracle: a finding,
-        # never agreement or coverage.
-        v = Verdict(
-            "OPT_EMULATED",
-            v_off.klass,
-            f"agrees with the user-visible optimizer-on answer; the eager "
-            f"baseline differs: {v_off.detail}",
-            v_off.tags,
-        )
-    else:
-        # Either both agree, or neither does — and when neither does, the
-        # baseline is the one to report, because it names the bug without an
-        # optimizer in the way.
-        v = v_off
+    legs: dict[tuple, tuple] = {}  # the boundary legs' outcome, by tags
 
-    # UNSHIPPED still earns the boundary legs: they are OUR side against
-    # itself, with no DuckDB in them, so an unshipped width cannot excuse a
-    # self-inconsistency and a real DIVERGE_VALUE there outranks the class.
-    # OPT_EMULATED does not: it is a mismatch, and like every other mismatch
-    # it is the primary finding, which no later leg may replace.
-    ev.duck_off = duck_off
-    hit = X.post_verdict(ev, v)
-    if hit is not None:
-        return Verdict("EXCLUDED", hit[0], hit[1], v.tags, raw=f"{v.kind} {v.klass}")
-    if v.kind not in ("AGREE", "UNSHIPPED"):
-        return v
-    if trap_cl is not None:
-        return v  # the boundary legs all need a non-trapping row run
-    _phase("confit:legs")
-    extra = _extra_legs(fn_cl, case, table, got_cl, v.tags)
-    return extra if extra is not None else v
+    def settle(duck_off, duck_on) -> Verdict:
+        """The verdict from both readings. `settle(off, off)` is the verdict
+        without the bracket."""
+        v_off, v_on = against(duck_off), against(duck_on)
+        agreed = ("AGREE", "AGREE_TRAP")
+        if "UNSHIPPED" in (v_off.kind, v_on.kind):
+            # An unshipped width outranks the optimizer bracket: neither
+            # reading was value-compared, so neither can be evidence for or
+            # against a plan-rewrite pass.
+            v = v_off if v_off.kind == "UNSHIPPED" else v_on
+        elif v_off.kind in agreed and v_on.kind not in agreed:
+            # Eager semantics agree with us; a pass changes what the USER sees.
+            v = Verdict(
+                "DIVERGE_OPT",
+                v_on.klass,
+                "agrees with optimizer-off DuckDB, not with optimizer-on: "
+                f"{v_on.detail}",
+                v_on.tags,
+            )
+        elif v_on.kind in agreed and v_off.kind not in agreed:
+            # We answer like a plan-rewrite pass and unlike the oracle: a
+            # finding, never agreement or coverage.
+            v = Verdict(
+                "OPT_EMULATED",
+                v_off.klass,
+                f"agrees with the user-visible optimizer-on answer; the eager "
+                f"baseline differs: {v_off.detail}",
+                v_off.tags,
+            )
+        else:
+            # Either both agree, or neither does — and when neither does, the
+            # baseline is the one to report, because it names the bug without
+            # an optimizer in the way.
+            v = v_off
+
+        # UNSHIPPED still earns the boundary legs: they are OUR side against
+        # itself, with no DuckDB in them, so an unshipped width cannot excuse
+        # a self-inconsistency and a real DIVERGE_VALUE there outranks the
+        # class. OPT_EMULATED does not: it is a mismatch, and like every other
+        # mismatch it is the primary finding, which no later leg may replace.
+        ev.duck_off = duck_off
+        hit = X.post_verdict(ev, v)
+        if hit is not None:
+            return Verdict(
+                "EXCLUDED", hit[0], hit[1], v.tags, raw=f"{v.kind} {v.klass}"
+            )
+        if v.kind not in ("AGREE", "UNSHIPPED"):
+            return v
+        if trap_cl is not None:
+            return v  # the boundary legs all need a non-trapping row run
+        key = tuple(v.tags)
+        if key not in legs:
+            _phase("confit:legs")
+            try:
+                legs[key] = (_extra_legs(fn_cl, case, table, got_cl, v.tags), None)
+            except Exception as e:  # noqa: BLE001 -- raised below, each time
+                legs[key] = (None, e)
+        extra, err = legs[key]
+        if err is not None:
+            raise err
+        return extra if extra is not None else v
+
+    def at_baseline(duck_off) -> None:
+        # A verdict that raises is not sent: the case is then settled after
+        # both readings, where it raises again, as in-process.
+        try:
+            v = settle(duck_off, duck_off)
+        except Exception:  # noqa: BLE001
+            v = None
+        # The boundary legs may have marked confit's phase. Marked before the
+        # line goes out: a worker lost after it is in DuckDB
+        # (`fuzz.runner._unbracketed`).
+        _phase("oracle")
+        if v is not None:
+            baseline(v)
+
+    duck_off, duck_on = _duck_run(
+        sql, case, udf_objs, baseline=None if baseline is None else at_baseline
+    )
+    return settle(duck_off, duck_on)
 
 
 def _extra_legs(fn, case, table, got, tags) -> Verdict | None:
@@ -1084,20 +1133,36 @@ def _skip(case: G.Case, e: Exception) -> Verdict:
     return Verdict("SKIP", f"oracle:{type(e).__name__}", str(e), case.tags)
 
 
-def run_case_json(seed: int, *, report: bool = True) -> dict:
+def run_case_json(seed: int, *, report: bool = True, baseline=None) -> dict:
     """`gen(seed)` through `run_case`, as the JSON line the worker prints:
     the verdict, the SQL, and the case's inputs. With `report` off, a
-    REFUSED line has no `oracle` yet and `refusal_json` completes it."""
+    REFUSED line has no `oracle` yet and `refusal_json` completes it. With
+    `baseline`, the line of the verdict without the bracket goes to it
+    before the optimizer-on reading runs (`run_case`)."""
     case = G.gen(seed)
+    of_case: dict = {}  # what both lines carry: computed once
+
+    def line(v: Verdict) -> dict:
+        if not of_case:
+            sql = G.render(case.query)
+            of_case.update(
+                sql=sql,
+                inputs=case_inputs(case),
+                reach=[f"reaches:{f}" for f in sorted(unshipped_reach(sql))],
+                triples=sorted(coverage.key(t) for t in coverage.triples(case.query)),
+            )
+        out = {"seed": seed, "sql": of_case["sql"], **v.to_json()}
+        out["inputs"] = of_case["inputs"]
+        out["tags"] = out["tags"] + of_case["reach"]
+        out["triples"] = of_case["triples"]
+        return out
+
+    send = None if baseline is None else (lambda v: baseline(line(v)))
     try:
-        v = run_case(case, report=report)
+        v = run_case(case, report=report, baseline=send)
     except Exception as e:  # noqa: BLE001 — oracle's own bug, not the engine's
         v = _skip(case, e)
-    sql = G.render(case.query)
-    out = {"seed": seed, "sql": sql, **v.to_json(), "inputs": case_inputs(case)}
-    out["tags"] = out["tags"] + [f"reaches:{f}" for f in sorted(unshipped_reach(sql))]
-    out["triples"] = sorted(coverage.key(t) for t in coverage.triples(case.query))
-    return out
+    return line(v)
 
 
 def refusal_json(seed: int) -> dict:
