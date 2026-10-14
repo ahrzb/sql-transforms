@@ -114,8 +114,34 @@ def test_a_whitened_component_of_rounding_noise_stays_python(make):
     to_native(_step(make().fit(x)), strict=True, allow_bound=True)
 
 
-def test_a_float32_fit_stays_python():
+def test_a_float32_mean_stays_python():
     x, _ = _data(5, 4)
     est = PCA(n_components=2).fit(x.astype(np.float32))
     with pytest.raises(NotNative, match="projects its mean in float32"):
+        to_native(_step(est), strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("make", MAKES[3:], ids=lambda m: type(m()).__name__)
+def test_a_float32_fit_without_a_mean_serves(make):
+    # numpy widens the float32 components to float64 before the product.
+    x, means = _data(5, 6)
+    est = make().fit(x.astype(np.float32))
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_near(6, x, means))
+    assert check(step, native, rows) == rows.num_rows
+
+
+def test_a_projection_takes_a_fit_by_its_estimated_build():
+    from sql_transform.native.project import MAX_BUILD_S, _build_estimate
+
+    # TODO measured shapes on either side of the cap (project.py).
+    assert _build_estimate(512, 32) <= MAX_BUILD_S
+    assert _build_estimate(512, 64) > MAX_BUILD_S
+    x = np.random.default_rng(6).normal(size=(10, 1024))
+    est = GaussianRandomProjection(n_components=64, random_state=0).fit(x)
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated \d+ s build, past 7 s \(64 components over 1,024",
+    ):
         to_native(_step(est), strict=True, allow_bound=True)

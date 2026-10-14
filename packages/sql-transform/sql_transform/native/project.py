@@ -21,18 +21,21 @@ with n the number of features, c_k the component, m the mean (none in
 without `whiten`). Each side's sum of n products is within γ_n·sum_i
 |x_i·c_ki| of the exact one, in any order, fused or not (Higham, *Accuracy
 and Stability of Numerical Algorithms*, §3.1), and the projected mean
-within γ_n·sum_i |m_i·c_ki| on any host. With the subtraction and the
-division, the two sides are within (n + 2)·eps·S_k to first order; n + 3
-also covers the second order and the rounding of S in `check`. `tau_k =
-(2n/s_k + 1)·2**-1074` covers the products and the quotient that underflow.
+within γ_n·sum_i |m_i·c_ki| on any host, where γ_n = n·u/(1 - n·u) and
+u = eps/2. With the subtraction and the division, the two sides are within
+(n + 2)·eps·S_k to first order; n + 3 also covers the second order and the
+rounding of S in `check`. `tau_k = (2n/s_k + 1)·2**-1074` covers the
+products and the quotient that underflow.
 The bound assumes that no partial sum overflows: one order can overflow
 where another does not only past |x_i·c_ki| of about DBL_MAX/n. A step
 within the bound serves only with `to_native(step, allow_bound=True)`.
 
 The translation computes the projected mean with numpy, in the twin's own
-spelling, so that on one host both sides share it. A fitted state in
-float32 projects the mean in float32, which the bound does not cover: the
-step stays Python. A whitened component whose scale sklearn clipped to eps,
+spelling, so that on one host both sides share it. A `PCA` or
+`IncrementalPCA` fitted in float32 projects its mean in float32, which the
+bound does not cover: the step stays Python. A float32 `TruncatedSVD` or
+random projection serves, since numpy widens its components to float64
+before the product. A whitened component whose scale sklearn clipped to eps,
 or whose variance is at most eps times the largest, is rounding noise of
 size O(1) for the twin too: on rank-deficient data the twin flips labels
 against itself about as often as an entry does (the ruling, item 7). The
@@ -89,6 +92,17 @@ def _tau(est: Any) -> np.ndarray:
 
 MATVEC = ErrorScale(k=_k, s=_s, tau=_tau)
 
+# The longest build the entry takes on for one estimator, in seconds, by
+# `_build_estimate` (as quantile.py's, spline.py's and trees.py's caps).
+MAX_BUILD_S = 7.0
+
+
+def _build_estimate(n: int, k: int) -> float:
+    """The seconds confit takes to build the entry (warm, release build), from
+    its n·k products: TODO."""
+    p = n * k
+    return 0.0 * n + 0.0 * p + 0.0 * p * n + 0.0 * p**2 + 0.0 * k**2
+
 
 def _tree(terms: list[S.Expr]) -> S.Expr:
     """The sum of `terms` as a balanced tree: its depth is log2 of their
@@ -105,9 +119,15 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
     name = type(est).__name__
     c = np.asarray(est.components_)
     m = _mean(est)
-    fitted = [c] + ([m] if m is not None else [])
-    if any(a.dtype != np.float64 for a in fitted):
+    if m is not None and np.result_type(m, c) != np.float64:
         raise NotNative(f"{name}: a float32 fit projects its mean in float32")
+    k, n = c.shape
+    estimate = _build_estimate(n, k)
+    if estimate > MAX_BUILD_S:
+        raise NotNative(
+            f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
+            f" ({k:,} components over {n:,} features)"
+        )
     whiten = bool(getattr(est, "whiten", False))
     s = _scale(est)
     if whiten:
@@ -121,11 +141,11 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
     # The twin's own spelling of the projected mean (`_BasePCA._transform`).
     mc = None if m is None else (np.reshape(m, (1, -1)) @ c.T)[0]
     out = []
-    for k, ck in enumerate(c):
-        e = _tree([xi * f64(ci) for xi, ci in zip(x, ck, strict=True)])
+    for j, cj in enumerate(c):
+        e = _tree([xi * f64(ci) for xi, ci in zip(x, cj, strict=True)])
         if mc is not None:
-            e = e - f64(mc[k])
+            e = e - f64(mc[j])
         if whiten:
-            e = e / f64(s[k])
+            e = e / f64(s[j])
         out.append(e)
     return out
