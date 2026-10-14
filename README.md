@@ -109,7 +109,7 @@ For each build, Confit gives one of two outcomes:
 The contract forbids a third mode: a build that succeeds and a function that
 answers differently. The corpus has 678 SQL statements from DuckDB's own test
 suite. Confit serves **543 of 678** bit-exact and refuses the others
-(2026-10-05, [counts](packages/confit/docs/reports/corpus-counts.json)).
+(2026-10-14, [counts](packages/confit/docs/reports/corpus-counts.json)).
 [Known limitations](packages/confit/docs/known-limitations.md) lists the
 refusals and the reasons for them.
 

@@ -161,7 +161,7 @@ analytics. Confit is for serving.
 
 - The corpus has 678 SQL statements from DuckDB's own test suite. Confit
   replays **543 of 678** bit-exact with **zero wrong answers**, and refuses the
-  others with a named error (2026-10-05,
+  others with a named error (2026-10-14,
   [`docs/reports/corpus-counts.json`](docs/reports/corpus-counts.json)).
   `MATCH_FLOOR` in `tests/test_corpus_replay.py` sets a minimum for this
   count, so the count cannot decrease without a test failure.
