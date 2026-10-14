@@ -53,8 +53,8 @@ gives that dense answer.
   are true:
   1. Each step that has a sparse output, except the last step, hands on
      only 0s and 1s.
-  2. Each step that is handed a sparse matrix of 0s and 1s answers it as
-     it answers the dense array of the same values.
+  2. Each step that is handed such a sparse matrix of 0s and 1s answers it
+     as it answers the dense array of the same values.
 - If a `Pipeline` does not meet these conditions, `to_native` returns the
   step unchanged ([claim: to-native-best-effort](catalog-contract.md)).
   `to_native(step, strict=True)` raises `NotNative`, which names the step
@@ -62,10 +62,13 @@ gives that dense answer.
 - The twin never reads -0.0 from a sparse output, because `.toarray()`
   adds each stored value to 0.0. But a step inside a `Pipeline`,
   `ColumnTransformer` or `FeatureUnion` can compute -0.0. So the entry
-  adds 0.0 to each output field of such a transformer that has a sparse
-  output. It also adds 0.0 to each output field of a part that a weight in
-  `transformer_weights` multiplies, if that part has a sparse output.
-  Adding 0.0 changes -0.0 into 0.0 and keeps every other value.
+  adds 0.0 to each output field of a `Pipeline`, `ColumnTransformer` or
+  `FeatureUnion` that has a sparse output. Adding 0.0 changes -0.0 into
+  0.0 and keeps every other value.
+- A `ColumnTransformer` or `FeatureUnion` can multiply the output of a
+  part by a weight (`transformer_weights`). If that part has a sparse
+  output, the entry also adds 0.0 to each output field of the part, after
+  the weight.
 
 *Evidence:* `native/sparse_test.py::test_a_sparse_output_is_served_on_every_row`, `native/sparse_test.py::test_a_sparse_output_that_stays_python_says_why`.
 
