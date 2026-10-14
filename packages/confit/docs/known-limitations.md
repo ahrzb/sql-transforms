@@ -89,9 +89,11 @@ build time. `"filter"` (the default) is the engine's native 0..1;
 serving guarantee) by rejecting anything that can drop a row — a WHERE
 clause, an INNER join (key misses drop); `"many"` (0..N) is the multiplicity opt-in: duplicate-key
 joins, cross joins, and inequality/constant `ON` joins build ONLY under
-it (one join per query, a named rejection) — multiplicity can
-never sneak into a serving path by default. Comma and `ON` self-joins
-serve under `'many'` too, and so do `USING`/`NATURAL` self-joins.
+it — multiplicity can never sneak into a serving path by default. A
+query under `'many'` can have more than one join, and the matches of its
+joins multiply. Comma and `ON` self-joins
+serve under `'many'` too, and so do `USING`/`NATURAL` self-joins. If a
+self-join comes after another join, confit refuses it by name.
 
 The engine serves **row-at-a-time feature transforms**. Whole-relation
 constructs are out of scope because their output shape is not

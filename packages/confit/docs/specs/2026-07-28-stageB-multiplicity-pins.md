@@ -34,6 +34,13 @@ build keys, keyless N-row joins, self-joins) build ONLY under
    EXCLUDE strips one side's (the USING survivor's position depends on
    which copy went — pinned); excluding all of one side's star is legal;
    bare names (and rowid) are ambiguity errors.
+8. **Two or more joins** join in FROM order. Each row that the first joins
+   produce, matched or null-extended, goes into the next join, and the next
+   join applies rules 1 to 5 to it. A key of a later join can read the
+   columns of an earlier join. DuckDB with the optimizer off evaluates the
+   keys of a later join for each row that reaches that join. So such a key
+   traps for a row that an earlier LEFT join null-extends, and it does not
+   trap for a row that an earlier INNER join drops.
 
 ## Order is not part of the contract
 
@@ -47,17 +54,23 @@ single-threaded, one probe row's matches land ~2048 rows apart.
 Parity for `shape='many'` is therefore **multiset** (both sides sorted
 before comparing). confit's own order is deterministic: probe rows in input
 order; all matches for one probe row contiguous, in build INSERTION order;
-the LEFT null-extension in place. confit refuses ORDER BY.
+the LEFT null-extension in place. With two or more joins, the matches of a
+later join follow each row of the earlier joins in the same way. confit
+refuses ORDER BY.
 
 ## confit's implementation
 
-- The single join lowers as a loop over the multimap row range for the
-  probe key (`ProbeRange`; a NULL key forces an empty range). The residual
-  gates match-ness; WHERE gates emission only; LEFT emits the
-  null-extension row when no match survived (`lower_many_loop` in
-  `src/specializer/lower.rs`).
-- Under `shape='many'` confit refuses more than one join per query and
-  IS NOT DISTINCT FROM join keys.
+- Each join lowers as a loop over the multimap row range for its probe
+  key (`ProbeRange`; a NULL key forces an empty range). The loops nest in
+  FROM order. The residual gates match-ness; WHERE gates emission only;
+  LEFT emits the null-extension row when no match survived
+  (`lower_many_loops` in `src/specializer/lower.rs`).
+- Under `shape='many'` confit refuses IS NOT DISTINCT FROM join keys, a
+  join in a query with a subquery, and a self-join after another join.
+  In a self-join, DuckDB with the optimizer off evaluates the keys of the
+  second copy of the request table for every request of the batch. Confit
+  evaluates a later join only for the rows that reach it. So a trap in
+  those keys can differ.
 - The corpus replay (`tests/test_corpus_replay.py`) retries with
   `shape='many'` only on the named multiplicity refusals, so the
   default-shape refusals stay proven.

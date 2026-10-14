@@ -4163,26 +4163,116 @@ fn many_shape_dup_key_joins_fan_out() {
         Ok(_) => panic!("dup keys under the default shape must error"),
     };
     assert!(e.contains("duplicate map key"), "{e}");
-    // Multi-join under 'many' is a named restriction.
-    let dim_b = stat("d", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
-    let dim2 = stat("d2", &[("id", Ty::I64, false), ("w", Ty::I64, false)]);
-    let e = match super::prepare_opaque(
-        "SELECT pid FROM __THIS__ LEFT JOIN d ON pid = d.id LEFT JOIN d2 ON pid = d2.id",
-        "__THIS__",
-        &schema,
-        &[],
-        &[],
-        &[dim_b, dim2],
-        true,
+}
 
-        &[],
-        &[],
-        &[],
-    ) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("multi-join under many must be the named restriction"),
+#[test]
+fn many_shape_nested_joins() {
+    // One loop per join, nested in FROM order: join 2 runs for every row
+    // join 1 produces, matched or null-extended, so the order is the
+    // outer loop's, then the inner one's build INSERTION order.
+    let schema = cols(&[("pid", Ty::I64, true)]);
+    let d = stat("d", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
+    let d2 = stat("d2", &[("id", Ty::I64, false), ("w", Ty::I64, false)]);
+    let entries = |kv: &[(i64, i64)]| {
+        StaticData::Map(
+            kv.iter()
+                .map(|&(k, v)| (vec![KeyBits::I64(k)], vec![ScalarVal::I64(v)]))
+                .collect(),
+        )
     };
-    assert!(e.contains("one join per query"), "{e}");
+    let input = || batch(4, vec![c_i64(&[Some(1), Some(2), Some(3), None])]);
+    let run_many = |sql: &str, d2_rows: &[(i64, i64)]| -> Result<Vec<Vec<String>>, String> {
+        let p = super::prepare_opaque(
+            sql,
+            "__THIS__",
+            &schema,
+            &[],
+            &[],
+            &[d.clone(), d2.clone()],
+            true,
+            &[],
+            &[],
+            &[],
+        )
+        .map_err(|e| e.to_string())?;
+        let data = vec![entries(&[(1, 10), (2, 20), (1, 11)]), entries(d2_rows)];
+        let f = compile(&p.program, data).map_err(|e| e.to_string())?;
+        run_snapshot(&f, &input()).map_err(|e| e.to_string())
+    };
+
+    // Two joins on the row: their matches multiply, and a LEFT miss of
+    // the first still reaches the second.
+    let star = [(1, 100), (3, 300), (1, 101)];
+    assert_eq!(
+        run_many(
+            "SELECT pid, v, w FROM __THIS__ LEFT JOIN d ON pid = d.id \
+             LEFT JOIN d2 ON pid = d2.id",
+            &star,
+        )
+        .unwrap(),
+        rows(&[
+            &["1", "10", "100"],
+            &["1", "10", "101"],
+            &["1", "11", "100"],
+            &["1", "11", "101"],
+            &["2", "20", "NULL"],
+            &["3", "NULL", "300"],
+            &["NULL", "NULL", "NULL"],
+        ])
+    );
+    assert_eq!(
+        run_many(
+            "SELECT pid, v, w FROM __THIS__ JOIN d ON pid = d.id JOIN d2 ON pid = d2.id",
+            &star,
+        )
+        .unwrap(),
+        rows(&[
+            &["1", "10", "100"],
+            &["1", "10", "101"],
+            &["1", "11", "100"],
+            &["1", "11", "101"],
+        ])
+    );
+    // A chain: the second join's key is a column of the first; the
+    // second's residual and the WHERE read both.
+    let chain = [(10, 100), (11, 110), (10, 101), (20, 200)];
+    assert_eq!(
+        run_many(
+            "SELECT pid, v, w FROM __THIS__ LEFT JOIN d ON pid = d.id \
+             LEFT JOIN d2 ON d.v = d2.id AND d2.w - d.v > 95",
+            &chain,
+        )
+        .unwrap(),
+        rows(&[
+            &["1", "10", "NULL"],
+            &["1", "11", "110"],
+            &["2", "20", "200"],
+            &["3", "NULL", "NULL"],
+            &["NULL", "NULL", "NULL"],
+        ])
+    );
+    assert_eq!(
+        run_many(
+            "SELECT pid, v, w FROM __THIS__ JOIN d ON pid = d.id \
+             LEFT JOIN d2 ON d.v = d2.id WHERE w IS NULL OR w > 100",
+            &chain,
+        )
+        .unwrap(),
+        rows(&[
+            &["1", "10", "101"],
+            &["1", "11", "110"],
+            &["2", "20", "200"]
+        ])
+    );
+    // A self-join after another join refuses by name: its batch side is
+    // built over the whole batch on DuckDB, reached or not.
+    let e = run_many(
+        "SELECT 1 FROM __THIS__ JOIN d ON __THIS__.pid = d.id \
+         JOIN __THIS__ t2 ON __THIS__.pid = t2.pid",
+        &star,
+    )
+    .unwrap_err();
+    assert!(e.contains("a self-join after another join"), "{e}");
 }
 
 #[test]

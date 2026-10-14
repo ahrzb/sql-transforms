@@ -69,8 +69,8 @@ reads the request table; this is not the removed whole-query fold
 **Stays refused, by name**: aggregation, `GROUP BY`, `DISTINCT`, `ORDER BY`,
 row limits or windows over request rows at any level; a CTE referenced twice;
 correlated, scalar and `IN (SELECT …)` subqueries, `LATERAL`, set operations; a
-static-only body that aggregates; under `shape='many'`, more than one join in
-the whole pipeline.
+static-only body that aggregates; under `shape='many'`, a join in a query with
+more than one stage.
 
 ## DuckDB semantics to reproduce
 
@@ -158,11 +158,12 @@ output row. It is not once per original request row.
 
 ### `shape='many'`
 
-The one-join restriction stays global across the pipeline: at most one join in
-the whole query, at any stage (the guard at `lower.rs` becomes a count over all
-stages). A join at one stage under `many` followed by further stages lowers as
-the existing loop with the later stages inside its body. Joins at two stages
-under `many` would compose multiplicities and are out of scope.
+Under `many`, a query with a join has one stage. Confit refuses a join in a
+query with more than one stage, by name (`a subquery under a shape='many'
+join`). One stage can have any number of joins: they lower as nested loops,
+one for each join ([multiplicity pins](2026-07-28-stageB-multiplicity-pins.md)).
+Joins at two stages under `many` would compose multiplicities across a level,
+and they are out of scope.
 
 ### Phase 2: static-derived relations
 
@@ -208,7 +209,7 @@ The IR, both backends, the verifier and the boundary.
 | a constant folded across a level | a slot is never foldable; bind-time folding stops at the level boundary | `k + 9223372036854775807` on 3 rows and on 0 rows |
 | a bare NULL typed too early, or re-typed by materialization | binding schema kept apart from storage; the named SQLNULL refusal in both phases | the `x \|\| 'a'` case, derived and phase-2 forms |
 | `shape='map'` proved wrong | the one-row proof walks every stage | shape-contract tests per stage |
-| `shape='many'` multiplicity composed | one join per pipeline | two joins at different stages refuse |
+| `shape='many'` multiplicity composed across levels | a join under `many` needs a single stage | a join beside a derived table refuses |
 | a name resolves where DuckDB's binder errors | each level binds against its closed scope | the closed-scope cases |
 | two levels collide on a regex, join or model ID | IDs allocated by the shared query context | the same static table joined at two levels |
 | phase 2: a static body that traps serves anyway | construction-time run; the named refusal | the static `CAST` case on 0 and 2 request rows |
