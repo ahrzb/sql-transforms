@@ -54,14 +54,6 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    asks the owner to extend the empty-static ruling
    ([decisions/open/all-null-key-static.md](decisions/open/all-null-key-static.md)).
    Still open from it:
-   - TIMEOUT 4667128 is no trap: the request table has no rows and both
-     readings agree, but the optimizer-on reading folds a constant
-     `repeat('0', 2147483647)` inside a SQL function at plan time (about
-     0.5 s per 10^8 characters). The bracket reading could run under its own
-     time limit, so that a slow bracket costs only the DIVERGE_OPT label.
-     The pause nights add 5068704 and 7731793: a constant
-     `lpad(..., 2147483647, ...)` under a WHERE that is always false; the
-     optimizer-off reading returns no rows in 0.45 s, as confit does.
    - DuckDB's hash join also skips the ON clause of a LEFT JOIN whose static
      keys are all NULL, while confit still evaluates it (not yet seen in a
      campaign; an AnyJoin reads such a static row by row, so the plan shape
@@ -89,7 +81,10 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
 
    Not confit defects: TIMEOUT 6154334 is `levenshtein` over two strings of
    131,068 characters (DuckDB 73 s, confit 55 s; confit runs first, so the
-   20 s limit stops confit); 5068704 and 7731793 are the bracket item above;
+   20 s limit stops confit); in 5068704 and 7731793, as in 4667128, only the
+   optimizer-on reading folds a constant string of 2^31 - 1 characters, and
+   it now runs under a time limit of its own (`--bracket-timeout`), so they
+   keep their optimizer-off verdict;
    24 of the 26 DuckDB TIMEOUTs with seeds are the open oracle-TIMEOUT
    record's mechanism, and the two OPT_EMULATED cases (7242549, 7829571)
    are the all-NULL-key record's. Their seeds are in those two records.

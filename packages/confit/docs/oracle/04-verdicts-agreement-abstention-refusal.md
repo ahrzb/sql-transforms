@@ -13,7 +13,8 @@ otherwise the order is:
 2. classify construction refusal (its DuckDB reading is report-only, see claim:
    refusal-absorb) or execute both confit backends;
 3. settle backend agreement;
-4. execute optimizer-off and optimizer-on DuckDB on one connection;
+4. execute optimizer-off and optimizer-on DuckDB on one connection (a campaign worker
+   sends a first verdict between the two, see claim: optimizer-on-budget);
 5. compare confit separately with each DuckDB reading;
 6. form the optimizer bracket; and
 7. for eligible row-path results, run confit-only boundary and ordering legs.
@@ -26,6 +27,47 @@ evidence about an optimizer pass.
 *Enforced-by:* `fuzz.oracle._duck_run` and `fuzz.oracle.run_case`.
 *Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_opt_emulated_is_final_and_no_self_leg_replaces_it`.
 
+**claim: optimizer-on-budget.** A campaign worker sends each verdict that needs DuckDB
+in two lines. It sends the first line after the optimizer-off reading and the boundary
+legs, before the optimizer-on reading starts. That line is the verdict that the case
+gets if the optimizer-on reading gives the optimizer-off answer. The second line is the
+whole verdict. The runner waits for the second line under its own budget
+(`--bracket-timeout`, 5 s). The optimizer-on reading ends in one of three ways:
+
+- It finishes. The second line replaces the first.
+- It runs past the budget, or its worker dies in DuckDB. The first line stays, with
+  `bracket` set to `over-budget` or `died`, and the runner replaces the worker. This is
+  never a `TIMEOUT` or `PANIC`.
+- It raises. That is the oracle's own bug, so the case becomes `SKIP`, as it does
+  in-process.
+
+If the worker is lost in confit after the first line, the case is a `TIMEOUT` or `PANIC`
+as before. That can occur only in the boundary legs. They run after the optimizer-on
+reading only when the verdict of the first line did not need them.
+
+The budget matters because DuckDB's optimizer can fold a constant string of 2^31 - 1
+characters while it plans the query, and DuckDB cannot interrupt that (seeds 4667128,
+5068704 and 7731793). If the optimizer-on reading does not finish, the case keeps the
+verdict of the first line. It loses only the label that the optimizer-on reading can
+add: an `AGREE` that the reading would make `DIVERGE_OPT` stays `AGREE`, and a gated
+`DIVERGE_*` verdict that the reading would make `OPT_EMULATED` stays gated. The campaign
+report lists these cases with their seeds.
+
+The time limit of a case covers confit, the optimizer-off reading and the boundary legs,
+but not the optimizer-on reading. So a case whose two readings together take longer than
+that limit still gets a verdict when the optimizer-off reading fits in it (seeds 9195711
+and 9200287 get `AGREE_TRAP`).
+
+*Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle._duck_run`, `fuzz.oracle._take`,
+`fuzz.worker`, `fuzz.runner._drive`, `fuzz.runner._unbracketed` and
+`fuzz.runner.report`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_the_baseline_verdict_is_sent_before_the_bracket_reading`,
+`::test_a_line_sent_before_the_bracket_changes_nothing`,
+`packages/confit/tests/test_exclusions.py::test_a_canary_is_excused_before_the_bracket_too`,
+`packages/confit/tests/test_fuzz_runner.py::test_a_bracket_reading_costs_at_most_its_label`,
+`::test_a_worker_lost_in_confit_after_the_baseline_verdict_is_blamed` and
+`::test_an_unfinished_bracket_is_reported_with_its_reason`.
+
 **claim: oracle-reuse.** A campaign worker and the shrinker keep one oracle database for
 many cases (`fuzz.oracle.reuse_oracle`). Every other caller opens a fresh one per case.
 A reused database answers as a fresh one would, because nothing a verdict reads outlives
@@ -37,6 +79,10 @@ its case:
 - its UDFs are registered for it and removed after it;
 - the optimizer is switched off again before the next case's baseline.
 
+While a case holds the database, another reading in the same process opens a fresh one:
+the worker settles its first verdict line between the two readings, and an exclusion's
+witness can read DuckDB then.
+
 The database is reused only after its catalog is verified empty: no table, no
 non-internal view, every UDF removed. Any failure while emptying it discards it, and a
 database retires after 1000 cases anyway. What the catalog does not show is process
@@ -47,8 +93,9 @@ could at most move a `memory_limit` trap, and retirement bounds it.
 `fuzz.oracle._give_back`, used by `fuzz.worker` and `fuzz.shrink`.
 *Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_reused_oracle_answers_like_a_fresh_one`,
 `::test_a_reused_oracle_is_emptied_and_a_leftover_discards_it`,
-`::test_a_failed_load_leaves_nothing_for_the_next_case`, and
-`::test_a_reused_oracle_reads_the_next_baseline_with_the_optimizer_off`. A 20,000-seed
+`::test_a_failed_load_leaves_nothing_for_the_next_case`,
+`::test_a_reused_oracle_reads_the_next_baseline_with_the_optimizer_off`, and
+`::test_a_reading_while_a_case_holds_the_oracle_gets_a_fresh_one`. A 20,000-seed
 campaign agreed with fresh databases case for case on every verdict the reuse could
 touch (PR #310).
 

@@ -7,7 +7,10 @@ Each worker is a subprocess reading seeds line-by-line; a dead or hung worker
 is killed, blamed for its in-flight seed (PANIC/TIMEOUT finding, stderr tail
 attached), and replaced. A refused query's DuckDB reading is reporting only,
 so it runs after the verdict, under its own --report-timeout, and running
-out of that costs the report an outcome, not a finding. Verdict counts,
+out of that costs the report an outcome, not a finding. Likewise the
+optimizer-on (bracket) reading runs after the baseline verdict is sent,
+under its own --bracket-timeout, and running out of that costs the verdict
+its bracket label (DIVERGE_OPT, OPT_EMULATED), not a TIMEOUT. Verdict counts,
 refusal classes, the unshipped-feature bucket, and a construct-coverage
 histogram over AGREE cases print at the end — a grammar hole should be
 visible, not silent.
@@ -110,6 +113,20 @@ UNFINISHED = tuple(_UNFINISHED_NOTE)
 # (seed 1014384), so the budget also bounds a worker's memory.
 REPORT_TIMEOUT = 5.0
 
+# A verdict whose bracket reading did not finish (see `_drive`): it stays the
+# baseline verdict, and this says why.
+_BRACKET_NOTE = {
+    "over-budget": "the reading ran past --bracket-timeout",
+    "died": "the worker died in the reading",
+}
+UNBRACKETED = tuple(_BRACKET_NOTE)
+
+# Seconds the optimizer-on reading may take once the baseline verdict is out.
+# A typical one takes milliseconds, like the baseline. The ones past this
+# fold a gigabyte constant at plan time (seeds 4667128, 5068704, 7731793:
+# `repeat` or `lpad` to 2^31 - 1 characters), which DuckDB cannot interrupt.
+BRACKET_TIMEOUT = 5.0
+
 
 def _spawn():
     """A worker subprocess and the temp file holding its stderr, as
@@ -166,12 +183,18 @@ def _read(proc, timeout: float) -> tuple[str, bool]:
     return line, fired.is_set()
 
 
-def _drive(seeds, results, timeout, lock, report_timeout):
+def _drive(seeds, results, timeout, lock, report_timeout, bracket_timeout):
     """One worker thread: seeds off the shared iterator (`lock` guards it)
     into a subprocess, verdict dicts onto `results`.
 
     `timeout` is per seed, in seconds. A worker that dies or outruns it is
     killed, blamed for the seed it was holding, and replaced.
+
+    A verdict marked `"bracket": "pending"` is the verdict without the
+    optimizer-on reading, and the whole verdict follows it. That line is
+    read under `bracket_timeout` instead: a worker that outruns that or dies
+    in DuckDB keeps the baseline verdict, marked `over-budget` or `died`,
+    and is replaced (`_unbracketed`).
 
     A REFUSED verdict arrives before DuckDB has run, and the report-only
     reading that completes it (`fuzz.oracle.refusal_json`) is read under
@@ -201,6 +224,10 @@ def _drive(seeds, results, timeout, lock, report_timeout):
         line, fired = _read(proc, timeout)
         if line:
             r = json.loads(line)
+            if r.get("bracket") == "pending":
+                rest, over = ("", True) if fired else _read(proc, bracket_timeout)
+                r = json.loads(rest) if rest else _unbracketed(r, over, err)
+                fired = fired or over or not rest
             if r["kind"] == "REFUSED":
                 rest, over = ("", True) if fired else _read(proc, report_timeout)
                 if rest:
@@ -223,6 +250,17 @@ def _drive(seeds, results, timeout, lock, report_timeout):
     proc.stdin.close()
     proc.wait(timeout=10)
     err.close()
+
+
+def _unbracketed(r: dict, over: bool, err) -> dict:
+    """The verdict when the line after a pending one did not come: `r`, the
+    baseline verdict, marked with why, if the worker was in DuckDB. A worker
+    lost anywhere else (the boundary legs, which a bracketed verdict can
+    still need) is blamed like any other."""
+    stderr = _stderr_all(err)
+    if side_of(stderr) != "oracle":
+        return blame(r["seed"], "TIMEOUT" if over else "PANIC", stderr[-800:], stderr)
+    return {**r, "bracket": "over-budget" if over else "died"}
 
 
 def blame(seed: int, kind: str, detail: str, stderr: str | None = None) -> dict:
@@ -331,6 +369,7 @@ def campaign(
     timeout: float,
     out: Path,
     report_timeout: float = REPORT_TIMEOUT,
+    bracket_timeout: float = BRACKET_TIMEOUT,
 ):
     """Seeds `start .. start + n - 1` across `workers` subprocesses: reports,
     writes the findings to `out`, and returns every verdict dict."""
@@ -338,10 +377,9 @@ def campaign(
     seeds = iter(range(start, start + n))
     results: list[dict] = []
     lock = threading.Lock()
+    budgets = (report_timeout, bracket_timeout)
     threads = [
-        threading.Thread(
-            target=_drive, args=(seeds, results, timeout, lock, report_timeout)
-        )
+        threading.Thread(target=_drive, args=(seeds, results, timeout, lock, *budgets))
         for _ in range(workers)
     ]
     for t in threads:
@@ -392,6 +430,19 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
         by_side = "  ".join(f"{k} {c}" for k, c in sorted(sides.items()))
         line = f"  {kind:22} {len(hit):6}  {100 * len(hit) / n:5.1f}%"
         print(line + (f"  {by_side}" if kind != "SKIP" and hit else ""))
+
+    # A bracket reading that did not finish leaves the baseline verdict
+    # (`_drive`), counted above under it: only its optimizer-on label is
+    # unknown.
+    unbracketed = [r for r in results if r.get("bracket") in UNBRACKETED]
+    if unbracketed:
+        print("\n== bracket readings that did not finish ==")
+        for outcome, note in _BRACKET_NOTE.items():
+            seeds = sorted(r["seed"] for r in unbracketed if r["bracket"] == outcome)
+            if seeds:
+                more = ", ..." if len(seeds) > 5 else ""
+                some = ", ".join(map(str, seeds[:5])) + more
+                print(f"  {outcome:14} {len(seeds)}  {note}: seeds {some}")
 
     # Each exclusion's count against its expected rate (fuzz/exclusions.py):
     # a count far above it means the scope reaches something new.
@@ -576,6 +627,12 @@ def main():
         default=REPORT_TIMEOUT,
         help="seconds for a refused query's report-only DuckDB reading",
     )
+    ap.add_argument(
+        "--bracket-timeout",
+        type=float,
+        default=BRACKET_TIMEOUT,
+        help="seconds for the optimizer-on DuckDB reading after the baseline verdict",
+    )
     ap.add_argument("--out", type=Path, default=Path("findings.jsonl"))
     ap.add_argument("--cases", type=Path, help="write every seed's verdict here")
     ap.add_argument(
@@ -588,7 +645,13 @@ def main():
     )
     a = ap.parse_args()
     results = campaign(
-        a.seed, a.n, a.workers, a.timeout, a.out, report_timeout=a.report_timeout
+        a.seed,
+        a.n,
+        a.workers,
+        a.timeout,
+        a.out,
+        report_timeout=a.report_timeout,
+        bracket_timeout=a.bracket_timeout,
     )
     if a.cases is not None:
         write_cases(results, a.cases)
