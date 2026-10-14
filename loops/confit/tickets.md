@@ -18,7 +18,8 @@ DuckDB does, and lets the campaign generator declare SQL functions. It merged in
 each element of a list output, and each field of a struct output, that a SQL function's `null_when` can make
 NULL without a CASE of its own where the element cannot trap; #417 had made such builds up to 5x slower. It
 merged inline as #422. T9 serves more than one join under `shape='many'` (ruled class 4). It merged inline as
-#449.
+#449. T10 refuses by name a comma join whose WHERE terms come in an order where DuckDB and confit trap on
+different rows, and adds a campaign generator step for such joins. It merged inline as #451.
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
