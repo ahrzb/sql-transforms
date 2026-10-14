@@ -2148,12 +2148,17 @@ def test_isotonic_refuses_two_features():
         to_native(step, strict=True)
 
 
-def test_isotonic_refuses_past_its_cap(monkeypatch):
-    from sql_transform.native import isotonic
+def test_isotonic_takes_a_fit_by_its_estimated_build():
+    from sql_transform.native.isotonic import MAX_BUILD_S, _build_estimate
 
-    monkeypatch.setattr(isotonic, "MAX_THRESHOLDS", 5)
-    with pytest.raises(NotNative, match="10 thresholds: past the 5"):
-        to_native(_isotonic_step(_fitted_isotonic()), strict=True)
+    # 10,555 thresholds built in 5.8 s and 12,314 in 7.4 s (isotonic.py,
+    # `_build_estimate`), where a count of 8,000 thresholds was the cap.
+    assert _build_estimate(10_554) <= MAX_BUILD_S
+    assert _build_estimate(12_313) > MAX_BUILD_S
+    X = np.arange(13_000.0)
+    step = _isotonic_step(IsotonicRegression().fit(X, X))
+    with pytest.raises(NotNative, match=r"an estimated 8 s build, past 7 s"):
+        to_native(step, strict=True)
 
 
 def test_isotonic_refuses_a_fused_interp(monkeypatch):

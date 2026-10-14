@@ -8,16 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **`QuantileTransformer`'s cap as a build estimate.**
-   `quantile.MAX_QUANTILES` caps the quantiles summed over the features at
-   8,000, where the builds of 2026-10-05 took 6.2-8.0 s. On reading 5's
-   machine one feature at 8,000 builds in 8.5 s with reading 4's code and
-   in 9.9 s with master (warm, uv's CPython; master at 1,000, 2,000 and
-   4,000: 0.73, 2.21 and 4.39 s), past `MAX_BUILD_S` (finding 68). Fit the
-   seconds on (quantiles, features) as `trees.py` and `spline.py` do, and
-   refuse past 7 s. `isotonic.MAX_THRESHOLDS` (8,000 thresholds, 5.8 s on
-   2026-10-05) is the same kind of cap.
-2. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
+1. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
    probes each part on its own input, so a later step's tests read the
    outputs of the step before (a `PolynomialFeatures` product can overflow
    to ±inf), and confit binds each value read twice once (#412). The
@@ -78,10 +69,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   The rest is open, low priority for confit: a struct read field by
   field still builds 1.2 to 3.7 times as slowly as a list
   (`RandomTreesEmbedding` of 100 trees of depth 5: 1.6 s against 0.7 s),
-  and this sets the forest and spline caps. A confit-only struct of 2,000
-  fields over 64 parameters builds in 1.1 to 1.4 s read field by field
-  and 0.09 s read whole (loops/confit/PLANS.md). When it lands, measure
-  the builds again and refit the estimates.
+  and this sets the forest, spline and quantile caps (`QuantileTransformer`
+  over 800 features of one leaf: 5.7 s against 1.1 s, master 94d7bb1). A
+  confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
+  1.4 s read field by field and 0.09 s read whole (loops/confit/PLANS.md).
+  When it lands, measure the builds again and refit the estimates.
 - **A named refusal, not a Cranelift verifier error.** `OneHotEncoder`
   over 16 string features of 125 categories (2,000 fields) stopped after
   31 s with `cranelift define: verifier error`, an internal error, where
@@ -100,10 +92,17 @@ that request, `to_native(step, allow_bound=True)`. In order:
   needs it: `QuantileTransformer` answers both searches from one tree
   whose leaves compute both lines (T12), 0.5, 1.3, 2.7-3.2 s at 1,000,
   2,000, 4,000 quantiles over one feature against 1.4, 4.7, 23 s for the
-  two trees (release build, one container, 2026-10-05); capped at 8,000
-  quantiles over an estimator's features (6-8 s at that sum). Low priority
+  two trees (release build, one container, 2026-10-05); capped since T34
+  at an estimated 7 s build (`quantile._build_estimate`). Low priority
   for confit: a future entry that needs two trees in one expression would
   raise it again.
+- **A cheaper pass over a function body in Python.** confit's
+  `SqlFunction` writes a body's values read twice as bound values
+  (`sql.shared_texts`, #412) in Python, and it rebuilds every node of the
+  body to do so. For `QuantileTransformer` at 8,000 quantiles over one
+  feature it takes 1.7 to 1.9 s beside a build of 6.9 to 7.3 s, in a
+  `to_native` of 8.8 to 9.1 s (release build, master 94d7bb1, T34). The
+  build estimates do not count it. Low priority for confit.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
@@ -186,8 +185,10 @@ Configurations a translator declines (`NotNative`), each with its ground:
   (searchsorted's answer is then its search order's), which no strategy
   fits on finite data.
 - `QuantileTransformer(output_distribution="normal")`: scipy's
-  `norm.ppf` has no SQL twin. Past 8,000 quantiles over an estimator's
-  features, where builds reach 6-8 s (`quantile.MAX_QUANTILES`).
+  `norm.ppf` has no SQL twin. A fit whose build is estimated past 7 s
+  (`quantile._build_estimate`, from the leaves and the features): 10
+  quantiles over 800 features build in 11.4 s. 8,000 quantiles over one
+  feature build in 6.9 to 7.4 s and are served (master 94d7bb1, T34).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
@@ -268,10 +269,10 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `ColumnTransformer` with a passthrough part before the last step of a
   `Pipeline` (its object output, as for the `Pipeline` rule above).
 - `IsotonicRegression` with float32 thresholds (the twin casts its input
-  to float32), past 8,000 thresholds (about 6 s to build; one CASE tree
-  builds in about 0.7 ms a threshold, 22 s at 20,000), with thresholds
-  further apart than a double spans, or on a platform whose `np.interp`
-  fuses its multiply-add (`quantile.interp_is_numpys`).
+  to float32), past an estimated 7 s build (`isotonic._build_estimate`,
+  at about 11,700 thresholds: 12,314 build in 7.4 s on master 94d7bb1),
+  with thresholds further apart than a double spans, or on a platform
+  whose `np.interp` fuses its multiply-add (`quantile.interp_is_numpys`).
 - `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
   `np.max` and `np.min` included: on a tie of signed zeros numpy's SIMD
   reduction answers the zero its lane order reaches, neither the first

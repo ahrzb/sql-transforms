@@ -15,7 +15,14 @@ from sklearn.preprocessing import QuantileTransformer
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import NotNative, check, to_native
-from sql_transform.native.quantile import _both, _leaves, interp_is_numpys
+from sql_transform.native.quantile import (
+    MAX_BUILD_S,
+    _both,
+    _build_estimate,
+    _leaves,
+    _leaves_of,
+    interp_is_numpys,
+)
 
 
 def _step(X: np.ndarray, **params) -> PythonTransform:
@@ -200,10 +207,36 @@ def test_runs_of_zeros_of_either_sign(zeros):
     assert check(step, to_native(step, strict=True), _rows(step, 3)) > 0
 
 
-def test_past_the_quantile_budget_stays_python():
-    X = np.random.default_rng(4).normal(size=(2500, 9))
-    step = _step(X, n_quantiles=1000)
-    with pytest.raises(NotNative, match="9000 quantiles, past the 8000"):
+def _estimate(X: np.ndarray, **params) -> float:
+    est = _step(X, **params).instances[0]
+    r = np.asarray(est.references_, dtype=np.float64)
+    trees = [_leaves_of(np.asarray(q, dtype=np.float64), r) for q in est.quantiles_.T]
+    arms = sum(at is not None for t in trees for _, _, at in t)
+    return _build_estimate(sum(map(len, trees)), arms, len(trees))
+
+
+def test_the_entry_takes_a_fit_by_its_estimated_build():
+    # 8,000 quantiles over one feature build in 6.9-7.4 s, and 500 over 32
+    # integer features in 5.5 s: their runs of equal quantiles leave about
+    # 155 leaves a feature. The count of 8,000 quantiles before refused the
+    # second (quantile.py, `_build_estimate`).
+    rng = np.random.default_rng(4)
+    X = rng.normal(size=(16000, 1))
+    assert _estimate(X, n_quantiles=8000) <= MAX_BUILD_S
+    ints = rng.integers(0, 125, size=(2000, 32)).astype(float)
+    assert _estimate(ints, n_quantiles=500) <= MAX_BUILD_S
+
+
+@pytest.mark.parametrize(
+    ("shape", "quantiles", "seconds"),
+    [((2500, 9), 1000, 8), ((2000, 800), 10, 11)],
+    ids=["1000x9", "10x800"],
+)
+def test_past_the_estimated_build_stays_python(shape, quantiles, seconds):
+    # 1,000 quantiles over 9 features: 8,991 leaves. 10 quantiles over 800
+    # features built in 11.4 s, within the count of 8,000 quantiles before.
+    step = _step(np.random.default_rng(4).normal(size=shape), n_quantiles=quantiles)
+    with pytest.raises(NotNative, match=rf"an estimated {seconds} s build, past 7 s"):
         to_native(step, strict=True)
 
 
