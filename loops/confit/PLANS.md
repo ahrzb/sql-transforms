@@ -106,6 +106,25 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
+Open, next (taken after `avg` in a scalar subquery):
+
+- **A value that a SQL function builds once and reads many times serves
+  slowly, about 60 ns a read** (asked by the native loop 2026-10-14, its
+  T37; not blocking). The catalog reads each numeric feature as
+  `coalesce(x, NaN)`, one `confit.sql` object that every output field
+  reads. With 256 parameters each read by 16 output fields (4,096 products
+  in balanced sums), 64 rows serve in 18.1 ms, against 1.8 ms when the sums
+  read the parameters directly, and the build takes 0.81 s against 0.24 s.
+  CASE WHEN x IS NULL and `ifnull` cost the same; with one read per value
+  the coalesce costs about 15 ns a row and parameter. The catalog's PCA over
+  256 features of 64 components serves 64 rows in 78 ms, against 39 ms for
+  its Python twin. Measured by the native loop (release build, master
+  bf42757, cranelift); reproduction
+  `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`. Not
+  yet examined here: it may be the carry described below for the
+  OneHotEncoder guard, a shared value computed at field 0 and passed
+  through every block to its last reader.
+
 Open, low priority (the catalog builds within its caps):
 
 - **A struct output read field by field still costs more than the struct
@@ -393,15 +412,22 @@ The first five are ruled, in this order; the rest follow.
   DuckDB serves a constant-empty join.
 - **Per-row aggregation over matched static rows** (correlated scalar
   subquery; `JOIN` + `GROUP BY` under `shape='many'`). Served: a scalar
-  subquery with one `count`, `min`, `max`, or integer, BOOLEAN or DECIMAL
-  `sum` over one static table, keyed by `=` or IS NOT DISTINCT FROM between a
-  bare column of the table and an outer expression that cannot trap. It binds
-  as a hidden LEFT join to a table grouped at build
-  (`src/specializer/frontend/subquery.rs`, `AggTable` in `plan.rs`; claim
-  `scalar-subquery-as-join`; `tests/test_scalar_subquery.py`; generator gate
-  33 mod 43, tag `scalar-subquery`; 2,400 gated seeds, 0 findings besides 10
-  DIVERGE_OPT of the known trap-elision class). Still refused by name: `avg`
-  (DuckDB divides in long double), DOUBLE `sum` (decision below), DISTINCT,
+  subquery with one `count`, `min`, `max`, integer, BOOLEAN or DECIMAL `sum`,
+  or integer or DECIMAL `avg` over one static table, keyed by `=` or IS NOT
+  DISTINCT FROM between a bare column of the table and an outer expression
+  that cannot trap. It binds as a hidden LEFT join to a table grouped at
+  build (`src/specializer/frontend/subquery.rs`, `AggTable` in `plan.rs`;
+  claim `scalar-subquery-as-join`; `tests/test_scalar_subquery.py`;
+  generator gate 33 mod 43, tag `scalar-subquery`; 2,400 gated seeds, 0
+  findings besides 10 DIVERGE_OPT of the known trap-elision class). `avg`
+  follows DuckDB's finalization exactly (`src/duckdb/avg.rs`): `double` for
+  SMALLINT and DECIMAL(<=4, s), x87 `long double` for the rest (sum, divisor
+  and quotient rounded to 64 bits, then to 53), so it serves on x86_64 Linux
+  only; refused past i128 in Σ|v| (HUGEINT addition traps). The tests hold
+  groups per storage type that tell the models apart; 24,000 gated seeds
+  after avg gave 0 gated verdicts, with 2,013 cases of a subquery avg (778
+  AGREE, 31 AGREE_TRAP).
+  Still refused by name: DOUBLE `sum`/`avg` (decision below), DISTINCT,
   an expression over the aggregate, several aggregates, a WHERE term that is
   not a key (a static predicate traps on unmatched rows), an outer side that
   can trap or reads a joined table, a VARCHAR key against another type, a
@@ -409,8 +435,7 @@ The first five are ruled, in this order; the rest follow.
   a scalar subquery under `shape='many'` in a two-level query. Next, in this
   order: static predicates that cannot trap; outer sides that can trap (they
   trap only when the static table has rows, which the build knows); an
-  expression over the aggregate; `avg` over integer and DECIMAL after
-  measuring DuckDB's long-double rounding.
+  expression over the aggregate.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
