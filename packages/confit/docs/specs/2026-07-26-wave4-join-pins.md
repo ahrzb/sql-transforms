@@ -20,8 +20,8 @@ keyless N-row joins) is in `2026-07-28-stageB-multiplicity-pins.md`.
   key term, and a key term that can trap anywhere but right after the key
   terms of the earlier comma tables; any other order serves
   (`check_comma_order`; pins in `tests/test_duckdb_wave4_joins.py`,
-  measured 2026-10-14; campaign generator gate 22 mod 41, tag
-  `comma-keys`).
+  measured 2026-10-14; the campaign generator writes such joins for the
+  seeds of remainder 22 modulo 41, tag `comma-keys`).
 - Cross join to a 1-row static: output rowcount == driving rowcount; a
   0-row static annihilates (INNER semantics). LEFT JOIN ON TRUE to an empty
   table keeps rows. confit serves a keyless comma table as an empty-key
