@@ -1603,10 +1603,11 @@ fn a_value_every_case_arm_reads_is_computed_once() {
         col("d", Ty::F64, false),
     ];
     // Behind one gate in every item: `share.rs` computes it once, ahead of
-    // the first item.
+    // the first item. The condition can trap (an integer sum), so each CASE
+    // keeps its arms (`lower.rs` `select_case`).
     let n = "(a * b + c * d + a * c + b * d)";
     let items: Vec<String> = (0..8)
-        .map(|i| format!("CASE WHEN k IS NULL THEN NULL ELSE {n} + {i} END AS o{i}"))
+        .map(|i| format!("CASE WHEN k + 1 IS NULL THEN NULL ELSE {n} + {i} END AS o{i}"))
         .collect();
     let sql = format!("SELECT {} FROM __THIS__", items.join(", "));
     let p = crate::specializer::prepare(&sql, "__THIS__", &cols, &[])
@@ -1655,8 +1656,9 @@ fn a_value_read_in_one_place_is_not_stored() {
         col("b", Ty::F64, false),
     ];
     // `s` rides the blocks of `t`'s CASE to the one place that reads it.
+    // The condition can trap, so the CASE keeps its arms.
     let sql = "SELECT s * 2 AS o, t FROM (SELECT a * b + a AS s, \
-               CASE WHEN k IS NULL THEN 0.5e0 ELSE 1.5e0 END AS t FROM __THIS__) AS sub";
+               CASE WHEN k + 1 IS NULL THEN 0.5e0 ELSE 1.5e0 END AS t FROM __THIS__) AS sub";
     let p = crate::specializer::prepare(sql, "__THIS__", &cols, &[])
         .unwrap()
         .program;

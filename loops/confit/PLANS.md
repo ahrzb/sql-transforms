@@ -106,25 +106,6 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-Open, next (taken after `avg` in a scalar subquery):
-
-- **A value that a SQL function builds once and reads many times serves
-  slowly, about 60 ns a read** (asked by the native loop 2026-10-14, its
-  T37; not blocking). The catalog reads each numeric feature as
-  `coalesce(x, NaN)`, one `confit.sql` object that every output field
-  reads. With 256 parameters each read by 16 output fields (4,096 products
-  in balanced sums), 64 rows serve in 18.1 ms, against 1.8 ms when the sums
-  read the parameters directly, and the build takes 0.81 s against 0.24 s.
-  CASE WHEN x IS NULL and `ifnull` cost the same; with one read per value
-  the coalesce costs about 15 ns a row and parameter. The catalog's PCA over
-  256 features of 64 components serves 64 rows in 78 ms, against 39 ms for
-  its Python twin. Measured by the native loop (release build, master
-  bf42757, cranelift); reproduction
-  `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`. Not
-  yet examined here: it may be the carry described below for the
-  OneHotEncoder guard, a shared value computed at field 0 and passed
-  through every block to its last reader.
-
 Open, low priority (the catalog builds within its caps):
 
 - **A struct output read field by field still costs more than the struct
@@ -133,9 +114,11 @@ Open, low priority (the catalog builds within its caps):
   Release build of that change, 2026-10-06:
   - 2,000 fields over 64 inputs build in 1.1 to 1.4 s read field by field
     and 0.09 s read whole. RandomTreesEmbedding of 100 trees of depth 5
-    over 8 features builds in 1.7 s, and in 0.8 s as a list. Each field
-    read under `null_when` is a branch of its own: see "Branches that need
-    not be branches" under Performance.
+    over 8 features builds in 1.7 s, and in 0.8 s as a list. Since
+    2026-10-14 a field read under `null_when` whose field cannot trap is
+    no branch (`lower.rs` `null_guard`); one whose field can trap still
+    is. See also "A struct read field by field builds about 5 times
+    slower than before #422" under Performance.
   - OneHotEncoder over 8 string features of 50 categories (400 fields)
     builds in 28 s, and in 2.4 s without its input guard (master refused
     it at Cranelift's size limit). The guard's `IN` lists share prefixes
@@ -178,6 +161,41 @@ Open, low priority (the catalog builds within its caps):
   function that Cranelift's optimizer grows past the index still stops
   with a verifier error.
 
+- **Closed 2026-10-14: a value that a SQL function builds once and reads
+  many times served slowly, about 60 ns a read** (asked by the native loop,
+  its T37). The catalog reads each numeric feature as `coalesce(x, NaN)`, a
+  CASE of one arm that `share.rs` leaves unshared (five nodes), so each
+  read lowered to a chain of three blocks that carried the whole live
+  stack. Each field read of a catalog step is a CASE too, `CASE WHEN c
+  THEN NULL ELSE v END` from the step's `null_when`, and each block it
+  starts loads again every column that `v` reads (two helper calls a
+  load in Cranelift). Now a CASE whose parts cannot trap lowers to
+  selects (`lower.rs` `select_case`) when it holds at most 8 operations
+  (the IS NULL spelling and `ifnull` with `coalesce`) or is such a guard
+  (`null_guard`). Release builds of master a2ba98d and the change, one
+  container, 64 rows a call, two runs each unless noted:
+  - The native loop's reproduction
+    (`/mnt/project-files/transforms-loop/confit-shared-value-reads.py`,
+    plus a 256x64 shape): 256 parameters read by 16 fields serve in 2.2
+    to 2.3 ms (15 to 22 ms on master; plain reads 2.2 to 2.3 ms) and
+    build in 0.43 to 0.47 s (1.4 s; plain 0.4 s); 256x64 in 3.6 to
+    4.1 ms (56 to 61 ms; plain 4.0 to 5.1 ms), built in 3.4 to 3.6 s
+    (7.9 to 8.1 s; plain 2.5 to 2.7 s); 16x256 in 1.7 ms (15 to 16 ms;
+    plain 1.6 ms), built in 1.3 to 1.7 s (2.3 to 2.6 s; plain 0.7 to
+    1.3 s). The rest of the build gap is not the selects: a cache of
+    them per block changed nothing measurable.
+  - The 256x64 shape with an id parameter and a `null_when`, one run:
+    4.0 ms, against 28 ms with the small CASE alone and 4.0 ms without
+    the `null_when`.
+  - The catalog's PCA over 256 features of 64 components (native #458,
+    `allow_bound=True`): 4.9 to 5.2 ms (59 ms on master; its twin 59 to
+    66 ms on this container), built in 3.2 s (7.3 to 7.5 s), `to_native`
+    in 4.5 s (8.6 to 9.0 s).
+  - The catalog's Normalizer at 128 features (a follow-up of the
+    shared-subexpression work): l1 1.8 to 1.9 ms (2.7 to 3.0 ms on
+    master), l2 2.3 to 2.5 ms (3.8 to 4.2 ms), max 1.8 to 2.0 ms
+    (2.5 ms).
+
 - **Closed 2026-10-06: a trap in one field of a SQL function's struct
   costs each field read** (repros in `/mnt/project-files/transforms-loop/`).
   Every field read carried its own copy of field 0's input guard, and
@@ -215,12 +233,6 @@ Follow-ups from the shared-subexpression work:
 - Sharing covers a stage's projection only: not WHERE, join keys, or the
   `shape="many"` loop; and only trap-free subexpressions (a repeated `sqrt`
   is evaluated where it stands, its trap-free operand once).
-- A CASE lowers to blocks even when every arm is a trap-free leaf, so the
-  catalog's `coalesce(x, NaN)` per term splits three blocks, and its
-  right-nested l2 sum carries its pending partial sums through each:
-  catalog l2 serves 64 rows in 3.1 ms at 64 features and 14.5 ms at 128
-  (l1, whose sum is left to right, 2.5 ms at 128). Lowering such a CASE to
-  `select` would make it linear.
 
 Delivered:
 
@@ -551,15 +563,26 @@ The first five are ruled, in this order; the rest follow.
   function per group of output columns.
 - **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
   multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
-- **Branches that need not be branches.** Each CASE lowers to a branch, and
-  Cranelift's build time grows with the branches. A forest of 100 depth-5
-  trees (`case_forest.py` in #422) builds in 1.0 s as one list of
-  `CAST(leaf = k AS DOUBLE)`, in 3.0 s with `CASE WHEN leaf = k THEN 1.0
-  ELSE 0.0 END` fields, and in 4.2 s read field by field: a field read under
-  a `null_when` binds as `CASE WHEN g IS NULL THEN NULL ELSE <field> END`,
-  one branch per read. Where the value cannot trap (`plan::can_trap`), the
-  read could take the guard as its NULL flag, as a list or struct output
-  does since #422, and a CASE over constants could lower to a select.
+- **A struct read field by field builds about 5 times slower than
+  before #422** (found 2026-10-14, not yet examined). A forest of 100
+  depth-5 trees (`case_forest.py` in #422) read field by field builds in
+  36 s on master a2ba98d with `CAST(leaf = k AS DOUBLE)` fields (31 s with
+  the select form, where no field read branches), against 6.8 s on master
+  5c613c8 (before #422), release builds on one container; with `CASE WHEN
+  leaf = k THEN 1.0 ELSE 0.0 END` fields, 45 s (40 s). Read as one list,
+  it builds in 0.9 to 1.1 s on both. So the cost is not the branches. The catalog's RandomTreesEmbedding of the
+  same size read field by field built in 1.6 s on master b4b8d03 (native
+  PLANS), so the cause may be in a commit after b4b8d03, or in the
+  spelling.
+- **Branches that need not be branches.** A CASE lowers to a branch unless
+  it cannot trap and is small or a NULL guard (`lower.rs` `select_case`,
+  2026-10-14), and Cranelift's build time grows with the branches. The
+  forest above builds in 0.9 to 1.1 s as one list, of `CAST(leaf = k AS
+  DOUBLE)` or of `CASE WHEN leaf = k THEN 1.0 ELSE 0.0 END` (2.5 s before
+  the select form). What still branches, besides a CASE that can trap: a
+  CASE that is not a NULL guard and holds more than 8 operations, such as
+  a deep CASE tree, or holds a cast (a cast to VARCHAR would cost every
+  row).
 
 ## Authoring boundary (`sql_transform`)
 
