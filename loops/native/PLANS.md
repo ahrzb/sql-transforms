@@ -8,13 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **Drop the paths spelling of the forests.** Since confit #430 one CASE
-   per tree builds about as fast as the paths and serves a row about twice
-   as fast (100 trees of depth 5: 222 us against 459), and the paths take
-   a forest only within 150 output fields past its limit (`trees.py`,
-   T28). Dropping them removes `_paths`, `_paths_seconds`, `_steps` and
-   the tests' `spelling` fixture, before the rename below.
-2. **Probe an encoder's categories in one call a feature.** `encode._probe`
+1. **Probe an encoder's categories in one call a feature.** `encode._probe`
    calls sklearn's `transform` once a category, and each call builds every
    feature's category table again (`sklearn/utils/_encode.py`,
    `_map_to_integer`), so the probes cost about (features x categories)^2
@@ -23,11 +17,11 @@ Easiest first; each is one family, one PR.
    32 of 125 it takes 38 s (release build, master b4b8d03). One
    `transform` of a feature's categories as rows makes one call a
    feature; a row that raises is probed alone.
-3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+2. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
-4. **Numeric categories as ranges in the encoders' guard.** The guard
+3. **Numeric categories as ranges in the encoders' guard.** The guard
    tests a numeric feature with an IN list of its categories, one
    comparison a category: `OrdinalEncoder` over 32 features of 125
    integer categories builds in 5.2 s, against 0.66 s for strings, which
@@ -35,7 +29,7 @@ Easiest first; each is one family, one PR.
    consecutive integers a..b is `x >= a AND x <= b AND floor(x) = x`,
    exact on doubles (NaN and ±inf fail the range; -0.0 is 0), in three
    comparisons whatever the run.
-5. **`QuantileTransformer`'s cap as a build estimate.**
+4. **`QuantileTransformer`'s cap as a build estimate.**
    `quantile.MAX_QUANTILES` caps the quantiles summed over the features at
    8,000, where the builds of 2026-10-05 took 6.2-8.0 s. On reading 5's
    machine one feature at 8,000 builds in 8.5 s with reading 4's code and
@@ -44,7 +38,7 @@ Easiest first; each is one family, one PR.
    seconds on (quantiles, features) as `trees.py` and `spline.py` do, and
    refuse past 7 s. `isotonic.MAX_THRESHOLDS` (8,000 thresholds, 5.8 s on
    2026-10-05) is the same kind of cap.
-6. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
+5. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
    probes each part on its own input, so a later step's tests read the
    outputs of the step before (a `PolynomialFeatures` product can overflow
    to ±inf), and confit binds each value read twice once (#412). The
@@ -306,12 +300,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `row_sumsq_is_numpys` has) would serve them.
 - `RandomTreesEmbedding(sparse_output=True)`, the default: a sparse
   output (decisions/closed/sparse-outputs.md). A forest whose build is
-  estimated past 7 s in both spellings, one CASE per tree and the paths
-  (`trees._spelling`): over 8 features, past about 5,990 output fields,
-  such as 300 trees of depth 5 (6,961 fields, 8.2 s for the paths) and 3
-  unbounded trees over 2,000 rows (8.4 s for one CASE per tree). Since
-  T28, 160 trees of depth 5, 100 trees of depth 6 and one unbounded tree
-  over 4,000 rows are served.
+  estimated past 7 s (`trees._build_estimate`): over 8 features, past
+  about 5,990 output fields, such as 300 trees of depth 5 (6,961 fields,
+  9.8 s) and 3 unbounded trees over 2,000 rows (8.4 s). Since T28, 160
+  trees of depth 5, 100 trees of depth 6 and one unbounded tree over
+  4,000 rows are served.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
