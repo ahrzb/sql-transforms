@@ -1323,7 +1323,13 @@ impl Binder<'_> {
         let at = at.ok_or_else(|| PrepareError::Internal("__cf_seq index out of range".into()))?;
         if items.len() == 1 {
             // No sibling can trap: the read is the field, bound in place.
-            return self.expr_or_null(values[pick]);
+            let read = self.expr_or_null(values[pick])?;
+            return match read {
+                Some(e) if matches!(e.kind, SKind::NullOf) || folds_to_null(&e) => {
+                    self.null_beside_columns(&values, pick, e)
+                }
+                read => Ok(read),
+            };
         }
         let v = &items[at];
         if matches!(v.kind, SKind::NullOf) && self.expr_or_null(values[pick])?.is_none() {
@@ -1337,6 +1343,43 @@ impl Binder<'_> {
             ty,
             nullable,
         }))
+    }
+
+    /// The read of field `pick` of a struct_pack, `e`, which binds to a
+    /// closed NULL. DuckDB's struct_pack evaluates every field, so over a
+    /// field that names a column, the read is no constant, and an operator
+    /// with the default NULL handling over it does not fold (measured, 1.5.5:
+    /// `struct_pack(f := a, g := CAST(NULL AS BIGINT)).g + (a +
+    /// 9223372036854775807)` traps). The read then is a NULL that evaluates
+    /// that field, which cannot trap here. A bare NULL field is SQLNULL
+    /// there, and folds by its type.
+    fn null_beside_columns(
+        &self,
+        values: &[&SqlExpr],
+        pick: usize,
+        e: SExpr,
+    ) -> Result<Option<SExpr>, PrepareError> {
+        let nulls = DuckNulls::new(self);
+        for (i, v) in values.iter().enumerate() {
+            if i == pick || nulls.closed(v)? {
+                continue;
+            }
+            match self.expr_or_null(v)? {
+                Some(read) if !bind_foldable(&read) => return Ok(Some(null_reading(read, e.ty))),
+                // A NULL that reads a column (a bare NULL column).
+                None => return self.typed_null(v, e.ty).map(Some),
+                // Our binder drops a name whose value cannot matter
+                // (`coalesce(1, a)` binds as 1); DuckDB's field still reads
+                // it.
+                _ => {
+                    return Err(unsup(
+                        "a NULL struct field read beside a field that names a column \
+                         that its value does not read",
+                    ))
+                }
+            }
+        }
+        Ok(Some(e))
     }
 
     /// One CASE result: bound as usual, or, for `error(msg)`, a NULL arm

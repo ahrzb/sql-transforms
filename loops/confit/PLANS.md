@@ -54,10 +54,6 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    asks the owner to extend the empty-static ruling
    ([decisions/open/all-null-key-static.md](decisions/open/all-null-key-static.md)).
    Still open from it:
-   - A field read over struct_pack keeps only the siblings that can trap, so
-     a NULL field folds where DuckDB's struct_pack, which reads every field,
-     does not: `struct_pack(f := a, g := CAST(NULL AS BIGINT)).g + (a +
-     9223372036854775807)` returns rows where DuckDB traps (master too).
    - TIMEOUT 4667128 is no trap: the request table has no rows and both
      readings agree, but the optimizer-on reading folds a constant
      `repeat('0', 2147483647)` inside a SQL function at plan time (about

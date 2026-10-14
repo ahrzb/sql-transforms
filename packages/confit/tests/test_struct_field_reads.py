@@ -2,8 +2,10 @@
 
 DuckDB builds every field of a struct_pack, so reading one field still
 fires a sibling's trap: `(struct_pack(p := a, q := <overflow>)).p` traps
-(measured on 1.5.5, optimizer off). A field read over a CASE reads the field
-of the arm taken, and a NULL arm is a NULL struct whose field is NULL.
+(measured on 1.5.5, optimizer off). For the same reason a NULL field beside
+a field that names a column is no constant there. A field read over a CASE
+reads the field of the arm taken, and a NULL arm is a NULL struct whose field
+is NULL.
 """
 
 from __future__ import annotations
@@ -386,6 +388,29 @@ def test_a_guard_every_field_read_carries_traps_where_duckdb_does():
 
 
 @pytest.mark.parametrize(
+    "expr, column, constant",
+    [
+        ("(struct_pack(f := {v}, g := CAST(NULL AS BIGINT))).g", "a", "1"),
+        (
+            "struct_extract(struct_pack(f := {v}, g := CAST(NULL AS BIGINT)), 'g')",
+            "s",
+            "'p'",
+        ),
+        ("(struct_pack(g := CASE WHEN FALSE THEN 1 END, f := {v})).g", "x", "1.5"),
+    ],
+)
+def test_a_null_field_beside_a_column_does_not_fold(expr, column, constant):
+    # DuckDB's struct_pack evaluates every field, so beside a field that names
+    # a column the read is no constant: the `+` over it still evaluates its
+    # other operand (measured, 1.5.5). Beside constants the read folds.
+    trap = "(a + 9223372036854775807)"
+    read = expr.format(v=column)
+    assert_parity(q(f"{read} + {trap}"), ROWS, trap="Overflow")
+    read = expr.format(v=constant)
+    assert_parity(q(f"{read} + {trap}"), ROWS, expect="AGREE")
+
+
+@pytest.mark.parametrize(
     "expr, why",
     [
         (f"(struct_pack(p := NULL, q := {BIG})).p", "bare-NULL struct field"),
@@ -394,6 +419,10 @@ def test_a_guard_every_field_read_carries_traps_where_duckdb_does():
             "key",
         ),
         ("__cf_seq(0, a)", "reserved identifier"),
+        (
+            "(struct_pack(f := coalesce(1, a), g := CAST(NULL AS BIGINT))).g",
+            "NULL struct field read beside a field that names a column",
+        ),
     ],
 )
 def test_other_forms_refuse_by_name(expr, why):
