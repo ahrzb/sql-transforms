@@ -392,10 +392,19 @@ The first five are ruled, in this order; the rest follow.
   the fan-out loop); struct keys whose field-name sets differ refuse where
   DuckDB serves a constant-empty join.
 - **Per-row aggregation over matched static rows** (correlated scalar
-  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
-  over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
-  float-reduction bound's algorithm and edge domain
-  (`docs/oracle/05-the-comparison-contract.md`).
+  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Next: the scalar
+  subquery with the aggregates that need no ruling (`count`, `min`, `max`,
+  integer and DECIMAL `sum`) over one static table, keyed by equalities.
+  Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
+  written order over (distinct correlated values) x (static rows), so a static
+  predicate that can trap before the key traps on unmatched rows; the
+  aggregate argument runs on matched rows only; an empty static table or an
+  empty batch evaluates nothing; the subquery runs for every row that reaches
+  its operator, under a CASE guard too (after WHERE in the SELECT list, before
+  WHERE inside it); an uncorrelated one traps even on an empty batch. Waiting
+  on the owner: [decisions/open/join-group-by-per-request.md](decisions/open/join-group-by-per-request.md)
+  and the DOUBLE `sum`/`avg` domains of the float-reduction bound,
+  [decisions/open/double-sum-bound.md](decisions/open/double-sum-bound.md).
 - **Scalar/correlated/`IN` subqueries, a CTE referenced twice, set
   operations.** Blanket bans today; only batch-dependent forms are out of
   scope. Row-local derived tables and CTEs are in Next.
