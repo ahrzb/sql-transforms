@@ -8,18 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
-   probes each part on its own input, so a later step's tests read the
-   outputs of the step before (a `PolynomialFeatures` product can overflow
-   to ±inf), and confit binds each value read twice once (#412). The
-   widest bench `Pipeline` (configuration 9, seed 6) holds 1,069 bound
-   values (`sql_lets`) against 96 without the guard's tests, builds in
-   2.5-3.1 s against 0.6-0.7 s, and serves 64 rows in 5.6-10.8 ms against
-   4.2 ms (reading 5, finding 69). From T25 to T28, before confit #438, it
-   built in 13.6-15.2 s and served in 95-99 ms, slower than its twin
-   (85 ms), and no test saw it. Split the cost between the tests and the
-   bound values, then make the larger part cheaper. Add a check that fails
-   where a bench step serves more slowly than its twin.
+Nothing open: the loop builds the rulings below.
 
 ## Ruled 2026-10-06, to build
 
@@ -96,6 +85,13 @@ that request, `to_native(step, allow_bound=True)`. In order:
   at an estimated 7 s build (`quantile._build_estimate`). Low priority
   for confit: a future entry that needs two trees in one expression would
   raise it again.
+- **A long OR of tests that builds as fast as one `greatest`.** The input
+  guard of the widest bench `Pipeline` joined 392 tests by OR in each of
+  its 9 instances, and the step built in 2.4 to 2.7 s (2.2 to 2.3 s as a
+  balanced OR). With one `greatest` or `least` test for each kind of
+  rejected value (T35) it builds in 0.9 to 1.2 s, and in 0.6 to 0.7 s
+  without the guard (release build, master 9976d96). The catalog no
+  longer needs it. Low priority for confit.
 - **A cheaper pass over a function body in Python.** confit's
   `SqlFunction` writes a body's values read twice as bound values
   (`sql.shared_texts`, #412) in Python, and it rebuilds every node of the
