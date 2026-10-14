@@ -47,7 +47,7 @@ pytestmark = pytest.mark.filterwarnings(
 
 def _step(est: Any, types: list[pa.DataType], width: int) -> PythonTransform:
     """One fitted instance over features x0, x1, ... of `types`, returning
-    a struct of `width` lanes."""
+    a struct of `width` output fields."""
     return PythonTransform(
         "tf",
         {0: est},
@@ -69,10 +69,10 @@ def _traps(step: PythonTransform, native: Any, rows: pa.Table) -> list[bool]:
 
 
 @pytest.mark.parametrize("returns", ["struct", "list"])
-def test_a_read_of_any_lane_fires_the_guard(returns):
+def test_a_read_of_any_output_field_fires_the_guard(returns):
     # StandardScaler's validation rejects ±inf and lets NaN through. The
-    # guard is in the first lane, and a read of the second alone fires it,
-    # in confit and in DuckDB.
+    # guard is in the first output field, and a read of the second alone
+    # fires it, in confit and in DuckDB.
     est = StandardScaler().fit(np.random.default_rng(0).normal(size=(20, 2)))
     r = (
         pa.struct([("f0", pa.float64()), ("f1", pa.float64())])
@@ -170,7 +170,7 @@ def test_a_boolean_row_traps_as_its_container_does(make, traps):
 def test_a_later_step_traps_on_what_the_earlier_one_hands_it():
     # OrdinalEncoder answers NaN for an unknown or a missing string, and
     # Binarizer rejects NaN: the pipeline raises there. Binarizer's guard
-    # tests its own input, the encoder's lane.
+    # tests its own input, the encoder's output field.
     est = make_pipeline(
         OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=np.nan),
         Binarizer(threshold=0.5),

@@ -40,7 +40,7 @@ def _simple(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     # sklearn: the mask is computed first; features whose statistic is NaN
     # (no observed value at fit) are dropped unless keep_empty_features;
     # each missing value of a kept feature becomes its statistic, cast to
-    # the fit dtype; then the indicator's lanes over the same mask.
+    # the fit dtype; then the indicator's output fields over the same mask.
     if est._fit_dtype.kind not in "fiu":
         raise NotNative(f"SimpleImputer over {est._fit_dtype} data")
     miss = _missing(est, x)

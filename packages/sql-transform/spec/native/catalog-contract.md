@@ -15,7 +15,7 @@ takes the instance id first, then the declared features, by position. It
 returns the same type: a scalar, a struct with the same field names, or a
 list of the same width.
 
-*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_lane_of_one_arm_reads_no_id`.
+*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_an_output_field_of_one_arm_reads_no_id`.
 
 **claim: entry-same-answer.** **The same answer.** By default, an entry
 serves only where it is bit-exact. It is bit-exact where it does the twin's

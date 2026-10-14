@@ -4,26 +4,27 @@ category (sklearn 1.9, `sklearn/preprocessing/_encoders.py` and
 
 An encoder's `transform` treats features independently: a row's output is
 one block per feature, and a block depends only on that feature's value,
-through the class the value falls in: one of the fitted categories,
-missing, or unknown. So rather than restating sklearn's rules (infrequent
-categories, `drop`, `encoded_missing_value`, `handle_unknown`, target
-means), the translation asks the fitted estimator: it transforms one probe
-row per class, reads the feature's block, and spells each lane as a CASE
+through the class the value falls in: one of the fitted categories, missing,
+or unknown. So rather than restating sklearn's rules (infrequent categories,
+`drop`, `encoded_missing_value`, `handle_unknown`, target means), the
+translation asks the fitted estimator: it transforms one probe row per
+class, reads the feature's block, and spells each output field as a CASE
 over the classes. The values are the twin's own, so the entry is bit-exact.
-A feature's probe rows go to `transform` in one call (`_probes`). Each
-call builds every feature's table of categories again
-(`sklearn/utils/_encode.py`, `_map_to_integer`), so a call a row cost
-about (features x categories)^2 checks: `to_native` of `OrdinalEncoder`
-over 32 string features of 125 categories took 40.8 s in 4,098 calls on
-master 44052cf, and takes 1.3 s in 130 calls, about four a feature (first
-in the process, release build, 2026-10-14). Over 32 of 500 it takes
-5.1 s, of which the trial build takes 2.5 s.
+A feature's probe rows go to `transform` in one call (`_probes`). Each call
+builds every feature's table of categories again
+(`sklearn/utils/_encode.py`, `_map_to_integer`), so a call a row cost about
+(features x categories)^2 checks: `to_native` of `OrdinalEncoder` over 32
+string features of 125 categories took 40.8 s in 4,098 calls on master
+44052cf, and takes 1.3 s in 130 calls, about four a feature (first in the
+process, release build, 2026-10-14). Over 32 of 500 it takes 5.1 s, of which
+the trial build takes 2.5 s.
 
 Where the twin raises (an unknown category under `handle_unknown="error"`,
 or a missing value it did not fit), the input guard traps: one test a
-feature, a value in none of the classes the twin answers (`_reject`).
-Every other value a lane's ELSE then meets traps too, so the ELSE answers
-the lane's largest group, and a one-hot lane is one comparison.
+feature, a value in none of the classes the twin answers (`_reject`). Every
+other value an output field's ELSE then meets traps too, so the ELSE answers
+the output field's largest group, and a one-hot output field is one
+comparison.
 
 confit spells the guard's IN list as one comparison a value. Past
 SEARCH_PAST strings, an encoder with one output field a feature (an
@@ -150,8 +151,8 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     # NULL and a float64 one otherwise, and sklearn's matching is not the
     # same on both: under `handle_unknown="use_encoded_value"`, categories
     # [nan] answer True as unknown in a float64 row and raise in a boolean
-    # one. So each lane is probed in both, and reads the float64 answer
-    # where any feature is NaN.
+    # one. So each output field is probed in both, and reads the float64
+    # answer where any feature is NaN.
     booleans = all(t == pa.bool_() for t in types)
     dtype = np.float64 if booleans else None
     if booleans:
@@ -186,16 +187,18 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         _reject(xj, string, rows, raises, null if booleans else None, search)
         if booleans:
             _reject(xj, string, rows_b, False, ~null)
-        for lane in range(offset, offset + widths[j]):
-            e = _lane(xj, string, rows, unknown, lane)
+        for field in range(offset, offset + widths[j]):
+            e = _field(xj, string, rows, unknown, field)
             if booleans:
-                b = _lane(xj, string, rows_b, None, lane)
+                b = _field(xj, string, rows_b, None, field)
                 if b.sql() != e.sql():
                     e = S.case(null, e).otherwise(b)
             out.append(e)
         offset += widths[j]
     if offset != len(_probe(est, base, 0, base[0]) or []):
-        raise NotNative(f"{type(est).__name__}: blocks of {offset} lanes in all")
+        raise NotNative(
+            f"{type(est).__name__}: blocks of {offset} output fields in all"
+        )
     return out
 
 
@@ -275,14 +278,14 @@ def _probes(
     return out
 
 
-def _lane(
+def _field(
     xj: S.Expr,
     string: bool,
     rows: list[tuple[Any, list[float] | None]],
     unknown: list[float] | None,
-    lane: int,
+    field: int,
 ) -> S.Expr:
-    """One output lane: the CASE over the feature's classes, the values
+    """One output field: the CASE over the feature's classes, the values
     grouped. The ELSE answers unknown values or, where the twin raises on
     them (`unknown` is None), the largest group: every other value it then
     meets is one the twin raises on, where the input guard traps."""
@@ -290,10 +293,10 @@ def _lane(
     for c, got in rows:
         if got is None:
             continue
-        v = got[lane]
+        v = got[field]
         groups.setdefault(repr(v), (v, []))[1].append(c)
     if unknown is not None:
-        other = unknown[lane]
+        other = unknown[field]
     else:
         other = max(groups.values(), key=lambda g: len(g[1]), default=(None,))[0]
     arms = []

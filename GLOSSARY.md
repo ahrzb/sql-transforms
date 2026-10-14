@@ -88,7 +88,7 @@ _Avoid_: JIT (for both)
 
 **Lane**:
 The machine type that holds a value in a built function: i64, f64, i128 or
-a string. A field of a struct output is a field, not a lane.
+a string. An output field is not a lane.
 
 **Native catalog**:
 The entries in `sql_transform.native` that translate a fitted sklearn
@@ -104,6 +104,12 @@ loop's records, "entry" alone means a catalog entry.
 The reference for a catalog entry: `PythonTransform`, which calls the fitted
 sklearn estimator.
 _Avoid_: baseline, python path
+
+**Output field**:
+One value in the output row of a catalog entry or of a `PythonTransform`.
+The output is a struct, a fixed-size list or a scalar. An output field is
+one field of the struct, one element of the list, or the scalar itself.
+_Avoid_: lane (for an output field)
 
 **Family**:
 A group of sklearn transformers in one catalog module, for example

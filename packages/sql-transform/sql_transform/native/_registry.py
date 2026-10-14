@@ -1,6 +1,6 @@
 """The catalog and the translation of one `PythonTransform`.
 
-A translator turns ONE fitted estimator into its output lanes, as
+A translator turns ONE fitted estimator into its output fields, as
 `confit.sql` expressions over the feature expressions it is handed:
 
     @translates(StandardScaler)
@@ -12,17 +12,17 @@ with NULL as NaN, as `transform` sees it in a numeric row; a string passes
 as is, NULL as NULL (the step hands it None). A translator that cannot
 serve this estimator's configuration raises `NotNative` naming why.
 
-The framework does the rest, the same way for every entry: one
-`SqlFunction` named like the step, taking the instance id then the
-features, whose every lane selects the instance's expression by id
-(`CASE WHEN id = 0 THEN ... WHEN id IN (1, 2) THEN ... END`, instances
-whose lane is the same tree sharing an arm). Past the first lane, a lane
-that is one arm (every lane, in a step of one instance) is the tree alone,
-without the CASE. As in the step, a NULL id answers NULL (a NULL struct or
-list, for a struct or list return) and an id the step does not know
-raises. Before it is returned, confit builds it into the query
-reading every lane (`query`): a translation confit refuses leaves the step
-Python.
+The framework does the rest, the same way for every entry: one `SqlFunction`
+named like the step, taking the instance id then the features, whose every
+output field selects the instance's expression by id
+(`CASE WHEN id = 0 THEN ... WHEN id IN (1, 2) THEN ... END`, instances whose
+output field is the same tree sharing an arm). Past the first output field,
+an output field that is one arm (every output field, in a step of one
+instance) is the tree alone, without the CASE. As in the step, a NULL id
+answers NULL (a NULL struct or list, for a struct or list return) and an id
+the step does not know raises. Before it is returned, confit builds it into
+the query reading every output field (`query`): a translation confit refuses
+leaves the step Python.
 
 Bit-exact is the default: a translation whose parity bound is above 0
 serves only with `to_native(step, allow_bound=True)`. Such an entry can
@@ -94,8 +94,8 @@ class ErrorScale:
 @dataclass(frozen=True)
 class Entry:
     """A catalog entry: the translator and its declared parity bound, in
-    doubles per lane (0 = bit-exact) or in an error scale, fixed by the
-    derivation or the measurement its module cites.
+    doubles per output field (0 = bit-exact) or in an error scale, fixed by
+    the derivation or the measurement its module cites.
 
     `ulps` is the class's ceiling. An entry whose bound depends on the
     configuration also has `per_estimator`, which answers one fitted
@@ -268,7 +268,7 @@ def handed_on() -> str:
 def translate_part(
     est: Any, x: list[S.Expr], types: list[pa.DataType], hand: str
 ) -> list[S.Expr]:
-    """`est`'s output lanes over `x`, a part of the composition now being
+    """`est`'s output fields over `x`, a part of the composition now being
     translated, which the twin hands its row as `hand`. Its input guard's
     tests join the instance's."""
     if hand not in HANDS:
@@ -414,8 +414,8 @@ def _feature(param: S.Expr, t: pa.DataType) -> S.Expr:
     return S.coalesce(x, S.lit(float("nan")))
 
 
-def _lanes(step: PythonTransform) -> list[tuple[str | None, pa.DataType]]:
-    """The output lanes, each `(field name, type)`; unnamed in a scalar
+def _output_fields(step: PythonTransform) -> list[tuple[str | None, pa.DataType]]:
+    """The output fields, each `(field name, type)`; unnamed in a scalar
     or a fixed-size list return."""
     r = step.returns
     if pa.types.is_struct(r):
@@ -434,7 +434,7 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
     missing = sorted(k.__name__ for k in kinds if k not in _CATALOG)
     if missing:
         raise NotNative(f"no translation for {', '.join(missing)}")
-    lanes = _lanes(step)
+    fields = _output_fields(step)
     types = list(step.takes.types)
     takes = pa.schema([pa.field(_ID, pa.int64()), *step.takes])
 
@@ -451,14 +451,15 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
                 tests = _GUARD.get().tests
             finally:
                 _GUARD.reset(token)
-            if len(out) != len(lanes):
+            if len(out) != len(fields):
                 raise NotNative(
                     f"instance {k}: {type(est).__name__} translates to"
-                    f" {len(out)} lanes, the step declares {len(lanes)}"
+                    f" {len(out)} output fields, the step declares {len(fields)}"
                 )
             if tests:
-                # The input guard, in the first lane: a read of any lane
-                # fires it, as it fires the unknown-id trap below.
+                # The input guard, in the first output field: a read of any
+                # output field fires it, as it fires the unknown-id trap
+                # below.
                 trap = S.fn("error", S.lit(_REJECTED.format(step.name)))
                 out[0] = S.case(any_of(tests), trap).otherwise(out[0])
             per_id.append((k, out))
@@ -471,7 +472,7 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
         same = SameTree()
 
         def select(j: int) -> S.Expr:
-            # Instances whose lane is the same tree (one instance, a
+            # Instances whose output field is the same tree (one instance, a
             # stateless estimator, or equal fits) share one arm.
             arms: dict[int, tuple[list[int], S.Expr]] = {}
             for k, out in per_id:
@@ -479,11 +480,11 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
                 arms.setdefault(key, ([], out[j]))[0].append(k)
             (ks0, v0), *rest = arms.values()
             if j and not rest:
-                # One arm needs no CASE past the first lane: a known id
-                # answers it, an unknown one raises from the first lane
-                # (below), and a NULL one is a NULL struct or list
-                # (`null_when`). Without a CASE per lane, a step of one
-                # instance builds 1.1-1.4x and serves 1.1-1.3x as fast
+                # One arm needs no CASE past the first output field: a known
+                # id answers it, an unknown one raises from the first output
+                # field (below), and a NULL one is a NULL struct or list
+                # (`null_when`). Without a CASE per output field, a step of
+                # one instance builds 1.1-1.4x and serves 1.1-1.3x as fast
                 # (release build, master 4c831d8).
                 return v0
 
@@ -494,19 +495,19 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
             for ks, v in rest:
                 e = e.when(hit(ks), v)
             if j == 0:
-                # An unknown id raises, from the first lane only: DuckDB
-                # builds every field of a struct, so a read of any lane
-                # fires it, and the other lanes carry no trap that every
-                # field read would have to keep.
-                e = e.when(iid.isnull(), S.lit(None, lanes[0][1])).otherwise(
+                # An unknown id raises, from the first output field only:
+                # DuckDB builds every field of a struct, so a read of any
+                # output field fires it, and the other output fields carry
+                # no trap that every field read would have to keep.
+                e = e.when(iid.isnull(), S.lit(None, fields[0][1])).otherwise(
                     S.fn("error", S.lit(_UNKNOWN.format(step.name)))
                 )
             return e
 
         if pa.types.is_struct(step.returns):
-            return {name: select(j) for j, (name, _) in enumerate(lanes)}
+            return {name: select(j) for j, (name, _) in enumerate(fields)}
         if pa.types.is_fixed_size_list(step.returns):
-            return [select(j) for j in range(len(lanes))]
+            return [select(j) for j in range(len(fields))]
         return select(0)
 
     whole = pa.types.is_struct(step.returns) or pa.types.is_fixed_size_list(
@@ -517,7 +518,7 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
         takes,
         step.returns,
         body,
-        # A NULL id is a NULL struct or list, not one of NULL lanes.
+        # A NULL id is a NULL struct or list, not one of NULL output fields.
         null_when=(lambda iid, *_: iid.isnull()) if whole else None,
     )
     _builds(step, fn)
@@ -525,7 +526,7 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
 
 
 def query(step: Any, id_col: str = _ID) -> str:
-    """The query reading every output lane of one call of `step`: what
+    """The query reading every output field of one call of `step`: what
     `to_native` builds and `check` serves with both entries."""
     args = ", ".join([S.col(id_col).sql(), *(S.col(n).sql() for n in step.takes.names)])
     call = f"{step.name}({args})"

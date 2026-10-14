@@ -167,13 +167,13 @@ rounding. Below `2**53`, `float64(n)` is exact and the two are identical, so
 this is a no-op for every ordinary integer feature rather than a trade.
 
 **The declaration decides, not the column.** A BIGINT column passed into a
-lane declared `pa.float64()` is cast to a double by DuckDB before the call, so
-the model sees `float64(n)` and narrows from there — a different leaf above
+feature declared `pa.float64()` is cast to a double by DuckDB before the call,
+so the model sees `float64(n)` and narrows from there — a different leaf above
 `2**53`, and the right one for that declaration. The class's own `__call__`
 follows the same rule, which is what makes it a usable oracle: it builds an
-int64 array and narrows it in one step for a declared BIGINT lane, and passes
-the double through for a declared DOUBLE one. (`np.float32(n)` is *not* that
-conversion — the scalar constructor rounds via float64. Only the array
+int64 array and narrows it in one step for a declared BIGINT feature, and
+passes the double through for a declared DOUBLE one. (`np.float32(n)` is *not*
+that conversion — the scalar constructor rounds via float64. Only the array
 `astype` reproduces it.)
 
 *Evidence:* `_trees_test.py::test_integer_feature_above_2_53_matches_sklearn`, `_trees_test.py::test_call_and_kernel_agree_on_an_integer_feature_above_2_53`, `packages/confit/tests/test_tree_predict.py::test_compare_grid_decides_whether_an_integer_feature_narrows`.

@@ -56,7 +56,9 @@ def _code(name: str, label: str, t: pa.DataType) -> str:
         ) from None
 
 
-def _lanes(name: str, returns: pa.DataType) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _output_fields(
+    name: str, returns: pa.DataType
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """`(field names, type codes)` for a declared return type — see
     [`UDF.returns`] for what each arrow shape means."""
     if pa.types.is_struct(returns):
@@ -68,10 +70,10 @@ def _lanes(name: str, returns: pa.DataType) -> tuple[tuple[str, ...], tuple[str,
             tuple(_code(name, "returns", f.type) for f in fields),
         )
     if pa.types.is_fixed_size_list(returns):
-        # k == 1 is the one shape where the lane COUNT and the arrow SHAPE
-        # disagree: width-1 unnamed is a plain scalar everywhere downstream
-        # (the engine serves it as one, DuckDB is registered for one), so a
-        # value declared as a list would cross as its element.
+        # k == 1 is the one shape where the output field COUNT and the arrow
+        # SHAPE disagree: width-1 unnamed is a plain scalar everywhere
+        # downstream (the engine serves it as one, DuckDB is registered for
+        # one), so a value declared as a list would cross as its element.
         if returns.list_size < 2:
             raise UDFError(
                 f"UDF {name}: a width-1 list return is a scalar — declare"
@@ -98,22 +100,23 @@ class UDF:
     a fitted transform being a function ``S -> T`` between named structs.
 
     ``returns`` is the SQL return TYPE, which also says how wide the call is
-    and whether its lanes are addressable:
+    and whether its output fields are addressable:
 
     ===========================  =======================================
     ``pa.float64()``             an ordinary scalar expression
     ``pa.struct([...])``         width-k with addressable field names;
                                  struct-valued at EVERY width, so
-                                 ``f(x).a`` reads a lane off ONE call
+                                 ``f(x).a`` reads an output field off
+                                 ONE call
     ``pa.list_(t, k)``           width-k unnamed; fixed size because the
                                  width is part of the declaration
     ===========================  =======================================
 
     Names are matched name-keyed, never positionally, so a refit that
-    renumbers lanes (OneHotEncoder gaining a category) breaks loudly rather
-    than rewiring silently. An addressed field is validated at fit and served
-    as a field read over the one whole-value call; the names ride as string
-    literals, so any spelling is safe.
+    renumbers output fields (OneHotEncoder gaining a category) breaks loudly
+    rather than rewiring silently. An addressed field is validated at fit
+    and served as a field read over the one whole-value call; the names ride
+    as string literals, so any spelling is safe.
     """
 
     name: str
@@ -132,17 +135,17 @@ class UDF:
     @property
     def return_names(self) -> tuple[str, ...]:
         """Output field names — empty unless ``returns`` is a struct."""
-        return _lanes(self.name, self.returns)[0]
+        return _output_fields(self.name, self.returns)[0]
 
     @property
     def return_types(self) -> tuple[str, ...]:
-        """Output lane types as engine codes; its length is the call width."""
-        return _lanes(self.name, self.returns)[1]
+        """Output field types as engine codes; its length is the call width."""
+        return _output_fields(self.name, self.returns)[1]
 
     def _check_schema(self) -> None:
         """Force every type through the vocabulary at declaration, so a bad
         one names itself while the author is still holding the object rather
-        than at prepare. The lane readings raise; their values are not wanted
+        than at prepare. The type readings raise; their values are not wanted
         here."""
         _ = self.take_types, self.return_types
         names = self.return_names
@@ -205,8 +208,8 @@ class UDF:
         names, rets = self.return_names, self.return_types
         if names:
             # Declared names => a STRUCT return at EVERY width, so field
-            # access reads lanes off ONE call — DuckDB CSEs the identical
-            # pure calls; confit shares the ecall site.
+            # access reads output fields off ONE call — DuckDB CSEs the
+            # identical pure calls; confit shares the ecall site.
             import duckdb
 
             return params, duckdb.struct_type(
@@ -214,11 +217,12 @@ class UDF:
             )
         if pa.types.is_fixed_size_list(self.returns):
             # A LIST at every width including 1 — the declaration's SHAPE is
-            # what crosses, not its lane count, and the lane TYPE is the one
-            # declared. Registering this as `DOUBLE[]` regardless (as it was)
-            # rounds an int64 lane through a double on the DuckDB side while
-            # the engine serves the integer, and at k=1 leaves the two sides
-            # disagreeing about the shape as well.
+            # what crosses, not its output field count, and the output field
+            # TYPE is the one declared. Registering this as `DOUBLE[]`
+            # regardless (as it was) rounds an int64 output field through a
+            # double on the DuckDB side while the engine serves the integer,
+            # and at k=1 leaves the two sides disagreeing about the shape as
+            # well.
             return params, f"{_DUCK[rets[0]]}[]"
         return params, _DUCK[rets[0]]
 
@@ -333,7 +337,7 @@ class Named:
     ``get_feature_names_out`` (advisory: ignored when it disagrees with the
     learned width). So a fixed override on a learned-width transform — an
     encoder whose categories change with the data — refuses at fit rather
-    than mislabelling lanes.
+    than mislabelling output fields.
 
     Not required for correctness: SQL is already a rename operator
     (``struct_pack(x := p.pca0, ...)``, or a wrapper projection level)."""

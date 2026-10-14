@@ -41,7 +41,7 @@ def expm1(w: S.Expr) -> S.Expr:
     u = S.fn("exp", w)
     # `u <= 0` is never taken (`u - 1 = -1` answers every such `u`): it is
     # the guard confit reads to know `ln(u)` cannot raise, so a struct field
-    # read leaves the other lanes unevaluated (confit #362).
+    # read leaves the other output fields unevaluated (confit #362).
     return (
         S.case(u == _ONE, w)
         .when(u - _ONE == f64(-1.0), f64(-1.0))

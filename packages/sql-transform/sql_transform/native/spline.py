@@ -11,43 +11,43 @@ coefficients `c`, the identity, and degree `k`) at the column:
   for `continue` and `periodic`, False for `error`, whose NaN outputs past
   the knots then raise. NaN rows become 0.
 - `constant`, `linear`: `spl(x)` where `t[k] <= x <= t[n]`, else 0; below
-  and above, the first and last `degree` lanes take `spl(t[k])` and
-  `spl(t[n])` (`constant`), or `f + (x - xb) * fp` with `fp` the
-  derivative there (`linear`, `degree + 1` lanes when `degree <= 1`).
-  NaN meets no test, so it gives 0. The twin reads that range as
-  `t[degree]`, `t[-degree-1]`, and its `linear` branch raises its local
-  `degree` inside the loop over features: at `degree <= 1`, the features
-  after the first read a narrower range (inverted at `degree=1,
-  n_knots=2`) and continue two lanes. The entry follows (`_spline`).
+  and above, the first and last `degree` output fields take `spl(t[k])` and
+  `spl(t[n])` (`constant`), or `f + (x - xb) * fp` with `fp` the derivative
+  there (`linear`, `degree + 1` output fields when `degree <= 1`). NaN meets
+  no test, so it gives 0. The twin reads that range as `t[degree]`,
+  `t[-degree-1]`, and its `linear` branch raises its local `degree` inside
+  the loop over features: at `degree <= 1`, the features after the first
+  read a narrower range (inverted at `degree=1, n_knots=2`) and continue two
+  output fields. The entry follows (`_spline`).
 
 `spl(x)` is scipy's `_evaluate_spline` (`scipy/interpolate/src/
 __fitpack.cc`, compiled C++): `_find_interval` picks the largest `l` in
 `[k, n-1]` with `t[l] <= x` (`k` below the knots; so `x == t[n]` falls in
 the last interval, closed), whichever interval it starts from; `_deBoor_D`
 runs de Boor's recurrence over `t[l-k+1 .. l+k]` into `h[0..k]`; and output
-lane `j` is `0.0 + c[l-k, j]*h[0] + ... + c[l, j]*h[k]`, in that order.
+field `j` is `0.0 + c[l-k, j]*h[0] + ... + c[l, j]*h[k]`, in that order.
 
-The entry spells the same: per lane, a CASE over the intervals in
+The entry spells the same: per output field, a CASE over the intervals in
 `_find_interval`'s order, each arm the recurrence's own operations on the
 fitted knots (the knot differences folded as the C code computes them) and
-the lane's sum in order. With `c` the identity, a lane's sum is `0.0` plus
-one basis value (two under `periodic`, which folds the last `degree` bases
-onto the first) plus `0.0 * h[a]` terms. The sum starts at +0.0 and IEEE
-gives -0.0 only for -0.0 + -0.0, so it is never -0.0; adding a `0.0 *
-h[a]`, a signed zero, then changes nothing as long as `h[a]` is finite.
-Over an interval `x` is bounded in, the basis values are (they lie in
-[0, 1] up to rounding, every divisor being a knot gap the `knots` check
-below keeps away from the subnormals), so those terms are left out, and an
-interval where the lane has no basis is `0.0`. Where `x` is not bounded,
-the outer intervals of `continue`, the terms stay: there `x = -1e300` can
-overflow a basis value, and `0.0 * inf` is the NaN the twin answers.
-`0.0 + h` stays too: it is `h` except that it turns -0.0 into 0.0.
+the output field's sum in order. With `c` the identity, an output field's
+sum is `0.0` plus one basis value (two under `periodic`, which folds the
+last `degree` bases onto the first) plus `0.0 * h[a]` terms. The sum starts
+at +0.0 and IEEE gives -0.0 only for -0.0 + -0.0, so it is never -0.0;
+adding a `0.0 * h[a]`, a signed zero, then changes nothing as long as `h[a]`
+is finite. Over an interval `x` is bounded in, the basis values are (they
+lie in [0, 1] up to rounding, every divisor being a knot gap the `knots`
+check below keeps away from the subnormals), so those terms are left out,
+and an interval where the output field has no basis is `0.0`. Where `x` is
+not bounded, the outer intervals of `continue`, the terms stay: there
+`x = -1e300` can overflow a basis value, and `0.0 * inf` is the NaN the twin
+answers. `0.0 + h` stays too: it is `h` except that it turns -0.0 into 0.0.
 
-`periodic`'s `np.remainder(d, p)` is numpy's `npy_divmod`: `m = fmod(d,
-p)` (DuckDB's `%` on DOUBLE; its `fmod` floors), then `m + p` when `m` and
-`p` differ in sign, and `copysign(0, p)` when `m` is zero. `p > 0`, so: 0.0
-when `m == 0`, `m + p` when `m < 0`, else `m`; that is `m + p` or `m +
-0.0`. At ±inf the remainder is NaN, and scipy answers NaN on every lane;
+`periodic`'s `np.remainder(d, p)` is numpy's `npy_divmod`: `m = fmod(d, p)`
+(DuckDB's `%` on DOUBLE; its `fmod` floors), then `m + p` when `m` and `p`
+differ in sign, and `copysign(0, p)` when `m` is zero. `p > 0`, so: 0.0 when
+`m == 0`, `m + p` when `m < 0`, else `m`; that is `m + p` or `m + 0.0`. At
+±inf the remainder is NaN, and scipy answers NaN on every output field;
 `handle_missing="zeros"` validates with infinity allowed, so the twin
 answers it, and the entry tests for it before the intervals.
 
@@ -58,36 +58,35 @@ them at translation time.
 Where the validation of the twin raises, the entry traps: on a row past
 the knots under `extrapolation="error"` (`rejects`), and on NaN under
 `handle_missing="error"` (the input guard's probe finds it). Behind the
-trap the lanes answer NaN past the knots, which is what scipy hands
+trap the output fields answer NaN past the knots, which is what scipy hands
 sklearn before it raises, and 0.0 on NaN. Under `constant` with
 `degree=0` above the knots the twin's slice assignment fails to
-broadcast (or, with one lane, assigns nothing): an sklearn bug, not
+broadcast (or, with one output field, assigns nothing): an sklearn bug, not
 validation, where the entry answers 0.0
 (decisions/closed/tolerated-differences.md, the ruling lists it).
 
-Widths. The recurrence reads each round's values twice, so a lane's
-text doubles per degree (about 3 KB of SQL per lane at degree 3, 8 knots,
-33 KB at degree 5); `continue` keeps three times that (its outer sums),
-and `periodic` repeats its mapped `x` at every read. confit binds once a
-value that a SQL function body reads more than once (#412), so the build
-follows the distinct nodes, not the text. Release build, master b4b8d03
-with confit #430, one instance, a struct return, 10,000-row batches, 32
-features at degree 3 and 8 knots (320 lanes; `periodic` 224):
-`constant`, `linear` and `error` build in 0.7-0.9 s and serve 121-131 us
-per row (the input guard of `error` tests the knots); `continue` 1.0 s
-and 106 us; `periodic` 0.9 s and 47 us; the twin serves the `continue`
-step in 1,190 us per row. 64 features of `continue`: 2.7 s and 205 us;
-16 features of degree 5, 7 knots, `continue`: 0.9 s and 50 us; 64
-features of degree 5, 8 knots, `continue`: 5.7 s and 308 us. One feature
-at degree 3, 5 knots: 0.02 s and 0.69 us, against the twin's 154 us
-(2026-10-14). The entry refuses a step whose estimated build passes
-MAX_BUILD_S (`_build_estimate`), as quantile.py and isotonic.py cap
-theirs. Up to 64 features it takes on every configuration measured
-(degrees 1 to 5, 5 and 8 knots, the five extrapolations). Of 96 and 128
-features it refuses 7, which build in 8.0 to 12.5 s (degrees 4 and 5 at
-8 knots), before confit is asked. Since #430 confit builds every
-configuration measured: it refused four past Cranelift's size limit
-before (128 features of degree 3 to 5 at 8 knots, `error`).
+Widths. The recurrence reads each round's values twice, so an output field's
+text doubles per degree (about 3 KB of SQL per output field at degree 3, 8
+knots, 33 KB at degree 5); `continue` keeps three times that (its outer
+sums), and `periodic` repeats its mapped `x` at every read. confit binds
+once a value that a SQL function body reads more than once (#412), so the
+build follows the distinct nodes, not the text. Release build, master
+b4b8d03 with confit #430, one instance, a struct return, 10,000-row batches,
+32 features at degree 3 and 8 knots (320 output fields; `periodic` 224):
+`constant`, `linear` and `error` build in 0.7-0.9 s and serve 121-131 us per
+row (the input guard of `error` tests the knots); `continue` 1.0 s and
+106 us; `periodic` 0.9 s and 47 us; the twin serves the `continue` step in
+1,190 us per row. 64 features of `continue`: 2.7 s and 205 us; 16 features
+of degree 5, 7 knots, `continue`: 0.9 s and 50 us; 64 features of degree 5,
+8 knots, `continue`: 5.7 s and 308 us. One feature at degree 3, 5 knots:
+0.02 s and 0.69 us, against the twin's 154 us (2026-10-14). The entry
+refuses a step whose estimated build passes MAX_BUILD_S (`_build_estimate`),
+as quantile.py and isotonic.py cap theirs. Up to 64 features it takes on
+every configuration measured (degrees 1 to 5, 5 and 8 knots, the five
+extrapolations). Of 96 and 128 features it refuses 7, which build in 8.0 to
+12.5 s (degrees 4 and 5 at 8 knots), before confit is asked. Since #430
+confit builds every configuration measured: it refused four past Cranelift's
+size limit before (128 features of degree 3 to 5 at 8 knots, `error`).
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 16
@@ -119,34 +118,33 @@ from sql_transform.native._registry import NotNative, rejects, translates
 MAX_BUILD_S = 7.0
 
 
-def _build_estimate(lanes: list[S.Expr], est: Any) -> float:
-    """The seconds confit takes to build these lanes (warm, release build)
-    into the query that reads each output field. confit binds once a value
-    that the body reads more than once (#412), so the build follows the
-    distinct nodes the lanes read, not the text they spell, plus a term in
-    the nodes times the lanes. The input guard adds a term in the lanes
-    times the features, a tenth to a fifth of what it added before
-    confit #430 stopped building the guard's tests again at each field
-    read. The guard has a test a feature on NaN and ±inf under
-    `handle_missing="error"`; under `extrapolation="error"`, a test on
-    the knots, whose term is about twice as large, with or without the
-    first.
-    Fitted on 276 warm builds of one instance over 0.3 s (8 to 128
-    features, degrees 1 to 5, 5 and 8 knots, the five extrapolations, up
-    to 1,536 lanes; 16 of them again under `handle_missing="zeros"`; 0.3
-    to 12.5 s): each within 0.82 to 1.42 times the estimate (master
-    b4b8d03 with confit #430, 2026-10-14). confit builds all 359
-    configurations, and the cap took on none slower than 7.5 s and
-    refused none faster than 8.0 s. The estimate is one estimator's: a
-    step's instances compound it linearly."""
+def _build_estimate(fields: list[S.Expr], est: Any) -> float:
+    """The seconds confit takes to build these output fields (warm, release
+    build) into the query that reads each output field. confit binds once a
+    value that the body reads more than once (#412), so the build follows
+    the distinct nodes the output fields read, not the text they spell, plus
+    a term in the nodes times the output fields. The input guard adds a term
+    in the output fields times the features, a tenth to a fifth of what it
+    added before confit #430 stopped building the guard's tests again at
+    each field read. The guard has a test a feature on NaN and ±inf under
+    `handle_missing="error"`; under `extrapolation="error"`, a test on the
+    knots, whose term is about twice as large, with or without the first.
+    Fitted on 276 warm builds of one instance over 0.3 s (8 to 128 features,
+    degrees 1 to 5, 5 and 8 knots, the five extrapolations, up to 1,536
+    output fields; 16 of them again under `handle_missing="zeros"`; 0.3 to
+    12.5 s): each within 0.82 to 1.42 times the estimate (master b4b8d03
+    with confit #430, 2026-10-14). confit builds all 359 configurations, and
+    the cap took on none slower than 7.5 s and refused none faster than
+    8.0 s. The estimate is one estimator's: a step's instances compound it
+    linearly."""
     seen: set[int] = set()
-    stack = list(lanes)
+    stack = list(fields)
     while stack:  # no recursion: a recurrence can be deep
         e = stack.pop()
         if id(e) not in seen:
             seen.add(id(e))
             stack.extend(e.children)
-    nodes, width = len(seen), len(lanes)
+    nodes, width = len(seen), len(fields)
     if est.extrapolation == "error":
         guard = 6.29e-6
     elif est.handle_missing == "error":
@@ -160,7 +158,7 @@ def _build_estimate(lanes: list[S.Expr], est: Any) -> float:
 
 # A knot gap under this, but not zero, could overflow `1 / gap` in the
 # recurrence, so the intervals are no longer known to give finite basis
-# values: every lane then keeps its whole sum.
+# values: every output field then keeps its whole sum.
 _TINY_GAP = 1e-300
 
 Val = float | S.Expr
@@ -215,11 +213,11 @@ def _de_boor(t: list[float], k: int, ell: int, x: S.Expr) -> list[Val]:
     return h
 
 
-def _lane_sum(h: list[Val], col: list[float], bounded: bool) -> S.Expr:
+def _field_sum(h: list[Val], col: list[float], bounded: bool) -> S.Expr:
     """`out = 0.0; out += c[l-k+a, j] * h[a]` for `a = 0..k`, over the
-    lane's column of `c` at this interval (`col[a]`). A term `1.0 * h` is
-    `h`; a term `0.0 * h` is left out where `h` is finite (`bounded`),
-    as the module says."""
+    output field's column of `c` at this interval (`col[a]`). A term
+    `1.0 * h` is `h`; a term `0.0 * h` is left out where `h` is finite
+    (`bounded`), as the module says."""
     acc: Val = 0.0
     for cv, ha in zip(col, h, strict=True):
         if cv == 1.0:
@@ -233,8 +231,8 @@ def _lane_sum(h: list[Val], col: list[float], bounded: bool) -> S.Expr:
 
 def _spline_py(t: list[float], k: int, c: np.ndarray, x: float) -> list[float]:
     """`_evaluate_spline` at one `x`, on Python floats (the same IEEE
-    doubles, unfused): `_find_interval`, `_de_boor`, then every lane's
-    whole sum in order."""
+    doubles, unfused): `_find_interval`, `_de_boor`, then every output
+    field's whole sum in order."""
     n = len(t) - k - 1
     ell = k
     while ell < n - 1 and t[ell + 1] <= x:
@@ -302,28 +300,28 @@ def _remainder(d: S.Expr, p: float) -> S.Expr:
 def _arms(
     t: list[float], k: int, c: np.ndarray, x: S.Expr, unbounded: set[int], every: bool
 ) -> list[list[tuple[float | None, S.Expr]]]:
-    """Per lane, `_find_interval`'s arms in order: `(upper, value)`, the
-    arm taken when `x < upper` (None: the last, closed one). Neighbouring
-    arms with the same value (the same tree, `SameTree`) merge: the
-    conditions are cumulative."""
+    """Per output field, `_find_interval`'s arms in order: `(upper, value)`,
+    the arm taken when `x < upper` (None: the last, closed one).
+    Neighbouring arms with the same value (the same tree, `SameTree`) merge:
+    the conditions are cumulative."""
     n = len(t) - k - 1
-    lanes: list[list[tuple[float | None, S.Expr]]] = [[] for _ in range(c.shape[1])]
+    fields: list[list[tuple[float | None, S.Expr]]] = [[] for _ in range(c.shape[1])]
     same = SameTree()
     for ell in range(k, n):
         h = _de_boor(t, k, ell, x)
         upper = t[ell + 1] if ell < n - 1 else None
         bounded = not every and ell not in unbounded
-        for j, arms in enumerate(lanes):
+        for j, arms in enumerate(fields):
             col = [float(c[ell + a - k, j]) for a in range(k + 1)]
-            v = _lane_sum(h, col, bounded)
+            v = _field_sum(h, col, bounded)
             if arms and same.key(arms[-1][1]) == same.key(v):
                 arms[-1] = (upper, v)
             else:
                 arms.append((upper, v))
-    return lanes
+    return fields
 
 
-def _lane(
+def _field(
     head: list[tuple[S.Expr, S.Expr]], arms: list[tuple[float | None, S.Expr]], x
 ) -> S.Expr:
     """`CASE <head arms> WHEN x < t[k+1] THEN ... ELSE <last arm> END`,
@@ -358,13 +356,13 @@ def _knots(spl: Any, j: int) -> tuple[list[float], int, np.ndarray]:
 
 
 def _unknotted(est: Any, spl: Any, x: S.Expr) -> list[S.Expr]:
-    """A feature whose knots are all NaN (`knots="quantile"` fit on a
-    column only missing). Every C comparison with a NaN knot is false, so
+    """A feature whose knots are all NaN (`knots="quantile"` fit on a column
+    only missing). Every C comparison with a NaN knot is false, so
     `_find_interval` answers `k` and the recurrence runs on NaN gaps:
     `spl(x)` is its arm `k`, with the whole sums. `periodic` reads its
     period as not positive and evaluates at 0.0; `constant` and `linear`
-    find no row inside, below or above, so every lane is 0.0. NaN rows
-    are 0.0 throughout."""
+    find no row inside, below or above, so every output field is 0.0. NaN
+    rows are 0.0 throughout."""
     t = [float(v) for v in spl.t]
     k = int(spl.k)
     c = np.asarray(spl.c, dtype=np.float64)
@@ -375,7 +373,7 @@ def _unknotted(est: Any, spl: Any, x: S.Expr) -> list[S.Expr]:
     h = _de_boor(t, k, k, xv)
     return [
         S.case(isnan(x), zero).otherwise(
-            _lane_sum(h, [float(c[a, j]) for a in range(k + 1)], bounded=False)
+            _field_sum(h, [float(c[a, j]) for a in range(k + 1)], bounded=False)
         )
         for j in range(c.shape[1])
     ]
@@ -383,9 +381,9 @@ def _unknotted(est: Any, spl: Any, x: S.Expr) -> list[S.Expr]:
 
 def _bare(x: S.Expr) -> S.Expr:
     """The feature without its NULL-as-NaN wrapper (`coalesce(p, NaN)`,
-    `_registry._feature`): past a lane's first arm, which answers NaN and
-    NULL, the two are the same value, and `p` is a fraction of the text
-    that every one of a lane's many reads of `x` repeats."""
+    `_registry._feature`): past an output field's first arm, which answers
+    NaN and NULL, the two are the same value, and `p` is a fraction of the
+    text that every one of an output field's many reads of `x` repeats."""
     if (
         isinstance(x, S.Call)
         and x.name.lower() == "coalesce"
@@ -429,23 +427,25 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
         head = [(nan, zero)]
         if period > 0:
             # The remainder of ±inf is NaN, which scipy answers with NaN on
-            # every lane; the arms would take it to the last interval, where
-            # a lane with no basis there is 0.0 (`handle_missing="zeros"`
-            # validates with infinity allowed, so the twin answers it).
+            # every output field; the arms would take it to the last
+            # interval, where an output field with no basis there is 0.0
+            # (`handle_missing="zeros"` validates with infinity allowed, so
+            # the twin answers it).
             head.append((S.fn("abs", x) == f64(math.inf), f64(math.nan)))
-        lanes = _arms(t, k, c, xv, set(), every)
-        return [_lane(head, arms, xv) for arms in lanes]
+        fields = _arms(t, k, c, xv, set(), every)
+        return [_field(head, arms, xv) for arms in fields]
 
     if ext in ("continue", "error"):
         unbounded = {k, n - 1} if ext == "continue" else set()
-        lanes = _arms(t, k, c, x, unbounded, every)
+        fields = _arms(t, k, c, x, unbounded, every)
         head = [(nan, zero)]
         if ext == "error":
             # Past the knots scipy answers NaN, and the twin raises: the
-            # input guard traps there (above), and the lanes answer NaN.
+            # input guard traps there (above), and the output fields answer
+            # NaN.
             out = f64(math.nan)
             head += [(x < f64(lo), out), (x > f64(hi), out)]
-        return [_lane(head, arms, x) for arms in lanes]
+        return [_field(head, arms, x) for arms in fields]
 
     if ext not in ("constant", "linear"):
         raise NotNative(f"SplineTransformer(extrapolation={ext!r})")
@@ -453,18 +453,18 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
     # (`_spline`): `t[degree]` and `t[-degree-1]`, inside `[t[k], t[n]]`
     # since `degree >= k`, so `spl` evaluates inside its knots there.
     lo, hi = t[degree], t[len(t) - degree - 1]
-    lanes = _arms(t, k, c, x, set(), every)
+    fields = _arms(t, k, c, x, set(), every)
     f_min = [float(v) for v in spl(lo)]
     f_max = [float(v) for v in spl(hi)]
-    # Per lane, what a row below and a row above it get, and, when the
-    # range is inverted (`lo > hi`, a row then both), which comes last.
+    # Per output field, what a row below and a row above it get, and, when
+    # the range is inverted (`lo > hi`, a row then both), which comes last.
     below: list[S.Expr] = [zero] * n_splines
     above: list[S.Expr] = [zero] * n_splines
     both: list[S.Expr] = [zero] * n_splines
     if ext == "constant":
         # `XBS[below, :degree] = f_min[:degree]`, and the last `degree`
-        # lanes above; at degree 0 the twin's slice is empty (it raises,
-        # or with one lane assigns nothing), so 0.0 stays.
+        # output fields above; at degree 0 the twin's slice is empty (it
+        # raises, or with one output field assigns nothing), so 0.0 stays.
         for i in range(degree):
             below[i] = f64(f_min[i])
             above[n_splines - degree + i] = f64(f_max[n_splines - degree + i])
@@ -473,15 +473,15 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
         fp_max = [float(v) for v in spl(hi, nu=1)]
         lines = degree + 1 if degree <= 1 else degree
         if lines > n_splines:
-            # Its step `j` indexes `f_min[j]` past the lanes (an IndexError
-            # on a row below) and writes a row above into the previous
-            # feature's lanes (`n_splines - 1 - j < 0`).
+            # Its step `j` indexes `f_min[j]` past the output fields (an
+            # IndexError on a row below) and writes a row above into the
+            # previous feature's output fields (`n_splines - 1 - j < 0`).
             raise NotNative(
                 f"SplineTransformer(extrapolation='linear'): feature {j}"
-                f" continues {lines} lanes of {n_splines}, past its own"
+                f" continues {lines} output fields of {n_splines}, past its own"
             )
-        # Step `i` writes lane `i` below, then lane `n_splines - 1 - i`
-        # above; a row in both keeps the later write.
+        # Step `i` writes output field `i` below, then output field
+        # `n_splines - 1 - i` above; a row in both keeps the later write.
         last: dict[int, str] = {}
         for i in range(lines):
             below[i] = f64(f_min[i]) + (x - f64(lo)) * f64(fp_min[i])
@@ -502,8 +502,8 @@ def _feature(est: Any, spl: Any, j: int, x: S.Expr, degree: int) -> list[S.Expr]
             for b, a, w in zip(below, above, both, strict=True)
         ]
     return [
-        _lane([(nan, zero), (x < f64(lo), b), (x > f64(hi), a)], arms, x)
-        for arms, b, a in zip(lanes, below, above, strict=True)
+        _field([(nan, zero), (x < f64(lo), b), (x > f64(hi), a)], arms, x)
+        for arms, b, a in zip(fields, below, above, strict=True)
     ]
 
 
@@ -539,10 +539,10 @@ def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     # entry hands each feature the count the twin has when it starts it.
     degree = est.degree
     for j, xj in enumerate(x):
-        lanes = _feature(est, est.bsplines_[j], j, xj, degree)
+        fields = _feature(est, est.bsplines_[j], j, xj, degree)
         if est.extrapolation == "linear" and degree <= 1:
             degree += 1
-        out += lanes if est.include_bias else lanes[:-1]
+        out += fields if est.include_bias else fields[:-1]
     estimate = _build_estimate(out, est)
     if estimate > MAX_BUILD_S:
         raise NotNative(
@@ -551,7 +551,7 @@ def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         )
     if len(out) != est.n_features_out_:
         raise NotNative(
-            f"SplineTransformer: {len(out)} lanes where sklearn counts"
+            f"SplineTransformer: {len(out)} output fields where sklearn counts"
             f" {est.n_features_out_}"
         )
     return out

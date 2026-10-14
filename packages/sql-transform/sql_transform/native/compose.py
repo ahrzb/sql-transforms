@@ -4,20 +4,21 @@ its steps' translations (sklearn 1.9, `Pipeline.transform` in
 concatenation of its parts' (below, `_column_transformer`, `_union`).
 
 The twin: `Xt = X`, then for each step of `_iter()` (every step, the final
-one included, skipping `"passthrough"` and `None`), `Xt = step.transform(Xt)`.
-The first step that runs is handed the row as the step hands it; every later
-one the previous step's output, a float64 array, or over boolean features
-only a boolean one where a step hands booleans back. So the translation
-hands the first step the features and their declared types, and each later
-step the previous step's lanes typed DOUBLE, or boolean then. A nested
-`Pipeline` is one more catalog entry, and composes the same way.
+one included, skipping `"passthrough"` and `None`),
+`Xt = step.transform(Xt)`. The first step that runs is handed the row as the
+step hands it; every later one the previous step's output, a float64 array,
+or over boolean features only a boolean one where a step hands booleans
+back. So the translation hands the first step the features and their
+declared types, and each later step the previous step's output fields typed
+DOUBLE, or boolean then. A nested `Pipeline` is one more catalog entry, and
+composes the same way.
 
-Only bit-exact steps compose: a lane within k ulps of its twin, read by a
-later step, is not within k ulps after it (`x - mean_` near `mean_` turns
-a 4-ulp difference into any number of ulps), so a step whose own bound is
-not 0 refuses the pipeline. The bound read is the step's, not its class's:
-`FunctionTransformer()` composes, `FunctionTransformer(np.exp)` does not
-(unless this platform's numpy kernel reads 0, `function.py`).
+Only bit-exact steps compose: an output field within k ulps of its twin,
+read by a later step, is not within k ulps after it (`x - mean_` near
+`mean_` turns a 4-ulp difference into any number of ulps), so a step whose
+own bound is not 0 refuses the pipeline. The bound read is the step's, not
+its class's: `FunctionTransformer()` composes, `FunctionTransformer(np.exp)`
+does not (unless this platform's numpy kernel reads 0, `function.py`).
 `to_native(step, allow_bound=True)` does not change this: whether a bounded
 step may compose is an open owner question
 (loops/native/decisions/open/bounded-steps-in-compositions.md).
@@ -117,9 +118,9 @@ def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         raise NotNative("Pipeline of passthrough steps over a string feature")
     # Over boolean features only, a row none NULL is a boolean array (where
     # the pipeline is handed the step's list, or such an array), and a step
-    # that hands booleans back (a selector, `Binarizer`, the identity)
-    # hands the next one a boolean array too: its lanes stay typed boolean,
-    # for the next step's own rule (`FunctionTransformer` has one).
+    # that hands booleans back (a selector, `Binarizer`, the identity) hands
+    # the next one a boolean array too: its output fields stay typed
+    # boolean, for the next step's own rule (`FunctionTransformer` has one).
     hand = handed()
     booleans = (
         hand in ("list", "booleans")
@@ -198,10 +199,10 @@ def on_booleans(est: Any, n: int) -> np.dtype | None:
 #   `xp.concat(axis=1)` (numpy's concatenate), or sparse when a part's
 #   output is.
 #
-# The step reads the stacked row with `float()`, so a part's lanes keep
-# their values whatever dtype the stack takes (float64, or object beside a
-# passthrough), and a weight is `x * w` in doubles: the twin's product of a
-# float64 (or Python float) by the weight.
+# The step reads the stacked row with `float()`, so a part's output fields
+# keep their values whatever dtype the stack takes (float64, or object
+# beside a passthrough), and a weight is `x * w` in doubles: the twin's
+# product of a float64 (or Python float) by the weight.
 
 
 def _passes(part: Any) -> bool:
@@ -321,8 +322,8 @@ def _part(
     types: list[pa.DataType],
     hand: str,
 ) -> list[S.Expr]:
-    """One part's lanes over its own features, weighted; the twin hands
-    it its row as `hand`."""
+    """One part's output fields over its own features, weighted; the twin
+    hands it its row as `hand`."""
     where = f"{owner} part {name!r}"
     entry = catalog().get(type(part))
     if entry is None:
@@ -334,7 +335,8 @@ def _part(
         )
     if _passes(part) and pa.string() in types:
         raise NotNative(
-            f"{where} passes a string column through; the step reads lanes with float()"
+            f"{where} passes a string column through; the step reads output"
+            " fields with float()"
         )
     w = None if weight is None else _weight(owner, name, part, weight, types)
     try:
