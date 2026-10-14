@@ -98,6 +98,11 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
+4. **A comma join's trapping WHERE term before its key.**
+   `FROM t, s WHERE (9223372036854775807 + s.z) > 0 AND t.pid = s.id` traps
+   on DuckDB, which filters the cross product one term at a time; confit
+   takes `t.pid = s.id` as the join key and answers no rows (found
+   2026-10-14, every shape). With the key first, both answer no rows.
 
 ## For the native catalog
 
@@ -382,10 +387,15 @@ The first five are ruled, in this order; the rest follow.
   (served so far: a list literal read by a constant index or projected whole,
   with elements of one type, `tests/test_list_literals.py`). `decimal256`
   statics are blocked upstream (DuckDB refuses them at Arrow registration).
-- **More than one join under `shape='many'`** (`src/specializer/lower.rs`);
-  struct keys under `many` (plain equality only in the fan-out loop); struct
-  keys whose field-name sets differ refuse where DuckDB serves a constant-empty
-  join.
+- **More than one join under `shape='many'`.** The joins lower as loops,
+  one for each join, nested in FROM order (`lower_many_loops` in
+  `src/specializer/lower.rs`; `tests/test_duckdb_stageb_many.py`; generator
+  gate 29 mod 31, tag `many-joins`). Still refused by name: a self-join after
+  another join (DuckDB evaluates its build side for the whole batch, a loop
+  only for the rows that reach it), a join in a query with a subquery, and
+  IS NOT DISTINCT FROM or struct keys under `many` (plain equality only in
+  the fan-out loop); struct keys whose field-name sets differ refuse where
+  DuckDB serves a constant-empty join.
 - **Per-row aggregation over matched static rows** (correlated scalar
   subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
   over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the

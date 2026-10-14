@@ -327,8 +327,8 @@ REWRITE_TOLERANCES: tuple[RewriteTolerance, ...] = tuple(
             "wrap-derived",
             "many join",
             "a subquery under a shape='many' join",
-            "shape='many' stays one join per query, not per level (a design "
-            "review condition); the unwrapped query's join is the only one",
+            "under shape='many' the joins lower as loops in one level only (a "
+            "design review condition); the unwrapped query has one level",
         ),
         (
             "wrap-cte",

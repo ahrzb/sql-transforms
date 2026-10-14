@@ -328,3 +328,152 @@ def test_only_multiplicity_programs_fall_back(sql, shape, backend):
         sql, row_tables={"__THIS__": T}, static_tables={"d": dim}, shape=shape
     )
     assert fn.backend == backend
+
+
+# More than one join: one loop per join, nested in FROM order. Join k reads
+# every row that joins 0..k-1 produce, a LEFT null-extension included, as
+# DuckDB's left-deep plan does with the optimizer off.
+DK = pa.table({"id": [1, 2, 1, 2, 1], "k": [7, 8, 7, None, 9], "v": list("abcde")})
+D2 = pa.table({"id": [7, 7, 8, 1, None], "w": ["x", "y", "z", "q", "n"]})
+TC = pa.schema([pa.field("pid", pa.int64()), pa.field("c", pa.int64())])
+ROWS_C = [
+    {"pid": 1, "c": 0},
+    {"pid": 2, "c": 0},
+    {"pid": 3, "c": 1},
+    {"pid": None, "c": 0},
+]
+
+
+def _joins_check(sql: str, statics=None, rows=ROWS_C):
+    """Engine (shape='many') vs DuckDB over the statics, sorted-row
+    multiset; a trap must be a trap on both."""
+    statics = {"d": DK, "d2": D2} if statics is None else statics
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": TC}, static_tables=statics, shape="many"
+    )
+    with Oracle() as o:
+        o.table("__THIS__", "pid BIGINT, c BIGINT", [(r["pid"], r["c"]) for r in rows])
+        for name, tbl in statics.items():
+            o.load(name, tbl)
+        want = o.try_answer(sql)
+    if not isinstance(want, pa.Table):
+        with pytest.raises(ValueError):
+            fn.infer_rows(rows)
+        return
+    compare.assert_rows(fn.infer_rows(rows), compare.rows(want), ctx=sql)
+
+
+@pytest.mark.parametrize("j1", ["JOIN", "LEFT JOIN"])
+@pytest.mark.parametrize("j2", ["JOIN", "LEFT JOIN"])
+@pytest.mark.parametrize("key2", ["d.k = d2.id", "pid = d2.id"], ids=["chain", "star"])
+def test_two_joins_compose_vs_oracle(j1, j2, key2):
+    _joins_check(
+        f"SELECT pid, d.v, d2.w FROM __THIS__ {j1} d ON pid = d.id {j2} d2 ON {key2}"
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM __THIS__ LEFT JOIN d ON pid = d.id LEFT JOIN d2 ON d.k = d2.id",
+        "SELECT * FROM __THIS__ JOIN d ON pid = d.id JOIN d2 USING (id)",
+        "SELECT pid, d.v, d2.w FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "LEFT JOIN d2 ON d.k = d2.id AND d2.w <> 'y'",
+        "SELECT pid, d.v, d2.w FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "LEFT JOIN d2 ON d.k = d2.id WHERE d2.w IS NULL OR d.v > 'b'",
+        "SELECT pid, d.v, d2.w FROM __THIS__, d, d2 WHERE pid = d.id AND d.k = d2.id",
+        "SELECT pid, d.v, d2.id FROM __THIS__ JOIN d ON pid = d.id "
+        "JOIN d2 ON d.k > d2.id",
+        "SELECT pid, d.v, d2.w FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "LEFT JOIN d2 ON d.k = d2.id OR d2.w = 'q'",
+        # Three joins, the same static twice under two names.
+        "SELECT pid, d.v, d2.w, e.w AS e FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "JOIN d2 ON d.k = d2.id LEFT JOIN d2 AS e ON pid = e.id",
+    ],
+)
+def test_more_joins_vs_oracle(sql):
+    _joins_check(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT pid, CASE WHEN d.v > 'b' THEN d2.w ELSE upper(d.v) END AS x, "
+        "coalesce(d2.w, d.v) AS y FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "LEFT JOIN d2 ON d.k = d2.id",
+        "SELECT pid, d2.w FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "LEFT JOIN d2 ON (CASE WHEN d.v > 'b' THEN 8 ELSE d.k END) = d2.id",
+        "SELECT pid, d2.w FROM __THIS__ JOIN d ON pid = d.id LEFT JOIN d2 "
+        "ON d.k = d2.id AND (CASE WHEN d.v = 'a' THEN 'x' ELSE d.v END) <> d2.w",
+        "SELECT pid, d2.w FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        "LEFT JOIN d2 ON d.k = d2.id WHERE CASE WHEN d.v IS NULL THEN TRUE "
+        "ELSE coalesce(d2.w, 'n') <> 'y' END",
+    ],
+)
+def test_splits_under_two_open_joins(sql):
+    """Every open join's probe cache is re-created in each block a split
+    creates: in the outputs, in the second join's key and residual, and in
+    WHERE."""
+    _joins_check(sql)
+
+
+M = 9223372036854775807
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # pid 3 (c = 1) matches no d row: an INNER first join drops it before
+        # the second join's key, a LEFT one null-extends it (measured).
+        f"SELECT 1 AS x FROM __THIS__ JOIN d ON pid = d.id "
+        f"JOIN d2 ON ({M} + c) = d2.id",
+        f"SELECT 1 AS x FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        f"JOIN d2 ON ({M} + c) = d2.id",
+        # WHERE and the outputs run per row the last join emits.
+        f"SELECT 1 AS x FROM __THIS__ JOIN d ON pid = d.id JOIN d2 ON d.k = d2.id "
+        f"WHERE ({M} + c) > 0",
+        f"SELECT {M} + c AS x FROM __THIS__ JOIN d ON pid = d.id "
+        f"LEFT JOIN d2 ON d.k = d2.id",
+    ],
+)
+def test_a_later_join_runs_per_row_an_earlier_join_produces(sql):
+    _joins_check(sql)
+
+
+def test_a_left_join_to_an_empty_static_skips_its_on_clause_in_any_position():
+    """DuckDB never evaluates the ON clause of a LEFT join whose static has
+    no rows (measured), the second join included."""
+    empty = pa.table({"id": pa.array([], pa.int64()), "w": pa.array([], pa.string())})
+    _joins_check(
+        f"SELECT pid, d.v, e.w FROM __THIS__ LEFT JOIN d ON pid = d.id "
+        f"LEFT JOIN e ON ({M} + c) = e.id",
+        statics={"d": DK, "e": empty},
+    )
+
+
+def test_a_self_join_runs_first_or_refuses_by_name():
+    """A self-join reads the batch. As the first join it is the outer loop;
+    after another join it refuses, since DuckDB builds the batch side over
+    the whole batch, whether a row reaches the join or not."""
+    _joins_check(
+        "SELECT __THIS__.pid, u.c, d2.w FROM __THIS__ JOIN __THIS__ AS u "
+        "ON __THIS__.pid = u.pid LEFT JOIN d2 ON u.c + 7 = d2.id"
+    )
+    with pytest.raises(ValueError, match="a self-join after another join"):
+        DuckDBInferFn(
+            "SELECT 1 AS x FROM __THIS__ JOIN d ON __THIS__.pid = d.id "
+            "JOIN __THIS__ AS u ON __THIS__.pid = u.pid",
+            row_tables={"__THIS__": TC},
+            static_tables={"d": DK},
+            shape="many",
+        )
+
+
+def test_a_key_whose_emission_splits_keeps_the_keys_before_it():
+    """Each key rides the live stack until the probe: a CASE in a later key
+    splits blocks, and an earlier key's value must cross the split (before,
+    it failed verification as a probe key not visible in its block)."""
+    _many_check(
+        "SELECT pid, v FROM __THIS__ JOIN d ON pid = d.id "
+        "AND (CASE WHEN pid > 1 THEN 'b' ELSE 'a' END) = d.v"
+    )

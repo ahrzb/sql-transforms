@@ -1295,6 +1295,71 @@ def _struct_values(srng, query, row_schema, statics, env, tags) -> None:
     tags.append("struct-value")
 
 
+def _many_joins(mrng, query, rows, statics, env, tags) -> bool:
+    """Join one or two more static tables to the outer query, so it has at
+    least two joins, from a generator of its own so no other seed's draws
+    move. The caller then serves the case under shape='many', where the
+    matches of the joins multiply. About half of each new table's key
+    values come from the column that it joins on, repeats included, so its
+    rows match more than once. An item reads the new tables.
+    """
+    b = query.body
+    if b.frm != "__THIS__" or b.sub is not None:
+        return False
+    joined = [j.table for j in b.joins if j.table in statics]
+    # A row column a joined table also has is ambiguous bare: qualify it.
+    heads = {n.lower() for t in joined for n in statics[t][0]}
+    jenv = Env(
+        [
+            ("__THIS__" if t is None and c.split(".")[0].lower() in heads else t, c, ty)
+            for t, c, ty in env.cols
+        ]
+        + [(t, c, ty) for t in joined for c, ty, _ in leaves(statics[t][0])],
+        env.udfs,
+        env.tree,
+    )
+    added = 0
+    while added == 0 or len(b.joins) < 2:
+        taken = {k.lower() for k in statics}
+        name = next(f"m{i}" for i in range(len(statics) + 1) if f"m{i}" not in taken)
+        # A new table's columns may share no type with the columns in
+        # scope: draw another, a few times. Its column names carry its own
+        # name, so the query's unqualified reads stay unambiguous.
+        for _ in range(4):
+            sch = {
+                f"{name}{c}": spec
+                for c, spec in _schema(mrng, mrng.randrange(1, 4), static=True).items()
+            }
+            on = _equi_on(mrng, jenv, name, sch)
+            if on is not None:
+                break
+        if on is None:
+            break
+        srows = _rows(mrng, sch, mrng.randrange(0, 7))
+        eq = on if on.op == "=" else on.lhs
+        probe, key = eq.lhs, eq.rhs
+        if "." not in key.name and "." not in probe.name:
+            src = rows if probe.table in (None, "__THIS__") else statics[probe.table][1]
+            seen = [r[probe.name] for r in src if r[probe.name] is not None]
+            storage = sch[key.name].rstrip("?")
+            lo, hi = INT_RANGE.get(storage, (None, None))
+            seen = [v for v in seen if lo is None or lo <= v <= hi]
+            for r in srows:
+                if seen and mrng.random() < 0.5:
+                    r[key.name] = mrng.choice(seen)
+        statics[name] = (sch, srows)
+        b.joins.append(Join(mrng.choice(["INNER", "LEFT"]), name, on))
+        jenv = Env(
+            jenv.cols + [(name, c, t) for c, t, _ in leaves(sch)], env.udfs, env.tree
+        )
+        added += 1
+    if added == 0:
+        return False
+    b.items.append((expr(mrng, jenv, mrng.choice(TYPES), 2), f"mj{len(b.items)}"))
+    tags.append("many-joins")
+    return True
+
+
 def _sql_functions(frng, query, statics, env, udfs, tags) -> None:
     """Declare one or two SQL functions and call each in an item of its own
     in the outer query (one of them maybe twice), from a generator of its
@@ -1564,6 +1629,12 @@ def gen(seed: int) -> Case:
 
     env = Env([(None, c, t) for c, t, _ in leaves(row_schema)], udfs, tree)
     query = _query(rng, env, statics, tags, hostile_ids)
+    # 31 and 29 keep every seed that a test pins out of this gate, the
+    # canaries of `fuzz/exclusions.py` included.
+    many_joins = False
+    if seed % 31 == 29:
+        mrng = random.Random(seed * 7919 + 6)  # noqa: S311
+        many_joins = _many_joins(mrng, query, rows, statics, env, tags)
     if seed % 7 == 3:
         _decimal_join_key(drng, query, row_schema, rows, dname, statics, tags)
     if seed % 11 == 6:
@@ -1583,6 +1654,8 @@ def gen(seed: int) -> Case:
         _struct_values(srng, query, row_schema, statics, env, tags)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
+    if many_joins:
+        shape = "many"
     output = rng.choice([None] * 4 + ["dict", "model"])
     if shape:
         tags.append(f"shape={shape}")

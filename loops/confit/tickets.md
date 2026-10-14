@@ -17,14 +17,14 @@ function body reads more than once. It merged inline as #412. T6 serves a whole 
 DuckDB does, and lets the campaign generator declare SQL functions. It merged inline as #419. T8 reads
 each element of a list output, and each field of a struct output, that a SQL function's `null_when` can make
 NULL without a CASE of its own where the element cannot trap; #417 had made such builds up to 5x slower. It
-merged inline as #422.
+merged inline as #422. T9 serves more than one join under `shape='many'` (ruled class 4). It merged inline as
+#449.
 
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
 Next up, when a worker slot frees and the account's usage warning clears:
 
-- More than one join under `shape='many'` (ruled class 4).
 - Linear-time Cranelift builds of deep CASE trees. IsotonicRegression with 20 000 thresholds takes 22 s now.
 - Build time that grows faster than linearly for long AND/OR chains. A chain of 20 000 terms takes about
   23 s.
