@@ -694,11 +694,14 @@ impl Binder<'_> {
             && matches!(DuckNulls::new(self).closed(e), Ok(true))
     }
 
-    /// Whether `e` binds to a NULL constant.
+    /// Whether `e` binds to a NULL constant, or to a closed value that
+    /// evaluates to NULL, as DuckDB's binder evaluates a foldable argument:
+    /// `CASE WHEN FALSE THEN 44 END` binds to a CASE here (nightly seeds
+    /// 5397716, 6212474).
     fn binds_to_null(&self, e: &SqlExpr) -> bool {
         match self.expr_or_null(e) {
             Ok(None) => true,
-            Ok(Some(v)) => matches!(v.kind, SKind::NullOf),
+            Ok(Some(v)) => matches!(v.kind, SKind::NullOf) || folds_to_null(&v),
             Err(_) => false,
         }
     }
@@ -883,6 +886,19 @@ impl<'b, 'a> DuckNulls<'b, 'a> {
     pub(super) fn closed(&self, e: &SqlExpr) -> Result<bool, PrepareError> {
         use super::resolve::Walk;
         self.b.walk_expr(e, &mut |x| {
+            // A SQL function call is its body with the arguments
+            // substituted, and only that text is DuckDB's: an argument the
+            // body does not read, or reads only inside a call its binder
+            // makes NULL, reads no column there (nightly seeds 5397716,
+            // 6212474). The marker also spells the arguments in place,
+            // which this walk must not count.
+            if let Some((id, calls)) = calls::marker_call(x) {
+                return Ok(if self.closed(&calls[id].1)? {
+                    Walk::Over
+                } else {
+                    Walk::Stop
+                });
+            }
             Ok(match x {
                 SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => match self.b.ref_res(x) {
                     Ok(Resolved::Lane(v)) if self.b.duck_foldable(&v) => Walk::Over,
@@ -964,7 +980,7 @@ impl<'b, 'a> DuckNulls<'b, 'a> {
 }
 
 /// A call's argument expressions, in order.
-fn call_args(f: &sqlparser::ast::Function) -> Vec<&SqlExpr> {
+pub(super) fn call_args(f: &sqlparser::ast::Function) -> Vec<&SqlExpr> {
     use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
     let FunctionArguments::List(list) = &f.args else {
         return Vec::new();

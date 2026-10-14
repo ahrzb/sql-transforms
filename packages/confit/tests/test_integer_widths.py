@@ -314,6 +314,20 @@ def test_pure_udf_fold_keeps_declared_type_for_null_fields():
     _parity(sql, _StructUdf(on_null=(None,)))
 
 
+def test_pure_udf_over_an_argument_that_names_a_column_runs_per_row():
+    """`coalesce(8, k)` is 8 on every row, but it names a column, so DuckDB's
+    binder does not evaluate the call: the field keeps its declared BIGINT,
+    where a whole-call None at build would make it SQLNULL (nightly seeds
+    5144477, 6949338)."""
+    for sql in (
+        "SELECT (udf9(NULL, coalesce(8, k))).f1 AS o FROM __THIS__",
+        "SELECT udf9(NULL, coalesce(8, k)).f1 AS o FROM __THIS__",
+    ):
+        duck = _duck_udf(sql, _StructUdf())
+        assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
+        _parity(sql, _StructUdf())
+
+
 def test_side_effects_udf_is_never_executed_at_build():
     """side_effects=True (DuckDB's own flag and default-False semantics)
     opts out of the fold entirely: no build-time call, declared schema."""

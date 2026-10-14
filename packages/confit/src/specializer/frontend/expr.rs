@@ -257,9 +257,28 @@ impl Binder<'_> {
             SqlExpr::CompoundFieldAccess { root, access_chain } => {
                 matches!(access_chain.as_slice(), [AccessExpr::Dot(_)]) && over_udf(root)
             }
+            // A builtin's DECIMAL overload over a constant NULL DECIMAL binds
+            // SQLNULL, as the DECIMAL operators below do: its return type is
+            // left to its bind (measured: `- abs(CAST(NULL AS DECIMAL(4,1)))`
+            // and `abs(CASE WHEN FALSE THEN -28.066 END) - NULL` are BIGINT;
+            // nightly seeds 5923305, 6186379).
             SqlExpr::Function(f) => {
-                f.name.to_string().eq_ignore_ascii_case("struct_extract")
+                let name = f.name.to_string().to_ascii_lowercase();
+                name == "struct_extract"
                     || self.all_null_spelling(e)
+                    || (functions::DECIMAL_OVERLOADS.contains(&name.as_str())
+                        && call_args(f).first().is_some_and(|a| self.dec_null_operator(&[*a])))
+            }
+            // sqlparser spells `ceil` and `floor` as nodes of their own.
+            SqlExpr::Ceil { expr, field } | SqlExpr::Floor { expr, field }
+                if matches!(
+                    field,
+                    sqlparser::ast::CeilFloorKind::DateTimeField(
+                        sqlparser::ast::DateTimeField::NoDateTime
+                    )
+                ) =>
+            {
+                self.dec_null_operator(&[expr])
             }
             SqlExpr::Case { .. } => self.all_null_spelling(e),
             // A DECIMAL operator over a constant NULL operand, typed or bare,
@@ -285,8 +304,9 @@ impl Binder<'_> {
 
     /// Whether `e` is spelled as NULL all the way down: a NULL literal,
     /// `nullif(NULL, x)`, or a CASE / COALESCE / IFNULL / least / greatest
-    /// whose every result or argument is such a spelling. DuckDB types each
-    /// of these as a bare NULL (measured under unary minus, abs, upper, ||,
+    /// whose every result or argument is such a spelling, or an operator or
+    /// call that binds SQLNULL (`null_part`). DuckDB types each of
+    /// these as a bare NULL (measured under unary minus, abs, upper, ||,
     /// concat, coalesce and CASE unification).
     pub(super) fn all_null_spelling(&self, e: &SqlExpr) -> bool {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
@@ -301,8 +321,8 @@ impl Binder<'_> {
                 else_result,
                 ..
             } => {
-                conditions.iter().all(|w| self.all_null_spelling(&w.result))
-                    && else_result.as_deref().is_none_or(|x| self.all_null_spelling(x))
+                conditions.iter().all(|w| self.null_part(&w.result))
+                    && else_result.as_deref().is_none_or(|x| self.null_part(x))
             }
             SqlExpr::Function(f) => {
                 if self.nullif_sqlnull(f).unwrap_or(false) {
@@ -320,14 +340,39 @@ impl Binder<'_> {
                 };
                 !list.args.is_empty()
                     && list.args.iter().all(|a| match a {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) => {
-                            self.all_null_spelling(x)
-                        }
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) => self.null_part(x),
                         _ => false,
                     })
             }
             _ => false,
         }
+    }
+
+    /// A result of an all-NULL CASE or an argument of an all-NULL COALESCE:
+    /// an all-NULL spelling, or an operator or call that binds SQLNULL
+    /// (`53.832 * NULL`; measured: `trunc(CASE WHEN c THEN 53.832 * NULL
+    /// END)` and `abs(coalesce(0.5 * NULL, NULL))` are BIGINT; nightly seeds
+    /// 5248694, 6686677). A CASE or COALESCE part answers by its spelling
+    /// alone: binding it again at each level would take time exponential in
+    /// the depth.
+    fn null_part(&self, x: &SqlExpr) -> bool {
+        if self.all_null_spelling(x) {
+            return true;
+        }
+        let mut x = x;
+        while let SqlExpr::Nested(i) = x {
+            x = i;
+        }
+        let call = match x {
+            SqlExpr::BinaryOp { .. } | SqlExpr::UnaryOp { .. } => true,
+            SqlExpr::CompoundFieldAccess { .. } => true,
+            SqlExpr::Ceil { .. } | SqlExpr::Floor { .. } => true,
+            SqlExpr::Function(f) => !["coalesce", "ifnull", "least", "greatest", "nullif"]
+                .iter()
+                .any(|n| f.name.to_string().eq_ignore_ascii_case(n)),
+            _ => false,
+        };
+        call && matches!(self.expr_or_null(x), Ok(None))
     }
 
     /// Whether these operands bind a DECIMAL operator (one is a DECIMAL,

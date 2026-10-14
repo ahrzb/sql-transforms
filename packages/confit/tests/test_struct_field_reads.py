@@ -153,6 +153,18 @@ def test_a_field_read_agrees_with_the_oracle(expr):
         "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
         " q := 1 >= levenshtein('a', CAST(CASE WHEN a > 0 THEN NULL END AS VARCHAR)))"
         " END).p",
+        # An argument that names no column and evaluates to NULL makes the
+        # call NULL too, though it is not the NULL literal (nightly seeds
+        # 5397716, 6212474).
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := a * (CASE WHEN FALSE THEN 44 END)) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := repeat(CASE WHEN TRUE THEN NULL ELSE 'y' END, a + 21)) END).p",
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := levenshtein(s, CASE WHEN TRUE THEN NULL ELSE 'y' END)) END).p",
+        # A CASE that names a column stays a call.
+        "(CASE WHEN TRUE THEN NULL ELSE struct_pack(p := 'x',"
+        " q := repeat(CASE WHEN a > 0 THEN NULL ELSE 'y' END, a + 21)) END).p",
     ],
 )
 def test_a_read_of_a_struct_that_folds_to_null(expr):

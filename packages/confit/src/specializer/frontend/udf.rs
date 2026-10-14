@@ -115,6 +115,24 @@ impl Binder<'_> {
         eval_closed(e, self.regexes.borrow().clone())
     }
 
+    /// Whether DuckDB's binder can fold a call with `f`'s arguments: no
+    /// name in their text reads a column ([`DuckNulls::closed`]). Our
+    /// binder drops a name whose value cannot matter (`coalesce(8, c1)`
+    /// binds as 8), but DuckDB's fold keys on the text, so
+    /// `udf0(coalesce(8, c1))` runs per row and keeps its declared type
+    /// (nightly seeds 5144477, 6949338). Where it cannot, the call at
+    /// `site` never folds, so no later [`Self::site_bind_fold`] folds it.
+    pub(super) fn args_closed(&self, f: &sqlparser::ast::Function, site: u32) -> bool {
+        let nulls = DuckNulls::new(self);
+        let closed = outputs::call_args(f)
+            .into_iter()
+            .all(|a| matches!(nulls.closed(a), Ok(true)));
+        if !closed {
+            self.bind_folds.borrow_mut().push((site, None));
+        }
+        closed
+    }
+
     /// [`Self::try_extern_bind_fold`], at most once per call site.
     #[allow(clippy::type_complexity)]
     pub(super) fn site_bind_fold(
@@ -268,7 +286,13 @@ impl Binder<'_> {
         // rows, a zero-row batch answers empty; a FROM-less query that
         // appears to error at bind is eager constant evaluation, not the
         // binder).
-        match self.try_extern_bind_fold(ext as usize, spec, &args) {
+        let site = self.site_for(f);
+        let folded = if self.args_closed(f, site) {
+            self.try_extern_bind_fold(ext as usize, spec, &args)
+        } else {
+            None
+        };
+        match folded {
             Some(Err(_)) => {}
             Some(Ok(None)) => return Ok(Some(null_of(Ty::I32))),
             Some(Ok(Some(lanes))) => {
@@ -280,7 +304,6 @@ impl Binder<'_> {
             }
             None => {}
         }
-        let site = self.site_for(f);
         Ok(Some(SExpr {
             kind: SKind::ExternCall {
                 site,

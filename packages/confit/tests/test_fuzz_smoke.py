@@ -596,6 +596,16 @@ NIGHTLY_305_SHARDED = {
     # fold), and a field read stays a call where DuckDB's binder keeps one.
     4704064: "AGREE",
     4848122: "AGREE",
+    # The nightlies of 2026-10-07..14 (seeds 5000000..8199999): a field read
+    # of a SQL function whose body is NULL under a constant condition; a
+    # pure UDF over an argument that names a column; a builtin or a CASE
+    # over a NULL that DuckDB types SQLNULL; a HUGEINT product of exactly
+    # -2^127; BETWEEN in a JOIN ON over a trapping static column.
+    **dict.fromkeys([5397716, 6212474, 7430849, 7843947], "AGREE"),
+    **dict.fromkeys([5144477, 6949338], "AGREE"),
+    **dict.fromkeys([5248694, 5923305, 6186379, 6686677], "AGREE"),
+    **dict.fromkeys([6065493, 7511938], "AGREE_TRAP"),
+    6738617: "REFUSED",
 }
 
 
