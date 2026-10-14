@@ -10,19 +10,19 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
-T28 merged on 2026-10-14: the forest and spline build estimates are
-fitted again on confit #430, which stopped building the input guard's
-tests again at each field read of a struct output. A forest of 8
-features takes one CASE per tree up to about 5,990 output fields (2,450
-before): of the 43 forests measured, the estimates of T26 refuse 16 and
-those of T28 refuse 3. Of the 359 spline configurations measured, 7 are
-refused (43 before #430). Every encoder measured builds, in 0.03 to
-5.2 s: `OneHotEncoder` over 8 string features of 125 categories and over
-16 of 125, refused before, builds in 0.46 s and 1.2 s. Coverage is 31 of
-68. The loop runs from the "Transforms Loop" project thread.
+T29 merged on 2026-10-14: a quarter of the kernel probe's draws
+(`function.kernel_distance`) are now doubles of random sign, binary
+exponent and significand (`function._random_doubles`), in place of
+`exp(uniform)`, on which two accurate `log` kernels always agree (#404,
+`chi2.md` section 2). On this machine the probe reads what it read
+before: 1 ulp for `exp`, `log`, `log2`, `log10` and `tan`, 3 for `cbrt`,
+and 0 for `sin` and `cos`. The bounds hold over 2,500,000 draws against
+confit (500,000 each of five kinds, master b4b8d03): `log10` reaches 2,
+`cbrt` 3 and the others 1. Coverage is 31 of 68. The loop runs from the
+"Transforms Loop" project thread.
 
-Next: the kernel probe's random significands (PLANS "Next" item 1),
-then the other "Next" items, the densified sparse outputs and the
-families on the parity bound.
+Next: the native catalog's fifth reading, then PLANS "Next" (the paths
+spelling first), the densified sparse outputs and the families on the
+parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.

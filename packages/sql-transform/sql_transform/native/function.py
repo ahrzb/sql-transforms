@@ -152,13 +152,14 @@ _SERVED: dict[Any, Callable[[S.Expr], S.Expr]] = {
 
 # The functions served within a bound above 0: numpy's kernel is not
 # glibc's, which DuckDB and confit call. Each bound is the largest distance
-# measured, numpy 2.5.1 against DuckDB 1.5.5 and confit on x86-64 with
-# AVX-512: over 1,600,000 draws (uniform in +-1e3 and +-50, normal, and
-# +-exp(uniform(-700, 700))) exp, log, log2 and tan reach 1, log10 2 and
-# cbrt 3; over NATIVE_SEEDS=200 of the catalog's fixtures (each function
-# validated and not, 250,551 rows with the other functions') cbrt reaches
-# 3 and the others 1 (2026-10-05; cbrt against confit after #390). The
-# class's ceiling is the largest of them.
+# measured, numpy 2.5.1 against confit on x86-64 with AVX-512: over
+# 2,500,000 draws (500,000 each of uniform in +-1e3 and +-50, normal,
+# `_random_doubles` and +-exp(uniform(-700, 700))) exp, log, log2 and tan
+# reach 1, log10 2 and cbrt 3 (2026-10-14, master b4b8d03); over
+# NATIVE_SEEDS=200 of the catalog's fixtures (each function validated and
+# not, 250,551 rows with the other functions') cbrt reaches 3 and the
+# others 1 (2026-10-05; cbrt against confit after #390). The class's
+# ceiling is the largest of them.
 _BOUNDS = {
     np.exp: 1,
     np.log: 1,
@@ -194,14 +195,27 @@ def _ordered(x: np.ndarray) -> np.ndarray:
     return np.where(i >= 0, i, -(i & 0x7FFF_FFFF_FFFF_FFFF))
 
 
+def _random_doubles(rng: np.random.Generator, n: int) -> np.ndarray:
+    """`n` doubles of random sign, binary exponent and significand: each
+    normal double's bits equally likely. `exp(t)` of a uniform `t` would
+    not do: for |t| >= 2 its log lies within ulp(t)/4 of the double `t`,
+    far from a rounding midpoint, so two accurate `log` kernels agree there
+    (loops/native/decisions/research/2026-10-06/chi2.md, section 2)."""
+    sign = rng.integers(0, 2, n, dtype=np.uint64) << np.uint64(63)
+    exponent = rng.integers(1, 2047, n, dtype=np.uint64) << np.uint64(52)
+    significand = rng.integers(0, 1 << 52, n, dtype=np.uint64)
+    return (sign | exponent | significand).view(np.float64)
+
+
 @functools.cache
 def kernel_distance(func: Any) -> int | None:
     """The largest distance, in doubles, between numpy's float64 `func` and
     the entry's spelling of it as confit, the engine that serves the entry,
-    computes it, on probe values: 40,000 draws over the magnitudes a double
-    spans (huge arguments exercise the range reduction), and the signed
-    zeros, subnormals, infinities and NaN. NaN against a number counts as
-    2**64. None when the probe fails to run."""
+    computes it, on probe values: 40,000 draws (uniform in +-1e3 and +-50,
+    normal, and `_random_doubles` over the magnitudes a double spans, whose
+    huge arguments exercise the range reduction), and the signed zeros,
+    subnormals, infinities and NaN. NaN against a number counts as 2**64.
+    None when the probe fails to run."""
     rng = np.random.default_rng(20261005)
     n = 10_000
     x = np.concatenate(
@@ -209,7 +223,7 @@ def kernel_distance(func: Any) -> int | None:
             rng.uniform(-1e3, 1e3, n),
             rng.normal(0.0, 1.0, n),
             rng.uniform(-50.0, 50.0, n),
-            np.exp(rng.uniform(-700.0, 700.0, n)) * rng.choice([-1.0, 1.0], n),
+            _random_doubles(rng, n),
             [0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308, math.pi],
             [math.inf, -math.inf, math.nan, 1e308, -1e308, 709.78, 710.0],
         ]
