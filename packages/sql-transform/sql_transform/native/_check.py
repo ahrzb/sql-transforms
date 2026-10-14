@@ -1,5 +1,5 @@
 """Swap-the-entry parity: one query, served by confit twice, once with the
-Python step and once with its native twin, compared lane by lane.
+Python step and once with its native twin, compared field by field.
 
 The native twin is also checked against its own definition: registered on
 DuckDB, the same query (its call made once per row) must answer exactly what
@@ -100,9 +100,9 @@ def _bounds(scale: ErrorScale, est: Any, x: np.ndarray, width: int) -> np.ndarra
     return np.broadcast_to(b + np.asarray(tau, np.longdouble), (width,))
 
 
-def _lanes(rec: dict) -> list[tuple[str, Any]]:
-    """One answered row's lanes, each `(name, value)`: a struct's fields,
-    a list's elements, or the one value."""
+def _output_fields(rec: dict) -> list[tuple[str, Any]]:
+    """One answered row's output fields, each `(name, value)`: a struct's
+    fields, a list's elements, or the one value."""
     if len(rec) == 1:
         ((key, v),) = rec.items()
         if isinstance(v, list):
@@ -114,7 +114,8 @@ def _once(step: PythonTransform, id_col: str) -> str:
     """`query(step)` with the call made once per row, its struct then read
     by field: the same answers, in the time DuckDB takes for one call.
     DuckDB expands a macro at every field read, so it makes a wide struct's
-    call once per lane (285 lanes: 18 s, against 0.1 s once)."""
+    call once per output field (285 output fields: 18 s, against 0.1 s
+    once)."""
     r = step.returns
     if not pa.types.is_struct(r):
         return query(step, id_col)
@@ -246,10 +247,10 @@ def check(
     id_col: str = "__iid",
 ) -> int:
     """Raise `ParityError` unless `native` answers every row of `rows` as
-    `step` does, lane by lane, within the parity bound of the row's
+    `step` does, field by field, within the parity bound of the row's
     instance: its ulp bound (0 = bit-exact) or its error scale
-    (`ErrorScale`). With `ulps`, every row is held to that many doubles
-    per lane instead. `rows` holds `id_col` and one column per declared
+    (`ErrorScale`). With `ulps`, every row is held to that many doubles per
+    output field instead. `rows` holds `id_col` and one column per declared
     feature.
 
     Where the step raises on a row (sklearn rejecting an input it
@@ -305,7 +306,7 @@ def check(
             u = 0  # what is not a double (NULL, say) compares exactly
         else:
             u = entry.bound(est)
-        la, lb = _lanes(a), _lanes(b)
+        la, lb = _output_fields(a), _output_fields(b)
         if len(la) != len(lb):
             raise ParityError(
                 f"row {i}: step {a!r}, native {b!r}; input {_input(rows, i)}"
@@ -321,7 +322,7 @@ def check(
                     else "n/a"
                 )
                 raise ParityError(
-                    f"row {i} lane {name!r}: step {x!r}, native {y!r}"
+                    f"row {i} output field {name!r}: step {x!r}, native {y!r}"
                     f" ({d} ulps, bound {u}); input {_input(rows, i)}"
                 )
             if repr(x) == repr(y):
@@ -331,7 +332,7 @@ def check(
                 bounds = _bounds(scale, est, x_in, len(la))
             if not near(x, y, bounds[j], scale.g):
                 raise ParityError(
-                    f"row {i} lane {name!r}: step {x!r}, native {y!r}, past"
+                    f"row {i} output field {name!r}: step {x!r}, native {y!r}, past"
                     f" its bound K*eps*S + tau = {float(bounds[j]):.6g}"
                     f" ({_apart(x, y, scale.g)} apart); input {_input(rows, i)}"
                 )

@@ -668,12 +668,12 @@ UNSEEN = ["zz", "", "A"]
 EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324, math.inf, -math.inf]
 # A row of only these has a norm under sklearn's zero-scale threshold.
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
-# The widest step drawn, in output lanes: a wider fixture checks the same
-# translation, only slower. 1,000 holds degree-2 PolynomialFeatures over
-# all 32 features and degree 3 over 16; with 8 seeds the classes that draw
-# past 300 lanes (PolynomialFeatures, OneHotEncoder, KBinsDiscretizer) run
-# in 35 s, against 31 s at 300 and 44 s at 2,000 (master 49acad5).
-MAX_LANES = 1000
+# The widest step drawn, in output fields: a wider fixture checks the same
+# translation, only slower. 1,000 holds degree-2 PolynomialFeatures over all
+# 32 features and degree 3 over 16; with 8 seeds the classes that draw past
+# 300 output fields (PolynomialFeatures, OneHotEncoder, KBinsDiscretizer)
+# run in 35 s, against 31 s at 300 and 44 s at 2,000 (master 49acad5).
+MAX_OUTPUT_FIELDS = 1000
 # A feature's type: a double, an integer or a boolean, by these cumulative
 # shares (a boolean about 15%); and the share of steps all boolean.
 SHARES = [0.6, 0.85]
@@ -797,8 +797,8 @@ def _step(cls_factory, seed: int, variant: int = 0) -> PythonTransform:
     # so a class's seeds are not the same few shapes for every one.
     rng = np.random.default_rng([seed, variant])
     # A shape the estimator cannot fit (a selector asked for more features
-    # than the step has), that keeps no lane or that is wider than
-    # MAX_LANES is drawn again.
+    # than the step has), that keeps no output field or that is wider than
+    # MAX_OUTPUT_FIELDS is drawn again.
     for _ in range(20):
         step = _draw(rng, cls_factory)
         if step is not None:
@@ -897,11 +897,11 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
             # sklearn rejects the data, or numpy cannot run the fit on it
             # (a quantile of a boolean column subtracts booleans).
             return None
-    if width == 0 or width > MAX_LANES:
+    if width == 0 or width > MAX_OUTPUT_FIELDS:
         return None
     if width == 1:
         returns = pa.float64()
-    elif rng.random() < 0.3:  # unnamed lanes
+    elif rng.random() < 0.3:  # unnamed output fields
         returns = pa.list_(pa.float64(), width)
     else:
         returns = pa.struct([(f"f{j}", pa.float64()) for j in range(width)])
@@ -1061,11 +1061,11 @@ def test_an_unknown_id_raises_as_the_twin_does():
 
 @pytest.mark.parametrize("returns", ["struct", "list"])
 @pytest.mark.parametrize("instances", [1, 2])
-def test_a_lane_of_one_arm_reads_no_id(returns, instances):
-    # Past the first lane, a lane that is one arm (one instance, or equal
-    # fits) is its expression alone: the body reads the id as often at any
-    # width. The first lane still answers each id as the twin does, on a
-    # read of the last lane too.
+def test_an_output_field_of_one_arm_reads_no_id(returns, instances):
+    # Past the first output field, an output field that is one arm (one
+    # instance, or equal fits) is its expression alone: the body reads the
+    # id as often at any width. The first output field still answers each id
+    # as the twin does, on a read of the last output field too.
     from confit.oracle import Oracle
 
     from sql_transform.native._check import _serve
@@ -1278,7 +1278,7 @@ def test_an_ordinal_guard_finds_many_strings_by_one_search(monkeypatch, kind, he
     assert check(step, native, rows) >= len(cats)
 
 
-def test_a_onehot_lane_tests_its_category_alone():
+def test_a_onehot_output_field_tests_its_category_alone():
     # Under handle_unknown="error" the ELSE answers the largest group, 0:
     # every other value it meets traps in the input guard, whose one test
     # holds the body's one IN list.
@@ -1845,7 +1845,8 @@ def _knot_rows(est: SplineTransformer, n_features: int) -> pa.Table:
 
 
 SPLINE_AT_KNOTS = [
-    # Without the bias, one spline per feature leaves no lane: kept there.
+    # Without the bias, one spline per feature leaves no output field: kept
+    # there.
     {
         "degree": d,
         "n_knots": m,
@@ -1897,9 +1898,10 @@ def test_spline_at_the_knots(params):
 )
 def test_a_periodic_spline_answers_infinity_as_its_twin(degree, n_knots):
     # Under handle_missing="zeros" the twin validates with infinity allowed:
-    # the remainder of ±inf is NaN, and scipy answers NaN on every lane. A
-    # lane with no basis in the last interval read 0.0 there (from
-    # n_knots = degree + 3, and at degree 0), until the entry tested for it.
+    # the remainder of ±inf is NaN, and scipy answers NaN on every output
+    # field. An output field with no basis in the last interval read 0.0
+    # there (from n_knots = degree + 3, and at degree 0), until the entry
+    # tested for it.
     X = np.random.default_rng(0).normal(size=(40, 2)) * 3
     est = SplineTransformer(
         degree=degree,
@@ -1928,14 +1930,15 @@ def test_a_periodic_spline_answers_infinity_as_its_twin(degree, n_knots):
     "params, reason",
     [
         ({"sparse_output": True}, r"sparse_output=True"),
-        # From the second feature on the twin continues two lanes of one:
-        # a row below raises, a row above writes the previous feature's.
+        # From the second feature on the twin continues two output fields of
+        # one: a row below raises, a row above writes the previous
+        # feature's.
         (
             {"degree": 0, "n_knots": 2, "extrapolation": "linear"},
-            "feature 1 continues 2 lanes of 1",
+            "feature 1 continues 2 output fields of 1",
         ),
     ],
-    ids=["sparse", "linear-past-the-lanes"],
+    ids=["sparse", "linear-past-the-fields"],
 )
 def test_spline_refuses(params, reason):
     X = np.column_stack([np.arange(10.0), np.arange(10.0) ** 2])
@@ -2329,8 +2332,9 @@ def _tree_step(est: RandomTreesEmbedding, n_features: int) -> PythonTransform:
 
 
 def test_trees_serve_the_default_forest():
-    # n_estimators=100, max_depth=5: up to 3,200 lanes, past MAX_LANES,
-    # so the generator never draws it (trees.py has its builds).
+    # n_estimators=100, max_depth=5: up to 3,200 output fields, past
+    # MAX_OUTPUT_FIELDS, so the generator never draws it (trees.py has its
+    # builds).
     X = np.random.default_rng(3).normal(size=(500, 6))
     est = RandomTreesEmbedding(sparse_output=False, random_state=0).fit(X)
     step = _tree_step(est, 6)
@@ -2358,7 +2362,7 @@ def test_trees_take_a_forest_by_the_estimated_build():
 
     # Since confit #430 the entry's build is estimated within 7 s for the
     # default forest, the default forest over 32 features, 250 trees of
-    # depth 5 (5,758 lanes) and one unbounded tree over 4,000 rows
+    # depth 5 (5,758 output fields) and one unbounded tree over 4,000 rows
     # (trees.py has the builds).
     assert _build_estimate(_forest(100, 5, 2000)) <= MAX_BUILD_S
     assert _build_estimate(_forest(100, 5, 2000, features=32)) <= MAX_BUILD_S
@@ -2367,7 +2371,7 @@ def test_trees_take_a_forest_by_the_estimated_build():
 
 
 def test_trees_refuse_a_build_past_the_cap():
-    # 300 trees of depth 5: 6,961 lanes, estimated at 9 s (9.8 s
+    # 300 trees of depth 5: 6,961 output fields, estimated at 9 s (9.8 s
     # measured).
     est = _forest(300, 5, 2000)
     with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):

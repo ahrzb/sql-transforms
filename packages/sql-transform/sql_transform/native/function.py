@@ -100,9 +100,9 @@ def _log(name: str) -> Callable[[S.Expr], S.Expr]:
     def spell(x: S.Expr) -> S.Expr:
         # numpy: -inf at either zero, NaN below zero (-inf included). DuckDB
         # raises on both. `x <= 0` passed is the guard confit reads as
-        # ruling them out (#362), so a field read leaves the other lanes
-        # unevaluated; NaN is above every number in DuckDB, so it reaches
-        # `name`, which keeps it.
+        # ruling them out (#362), so a field read leaves the other output
+        # fields unevaluated; NaN is above every number in DuckDB, so it
+        # reaches `name`, which keeps it.
         return (
             S.case(x == _ZERO, f64(-math.inf))
             .when(x <= _ZERO, _NAN)
@@ -116,7 +116,8 @@ def _trig(name: str) -> Callable[[S.Expr], S.Expr]:
     def spell(x: S.Expr) -> S.Expr:
         # DuckDB raises on an infinity where numpy answers NaN. The guard is
         # spelled with `abs`, the form confit reads as ruling the infinities
-        # out (#375), so a field read leaves the other lanes unevaluated.
+        # out (#375), so a field read leaves the other output fields
+        # unevaluated.
         inf = S.fn("abs", x) == f64(math.inf)
         return S.case(inf, _NAN).otherwise(S.fn(name, x))
 

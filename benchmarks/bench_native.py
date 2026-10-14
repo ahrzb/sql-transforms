@@ -7,9 +7,9 @@ fitted instances, finite numbers, inside the fitted range where the
 transform raises outside it, and for an encoder the row's instance's
 fitted categories; a row the twin still rejects is drawn again):
 
-  build    building the query that reads every lane, with the native entry
-           (`DuckDBInferFn`, what `to_native`'s trial build and serving pay
-           once per deployment)
+  build    building the query that reads every output field, with the
+           native entry (`DuckDBInferFn`, what `to_native`'s trial build and
+           serving pay once per deployment)
   native   one 64-row call served by the native entry (median)
   twin     the same call served by the Python step (median)
 
@@ -51,7 +51,7 @@ ROWS = 64
 SEEDS = range(8)
 
 
-def _lanes(step) -> int:
+def _field_count(step) -> int:
     r = step.returns
     if pa.types.is_struct(r):
         return r.num_fields
@@ -67,7 +67,7 @@ def widest(cls) -> tuple[object, object, int, int, list[str]]:
     for j, make in enumerate(fixtures.FIXTURES[cls]):
         for seed in SEEDS:
             step = fixtures._step(make, seed, j)
-            drawn.append(((_lanes(step), len(step.takes)), j, seed, step))
+            drawn.append(((_field_count(step), len(step.takes)), j, seed, step))
     drawn.sort(key=lambda d: d[0], reverse=True)
     declined = []
     for _, j, seed, step in drawn:
@@ -176,19 +176,19 @@ def _curve_step(shape: str, n: int) -> PythonTransform:
         ests = [StandardScaler().fit(x + k) for k in range(3)]
     else:
         raise SystemExit(f"no build-curve shape {shape!r}")
-    lanes = np.asarray(ests[0].transform(x[:1])).shape[1]
+    fields = np.asarray(ests[0].transform(x[:1])).shape[1]
     return PythonTransform(
         "tf",
         dict(enumerate(ests)),
         pa.schema([(f"x{i}", pa.float64()) for i in range(n)]),
-        pa.struct([(f"f{i}", pa.float64()) for i in range(lanes)]),
+        pa.struct([(f"f{i}", pa.float64()) for i in range(fields)]),
     )
 
 
 def build_curve(shape: str, widths: list[int]) -> None:
     """Build time against width: `to_native` on `_curve_step(shape, n)`,
-    whose trial build reads every lane (a refusal is timed too)."""
-    print(f"| {shape}: features | lanes | build (s) |")
+    whose trial build reads every output field (a refusal is timed too)."""
+    print(f"| {shape}: features | output fields | build (s) |")
     print("|---|---|---|")
     for n in widths:
         step = _curve_step(shape, n)
@@ -199,7 +199,7 @@ def build_curve(shape: str, widths: list[int]) -> None:
         except NotNative:
             what = ", refused"
         print(
-            f"| {n} | {_lanes(step):,} | {time.perf_counter() - t:.2f}{what} |",
+            f"| {n} | {_field_count(step):,} | {time.perf_counter() - t:.2f}{what} |",
             flush=True,
         )
 
@@ -229,7 +229,7 @@ def main() -> None:
         build_curve(args.shape, args.build_curve or [20, 30, 45, 60])
         return
     print(
-        "| class | config, seed | features | lanes | instances | build (s)"
+        "| class | config, seed | features | output fields | instances | build (s)"
         " | native (µs/call) | twin (µs/call) | speedup |"
     )
     print("|---|---|---|---|---|---|---|---|---|")
@@ -248,9 +248,9 @@ def main() -> None:
         twin_fn = DuckDBInferFn(sql, row_tables=schema, static_tables={}, udfs=[step])
         twin = _median_call(twin_fn, table, args.calls)
         print(
-            f"| `{cls.__name__}` | {j}, {seed} | {len(step.takes)} | {_lanes(step)}"
-            f" | {len(step.instances)} | {build:.2f} | {nat * 1e6:,.0f}"
-            f" | {twin * 1e6:,.0f} | {twin / nat:,.0f}x |",
+            f"| `{cls.__name__}` | {j}, {seed} | {len(step.takes)}"
+            f" | {_field_count(step)} | {len(step.instances)} | {build:.2f}"
+            f" | {nat * 1e6:,.0f} | {twin * 1e6:,.0f} | {twin / nat:,.0f}x |",
             flush=True,
         )
     for name, why in capped.items():

@@ -8,11 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
-   defines a lane as the machine type that holds a value in a built
-   function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
-   "lanes" as a ticket of its own: every module uses the word.
-2. **Numeric categories as ranges in the encoders' guard.** The guard
+1. **Numeric categories as ranges in the encoders' guard.** The guard
    tests a numeric feature with an IN list of its categories, one
    comparison a category: `OrdinalEncoder` over 32 features of 125
    integer categories builds in 5.2 s, against 0.66 s for strings, which
@@ -20,7 +16,7 @@ Easiest first; each is one family, one PR.
    consecutive integers a..b is `x >= a AND x <= b AND floor(x) = x`,
    exact on doubles (NaN and ±inf fail the range; -0.0 is 0), in three
    comparisons whatever the run.
-3. **`QuantileTransformer`'s cap as a build estimate.**
+2. **`QuantileTransformer`'s cap as a build estimate.**
    `quantile.MAX_QUANTILES` caps the quantiles summed over the features at
    8,000, where the builds of 2026-10-05 took 6.2-8.0 s. On reading 5's
    machine one feature at 8,000 builds in 8.5 s with reading 4's code and
@@ -29,7 +25,7 @@ Easiest first; each is one family, one PR.
    seconds on (quantiles, features) as `trees.py` and `spline.py` do, and
    refuse past 7 s. `isotonic.MAX_THRESHOLDS` (8,000 thresholds, 5.8 s on
    2026-10-05) is the same kind of cap.
-4. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
+3. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
    probes each part on its own input, so a later step's tests read the
    outputs of the step before (a `PolynomialFeatures` product can overflow
    to ±inf), and confit binds each value read twice once (#412). The
@@ -118,8 +114,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
   raise it again.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
-result counts as trap-free (a 32-lane step serves a 64-row call in 331 µs,
-against 297 µs inline and 5,081 µs before); a named refusal past
+result counts as trap-free (a step of 32 output fields serves a 64-row call
+in 331 µs, against 297 µs inline and 5,081 µs before); a named refusal past
 Cranelift's size limit; `greatest`/`least` without the exponential fold;
 binary-search dispatch over many instances; a field read expands its call
 once (`StandardScaler` at 128 features and three groups builds in 1.2 s,
@@ -127,19 +123,19 @@ where it passed the token cap); a cast that cannot fail is trap-free (wide
 `PolynomialFeatures` over BIGINT features built in 20-50 s, now 1-3 s);
 DuckDB's parse depth; a named refusal past Cranelift's 24-bit index
 width, where a 48-feature `Normalizer` met a verifier error; struct reads
-that build about linearly in the lanes read (`PolynomialFeatures` at 2,556
-lanes: refused, then 287 s after #348, now 3.2 s after #350, master
+that build about linearly in the output fields read (`PolynomialFeatures`
+at 2,556 output fields: refused, then 287 s after #348, now 3.2 s after #350, master
 5513891); and a dropped function's JIT memory freed (each build leaked two
 memory mappings, so a process stalled at `vm.max_map_count` after about
 32,000 builds; 6,000 builds now hold 477 mappings); and total calls (`exp`,
 a negation) and `ln` under a CASE guard that excludes x <= 0 as trap-free,
-so a field read leaves the other lanes unevaluated (Box-Cox at 64
+so a field read leaves the other output fields unevaluated (Box-Cox at 64
 features, one instance: 3,448 us per row and a 15.6 s build before, 52 us
 and 0.18 s with a guard arm the entry adds; a negation builds and serves
 as `-1.0 * x` does, and the entries spell `-x` again); a repeated pure
 subexpression computed once per row, and a refusal past Cranelift's
 registers right after lowering (a `Normalizer` repeats its norm in every
-lane: l1 and l2 at 32 features were refused after 6.9 s and 16.7 s,
+output field: l1 and l2 at 32 features were refused after 6.9 s and 16.7 s,
 master 5513891, and now build in 0.10 s and 0.22 s and serve a row in 1.6
 and 5.1 us against the twin's 250 to 300; at 128 features they build in
 1.8 s and 5.1 s); `greatest` lowered as a running extreme (the max norm
@@ -244,8 +240,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `SplineTransformer(sparse_output=True)`: a sparse output
   (decisions/closed/sparse-outputs.md). `extrapolation="linear"` at
   `degree=0, n_knots=2` over two or more features: the twin's running
-  `degree` (spline.py) continues two lanes of one from the second feature
-  on, and writes a row above the knots into the previous feature's lane.
+  `degree` (spline.py) continues two output fields of one from the second
+  feature on, and writes a row above the knots into the previous feature's
+  output field.
   Knots that are not sorted, partly NaN, or span past a double, and a
   spline whose `c` is not sklearn's shape (no fit makes these). A step
   past an estimated 7 s build, per estimator (`spline._build_estimate`):

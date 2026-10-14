@@ -90,9 +90,9 @@ def _robust(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
 def _normalizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn `normalize`: the row's norm (l1: `np.sum(abs(X), axis=1)`,
     # numpy's pairwise sum; l2: `sqrt(row_norms(X, squared=True))`, an
-    # einsum; max: `np.max(abs(X), axis=1)`, exact), a norm under
-    # 10 * eps read as 1.0, then `X /= norm`. NaN and infinity raise in the
-    # twin, so the row is finite wherever the twin answers. Every lane
+    # einsum; max: `np.max(abs(X), axis=1)`, exact), a norm under 10 * eps
+    # read as 1.0, then `X /= norm`. NaN and infinity raise in the twin, so
+    # the row is finite wherever the twin answers. Every output field
     # repeats the norm, which confit computes once per row (#363), and the
     # max norm's `greatest` lowers as a running extreme (#374): l1, l2 and
     # max build in 2.1 s, 5.4 s and 1.6 s at 128 features (release build,

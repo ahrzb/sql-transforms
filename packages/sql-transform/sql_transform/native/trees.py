@@ -14,15 +14,15 @@
    is the node id it stops at.
 3. The fitted `OneHotEncoder` (`sparse_output=self.sparse_output`, its
    other parameters the defaults) maps tree t's leaf onto its block:
-   `categories_[t]`, tree t's leaf ids sorted, a lane each, 1.0 at the
-   leaf's lane and 0.0 elsewhere, as float64. Every leaf holds a training
-   sample, so every leaf is a category.
+   `categories_[t]`, tree t's leaf ids sorted, an output field each, 1.0 at
+   the leaf's output field and 0.0 elsewhere, as float64. Every leaf holds a
+   training sample, so every leaf is a category.
 
-Lane k of tree t is 1.0 when the row lands on leaf k of tree t, else
+Output field k of tree t is 1.0 when the row lands on leaf k of tree t, else
 0.0: the test cast to DOUBLE (`CAST(test AS DOUBLE)`, which builds faster
 than a CASE on the two constants). The test is one CASE per tree: a
-nested CASE over the tree's branches answers the leaf id, and lane k
-tests `leaf = k`. The CASE is one object that every lane of its tree
+nested CASE over the tree's branches answers the leaf id, and output field k
+tests `leaf = k`. The CASE is one object that every output field of its tree
 reads, so confit binds it once (#412) and a row runs one path of each
 tree.
 
@@ -34,39 +34,38 @@ routed by an explicit test, since DuckDB orders NaN above every number
 bit-exact. Where the twin raises (±inf, or past float32's range) the
 entry traps: its input guard (`_registry.rejects`).
 
-One CASE per tree serves a row about twice as fast as the conjunctions
-of the branch tests on each leaf's path (100 trees of depth 5: 222 us
-against 459), and since confit #430 it builds about as fast, so it is
-the entry's one spelling. The entry takes a forest whose build is
-estimated within MAX_BUILD_S (`_build_estimate`), about 5,990 lanes at 8
-features, and refuses it past that. The estimate is fitted on warm
-builds of 43 forests, each the slower of a struct and a list return
-(release build, 8 features and, for five forests, 16 to 64; fits of 500
-to 5,000 rows; master b4b8d03 with confit #430, 2026-10-14). The struct
-return is the slower, by 1.2 to 3.7 times: confit builds each field read
-of a struct on its own (loops/native/PLANS.md, "Needs from confit").
-Since #430 it no longer builds the input guard's tests again at each,
-but the estimate keeps a term in the lanes times the features: 100
-trees of depth 5 build in 1.6 s over 8 features and 2.3 s over 64. Each
-build over 0.3 s is within 0.76 to 1.13 times the estimate, except
-forests of 4 to 10 unbounded trees, which build 1.2 to 1.5 times it.
-The table below was measured an hour after the fit, and its builds took
-0.9 to 1.2 times the estimate (1.65 times at 5 unbounded trees). A
-struct return, one instance, 8 features and fits of 2,000 rows unless
-the row says, 10,000-row batches; a refused forest shows its build with
-the cap lifted:
+One CASE per tree serves a row about twice as fast as the conjunctions of
+the branch tests on each leaf's path (100 trees of depth 5: 222 us against
+459), and since confit #430 it builds about as fast, so it is the entry's
+one spelling. The entry takes a forest whose build is estimated within
+MAX_BUILD_S (`_build_estimate`), about 5,990 output fields at 8 features,
+and refuses it past that. The estimate is fitted on warm builds of 43
+forests, each the slower of a struct and a list return (release build, 8
+features and, for five forests, 16 to 64; fits of 500 to 5,000 rows; master
+b4b8d03 with confit #430, 2026-10-14). The struct return is the slower, by
+1.2 to 3.7 times: confit builds each field read of a struct on its own
+(loops/native/PLANS.md, "Needs from confit"). Since #430 it no longer builds
+the input guard's tests again at each, but the estimate keeps a term in the
+output fields times the features: 100 trees of depth 5 build in 1.6 s over 8
+features and 2.3 s over 64. Each build over 0.3 s is within 0.76 to 1.13
+times the estimate, except forests of 4 to 10 unbounded trees, which build
+1.2 to 1.5 times it. The table below was measured an hour after the fit, and
+its builds took 0.9 to 1.2 times the estimate (1.65 times at 5 unbounded
+trees). A struct return, one instance, 8 features and fits of 2,000 rows
+unless the row says, 10,000-row batches; a refused forest shows its build
+with the cap lifted:
 
-    forest                           lanes   build   serve a row
-    30 trees, depth 5                  693   0.4 s         51 us
-    100 trees, depth 5               2,286   1.7 s        222 us
-    100 trees, depth 5, 32 features  2,242   2.0 s        205 us
-    160 trees, depth 5               3,745   3.9 s        397 us
-    100 trees, depth 6               3,839   4.2 s        357 us
-    250 trees, depth 5               5,758   7.2 s        741 us
-    1 tree, unbounded                2,000   1.4 s        136 us
-    1 tree, unbounded, 4,000 rows    4,000   3.3 s        333 us
-    5 trees, unbounded, 1,000 rows   5,000   8.6 s        326 us
-    3 trees, unbounded               6,000   8.4 s    (refused)
+    forest                           output fields   build   serve a row
+    30 trees, depth 5                          693   0.4 s         51 us
+    100 trees, depth 5                       2,286   1.7 s        222 us
+    100 trees, depth 5, 32 features          2,242   2.0 s        205 us
+    160 trees, depth 5                       3,745   3.9 s        397 us
+    100 trees, depth 6                       3,839   4.2 s        357 us
+    250 trees, depth 5                       5,758   7.2 s        741 us
+    1 tree, unbounded                        2,000   1.4 s        136 us
+    1 tree, unbounded, 4,000 rows            4,000   3.3 s        333 us
+    5 trees, unbounded, 1,000 rows           5,000   8.6 s        326 us
+    3 trees, unbounded                       6,000   8.4 s    (refused)
 
 against the twin's 8.9 ms a row at 30 trees. A list return builds in
 0.7 to 0.8 s at 100 trees of depth 5, over 8 to 64 features, so the
@@ -94,16 +93,16 @@ MAX_BUILD_S = 7.0
 
 def _build_estimate(est: Any) -> float:
     """The seconds confit takes to build the entry (warm, release build),
-    from its lanes and features (module docstring)."""
-    lanes = sum(len(c) for c in est.one_hot_encoder_.categories_)
+    from its output fields and features (module docstring)."""
+    fields = sum(len(c) for c in est.one_hot_encoder_.categories_)
     features = int(est.n_features_in_)
-    return 3.69e-4 * lanes + 1.27e-7 * lanes**2 + 4.86e-6 * lanes * features
+    return 3.69e-4 * fields + 1.27e-7 * fields**2 + 4.86e-6 * fields * features
 
 
 def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:
     """The node id of the leaf a row lands on: one nested CASE over the
     branches, `_apply_dense`'s on the float32 grid (None for a tree that
-    is one leaf). Every lane of the tree reads this one object."""
+    is one leaf). Every output field of the tree reads this one object."""
     t = tree.tree_
     left, right = t.children_left, t.children_right
     if left[0] == -1:
@@ -138,10 +137,10 @@ def _embed(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
         )
     estimate = _build_estimate(est)
     if estimate > MAX_BUILD_S:
-        lanes = sum(len(c) for c in cats)
+        fields = sum(len(c) for c in cats)
         raise NotNative(
             f"RandomTreesEmbedding: an estimated {estimate:.0f} s build,"
-            f" past {MAX_BUILD_S:.0f} s ({lanes:,} lanes)"
+            f" past {MAX_BUILD_S:.0f} s ({fields:,} output fields)"
         )
     for xj in x:
         rejects(narrows_to_infinity(xj))

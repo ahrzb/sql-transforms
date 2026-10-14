@@ -138,7 +138,9 @@ def test_a_dropped_term_breaches_the_error_scale(dot):
     c = np.random.default_rng(1).normal(size=(3, 8))
     step = _step(c)
     native = to_native(step, strict=True, allow_bound=True)
-    with pytest.raises(ParityError, match=r"lane 'f0'.*past its bound K\*eps\*S"):
+    with pytest.raises(
+        ParityError, match=r"output field 'f0'.*past its bound K\*eps\*S"
+    ):
         check(step, native, _rows(_cancelling(8, 8)))
 
 

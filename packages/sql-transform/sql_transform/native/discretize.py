@@ -3,26 +3,27 @@ as a number or a one-hot block (sklearn 1.9,
 `sklearn/preprocessing/_discretization.py`).
 
 `KBinsDiscretizer.transform` validates X as float64 (NaN and infinity
-raise), then per feature `np.searchsorted(bin_edges_[j][1:-1], x_j,
-side="right")`: the number of inner edges at or below `x_j`, stored as a
-float64. With `encode="onehot-dense"` that bin goes through the fitted
-`_encoder`, a `OneHotEncoder` over `np.arange(n_bins_[j])`, so lane `k` of
-feature `j` is 1.0 when `x_j` falls in bin `k`, else 0.0. The strategy
-(`uniform`, `quantile` and its `quantile_method`, `kmeans`) and `n_bins`
-only shape `bin_edges_`, so the entry reads the edges and nothing else.
+raise), then per feature
+`np.searchsorted(bin_edges_[j][1:-1], x_j, side="right")`: the number of
+inner edges at or below `x_j`, stored as a float64. With
+`encode="onehot-dense"` that bin goes through the fitted `_encoder`, a
+`OneHotEncoder` over `np.arange(n_bins_[j])`, so output field `k` of feature
+`j` is 1.0 when `x_j` falls in bin `k`, else 0.0. The strategy (`uniform`,
+`quantile` and its `quantile_method`, `kmeans`) and `n_bins` only shape
+`bin_edges_`, so the entry reads the edges and nothing else.
 
 Comparisons and constants only, so the entry is bit-exact: `x < e` is
 IEEE's on both sides, and -0.0 equals 0.0 in numpy as in SQL.
 
-With `dtype=np.float32` validation narrows X to float32 first (rounding
-to nearest, ties to even; NaN and a value that rounds to infinity raise)
-and the edges stay float64, so searchsorted counts the edges `e` with
-`e <= float32(x)`, compared as doubles. Rounding is monotone, so each
-such test is one comparison of the double `x` against a moved cutpoint
-(`_f32_cut`), computed at build: the lanes are the float64 ones over the
-moved edges, and the codes and 0/1 lanes, float32 in the twin, are exact
-as doubles. Where float32 makes a value infinite the twin raises, and the
-input guard traps (`_registry.rejects`).
+With `dtype=np.float32` validation narrows X to float32 first (rounding to
+nearest, ties to even; NaN and a value that rounds to infinity raise) and
+the edges stay float64, so searchsorted counts the edges `e` with
+`e <= float32(x)`, compared as doubles. Rounding is monotone, so each such
+test is one comparison of the double `x` against a moved cutpoint
+(`_f32_cut`), computed at build: the output fields are the float64 ones over
+the moved edges, and the codes and 0/1 output fields, float32 in the twin,
+are exact as doubles. Where float32 makes a value infinite the twin raises,
+and the input guard traps (`_registry.rejects`).
 """
 
 from __future__ import annotations
@@ -77,10 +78,10 @@ def _f32_cut(edges: np.ndarray) -> np.ndarray:
 
 
 def _bin(x: S.Expr, edges: list[float]) -> S.Expr:
-    """The ordinal lane, `searchsorted(edges, x, side="right")` over sorted
-    edges: the first `k` with `x < edges[k]`, else `len(edges)`. A
-    repeated edge's arm is never reached, as numpy never lands between
-    equal edges."""
+    """The ordinal output field, `searchsorted(edges, x, side="right")` over
+    sorted edges: the first `k` with `x < edges[k]`, else `len(edges)`. A
+    repeated edge's arm is never reached, as numpy never lands between equal
+    edges."""
     if not edges:
         return f64(0.0)  # a constant feature: edges [-inf, inf], one bin
     e = S.case(x < f64(edges[0]), f64(0.0))
@@ -90,21 +91,21 @@ def _bin(x: S.Expr, edges: list[float]) -> S.Expr:
 
 
 def _onehot(x: S.Expr, edges: list[float]) -> list[S.Expr]:
-    """The one-hot block: lane `k` is 1.0 when `edges[k-1] <= x <
+    """The one-hot block: output field `k` is 1.0 when `edges[k-1] <= x <
     edges[k]` (no lower test at `k = 0`, no upper at the last), else 0.0.
-    Between two equal edges the bin is empty, and so is its lane."""
+    Between two equal edges the bin is empty, and so is its output field."""
     m = len(edges)
     if not m:
         return [f64(1.0)]
-    lanes = [S.case(x < f64(edges[0]), f64(1.0)).otherwise(f64(0.0))]
+    fields = [S.case(x < f64(edges[0]), f64(1.0)).otherwise(f64(0.0))]
     for k in range(1, m):
-        lanes.append(
+        fields.append(
             S.case(x < f64(edges[k - 1]), f64(0.0))
             .when(x < f64(edges[k]), f64(1.0))
             .otherwise(f64(0.0))
         )
-    lanes.append(S.case(x < f64(edges[m - 1]), f64(0.0)).otherwise(f64(1.0)))
-    return lanes
+    fields.append(S.case(x < f64(edges[m - 1]), f64(0.0)).otherwise(f64(1.0)))
+    return fields
 
 
 @translates(KBinsDiscretizer)
