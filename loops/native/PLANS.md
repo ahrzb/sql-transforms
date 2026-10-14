@@ -8,21 +8,13 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one family, one PR.
 
-1. **The kernel probe draws random significands**
-   (`function.kernel_distance`). A quarter of its draws are `exp(uniform)`,
-   on which two accurate `log` kernels always agree (#404, `chi2.md` §4).
-   The registered bounds hold on 2,000,000 random-significand draws in each
-   of three ranges (numpy 2.5.1 against DuckDB 1.5.5, 2026-10-06): `log`
-   1, `log2` 1, `log10` 2, `exp` 1, `tan` 1, `cbrt` 3. Since T19 a probe
-   that reads 0 makes a bounded function bit-exact on that platform: it
-   serves by default, is checked at 0 and composes, as `sin` and `cos`.
-2. **Drop the paths spelling of the forests.** Since confit #430 one CASE
+1. **Drop the paths spelling of the forests.** Since confit #430 one CASE
    per tree builds about as fast as the paths and serves a row about twice
    as fast (100 trees of depth 5: 222 us against 459), and the paths take
    a forest only within 150 output fields past its limit (`trees.py`,
    T28). Dropping them removes `_paths`, `_paths_seconds`, `_steps` and
    the tests' `spelling` fixture, before the rename below.
-3. **Probe an encoder's categories in one call a feature.** `encode._probe`
+2. **Probe an encoder's categories in one call a feature.** `encode._probe`
    calls sklearn's `transform` once a category, and each call builds every
    feature's category table again (`sklearn/utils/_encode.py`,
    `_map_to_integer`), so the probes cost about (features x categories)^2
@@ -31,11 +23,11 @@ Easiest first; each is one family, one PR.
    32 of 125 it takes 38 s (release build, master b4b8d03). One
    `transform` of a feature's categories as rows makes one call a
    feature; a row that raises is probed alone.
-4. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
+3. **"Lane" in the catalog's code means an output field.** GLOSSARY.md
    defines a lane as the machine type that holds a value in a built
    function. Rename `MAX_LANES`, `_registry._lanes` and the docstrings'
    "lanes" as a ticket of its own: every module uses the word.
-5. **Numeric categories as ranges in the encoders' guard.** The guard
+4. **Numeric categories as ranges in the encoders' guard.** The guard
    tests a numeric feature with an IN list of its categories, one
    comparison a category: `OrdinalEncoder` over 32 features of 125
    integer categories builds in 5.2 s, against 0.66 s for strings, which
@@ -67,8 +59,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
-     probes read 0; ship `sample_steps=1` (bit-exact) first. The probe's
-     draws are in "Next" (the kernel probe).
+     probes read 0; ship `sample_steps=1` (bit-exact) first. Since T29
+     the kernel probe draws random significands (`_random_doubles`).
    - Distances to fitted centres (`KMeans` and kin): compare squares,
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
