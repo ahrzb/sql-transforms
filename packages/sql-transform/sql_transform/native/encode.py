@@ -17,32 +17,31 @@ feature, a value in none of the classes the twin answers (`_reject`).
 Every other value a lane's ELSE then meets traps too, so the ELSE answers
 the lane's largest group, and a one-hot lane is one comparison.
 
-confit builds and runs the guard again at each field read of a struct
-output (loops/native/PLANS.md, "Needs from confit"), and it spells an IN
-list as one comparison a value, so the guard sets the cost of a wide
-encoder. Past SEARCH_PAST strings, an encoder with one output field a
-feature (an ordinal one) tests a string by one substring search instead
-(`_among`), which confit builds in a size that does not grow with the
-strings. A row costs more by the search than by a short IN list: with the
-search past 4 strings, a one-hot encoder over 8 features served a row 15
-times as slowly at 10 categories and 2.8 times at 50, and an ordinal one
-over 32 features of 125 categories 1.1 times as slowly. A one-hot encoder
-keeps the IN list: each of its fields runs the guard, and over 8 features
-of 125 categories the search served a row in 11.9 ms, against the twin's
-2.8 ms.
+confit spells the guard's IN list as one comparison a value. Past
+SEARCH_PAST strings, an encoder with one output field a feature (an
+ordinal one) tests a string by one substring search instead (`_among`),
+which confit builds in a size that does not grow with the strings:
+`OrdinalEncoder` over 32 string features of 125 categories builds in
+0.66 s, against 3.2 s with the IN lists. A one-hot encoder keeps the
+IN list. Since confit #430 its guard runs once a row, not at each field
+read of a struct output. Over 8 to 32 features, the search took 1.3 to
+2.4 times as long as the IN list to build, and 0.8 to 1.4 times as long
+to serve a row.
 Warm builds of `to_native`'s trial build and us a row over 2,000-row
 batches, string features unless the row says, struct returns (release
-build, master e1f15b9; the twin over 1,000 rows):
+build, master b4b8d03 with confit #430, 2026-10-14; the twin over 1,000
+rows):
 
-    encoder, features x categories   fields   build              serve       twin
-    OneHotEncoder, 8 x 10                80   0.21 s             18 us   1,028 us
-    OneHotEncoder, 8 x 50               400   5.3 s             920 us   1,695 us
-    OneHotEncoder, 8 x 50 numbers       400   2.3 s             180 us   1,836 us
-    OneHotEncoder, 8 x 125            1,000   (refused after 8.2 s)
-    OrdinalEncoder, 8 x 125               8   0.15 s             89 us   1,613 us
-    OrdinalEncoder, 32 x 125             32   1.2 s           1,127 us   5,447 us
-    OrdinalEncoder, 32 x 500             32   3.3 s           3,208 us  14,458 us
-    OrdinalEncoder, 32 x 125 numbers     32   16.5 s            580 us   4,272 us
+    encoder, features x categories   fields   build     serve        twin
+    OneHotEncoder, 8 x 10                80   0.03 s     7 us    1,262 us
+    OneHotEncoder, 8 x 50               400   0.18 s    86 us    2,351 us
+    OneHotEncoder, 8 x 50 numbers       400   0.20 s    67 us    2,364 us
+    OneHotEncoder, 8 x 125            1,000   0.46 s   237 us    3,807 us
+    OneHotEncoder, 16 x 125           2,000   1.2 s    455 us    7,545 us
+    OrdinalEncoder, 8 x 125               8   0.12 s    55 us    2,346 us
+    OrdinalEncoder, 32 x 125             32   0.66 s   283 us    8,535 us
+    OrdinalEncoder, 32 x 500             32   2.9 s  1,066 us   26,653 us
+    OrdinalEncoder, 32 x 125 numbers     32   5.2 s    477 us    6,071 us
 
 The classes follow the feature's declared type, which fixes what the step
 hands `transform`: a string or None, a float or NaN, or a boolean or NaN
@@ -135,9 +134,9 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     classes = [_classes(est.categories_[j], t) for j, t in enumerate(types)]
     base = _first_classes(est, types)
     widths = _widths(est, len(x))
-    # One output field a feature: the guard runs at each field read, so a
-    # search costs a row about one search a feature a field (module
-    # docstring).
+    # One output field a feature: past SEARCH_PAST strings, the search
+    # builds smaller than the IN list. A one-hot encoder builds faster
+    # with the IN list (module docstring).
     search = all(w == 1 for w in widths)
     # Over boolean features only, the row is a boolean array when none is
     # NULL and a float64 one otherwise, and sklearn's matching is not the

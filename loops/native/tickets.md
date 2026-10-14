@@ -10,19 +10,19 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
-T27 merged on 2026-10-06: the encoders' input guard is one test a
-feature, and under `handle_unknown="error"` an output field's ELSE
-answers its largest group, so a one-hot output field is one comparison.
-Past 100 strings an ordinal encoder's guard is one substring search.
-`OneHotEncoder` over 8 string features of 50 categories builds again
-(5.3 s; refused since T25), over 8 of 10 it builds in 0.21 s against
-0.46 s and serves a row in 18 us against 30, and `OrdinalEncoder` over 32
-features of 125 categories builds in 1.2 s against 26 s. Coverage is 31
-of 68. The loop runs from the "Transforms Loop" project thread.
+T28 merged on 2026-10-14: the forest and spline build estimates are
+fitted again on confit #430, which stopped building the input guard's
+tests again at each field read of a struct output. A forest of 8
+features takes one CASE per tree up to about 5,990 output fields (2,450
+before): of the 43 forests measured, the estimates of T26 refuse 16 and
+those of T28 refuse 3. Of the 359 spline configurations measured, 7 are
+refused (43 before #430). Every encoder measured builds, in 0.03 to
+5.2 s: `OneHotEncoder` over 8 string features of 125 categories and over
+16 of 125, refused before, builds in 0.46 s and 1.2 s. Coverage is 31 of
+68. The loop runs from the "Transforms Loop" project thread.
 
-The loop is paused at the owner's request (2026-10-06): it takes no new
-ticket until the owner resumes it. Next when it resumes: the kernel
-probe's random significands (PLANS "Next" item 1), then the densified
-sparse outputs and the families on the parity bound.
+Next: the kernel probe's random significands (PLANS "Next" item 1),
+then the other "Next" items, the densified sparse outputs and the
+families on the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.

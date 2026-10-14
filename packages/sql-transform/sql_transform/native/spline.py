@@ -70,24 +70,24 @@ text doubles per degree (about 3 KB of SQL per lane at degree 3, 8 knots,
 33 KB at degree 5); `continue` keeps three times that (its outer sums),
 and `periodic` repeats its mapped `x` at every read. confit binds once a
 value that a SQL function body reads more than once (#412), so the build
-follows the distinct nodes, not the text. Release build, master 6aea15e,
-one instance, a struct return, 10,000-row batches, 32 features at degree
-3 and 8 knots (320 lanes; `periodic` 224): `constant` and `linear` build
-in 1.0-1.1 s and serve 125-129 us per row; `error` 1.7 s and 165 us (its
-input guard tests the knots); `continue` 1.5 s and 104 us; `periodic`
-1.0 s and 52 us; the twin serves the `continue` step in 755 us per row.
-64 features of `continue`: 3.6 s and 258 us; 16 features of degree 5, 7
-knots, `continue`: 1.1 s and 53 us; 64 features of degree 5, 8 knots,
-`continue`: 7.0-7.5 s and 386 us. One feature at degree 3, 5 knots: 0.02
-s and 0.50 us, against the twin's 115 us (2026-10-06). The entry refuses
-a step whose estimated build passes MAX_BUILD_S (`_build_estimate`), as
-quantile.py and isotonic.py cap theirs. Up to 48 features it took on
-every configuration measured (degrees 1 to 5, 5 and 8 knots, the five
-extrapolations). Of 64 features it refused one, which builds in 8.0 s
-(degree 5, 8 knots, `error`). Of 96 and 128 features it refused 38,
-which build in 6.7 to 19 s, and the four that confit refuses past
-Cranelift's size limit (128 features of degree 3 to 5 at 8 knots,
-`error`), before confit is asked.
+follows the distinct nodes, not the text. Release build, master b4b8d03
+with confit #430, one instance, a struct return, 10,000-row batches, 32
+features at degree 3 and 8 knots (320 lanes; `periodic` 224):
+`constant`, `linear` and `error` build in 0.7-0.9 s and serve 121-131 us
+per row (the input guard of `error` tests the knots); `continue` 1.0 s
+and 106 us; `periodic` 0.9 s and 47 us; the twin serves the `continue`
+step in 1,190 us per row. 64 features of `continue`: 2.7 s and 205 us;
+16 features of degree 5, 7 knots, `continue`: 0.9 s and 50 us; 64
+features of degree 5, 8 knots, `continue`: 5.7 s and 308 us. One feature
+at degree 3, 5 knots: 0.02 s and 0.69 us, against the twin's 154 us
+(2026-10-14). The entry refuses a step whose estimated build passes
+MAX_BUILD_S (`_build_estimate`), as quantile.py and isotonic.py cap
+theirs. Up to 64 features it takes on every configuration measured
+(degrees 1 to 5, 5 and 8 knots, the five extrapolations). Of 96 and 128
+features it refuses 7, which build in 8.0 to 12.5 s (degrees 4 and 5 at
+8 knots), before confit is asked. Since #430 confit builds every
+configuration measured: it refused four past Cranelift's size limit
+before (128 features of degree 3 to 5 at 8 knots, `error`).
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 16
@@ -125,19 +125,20 @@ def _build_estimate(lanes: list[S.Expr], est: Any) -> float:
     that the body reads more than once (#412), so the build follows the
     distinct nodes the lanes read, not the text they spell, plus a term in
     the nodes times the lanes. The input guard adds a term in the lanes
-    times the features: confit builds the guard's tests again at each
-    field read (loops/native/PLANS.md, "Needs from confit"). The guard
-    has a test a feature on NaN and ±inf under `handle_missing="error"`;
-    under `extrapolation="error"`, a test on the knots, whose term is
-    about four times as large, with or without the first.
-    Fitted on 287 warm builds of one instance over 0.3 s (8 to 128
+    times the features, a tenth to a fifth of what it added before
+    confit #430 stopped building the guard's tests again at each field
+    read. The guard has a test a feature on NaN and ±inf under
+    `handle_missing="error"`; under `extrapolation="error"`, a test on
+    the knots, whose term is about twice as large, with or without the
+    first.
+    Fitted on 276 warm builds of one instance over 0.3 s (8 to 128
     features, degrees 1 to 5, 5 and 8 knots, the five extrapolations, up
     to 1,536 lanes; 16 of them again under `handle_missing="zeros"`; 0.3
-    to 19.0 s): each within 0.89 to 1.28 times the estimate (master
-    6aea15e, 2026-10-06). Of the 355 configurations confit builds, the cap
-    took on none slower than 7.3 s and refused none faster than 6.7 s.
-    The estimate is one estimator's: a step's instances compound it
-    linearly."""
+    to 12.5 s): each within 0.82 to 1.42 times the estimate (master
+    b4b8d03 with confit #430, 2026-10-14). confit builds all 359
+    configurations, and the cap took on none slower than 7.5 s and
+    refused none faster than 8.0 s. The estimate is one estimator's: a
+    step's instances compound it linearly."""
     seen: set[int] = set()
     stack = list(lanes)
     while stack:  # no recursion: a recurrence can be deep
@@ -147,13 +148,13 @@ def _build_estimate(lanes: list[S.Expr], est: Any) -> float:
             stack.extend(e.children)
     nodes, width = len(seen), len(lanes)
     if est.extrapolation == "error":
-        guard = 6.99e-5
+        guard = 6.29e-6
     elif est.handle_missing == "error":
-        guard = 1.83e-5
+        guard = 3.36e-6
     else:
         guard = 0.0
     return (
-        3.92e-5 * nodes + 2.38e-8 * nodes * width + guard * width * est.n_features_in_
+        3.58e-5 * nodes + 1.24e-8 * nodes * width + guard * width * est.n_features_in_
     )
 
 
