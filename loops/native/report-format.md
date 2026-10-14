@@ -76,18 +76,29 @@ anchor (`{#what-moved}` and so on).
    If a confit limit still stops a configuration, mark the configuration
    and name the limit.
 
-4. **Exactness.** List every registered ulp bound that is not 0. For each
+4. **Exactness.** List every parity bound above 0 that the catalog
+   registers: each ulp bound that is not 0, and each error scale. For each
    bound, give the family, the configuration, the bound, the seeds and date
-   of the measurement, and the reason. The reason is usually an order of
-   reduction that the entry cannot follow. If every entry is bit-exact,
-   say so.
-   - A class can declare its bound for each configuration
-     (`translates(cls, ulps=ceiling, bound=...)`). List each configuration
-     with a bound above 0 on its own line, for example
-     `FunctionTransformer(np.log10)`, 2 ulps.
-   - The KPI `nonzero_ulp_bounds` counts the catalog classes that serve a
-     configuration within a bound above 0. A class with a bound for each
-     configuration counts once, for any number of bounded configurations.
+   of the measurement, and the reason. The reason is usually the order of
+   the twin's additions, which the entry cannot follow. If every entry is
+   bit-exact, say so.
+   - A class can declare a different bound for each configuration, that
+     is, for each set of constructor arguments. The code for this is
+     `translates(cls, ulps=ceiling, bound=...)`: `ceiling` is the largest
+     bound of the class, and `bound` gives the bound of one fitted
+     estimator. List each configuration with a bound above 0 on its own
+     line, for example `FunctionTransformer(np.log10)`, 2 ulps.
+   - A family can declare its parity bound with an error scale. The code
+     for this is `translates(cls, scale=ErrorScale(k, s, tau))`, where `k`,
+     `s` and `tau` give K, S and τ. For such a family, give the formulas of
+     K, S and τ. For example, the linear projections have K = n + 3, where
+     n is the number of features. Also give the largest measured value of
+     |entry − twin| / (eps·S) for each number of features. Do not use this
+     value as K. It is only evidence that K holds.
+   - The KPI `nonzero_ulp_bounds` is the number of catalog classes that
+     have a bound above 0 for at least one configuration. Such a bound can
+     be an ulp bound or an error scale. A class counts once, however many
+     of its configurations have such a bound.
      `python -m sql_transform.native.coverage --bounds` prints the count.
    - Run the parity test on 200 seeds of every fixture configuration
      (`NATIVE_SEEDS=200`). Give the number of steps and of configurations

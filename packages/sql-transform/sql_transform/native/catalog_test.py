@@ -21,7 +21,7 @@ import pyarrow as pa
 import pytest
 from sklearn.cluster import FeatureAgglomeration
 from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, IncrementalPCA, KernelPCA, TruncatedSVD
 from sklearn.ensemble import RandomTreesEmbedding
 from sklearn.feature_selection import (
     RFE,
@@ -58,6 +58,7 @@ from sklearn.preprocessing import (
     StandardScaler,
     TargetEncoder,
 )
+from sklearn.random_projection import GaussianRandomProjection
 from threadpoolctl import threadpool_limits
 
 from sql_transform._udf import PythonTransform, _dense
@@ -727,6 +728,31 @@ FIXTURES[RandomTreesEmbedding] = [
     lambda: RandomTreesEmbedding(n_estimators=10, random_state=8),
 ]
 
+# Linear projections, within the matvec error scale (project.py). The fits
+# draw constant columns and fewer rows than features, so a whitened
+# component can be rounding noise, which stays Python (REFUSED).
+# `n_components=0.9` keeps the components that explain 90% of the variance.
+FIXTURES[PCA] = [
+    PCA,
+    lambda: PCA(n_components=1),
+    lambda: PCA(n_components=1, whiten=True),
+    lambda: PCA(n_components=2, svd_solver="covariance_eigh"),
+    lambda: PCA(n_components=0.9, svd_solver="full", whiten=True),
+    lambda: PCA(n_components=2, svd_solver="randomized", random_state=0),
+]
+FIXTURES[IncrementalPCA] = [
+    IncrementalPCA,
+    lambda: IncrementalPCA(n_components=1, whiten=True),
+]
+FIXTURES[TruncatedSVD] = [
+    lambda: TruncatedSVD(n_components=1, random_state=0),
+    lambda: TruncatedSVD(n_components=2, algorithm="arpack"),
+]
+FIXTURES[GaussianRandomProjection] = [
+    lambda: GaussianRandomProjection(n_components=1, random_state=0),
+    lambda: GaussianRandomProjection(n_components=4, random_state=1),
+]
+
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]
 UNSEEN = ["zz", "", "A"]
@@ -745,9 +771,10 @@ MAX_OUTPUT_FIELDS = 1000
 SHARES = [0.6, 0.85]
 BOOL_STEPS = 0.07
 # Refusals the generator draws, each tested by name on its own
-# (test_a_function_transformer_refuses, compose_test.py): a function the
-# twin computes in a narrower dtype on a boolean array.
-REFUSED = ("over boolean features only",)
+# (test_a_function_transformer_refuses, compose_test.py, project_test.py):
+# a function the twin computes in a narrower dtype on a boolean array, and
+# a whitened component of rounding noise.
+REFUSED = ("over boolean features only", "a whitened component of rounding noise")
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
@@ -1086,10 +1113,10 @@ def _scaler_step() -> PythonTransform:
 
 
 def test_a_step_without_a_translation_comes_back_unchanged():
-    step = _step(lambda: PCA(n_components=1), 0)
+    step = _step(lambda: KernelPCA(n_components=1), 0)
     assert to_native(step) is step
-    assert "no translation for PCA" in explain_native(step)
-    with pytest.raises(NotNative, match="PCA"):
+    assert "no translation for KernelPCA" in explain_native(step)
+    with pytest.raises(NotNative, match="KernelPCA"):
         to_native(step, strict=True)
 
 
@@ -1101,7 +1128,7 @@ def test_to_native_is_idempotent():
 def test_a_mixed_step_stays_python():
     step = _scaler_step()
     X = np.random.default_rng(1).normal(size=(10, len(step.takes)))
-    step.instances[len(step.instances)] = PCA(n_components=1).fit(X)
+    step.instances[len(step.instances)] = KernelPCA(n_components=1).fit(X)
     assert to_native(step) is step
 
 

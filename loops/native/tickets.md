@@ -53,10 +53,24 @@ matrix as dense (an imputer filling a stored 1 with 49.0, then scaled,
 parted in 36 of 40 rows). A sparse spline stays Python at degree 0 under
 `constant` or `periodic`, under `handle_missing="zeros"` over two or more
 features with `continue`, `error` or `periodic`, and over NaN knots; no
-other of 1,440 sparse spline configurations parted from the step. The
-loop runs from the "Transforms Loop" project thread.
+other of 1,440 sparse spline configurations parted from the step. T37
+(#458) serves the first family on the parity bound, `PCA`,
+`IncrementalPCA`, `TruncatedSVD` and `GaussianRandomProjection`
+(`project.py`), within (n + 3)·eps·S + τ of the twin, as the matvec ruling
+derives it, and only with `allow_bound=True`. The entry sums each output
+field's n products as a balanced tree. Over 200 seeds of 1 to 64
+features, the largest |entry − twin| / (eps·S) was 3.90 (`TruncatedSVD` at
+17 features), against K = 20. A whitened component of
+rounding noise and a `PCA` or `IncrementalPCA` fitted in float32 stay
+Python, as does a step estimated past a 7 s build (about 80 components over
+256 features). Up to 16 features the entry serves 64 rows 50 to 170 times
+as fast as the twin, but at 256 features of 64 components it takes twice
+the twin's time: confit serves each read of a feature in about 60 ns
+(PLANS, "Needs from confit"). Coverage is 35 of 68, past half. The loop
+runs from the "Transforms Loop" project thread.
 
-Next: PLANS "Ruled 2026-10-06, to build": the families on the parity
-bound.
+Next: the milestone report, since coverage crossed 34 of 68 (reporting.md);
+then PLANS "Ruled 2026-10-06, to build": the rest of the linear
+projections, then the other families on the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.

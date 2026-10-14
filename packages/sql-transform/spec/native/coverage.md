@@ -12,7 +12,7 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**31 of 68** in-scope transformers are native (84 listed by sklearn).
+**35 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -31,10 +31,10 @@ owner's ruling).
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
 | `FeatureUnion` | composition | concatenates parts' outputs; served over bit-exact entries |
 | `FunctionTransformer` | native | bit-exact; within 3 ulps for some configurations, served only with `allow_bound=True` |
-| `GaussianRandomProjection` | not yet |  |
+| `GaussianRandomProjection` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `GenericUnivariateSelect` | native | bit-exact |
 | `HashingVectorizer` | out of scope | input is text documents |
-| `IncrementalPCA` | not yet |  |
+| `IncrementalPCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `Isomap` | not yet |  |
 | `IsotonicRegression` | native | bit-exact |
 | `KBinsDiscretizer` | native | bit-exact |
@@ -62,7 +62,7 @@ owner's ruling).
 | `Nystroem` | not yet |  |
 | `OneHotEncoder` | native | bit-exact |
 | `OrdinalEncoder` | native | bit-exact |
-| `PCA` | not yet |  |
+| `PCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `PLSCanonical` | not yet |  |
 | `PLSRegression` | not yet |  |
 | `PLSSVD` | not yet |  |
@@ -97,7 +97,7 @@ owner's ruling).
 | `TSNE` | out of scope | no transform: the embedding is of the fit data only |
 | `TargetEncoder` | native | bit-exact |
 | `TfidfTransformer` | out of scope | input is a sparse count matrix |
-| `TruncatedSVD` | not yet |  |
+| `TruncatedSVD` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `VarianceThreshold` | native | bit-exact |
 | `VotingClassifier` | composition | averages parts' predictions |
 | `VotingRegressor` | composition | averages parts' predictions |

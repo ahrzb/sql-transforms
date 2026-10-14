@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 import sklearn
 from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, KernelPCA
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
@@ -68,8 +68,13 @@ class _MyPipeline(Pipeline):
     "make, reason",
     [
         (
+            lambda: make_pipeline(StandardScaler(), KernelPCA(n_components=1)),
+            "step 'kernelpca': no translation for KernelPCA",
+        ),
+        (
             lambda: make_pipeline(StandardScaler(), PCA(n_components=1)),
-            "step 'pca': no translation for PCA",
+            r"step 'pca': PCA is within 5·eps·S \+ τ \(S its error scale\), which"
+            " no later step keeps bounded",
         ),
         (
             lambda: make_pipeline(
@@ -98,9 +103,9 @@ class _MyPipeline(Pipeline):
         ),
         (
             lambda: Pipeline(
-                [("inner", make_pipeline(StandardScaler(), PCA(n_components=1)))]
+                [("inner", make_pipeline(StandardScaler(), KernelPCA(n_components=1)))]
             ),
-            "step 'inner': Pipeline step 'pca': no translation for PCA",
+            "step 'inner': Pipeline step 'kernelpca': no translation for KernelPCA",
         ),
         (
             lambda: Pipeline(
@@ -123,6 +128,7 @@ class _MyPipeline(Pipeline):
     ],
     ids=[
         "unknown",
+        "bounded-scale",
         "bounded-first",
         "bounded-last",
         "bounded-function-first",
@@ -387,8 +393,13 @@ class _MyScaler(StandardScaler):
     "make, reason",
     [
         (
+            lambda: ColumnTransformer([("p", KernelPCA(n_components=1), [0, 1])]),
+            "ColumnTransformer part 'p': no translation for KernelPCA",
+        ),
+        (
             lambda: ColumnTransformer([("p", PCA(n_components=1), [0, 1])]),
-            "ColumnTransformer part 'p': no translation for PCA",
+            r"part 'p': PCA is within 5·eps·S \+ τ \(S its error scale\); a"
+            " composition serves bit-exact parts only",
         ),
         (
             lambda: ColumnTransformer([("s", _MyScaler(), [0])]),
@@ -409,9 +420,9 @@ class _MyScaler(StandardScaler):
         ),
         (
             lambda: ColumnTransformer(
-                [("s", StandardScaler(), [0])], remainder=PCA(n_components=1)
+                [("s", StandardScaler(), [0])], remainder=KernelPCA(n_components=1)
             ),
-            "part 'remainder': no translation for PCA",
+            "part 'remainder': no translation for KernelPCA",
         ),
         (
             lambda: ColumnTransformer(
@@ -476,8 +487,8 @@ class _MyScaler(StandardScaler):
             "FeatureUnion part 'tan': FunctionTransformer is within 1 ulps",
         ),
         (
-            lambda: FeatureUnion([("p", PCA(n_components=1))]),
-            "FeatureUnion part 'p': no translation for PCA",
+            lambda: FeatureUnion([("p", KernelPCA(n_components=1))]),
+            "FeatureUnion part 'p': no translation for KernelPCA",
         ),
         (
             lambda: FeatureUnion(
@@ -494,9 +505,10 @@ class _MyScaler(StandardScaler):
         ),
         (
             lambda: FeatureUnion(
-                [("s", make_pipeline(StandardScaler(), PCA(n_components=1)))]
+                [("s", make_pipeline(StandardScaler(), KernelPCA(n_components=1)))]
             ),
-            "FeatureUnion part 's': Pipeline step 'pca': no translation for PCA",
+            "FeatureUnion part 's': Pipeline step 'kernelpca': no translation for"
+            " KernelPCA",
         ),
         (
             lambda: FeatureUnion([("s", StandardScaler())]).set_output(
@@ -507,6 +519,7 @@ class _MyScaler(StandardScaler):
     ],
     ids=[
         "ct-unknown",
+        "ct-bounded-scale",
         "ct-subclass",
         "ct-bounded",
         "ct-bounded-function",

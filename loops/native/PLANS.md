@@ -21,11 +21,16 @@ that request, `to_native(step, allow_bound=True)`. In order:
 1. **Families on the parity bound.** Since T24 a family declares its error
    scale, `translates(cls, scale=ErrorScale(k, s, tau, g))`, and
    `native.check` holds each row to it (`_registry.ErrorScale` says what
-   each operand is). The first family also lists its error scale in the
-   reports: `report-format.md`, "Exactness", names ulp bounds only, where
-   `coverage.nonzero_ulp_bounds` counts error scales too.
-   - Linear projections (`PCA` and kin): S_full, K = n + 3, summed pairwise;
-     refuse whitened components whose scale was clipped.
+   each operand is). T37 served the first family, `PCA`, `IncrementalPCA`,
+   `TruncatedSVD` and `GaussianRandomProjection` (project.py: S_full,
+   K = n + 3, summed pairwise), and `report-format.md` lists error scales.
+   - The rest of the linear projections, each with its own S: `FastICA`
+     subtracts the mean before the product (S over |x_i - m_i|·|c_ki|);
+     the PLS family and `LinearDiscriminantAnalysis` center and scale, then
+     project; `FactorAnalysis` chains two products, so the first one's
+     error passes through the second; `SparseRandomProjection` sums in
+     scipy's CSR order, which SQL may follow bit-exactly behind a kernel
+     probe.
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
@@ -41,6 +46,18 @@ that request, `to_native(step, allow_bound=True)`. In order:
 
 ## Needs from confit
 
+- **A value read many times, at about the cost of one read.** The catalog
+  reads each numeric feature as `coalesce(x, NaN)`, one `confit.sql`
+  object that every output field reads. Read once, it costs about 15 ns a
+  row; read by 16 output fields, about 62 ns a read. 256 features read by
+  16 sums of products serve 64 rows in 18.1 ms, against 1.8 ms over the
+  parameters read directly, and build in 0.81 s, against 0.24 s (release
+  build, master bf42757, 2026-10-14). A confit-only reproduction is in
+  `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`, sent
+  to the confit loop. It sets the speed of the linear projections (T37):
+  `PCA` over 256 features of 64 components serves 64 rows in 78 ms,
+  against the twin's 39 ms. When it lands, measure the projections,
+  `PolynomialFeatures` and the splines again.
 - **A struct output read field by field, built once for the call.**
   Where a query reads each field of a struct output one by one
   (`to_native`'s trial build does, and so does a serving query that names

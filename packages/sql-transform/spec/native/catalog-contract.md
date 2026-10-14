@@ -33,7 +33,7 @@ operations in the twin's order, or where a kernel probe reads 0.
 - NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
   are different answers.
 
-*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`.
+*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`.
 
 **claim: entry-same-inputs.** **The same inputs.** A feature reaches the
 translation as `PythonTransform` hands it to `transform`. A number or a

@@ -17,7 +17,7 @@ prediction (`_registry.py` says why).
 
 The catalog is one module per family (`scalers.py`, `impute.py`,
 `select.py`, `function.py`, `polynomial.py`, `spline.py`, `encode.py`,
-`quantile.py`, `isotonic.py`, ...), each entry registered with
+`quantile.py`, `isotonic.py`, `project.py`, ...), each entry registered with
 `@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`,
 a `ColumnTransformer`, a `FeatureUnion`).
 This package imports confit and sklearn and nothing else of sql_transform
@@ -37,6 +37,7 @@ from sql_transform.native import impute as _impute  # noqa: F401  (registers)
 from sql_transform.native import isotonic as _isotonic  # noqa: F401  (registers)
 from sql_transform.native import polynomial as _polynomial  # noqa: F401  (registers)
 from sql_transform.native import power as _power  # noqa: F401  (registers)
+from sql_transform.native import project as _project  # noqa: F401  (registers)
 from sql_transform.native import quantile as _quantile  # noqa: F401  (registers)
 from sql_transform.native import scalers as _scalers  # noqa: F401  (registers)
 from sql_transform.native import select as _select  # noqa: F401  (registers)
