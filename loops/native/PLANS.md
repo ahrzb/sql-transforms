@@ -46,6 +46,18 @@ that request, `to_native(step, allow_bound=True)`. In order:
 
 ## Needs from confit
 
+- **A value read many times, at about the cost of one read.** The catalog
+  reads each numeric feature as `coalesce(x, NaN)`, one `confit.sql`
+  object that every output field reads. Read once, it costs about 15 ns a
+  row; read by 16 output fields, about 62 ns a read. 256 features read by
+  16 sums of products serve 64 rows in 18.1 ms, against 1.8 ms over the
+  parameters read directly, and build in 0.81 s, against 0.24 s (release
+  build, master bf42757, 2026-10-14). A confit-only reproduction is in
+  `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`, sent
+  to the confit loop. It sets the speed of the linear projections (T37):
+  `PCA` over 256 features of 64 components serves 64 rows in 78 ms,
+  against the twin's 39 ms. When it lands, measure the projections,
+  `PolynomialFeatures` and the splines again.
 - **A struct output read field by field, built once for the call.**
   Where a query reads each field of a struct output one by one
   (`to_native`'s trial build does, and so does a serving query that names

@@ -39,7 +39,21 @@ before the product. A whitened component whose scale sklearn clipped to eps,
 or whose variance is at most eps times the largest, is rounding noise of
 size O(1) for the twin too: on rank-deficient data the twin flips labels
 against itself about as often as an entry does (the ruling, item 7). The
-step stays Python there."""
+step stays Python there.
+
+Measured: KMEASURE
+
+A step builds in about the time of its n·k products, and more past about
+16,000 of them (`_build_estimate`): 64 features of 64 components in 0.8 to
+1.3 s, 256 of 64 in 5.2 to 5.9 s. The entry refuses a step estimated past
+MAX_BUILD_S, before confit is asked: about 80 components over 256
+features, 32 over 512 or 12 over 1,024. Serving 64 rows takes 49 to 191 us
+up to 16 features of 4 components, against the twin's 7.4 to 9.7 ms; 1.7
+to 2.2 ms at 32 of 16 (twin 11.9 to 14.8 ms); 17 to 20 ms at 64 of 64,
+about the twin's time; and 77 to 83 ms at 256 of 64, twice the twin's 37
+to 45 ms. The entry reads each feature once a component, and confit serves
+such a read in about 60 ns (PLANS, "Needs from confit"). Release build,
+master bf42757, one container, 2026-10-14."""
 
 from __future__ import annotations
 
@@ -98,10 +112,17 @@ MAX_BUILD_S = 7.0
 
 
 def _build_estimate(n: int, k: int) -> float:
-    """The seconds confit takes to build the entry (warm, release build), from
-    its n·k products: TODO."""
+    """The seconds confit takes to build the entry (warm, release build),
+    from its n features and k components. The build is about linear in the
+    products n·k, with terms in n²·k and n·k² past that and a term in the
+    features. Fitted on the slower of the two returns, a struct and a list,
+    over 79 builds of 1.0 to 26 s (64 to 2,048 features, 1 to 128
+    components; `PCA` with and without `whiten`, and the Gaussian random
+    projection; master bf42757, 2026-10-14): each within 0.82 to 1.30 times
+    the estimate. The cap took on none slower than 7.9 s and refused none
+    faster than 7.2 s."""
     p = n * k
-    return 0.0 * n + 0.0 * p + 0.0 * p * n + 0.0 * p**2 + 0.0 * k**2
+    return 2.78e-4 * n + 1.62e-4 * p + 3.93e-7 * p * n + 1.33e-6 * p * k
 
 
 def _tree(terms: list[S.Expr]) -> S.Expr:
@@ -126,7 +147,7 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
     if estimate > MAX_BUILD_S:
         raise NotNative(
             f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
-            f" ({k:,} components over {n:,} features)"
+            f" ({k:,} component{'s' * (k != 1)} over {n:,} features)"
         )
     whiten = bool(getattr(est, "whiten", False))
     s = _scale(est)
