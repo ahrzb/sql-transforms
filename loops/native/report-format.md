@@ -76,7 +76,8 @@ anchor (`{#what-moved}` and so on).
    If a confit limit still stops a configuration, mark the configuration
    and name the limit.
 
-4. **Exactness.** List every registered ulp bound that is not 0. For each
+4. **Exactness.** List every parity bound above 0 that the catalog
+   registers: each ulp bound that is not 0, and each error scale. For each
    bound, give the family, the configuration, the bound, the seeds and date
    of the measurement, and the reason. The reason is usually an order of
    reduction that the entry cannot follow. If every entry is bit-exact,
@@ -85,9 +86,16 @@ anchor (`{#what-moved}` and so on).
      (`translates(cls, ulps=ceiling, bound=...)`). List each configuration
      with a bound above 0 on its own line, for example
      `FunctionTransformer(np.log10)`, 2 ulps.
+   - A family can declare its parity bound with an error scale
+     (`translates(cls, scale=ErrorScale(k, s, tau))`). For such a family,
+     give the formulas of K, S and τ. For example, the linear projections
+     have K = n + 3, where n is the number of features. Also give the
+     largest measured value of |entry − twin| / (eps·S) for each width n.
+     This value is evidence for K. It is not K.
    - The KPI `nonzero_ulp_bounds` counts the catalog classes that serve a
-     configuration within a bound above 0. A class with a bound for each
-     configuration counts once, for any number of bounded configurations.
+     configuration within a bound above 0. It counts ulp bounds and error
+     scales. A class with a bound for each configuration counts once, for
+     any number of bounded configurations.
      `python -m sql_transform.native.coverage --bounds` prints the count.
    - Run the parity test on 200 seeds of every fixture configuration
      (`NATIVE_SEEDS=200`). Give the number of steps and of configurations

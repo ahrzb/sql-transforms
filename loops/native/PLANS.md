@@ -21,11 +21,16 @@ that request, `to_native(step, allow_bound=True)`. In order:
 1. **Families on the parity bound.** Since T24 a family declares its error
    scale, `translates(cls, scale=ErrorScale(k, s, tau, g))`, and
    `native.check` holds each row to it (`_registry.ErrorScale` says what
-   each operand is). The first family also lists its error scale in the
-   reports: `report-format.md`, "Exactness", names ulp bounds only, where
-   `coverage.nonzero_ulp_bounds` counts error scales too.
-   - Linear projections (`PCA` and kin): S_full, K = n + 3, summed pairwise;
-     refuse whitened components whose scale was clipped.
+   each operand is). T37 served the first family, `PCA`, `IncrementalPCA`,
+   `TruncatedSVD` and `GaussianRandomProjection` (project.py: S_full,
+   K = n + 3, summed pairwise), and `report-format.md` lists error scales.
+   - The rest of the linear projections, each with its own S: `FastICA`
+     subtracts the mean before the product (S over |x_i - m_i|·|c_ki|);
+     the PLS family and `LinearDiscriminantAnalysis` center and scale, then
+     project; `FactorAnalysis` chains two products, so the first one's
+     error passes through the second; `SparseRandomProjection` sums in
+     scipy's CSR order, which SQL may follow bit-exactly behind a kernel
+     probe.
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
