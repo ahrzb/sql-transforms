@@ -35,6 +35,27 @@ Easiest first; each is one family, one PR.
    consecutive integers a..b is `x >= a AND x <= b AND floor(x) = x`,
    exact on doubles (NaN and ±inf fail the range; -0.0 is 0), in three
    comparisons whatever the run.
+5. **`QuantileTransformer`'s cap as a build estimate.**
+   `quantile.MAX_QUANTILES` caps the quantiles summed over the features at
+   8,000, where the builds of 2026-10-05 took 6.2-8.0 s. On reading 5's
+   machine one feature at 8,000 builds in 8.5 s with reading 4's code and
+   in 9.9 s with master (warm, uv's CPython; master at 1,000, 2,000 and
+   4,000: 0.73, 2.21 and 4.39 s), past `MAX_BUILD_S` (finding 68). Fit the
+   seconds on (quantiles, features) as `trees.py` and `spline.py` do, and
+   refuse past 7 s. `isotonic.MAX_THRESHOLDS` (8,000 thresholds, 5.8 s on
+   2026-10-05) is the same kind of cap.
+6. **A `Pipeline`'s guard costs 4.4 times its build.** `translate_part`
+   probes each part on its own input, so a later step's tests read the
+   outputs of the step before (a `PolynomialFeatures` product can overflow
+   to ±inf), and confit binds each value read twice once (#412). The
+   widest bench `Pipeline` (configuration 9, seed 6) holds 1,069 bound
+   values (`sql_lets`) against 96 without the guard's tests, builds in
+   2.5-3.1 s against 0.6-0.7 s, and serves 64 rows in 5.6-10.8 ms against
+   4.2 ms (reading 5, finding 69). From T25 to T28, before confit #438, it
+   built in 13.6-15.2 s and served in 95-99 ms, slower than its twin
+   (85 ms), and no test saw it. Split the cost between the tests and the
+   bound values, then make the larger part cheaper. Add a check that fails
+   where a bench step serves more slowly than its twin.
 
 ## Ruled 2026-10-06, to build
 
