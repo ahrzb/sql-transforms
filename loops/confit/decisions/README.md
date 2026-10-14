@@ -7,6 +7,8 @@ and the ground.
   - [Empty-static witness: trap order](open/empty-static-witness-trap-order.md)
   - [the oracle times out where confit traps first](open/oracle-timeout-before-a-trap.md)
   - [an INNER join whose static keys are all NULL](open/all-null-key-static.md)
+  - [JOIN with GROUP BY as an aggregate for each request](open/join-group-by-per-request.md)
+  - [the open parts of the float-reduction bound](open/double-sum-bound.md)
 - [closed/](closed) holds rulings in force:
   - [Oracle policy](closed/oracle-policy.md)
   - [static-only queries](closed/static-only-queries.md)
