@@ -1509,8 +1509,9 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     Each WHERE term of a subquery compares a key column of the table with a
     column of the request table. About half of the table's keys come from
     that column, repeats included, so a request matches several rows. A few
-    subqueries take a form that confit refuses by name: avg, a DOUBLE sum,
-    IS NOT DISTINCT FROM under shape='many', an outer side that can trap."""
+    subqueries take a form that confit refuses by name: a DOUBLE sum or avg,
+    IS NOT DISTINCT FROM under shape='many', an outer side that can trap. An
+    avg over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1542,7 +1543,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
             r = qrng.random()
             func = "count" if arg is None or r < 0.15 else "min" if r < 0.45 else "max"
             if arg is not None and r >= 0.75:
-                func = "sum" if r < 0.95 else "avg"
+                func = "sum" if r < 0.9 else "avg"
         if func != "count" and arg is None:
             arg = qrng.choice(list(sch))
         terms = []

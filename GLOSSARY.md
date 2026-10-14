@@ -202,8 +202,8 @@ statements that confit matches, refuses or fails.
 _Avoid_: test set, benchmark
 
 **Campaign**:
-A run of the random SQL generator (`fuzz.runner`) over a range of seeds. Each
-seed gives one case and one verdict.
+A run of the random SQL generator (`fuzz/gen.py`) over a range of seeds, which
+`fuzz.runner` drives. Each seed gives one case and one verdict.
 _Avoid_: fuzz run, sweep
 
 **Seed**:

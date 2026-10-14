@@ -146,6 +146,11 @@ AGGREGATES = [
     "sum(d)",
     "sum(u)",
     "sum(i8)",
+    "avg(v)",
+    "avg(j)",
+    "avg(d)",
+    "avg(u)",
+    "avg(i8)",
     "min(v)",
     "max(s)",
     "min(b)",
@@ -249,7 +254,7 @@ def test_forms_of_the_default_shape(sql):
 
 
 @pytest.mark.parametrize("shape", [None, "many"])
-@pytest.mark.parametrize("agg", ["count(*)", "sum(v)", "min(s)", "max(d)"])
+@pytest.mark.parametrize("agg", ["count(*)", "sum(v)", "avg(d)", "min(s)", "max(d)"])
 def test_empty_static_table_and_empty_batch(agg, shape):
     empty = S.slice(0, 0)
     assert_parity(_sub(agg), T, statics={"s": empty}, shape=shape)
@@ -282,8 +287,9 @@ def test_select_list_alias_of_a_subquery_is_duckdbs_binder_error(sql):
 @pytest.mark.parametrize(
     "sql, why",
     [
-        (_sub("avg(v)"), "the aggregate avg"),
+        (_sub("median(v)"), "the aggregate median"),
         (_sub("sum(f)"), "sum over a DOUBLE column"),
+        (_sub("avg(f)"), "avg over a DOUBLE column"),
         (_sub("count(DISTINCT v)"), "DISTINCT"),
         (_sub("max(v) + 1"), "one aggregate call"),
         (_sub("v"), "one aggregate call"),
@@ -350,6 +356,79 @@ def test_sum_past_the_range_of_its_result_refuses_the_build():
     )
     v = assert_parity(_sub("sum(w)"), T, statics={"s": wide}, expect="REFUSED")
     assert "adds absolute values past the range of its result" in v.detail
+
+
+@pytest.mark.parametrize("arg, ty", [("b", "BOOLEAN"), ("s", "VARCHAR")])
+def test_avg_over_boolean_or_varchar_is_duckdbs_binder_error(arg, ty):
+    v = assert_parity(_sub(f"avg({arg})"), T, statics={"s": S}, expect="REFUSED")
+    assert v.oracle == "rejects"
+    assert (
+        f"No function matches the given name and argument types 'avg({ty})'" in v.detail
+    )
+
+
+# Groups (sum, count) of each storage type whose avg tells DuckDB's
+# rounding apart from the others (src/duckdb/avg.rs). SMALLINT and
+# DECIMAL(4,2) divide in double, which differs here from x87 long double.
+# The other types divide in long double, which differs here from double and
+# from one rounding of the exact quotient. Found by a search over the
+# models; each group spreads its sum evenly over its rows.
+AVG_GROUPS = {
+    "int8": [(6406, 3075), (-33758, 2211)],
+    "int16": [(57813847, 3923), (33050602, 3247)],
+    "int32": [(-2827971762031, 3555), (-1175830622509, 2619)],
+    "int64": [(239779659854332136443, 26), (129125398997375843331, 14)],
+    "uint8": [(100498, 2679), (16350, 2311)],
+    "uint16": [(511573, 3719), (113396039, 3599)],
+    "uint32": [(2773561945545, 3479), (6420972326810, 3039)],
+    "uint64": [(36890665975583623169, 2), (332037418797826136062, 18)],
+    "decimal(4,2)": [(-7033692, 2280), (7176710, 2594)],
+    "decimal(9,4)": [(-306314197041, 2361), (1305803900508, 3848)],
+    "decimal(18,6)": [(-357814364270915024781, 2736), (-409514676728703535941, 3629)],
+    "decimal(38,0)": [
+        (41781269006313210299918023857145420718, 6),
+        (-24465413588787404663834588390323333212, 3),
+    ],
+}
+
+
+def _groups(spec, groups):
+    """A static table (g, v) whose group g has sum and count groups[g]."""
+    scale = int(spec[:-1].split(",")[1]) if spec.startswith("decimal") else None
+    rows = []
+    for g, (total, n) in enumerate(groups):
+        q, r = divmod(total, n)
+        for x in [q + 1] * r + [q] * (n - r):
+            v = x if scale is None else Decimal(f"{x}E-{scale}")
+            rows.append({"g": g, "v": v})
+    return table({"g": "int64", "v": spec}, rows)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("spec", sorted(AVG_GROUPS))
+def test_avg_rounds_as_duckdb_finalizes_it(spec, shape):
+    s = _groups(spec, AVG_GROUPS[spec])
+    t = table(
+        {"id": "int64", "g": "int64?"},
+        [{"id": i, "g": g} for i, g in enumerate([0, 1, 2, None, 1])],
+    )
+    sql = "SELECT id, (SELECT avg(s.v) FROM s WHERE s.g = t.g) AS a FROM __THIS__ AS t"
+    assert_parity(sql, t, statics={"s": s}, shape=shape)
+
+
+def test_avg_past_the_range_of_its_sum_refuses_the_build():
+    # DuckDB keeps a HUGEINT sum, and an addition past its range traps: in
+    # the order of these rows, the first one. The total itself fits.
+    near = Decimal(8 * 10**37)
+    ok = table({"k": "int64", "w": "decimal(38,0)"}, [{"k": 1, "w": near}] * 2)
+    assert_parity(_sub("avg(w)"), T, statics={"s": ok})
+    big = ["9" * 38, "9" * 38, "-" + "9" * 38]
+    wide = table(
+        {"k": "int64", "w": "decimal(38,0)"},
+        [{"k": 1, "w": Decimal(b)} for b in big],
+    )
+    v = assert_parity(_sub("avg(w)"), T, statics={"s": wide}, expect="REFUSED")
+    assert "past the range of the sum that DuckDB keeps for it" in v.detail
 
 
 def test_plan_facts_name_the_aggregate_join():
