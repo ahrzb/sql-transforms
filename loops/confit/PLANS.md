@@ -58,12 +58,6 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
      a NULL field folds where DuckDB's struct_pack, which reads every field,
      does not: `struct_pack(f := a, g := CAST(NULL AS BIGINT)).g + (a +
      9223372036854775807)` returns rows where DuckDB traps (master too).
-   - A regexp call over a NULL literal pattern is a NULL constant in confit,
-     but DuckDB calls it per row (the regexp functions handle a NULL
-     themselves), so it reads the subject and does not fold: `CAST((s ~
-     NULL) AS BIGINT) + (a + 9223372036854775807)` and the same over
-     `regexp_extract(s, NULL)` return rows where DuckDB traps, and over
-     `regexp_matches(s, NULL)` they are OPT_EMULATED (master too).
    - TIMEOUT 4667128 is no trap: the request table has no rows and both
      readings agree, but the optimizer-on reading folds a constant
      `repeat('0', 2147483647)` inside a SQL function at plan time (about

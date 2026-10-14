@@ -115,3 +115,20 @@ errors (sole overload `reverse(VARCHAR)`).
   behaves like a missing group, not NULL propagation); confit matches.
 - `* SIMILAR TO CAST(NULL AS STRING)` is a DuckDB binder error ("must be a
   constant").
+- Measured 2026-10-14 (DuckDB 1.5.5, optimizer off): the binder does not
+  fold a matches, full_match, `~`, SIMILAR TO or extract call over a NULL
+  pattern, because these functions handle a NULL themselves. The call reads
+  its subject for each row. So an operator with the default NULL handling
+  over it still evaluates a trap beside it: `CAST((s ~ NULL) AS BIGINT) +
+  (a + 9223372036854775807)` traps. If the subject names no column, the call
+  is foldable, and that operator folds to NULL. confit's NULL reads the
+  subject in the same way. With the optimizer on, DuckDB's regex rule makes
+  `regexp_matches(s, NULL)` a NULL constant.
+- A NULL subject or group skips no bind check. DuckDB checks the options,
+  then the group range, then the pattern (`regexp_matches(NULL, 'a(')` and
+  `regexp_extract(NULL, 'a', 99)` are errors). At run time, a NULL subject or
+  pattern gives NULL before a NULL group gives ''.
+- regexp_replace has the default NULL handling. After the overload resolves,
+  a NULL argument makes the call a NULL constant. This happens before DuckDB
+  reads the options or compiles the pattern, so `regexp_replace(s, NULL, 'x',
+  'zz')` is NULL.
