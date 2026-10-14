@@ -8,11 +8,6 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
 
 ## Next
 
-Paused by the owner on 2026-10-06 at 16:11Z: take no new item until the
-owner resumes the loops. On resume, first write the milestone report for
-the struct field-read delivery (#430; trigger "cross-loop delivery" in
-[../reporting.md](../reporting.md)).
-
 1. **Nightly campaign follow-through.** `.github/workflows/nightly-campaign.yml`
    runs `fuzz.nightly` (400k fresh seeds in four parallel shards, plus the
    metamorphic suite) and files red runs as a "Nightly campaign findings"
@@ -74,10 +69,57 @@ the struct field-read delivery (#430; trigger "cross-loop delivery" in
      `repeat('0', 2147483647)` inside a SQL function at plan time (about
      0.5 s per 10^8 characters). The bracket reading could run under its own
      time limit, so that a slow bracket costs only the DIVERGE_OPT label.
+     The pause nights add 5068704 and 7731793: a constant
+     `lpad(..., 2147483647, ...)` under a WHERE that is always false; the
+     optimizer-off reading returns no rows in 0.45 s, as confit does.
    - DuckDB's hash join also skips the ON clause of a LEFT JOIN whose static
      keys are all NULL, while confit still evaluates it (not yet seen in a
      campaign; an AnyJoin reads such a static row by row, so the plan shape
      decides).
+
+   The eight nights of the pause (2026-10-07..14, seeds 5000000..8199999,
+   all on master b4b8d03) are triaged in
+   [reports/2026-10-14-milestone.md](reports/2026-10-14-milestone.md). 46 of
+   their 65 gated cases have seeds (issue #435 and the shard logs; the rest
+   are only in the run artifacts, which the proxy does not serve). Each
+   DIVERGE and OPT_EMULATED case replays the same on b4b8d03 and on 24674cd
+   (before #430). Live, to fix next, each with a pin:
+   - A HUGEINT product of exactly -2^127 traps in DuckDB unless an operand
+     is -2^127 (`Hugeint::TryMultiply`), and `exec/hugeint.rs`
+     (`hugeint_arith`) returns it: `18446744073709551616 *
+     -9223372036854775808` (6065493, 6112137, 6263288, 6349920, 6917565,
+     7511938).
+   - BETWEEN in a join's ON clause: DuckDB binds it as two comparisons and
+     the join planner splits the conjuncts, so a conjunct over the static
+     side alone filters the whole static table and traps whatever matches.
+     `frontend/joins.rs` (`bind_residual`) keeps the BETWEEN per matching
+     pair (6738617). NOT BETWEEN is one per-pair condition in DuckDB too.
+   - A field read of a SQL function whose body is NULL under a constant
+     condition (`CASE WHEN TRUE THEN NULL ELSE struct_pack(...) END`):
+     struct_extract over a foldable NULL has no complete return type, so
+     DuckDB types the field SQLNULL, and confit gives it the declared field
+     type (`outputs::DuckNulls`; 5397716, 6212474, 7430849, 7843947).
+   - A pure UDF over an argument that reads a column but has one value
+     (`udf0(5, 91.693 - -1.75, coalesce(8, c1))`): `frontend/udf.rs`
+     (`try_extern_bind_fold`) asks `bind_foldable` of the bound argument and
+     folds the call at bind, typing its NULL as SQLNULL; DuckDB's binder
+     sees a column, runs the UDF per row and keeps the declared type
+     (5144477, 6949338).
+   - A function or operator over a SQLNULL-typed argument that is not the
+     NULL literal (`trunc(CASE WHEN c1 THEN 53.832 * NULL END)`,
+     `abs(coalesce(0.5 * NULL, NULL))`, `ceil(<all-NULL CASE>) - NULL`):
+     DuckDB's default NULL handling gives the chosen overload's return type
+     when it is complete (BIGINT here), while confit binds the argument as a
+     committed INTEGER NULL and answers INTEGER (5248694, 5923305, 6186379,
+     6686677).
+
+   Not confit defects: TIMEOUT 6154334 is `levenshtein` over two strings of
+   131,068 characters (DuckDB 73 s, confit 55 s; confit runs first, so the
+   20 s limit stops confit); 5068704 and 7731793 are the bracket item above;
+   24 of the 26 DuckDB TIMEOUTs with seeds are the open oracle-TIMEOUT
+   record's mechanism, and the two OPT_EMULATED cases (7242549, 7829571)
+   are the all-NULL-key record's. Add these seeds to those two records as
+   evidence.
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
