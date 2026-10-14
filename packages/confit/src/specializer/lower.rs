@@ -1730,9 +1730,15 @@ impl<'a> FB<'a> {
                 // and the "" mask default IS in the trap domain. NULL
                 // pre-empts the checks (jaccard(NULL, '') is NULL, not an
                 // error), so BOTH payloads mask to "a" under the COMBINED
-                // flag, the Flogb pattern.
+                // flag, the Flogb pattern. The edit distances trap where
+                // their table is refused, and a NULL row's payload can be
+                // long (`s || repeat('a', 30000)` over a NULL `s`), so they
+                // mask too.
                 let (av, bv) = match op {
-                    StrOp2::Jaccard | StrOp2::Hamming => {
+                    StrOp2::Jaccard
+                    | StrOp2::Hamming
+                    | StrOp2::Levenshtein
+                    | StrOp2::Damerau => {
                         let a = Lane { flag, val: la.val };
                         let b = Lane { flag, val: lb.val };
                         (

@@ -20,6 +20,12 @@ documentation.
   fine: ('','') = 0, ('','abc') = 3.
 - `damerau_levenshtein` is the **UNRESTRICTED** DL variant, transposition
   cost 1 — not restricted OSA. Witness: ('ca','abc') = 2 (OSA gives 3).
+- Over two long strings, DuckDB raises "Out of Memory Error: Allocation
+  failure" where the allocator refuses the table of `damerau_levenshtein`.
+  Measured under an address limit of 4 GiB: two strings of 30,000 bytes
+  raise it, and two strings of 1,000 bytes give an answer. Confit keeps a
+  table of (n + 2) × (m + 2) entries of 8 bytes and raises the same error
+  there.
 - `jaccard` = |A∩B|/|A∪B| over **single-byte sets**, duplicates ignored:
   ('ab','ba') = 1.0, ('abc','abd') = 0.5. An empty string on either side
   TRAPS: "Invalid Input Error: Jaccard Function: An argument too short!".

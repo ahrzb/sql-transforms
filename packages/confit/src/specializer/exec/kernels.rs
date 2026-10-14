@@ -864,13 +864,30 @@ pub(super) fn like_escape_of(esc: &str) -> Result<Option<u8>, Trap> {
     }
 }
 
+/// A table of `len` zeros for a distance kernel, sized by its inputs
+/// (`None`: past `usize`). Where the allocator refuses it, DuckDB's error,
+/// not a `vec!`, which stops the process (measured, 1.5.5: under an address
+/// limit of 4 GiB, `damerau_levenshtein` over two strings of 30,000 bytes
+/// raises it, and over two of 1,000 bytes answers).
+fn dp_table(len: Option<usize>) -> Result<Vec<usize>, Trap> {
+    let oom = || Trap("Out of Memory Error: Allocation failure".into());
+    let len = len.ok_or_else(oom)?;
+    let mut v = Vec::new();
+    v.try_reserve_exact(len).map_err(|_| oom())?;
+    v.resize(len, 0);
+    Ok(v)
+}
+
 /// levenshtein == editdist3: classic two-row DP over bytes.
-pub(super) fn duck_levenshtein(a: &[u8], b: &[u8]) -> i64 {
+pub(super) fn duck_levenshtein(a: &[u8], b: &[u8]) -> Result<i64, Trap> {
     if a.is_empty() || b.is_empty() {
-        return (a.len() + b.len()) as i64;
+        return Ok((a.len() + b.len()) as i64);
     }
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
+    let mut prev = dp_table(b.len().checked_add(1))?;
+    let mut cur = dp_table(b.len().checked_add(1))?;
+    for (j, p) in prev.iter_mut().enumerate() {
+        *p = j;
+    }
     for (i, &ac) in a.iter().enumerate() {
         cur[0] = i + 1;
         for (j, &bc) in b.iter().enumerate() {
@@ -879,22 +896,21 @@ pub(super) fn duck_levenshtein(a: &[u8], b: &[u8]) -> i64 {
         }
         std::mem::swap(&mut prev, &mut cur);
     }
-    prev[b.len()] as i64
+    Ok(prev[b.len()] as i64)
 }
 
 /// damerau_levenshtein: the UNRESTRICTED DL variant (NOT OSA — witness
 /// ('ca','abc') = 2), transposition cost 1, over bytes. Full matrix plus
-/// a last-occurrence table, as the unrestricted recurrence requires.
-// ponytail: O(n*m) memory; corpus strings are short — stream it if huge
-// inputs ever matter.
-pub(super) fn duck_damerau(a: &[u8], b: &[u8]) -> i64 {
+/// a last-occurrence table, as the unrestricted recurrence requires: O(n*m)
+/// memory, as DuckDB's own.
+pub(super) fn duck_damerau(a: &[u8], b: &[u8]) -> Result<i64, Trap> {
     let (n, m) = (a.len(), b.len());
     if n == 0 || m == 0 {
-        return (n + m) as i64;
+        return Ok((n + m) as i64);
     }
     let w = m + 2;
     let inf = n + m;
-    let mut d = vec![0usize; (n + 2) * w];
+    let mut d = dp_table((n + 2).checked_mul(w))?;
     d[0] = inf;
     for i in 0..=n {
         d[(i + 1) * w] = inf;
@@ -921,7 +937,7 @@ pub(super) fn duck_damerau(a: &[u8], b: &[u8]) -> i64 {
         }
         last_a[a[i - 1] as usize] = i;
     }
-    d[(n + 1) * w + m + 1] as i64
+    Ok(d[(n + 1) * w + m + 1] as i64)
 }
 
 /// jaccard: |A∩B|/|A∪B| over single-BYTE sets; empty either side traps.

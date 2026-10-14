@@ -1292,13 +1292,13 @@ fn compile_inst(
                 StrOp2::Levenshtein => Box::new(move |ctx| {
                     let s = ctx.arena.get(as_str(ctx.regs[a])).as_bytes();
                     let n = ctx.arena.get(as_str(ctx.regs[b])).as_bytes();
-                    ctx.regs[dst] = RegVal::I64(duck_levenshtein(s, n));
+                    ctx.regs[dst] = RegVal::I64(duck_levenshtein(s, n)?);
                     Ok(())
                 }),
                 StrOp2::Damerau => Box::new(move |ctx| {
                     let s = ctx.arena.get(as_str(ctx.regs[a])).as_bytes();
                     let n = ctx.arena.get(as_str(ctx.regs[b])).as_bytes();
-                    ctx.regs[dst] = RegVal::I64(duck_damerau(s, n));
+                    ctx.regs[dst] = RegVal::I64(duck_damerau(s, n)?);
                     Ok(())
                 }),
                 StrOp2::Jaccard => Box::new(move |ctx| {

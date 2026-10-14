@@ -9,6 +9,11 @@ inputs but NULL pre-empts every trap.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from test_duckdb_interpreter import duck_check
 
@@ -66,6 +71,60 @@ def test_damerau_is_unrestricted_dl():
             {"a": "", "b": "abc"},  # 3: empties accepted
         ],
     )
+
+
+# A process limited to 4 GiB of address space, over one row: there a
+# damerau_levenshtein table over `a` and `b`, (n + 2)^2 entries of 8 bytes,
+# is about 7.2 GB.
+_LIMITED = r"""
+import resource
+import sys
+
+import pyarrow as pa
+from confit import DuckDBInferFn
+
+resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
+n = 30_000
+t = pa.table({"a": ["a" * n], "b": ["b" * n], "s": pa.array([None], pa.string())})
+fn = DuckDBInferFn(sys.argv[1], row_tables={"__THIS__": t.schema}, static_tables={})
+try:
+    print(fn.infer_arrow(t).to_pylist())
+except ValueError as e:
+    print(e)
+"""
+
+
+def _limited(sql: str, interp: bool) -> str:
+    """What confit answers for `sql` in that process."""
+    env = {k: v for k, v in os.environ.items() if k != "SPECIALIZER_FORCE_INTERP"}
+    if interp:
+        env["SPECIALIZER_FORCE_INTERP"] = "1"
+    p = subprocess.run(  # noqa: S603 — fixed argv
+        [sys.executable, "-c", _LIMITED, sql],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=Path(__file__).parents[1],
+        timeout=120,
+        check=False,
+    )
+    assert p.returncode == 0, p.stderr[-2000:]
+    return p.stdout.strip()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_AS is Linux's")
+@pytest.mark.parametrize("interp", [False, True], ids=["cranelift", "interp"])
+def test_a_table_the_allocator_refuses_is_duckdbs_error(interp):
+    """damerau_levenshtein keeps an (n + 2) x (m + 2) table, as DuckDB's does.
+    Where the allocator refuses it, DuckDB raises `Out of Memory Error:
+    Allocation failure` (measured, 1.5.5, under the same limit), and confit
+    raises the same: the process lives. On a NULL row DuckDB does not call
+    the function, so a long payload there costs no table (`s || a` over a
+    NULL `s` is NULL, measured)."""
+    out = _limited("SELECT damerau_levenshtein(a, b) AS d FROM __THIS__", interp)
+    assert out == "Out of Memory Error: Allocation failure", out
+    sql = "SELECT damerau_levenshtein(s || a, s || b) AS d FROM __THIS__"
+    assert _limited(sql, interp) == "[{'d': None}]"
 
 
 def test_jaccard_single_byte_sets():

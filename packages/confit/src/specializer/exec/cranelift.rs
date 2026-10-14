@@ -557,16 +557,17 @@ extern "C" fn h_ssim(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64)
     let arena = unsafe { &*c.arena };
     let a = arena.get(span(ao, al)).as_bytes();
     let b = arena.get(span(bo, bl)).as_bytes();
-    match which {
+    let v = match which {
         0 => kernels::duck_levenshtein(a, b),
         1 => kernels::duck_damerau(a, b),
-        _ => match kernels::duck_hamming(a, b) {
-            Ok(v) => v,
-            Err(t) => {
-                c.set_trap(t.0);
-                0
-            }
-        },
+        _ => kernels::duck_hamming(a, b),
+    };
+    match v {
+        Ok(v) => v,
+        Err(t) => {
+            c.set_trap(t.0);
+            0
+        }
     }
 }
 
@@ -2302,9 +2303,7 @@ fn translate_inst(
                         },
                     );
                     let v = call_h(b, module, "h_ssim", &[cxp, which, ao, al, bo, bl]).unwrap();
-                    if matches!(op, StrOp2::Hamming) {
-                        trap_check(b);
-                    }
+                    trap_check(b);
                     v
                 }
                 StrOp2::Jaccard => {
