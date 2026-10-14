@@ -10,19 +10,16 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
-T29 merged on 2026-10-14: a quarter of the kernel probe's draws
-(`function.kernel_distance`) are now doubles of random sign, binary
-exponent and significand (`function._random_doubles`), in place of
-`exp(uniform)`, on which two accurate `log` kernels always agree (#404,
-`chi2.md` section 2). On this machine the probe reads what it read
-before: 1 ulp for `exp`, `log`, `log2`, `log10` and `tan`, 3 for `cbrt`,
-and 0 for `sin` and `cos`. The bounds hold over 2,500,000 draws against
-confit (500,000 each of five kinds, master b4b8d03): `log10` reaches 2,
-`cbrt` 3 and the others 1. Coverage is 31 of 68. The loop runs from the
-"Transforms Loop" project thread.
+Reading 5 merged on 2026-10-14
+([`reports/2026-10-14-reading-5.md`](reports/2026-10-14-reading-5.md)), on
+master 44052cf: coverage 31 of 68, no new class. On one machine, the
+default forest serves a row 3.8 times as fast as reading 4's code, and the
+input guard costs a median 8% of a 64-row call. Its new findings 68
+(`QuantileTransformer`'s cap builds past 7 s there) and 69 (a `Pipeline`'s
+guard costs 4.4 times its build) are PLANS "Next" items 5 and 6. The loop
+runs from the "Transforms Loop" project thread.
 
-Next: the native catalog's fifth reading, then PLANS "Next" (the paths
-spelling first), the densified sparse outputs and the families on the
-parity bound.
+Next: PLANS "Next" in order (the paths spelling first), then the
+densified sparse outputs and the families on the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.
