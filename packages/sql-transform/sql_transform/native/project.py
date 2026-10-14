@@ -41,7 +41,14 @@ size O(1) for the twin too: on rank-deficient data the twin flips labels
 against itself about as often as an entry does (the ruling, item 7). The
 step stays Python there.
 
-Measured: KMEASURE
+Measured over 200 seeds of each class at 1, 2, 3, 5, 8, 17, 32 and 64
+features (features of scales 1e-2 to 1e4 with large means, `whiten` on or
+off, rows near the mean and away from it): 6,196 steps, 5.6 million output
+fields, 68% of them apart from the twin. The largest |entry - twin| /
+(eps·S) is 3.90, for `TruncatedSVD` at 17 features, against K = 20; the
+least room is at 5 features, 1.97 against K = 8. Four steps of 64 features
+stayed Python, each for a whitened component of rounding noise. The
+measured value is evidence for K, not K.
 
 A step builds in about the time of its n·k products, and more past about
 16,000 of them (`_build_estimate`): 64 features of 64 components in 0.8 to

@@ -54,11 +54,13 @@ parted in 36 of 40 rows). A sparse spline stays Python at degree 0 under
 `constant` or `periodic`, under `handle_missing="zeros"` over two or more
 features with `continue`, `error` or `periodic`, and over NaN knots; no
 other of 1,440 sparse spline configurations parted from the step. T37
-(#PRNUM) serves the first family on the parity bound, `PCA`,
+(#458) serves the first family on the parity bound, `PCA`,
 `IncrementalPCA`, `TruncatedSVD` and `GaussianRandomProjection`
 (`project.py`), within (n + 3)·eps·S + τ of the twin, as the matvec ruling
 derives it, and only with `allow_bound=True`. The entry sums each output
-field's n products as a balanced tree. KSUMMARY A whitened component of
+field's n products as a balanced tree. Over 200 seeds of 1 to 64
+features, the largest |entry − twin| / (eps·S) was 3.90 (`TruncatedSVD` at
+17 features), against K = 20. A whitened component of
 rounding noise and a `PCA` or `IncrementalPCA` fitted in float32 stay
 Python, as does a step estimated past a 7 s build (about 80 components over
 256 features). Up to 16 features the entry serves 64 rows 50 to 170 times

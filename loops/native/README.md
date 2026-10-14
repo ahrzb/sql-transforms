@@ -72,12 +72,13 @@ modes. "Tickets and review" below gives what is specific to this loop.
    (units in the last place) over at least 200 seeds. Register that ulp
    bound, and cite the measurement in the translator's docstring: the
    seeds, the maximum and the date. Never raise a bound to make a failure
-   pass. First find the twin's order, and follow it. If a closed decision
-   record gives the family a parity bound with an error scale, register
-   it with `scale=ErrorScale(...)` and the K that the record derives.
-   Measure the largest |entry − twin| / (eps·S) over at least 200 seeds,
-   and cite it in the docstring. The measured value is evidence for K, not
-   K.
+   pass. First find the order of the twin's operations, and follow it. If
+   a closed decision record gives the family a parity bound with an error
+   scale, register that bound. Use the K that the record derives, in
+   `translates(cls, scale=ErrorScale(...))`. Measure the largest
+   |entry − twin| / (eps·S) over at least 200 seeds, and cite it in the
+   docstring. Do not use the measured value as K. It is only evidence that
+   K holds.
 7. **Done.** Do these steps:
    1. Regenerate coverage with
       `uv run --no-sync python -m sql_transform.native.coverage --write`.
