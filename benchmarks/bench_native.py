@@ -15,7 +15,9 @@ fitted categories; a row the twin still rejects is drawn again):
 
 The speedup is twin / native. Timings need confit's release build. A
 configuration within a bound above 0 is measured too, as
-`to_native(step, allow_bound=True)` serves it.
+`to_native(step, allow_bound=True)` serves it. The bench fails where a
+native step serves a call more slowly than its twin, as the widest
+`Pipeline` did from T25 to T28 (95-99 ms against 85 ms).
 
 With --build-curve, it times the build alone against the width instead,
 `to_native` on one step shape over n DOUBLE features: PolynomialFeatures
@@ -234,6 +236,7 @@ def main() -> None:
     )
     print("|---|---|---|---|---|---|---|---|---|")
     capped = {}
+    slower = []
     for cls in fixtures.FIXTURES:
         step, native, j, seed, declined = widest(cls)
         if declined:
@@ -253,8 +256,14 @@ def main() -> None:
             f" | {nat * 1e6:,.0f} | {twin * 1e6:,.0f} | {twin / nat:,.0f}x |",
             flush=True,
         )
+        if nat >= twin:
+            slower.append(f"{cls.__name__} ({j}, {seed})")
     for name, why in capped.items():
         print(f"\n{name}: {len(why)} wider fixture steps stay Python, e.g. {why[0]}")
+    if slower:
+        raise SystemExit(
+            f"native serves more slowly than its twin: {', '.join(slower)}"
+        )
 
 
 if __name__ == "__main__":

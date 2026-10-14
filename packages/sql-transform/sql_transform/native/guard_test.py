@@ -6,6 +6,7 @@ rows trap, so that none passes with both sides answering."""
 from __future__ import annotations
 
 import math
+import sys
 from typing import Any
 
 import numpy as np
@@ -131,6 +132,54 @@ def test_the_guard_traps_where_the_validation_raises(est, traps):
     )
     assert _traps(step, native, rows) == traps
     assert check(step, native, rows) == traps.count(False)
+
+
+@pytest.mark.parametrize(
+    "est, types, rows, traps",
+    [
+        # Each kind of rejected value is one test over every feature that
+        # rejects it (`_registry._holds`): the greatest |x| past the
+        # largest double, the least -|x| at -inf, or a greatest that is NaN.
+        (
+            StandardScaler(),
+            [pa.float64()] * 3,
+            [
+                (0.5, 1.0, 2.0),
+                (math.nan, math.inf, 1.0),
+                (1.0, math.nan, -math.inf),
+                (math.nan, math.nan, 1.0),
+                (math.nan, None, math.nan),
+            ],
+            [False, True, True, False, False],
+        ),
+        (
+            Binarizer(),
+            [pa.float64()] * 3,
+            [
+                (0.5, 1.0, 2.0),
+                (1.0, 2.0, math.nan),
+                (-math.inf, 1.0, 2.0),
+                (1.0, None, 2.0),
+                (sys.float_info.max, -sys.float_info.max, 0.0),
+            ],
+            [False, True, True, True, False],
+        ),
+        (
+            Binarizer(),
+            [pa.int64(), pa.bool_(), pa.int64()],
+            [(1, True, 3), (None, True, 3), (1, None, None), (-2, False, 0)],
+            [False, True, True, False],
+        ),
+    ],
+    ids=["allow-nan", "finite", "integers-and-booleans"],
+)
+def test_one_test_finds_a_rejected_value_among_many_features(est, types, rows, traps):
+    est.fit(np.random.default_rng(1).normal(size=(20, len(types))))
+    step = _step(est, types, len(types))
+    native = to_native(step, strict=True)
+    table = _rows(step, rows)
+    assert _traps(step, native, table) == traps
+    assert check(step, native, table) == traps.count(False)
 
 
 # Over boolean features only, the step hands a row none NULL as a boolean
