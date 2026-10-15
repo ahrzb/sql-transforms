@@ -145,6 +145,28 @@ def test_unresolved_is_counted_apart_from_agreement_and_mismatch(tmp_path, capsy
     }
 
 
+def test_agreements_within_the_float_reduction_bound_are_counted(tmp_path, capsys):
+    results = [
+        _r(1, "AGREE"),
+        _r(
+            2,
+            "AGREE",
+            "float-reduction-bound",
+            detail="c within the float-reduction bound",
+        ),
+        _r(
+            3,
+            "AGREE",
+            "float-reduction-bound",
+            detail="c within the float-reduction bound",
+        ),
+    ]
+    runner.report(results, tmp_path / "f.jsonl")
+    sec = _section(capsys.readouterr().out, "verdicts")
+    assert "AGREE          3" in sec
+    assert "of AGREE, within the float-reduction bound: 2 (seeds 2, 3)" in sec
+
+
 @pytest.mark.parametrize(
     ("msg", "prefixed", "named", "actionable"),
     [

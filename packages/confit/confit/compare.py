@@ -18,6 +18,11 @@ keyword: it trades `repr` for an ulp tolerance, and pays for that by comparing
 rows POSITIONALLY. It exists for the one leg whose ORACLE wobbles by an ulp;
 everything else is `assert_rows`.
 
+`within_float_bound` is the other named exception: the approved bound of a
+DOUBLE `sum` or `avg` of a scalar subquery, whose oracle answer depends on the
+order of its additions (docs/oracle/05, claim: float-reduction-bound). It
+keeps the multiset, and `repr` for every other column.
+
 Ships in the wheel next to `confit.oracle` for the same reason that one does:
 the fuzzer must not import from tests/, and the tests must not import from
 fuzz/, so anything both of them compare with belongs to the PACKAGE. At run
@@ -32,6 +37,7 @@ from __future__ import annotations
 import math
 import struct
 from decimal import Decimal
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -202,6 +208,77 @@ def assert_rows_close(got, want, *, max_ulp: int = 1, ctx: str = "") -> None:
             "row",
             diffs,
         )
+    )
+
+
+def within_float_bound(got, bounds, want, columns: dict[str, str]) -> str | None:
+    """None when `got` equals `want` as a multiset, with each column of
+    `columns` compared within its bound, else why not.
+
+    The approved exception for a DOUBLE `sum` or `avg` of a scalar subquery
+    (docs/oracle/05, claim: float-reduction-bound). `columns` maps each such
+    output column to "sum" or "avg". `bounds` holds, row by row beside
+    `got`, the bound of each such value, as the engine answers it in place
+    of the value (`DuckDBInferFn(..., float_bounds=True)`): B for a sum and
+    B / n for an avg, 0.0 where the comparison is exact, and None where the
+    value is NULL. A value whose bound is 0.0 or None compares by `repr`, as
+    in `multiset`. Else the distance |a - b| may be at most B for a sum, and
+    at most B / n + 2^-52 max(|a|, |b|) + 2^-1074 for an avg. The arithmetic
+    is exact.
+
+    The rows pair up as in `multiset`: by the `repr` of every other column,
+    and within the rows of one such key in the order of their bounded values.
+    """
+    if len(got) != len(want):
+        return f"got {_n(len(got), 'row')}, want {_n(len(want), 'row')}"
+    names = sorted(columns)
+
+    def key(r) -> str:
+        return repr(sorted((k, repr(v)) for k, v in r.items() if k not in columns))
+
+    def order(r) -> tuple:
+        return tuple((r.get(c) is not None, r.get(c) or 0.0) for c in names)
+
+    mine: dict[str, list] = {}
+    for g, b in zip(got, bounds, strict=True):
+        if key(g) != key(b):
+            raise ValueError(
+                f"the bound rows do not align with the rows: {b} beside {g}"
+            )
+        mine.setdefault(key(g), []).append((g, b))
+    theirs: dict[str, list] = {}
+    for w in want:
+        theirs.setdefault(key(w), []).append(w)
+    if sorted((k, len(v)) for k, v in mine.items()) != sorted(
+        (k, len(v)) for k, v in theirs.items()
+    ):
+        return "the columns that are not bounded differ"
+    for k, pairs in mine.items():
+        pairs = sorted(pairs, key=lambda p: order(p[0]))
+        for (g, b), w in zip(pairs, sorted(theirs[k], key=order), strict=True):
+            for c in names:
+                why = _bound_miss(
+                    g.get(c, _MISSING), w.get(c, _MISSING), b.get(c), columns[c]
+                )
+                if why:
+                    return f"{c}: {why}"
+    return None
+
+
+def _bound_miss(a, b, bound, func: str) -> str | None:
+    """Why `a` is not `b` within `bound` ([`within_float_bound`]), or None."""
+    if bound is None or bound == 0.0:
+        return None if repr(a) == repr(b) else f"{a!r} != {b!r}, compared exactly"
+    if not all(isinstance(v, float) and math.isfinite(v) for v in (a, b)):
+        return f"{a!r} != {b!r}"
+    limit = Fraction(bound)
+    if func == "avg":
+        limit += Fraction(max(abs(a), abs(b))) / 2**52 + Fraction(1, 2**1074)
+    d = abs(Fraction(a) - Fraction(b))
+    if d <= limit:
+        return None
+    return (
+        f"{a!r} and {b!r} are {float(d):.3g} apart, past the bound {float(limit):.3g}"
     )
 
 

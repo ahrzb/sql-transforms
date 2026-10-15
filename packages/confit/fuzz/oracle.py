@@ -77,6 +77,7 @@ from confit.compare import (
     non_null_violation,
     same_type,
     sequence,
+    within_float_bound,
 )
 from confit.oracle import Oracle
 
@@ -370,7 +371,7 @@ def _duck_ret(obj):
 # ------------------------------------------------------------------ oracle
 
 
-def _build(sql, schema, statics, udf_objs, shape, force_interp):
+def _build(sql, schema, statics, udf_objs, shape, force_interp, *, float_bounds=False):
     from confit import DuckDBInferFn
 
     prev = os.environ.pop("SPECIALIZER_FORCE_INTERP", None)
@@ -383,6 +384,7 @@ def _build(sql, schema, statics, udf_objs, shape, force_interp):
             static_tables=statics,
             udfs=udf_objs or None,
             shape=shape,
+            float_bounds=float_bounds,
         )
     finally:
         if force_interp:
@@ -765,6 +767,22 @@ def run_case(case: G.Case, *, report: bool = True, baseline=None) -> Verdict:
     if unsound:
         return Verdict("DIVERGE_VALUE", "unsound-non-null", f"NULL at {unsound}", tags)
 
+    # The bound of each DOUBLE sum or avg of a scalar subquery that confit
+    # answers, row by row beside its rows: a build of the same query that
+    # answers each such value with its bound (docs/oracle/05, claim:
+    # float-reduction-bound). It is built once, and only if a comparison
+    # needs it.
+    bounded = {b["column"]: b["func"] for b in fn_cl.plan_facts["bounds"]}
+    bound_rows: list[list[dict]] = []
+
+    def float_bounds() -> list[dict]:
+        if not bound_rows:
+            fn = _build(
+                sql, schema, statics, udf_objs, case.shape, False, float_bounds=True
+            )
+            bound_rows.append(fn.infer_arrow(table).to_pylist())
+        return bound_rows[0]
+
     # DuckDB runs after confit, so an excluded case never waits on it.
     _phase("oracle")
 
@@ -819,6 +837,16 @@ def run_case(case: G.Case, *, report: bool = True, baseline=None) -> Verdict:
             return Verdict("UNSHIPPED", klass, detail, t)
         want = duck_out.to_pylist()
         if multiset(got_cl) != multiset(want):
+            if (
+                bounded
+                and within_float_bound(got_cl, float_bounds(), want, bounded) is None
+            ):
+                return Verdict(
+                    "AGREE",
+                    "float-reduction-bound",
+                    f"{', '.join(sorted(bounded))} within the float-reduction bound",
+                    t,
+                )
             return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", t)
         return Verdict("AGREE", "", "", t)
 

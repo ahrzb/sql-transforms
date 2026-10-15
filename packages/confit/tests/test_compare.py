@@ -226,6 +226,74 @@ def test_assert_rows_close_reports_a_row_count_mismatch():
     assert "1 row" in msg and "0 rows" in msg and "leg 3" in msg
 
 
+# within_float_bound: the bound of a DOUBLE sum or avg (claim:
+# float-reduction-bound). One bounded column `c` beside the key column `id`.
+
+_SUM = {"c": "sum"}
+
+
+def _bounded(got, bounds, want, func="sum"):
+    rows = [{"id": i, "c": v} for i, v in enumerate(got)]
+    brows = [{"id": i, "c": b} for i, b in enumerate(bounds)]
+    wrows = [{"id": i, "c": v} for i, v in enumerate(want)]
+    return compare.within_float_bound(rows, brows, wrows, {"c": func})
+
+
+def test_within_float_bound_accepts_a_sum_up_to_its_bound():
+    assert _bounded([1.0], [0.5], [1.5]) is None
+    assert _bounded([1.0], [0.5], [0.5]) is None
+
+
+def test_within_float_bound_rejects_a_sum_past_its_bound():
+    why = _bounded([1.0], [0.5], [math.nextafter(1.5, 2.0)])
+    assert why is not None and "past the bound" in why
+
+
+def test_within_float_bound_measures_the_distance_exactly():
+    # In float arithmetic 1e16 + 1 - 1e16 is 0: the exact distance is 1.
+    assert _bounded([1e16 + 2], [1.0], [1e16]) is not None
+    assert _bounded([1e16 + 2], [2.0], [1e16]) is None
+
+
+def test_within_float_bound_compares_exactly_where_the_bound_is_zero_or_null():
+    assert _bounded([0.0], [0.0], [-0.0]) is not None  # signed zero, as in multiset
+    assert _bounded([1.0], [0.0], [1.0]) is None
+    assert _bounded([None], [None], [None]) is None
+    assert _bounded([None], [None], [0.0]) is not None
+
+
+def test_within_float_bound_adds_the_terms_of_the_division_for_an_avg():
+    # B / n, plus 2^-52 max(|a|, |b|), plus 2^-1074.
+    a = 1.0
+    b = a + 2.0**-52 + 2.0**-52 * 2
+    assert _bounded([a], [2.0**-52], [b], func="avg") is not None
+    assert _bounded([a], [2.0**-51], [b], func="avg") is None
+    assert _bounded([0.0], [5e-324], [1e-323], func="avg") is None
+    assert _bounded([0.0], [5e-324], [1e-323], func="sum") is not None
+
+
+def test_within_float_bound_pairs_the_rows_as_a_multiset():
+    got = [{"id": 1, "c": 2.0}, {"id": 2, "c": 5.0}]
+    bounds = [{"id": 1, "c": 0.25}, {"id": 2, "c": 0.25}]
+    want = [{"id": 2, "c": 5.25}, {"id": 1, "c": 1.75}]
+    assert compare.within_float_bound(got, bounds, want, _SUM) is None
+    # The other columns compare by repr, and so pair the rows.
+    want[0]["id"] = 3
+    assert compare.within_float_bound(got, bounds, want, _SUM) is not None
+
+
+def test_within_float_bound_rejects_rows_of_another_count():
+    why = compare.within_float_bound([], [], [{"id": 1, "c": 1.0}], _SUM)
+    assert why == "got 0 rows, want 1 row"
+
+
+def test_within_float_bound_raises_on_bound_rows_that_do_not_align():
+    with pytest.raises(ValueError, match="do not align"):
+        compare.within_float_bound(
+            [{"id": 1, "c": 1.0}], [{"id": 2, "c": 0.5}], [{"id": 1, "c": 1.0}], _SUM
+        )
+
+
 def test_assert_schema_accepts_an_equal_schema():
     s = pa.schema([pa.field("a", pa.int64())])
     assert compare.assert_schema(s, pa.schema([pa.field("a", pa.int64())])) is None

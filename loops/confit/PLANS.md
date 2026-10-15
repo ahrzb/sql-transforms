@@ -494,8 +494,8 @@ The first five are ruled, in this order; the rest follow.
   DuckDB serves a constant-empty join.
 - **Per-row aggregation over matched static rows** (correlated scalar
   subquery; `JOIN` + `GROUP BY` under `shape='many'`). Served: a scalar
-  subquery with one `count`, `min`, `max`, integer, BOOLEAN or DECIMAL `sum`,
-  or integer or DECIMAL `avg`, over all the values of a column or its
+  subquery with one `count`, `min`, `max`, integer, BOOLEAN, DECIMAL or
+  DOUBLE `sum`, or integer, DECIMAL or DOUBLE `avg`, over all the values of a column or its
   DISTINCT ones, over one static table, keyed by `=` or IS NOT
   DISTINCT FROM between a bare column of the table and an outer expression
   that cannot trap (the first key's may trap, see below), and filtered by
@@ -515,8 +515,15 @@ The first five are ruled, in this order; the rest follow.
   AGREE, 31 AGREE_TRAP). The generator draws the static terms after every
   other draw; on 30,000,000..30,049,999, 672 subquery cases gained terms (309
   AGREE, 10 AGREE_TRAP), and the campaign gave 0 gated verdicts.
-  Still refused by name: DOUBLE `sum`/`avg` (decision below), an
-  aggregate call with ORDER BY, `count(DISTINCT *)` (DuckDB's binder error)
+  A DOUBLE `sum`/`avg` (ruled 2026-10-15,
+  [decisions/closed/double-sum-bound.md](decisions/closed/double-sum-bound.md))
+  adds in table order from +0.0 (`Acc::Float` in `duckdb/mod.rs`) and serves
+  only as a whole output column (`float_bounds` in `specializer/mod.rs`); the
+  campaign builds the case again with `float_bounds=True` and compares within
+  B (`confit.compare.within_float_bound`, AGREE klass `float-reduction-bound`).
+  Still refused by name: a DOUBLE `sum`/`avg` that is not a whole output
+  column, reads a NaN or an infinity, or whose group has sum|v| + B past the
+  range, an aggregate call with ORDER BY, `count(DISTINCT *)` (DuckDB's binder error)
   and DISTINCT over a constant, an item that traps over the aggregates of a group or of no rows, holds a
   subquery or calls a SQL function, a UDF or a model, a WHERE term that is
   neither a key nor reads only the table, a static term that can trap (DuckDB
@@ -760,9 +767,7 @@ The first five are ruled, in this order; the rest follow.
   WHERE inside it); an uncorrelated one traps even on an empty batch.
   Measured 2026-10-15: a WHERE subquery under a comma join runs over every
   pair of the cross product, before the WHERE matches the comma key. Waiting
-  on the owner: [decisions/open/join-group-by-per-request.md](decisions/open/join-group-by-per-request.md)
-  and the DOUBLE `sum`/`avg` domains of the float-reduction bound,
-  [decisions/open/double-sum-bound.md](decisions/open/double-sum-bound.md).
+  on the owner: [decisions/open/join-group-by-per-request.md](decisions/open/join-group-by-per-request.md).
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
   set operations.** Refused today, except the scalar subquery, EXISTS and
   IN above; only batch-dependent forms are out of scope. Row-local derived

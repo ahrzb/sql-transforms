@@ -21,6 +21,8 @@ class DuckDBInferFn:
         static_tables: dict[str, pa.Table],
         udfs: list[Any] | None = None,
         shape: str | None = None,
+        *,
+        float_bounds: bool = False,
     ) -> None:
         """`row_tables`: the driving table's declared schema (the specializer
         takes exactly one row table today; the dict key is the table name the
@@ -101,6 +103,11 @@ class DuckDBInferFn:
         "map" (exactly one row out per row in; rejects WHERE and inner joins),
         "filter" (0 or 1, the default), or "many" (0..N; the only shape under
         which join multiplicity will build).
+
+        `float_bounds`: for the comparison checker of the campaign only. Each
+        output column that is a DOUBLE `sum` or `avg` of a scalar subquery
+        holds the comparison bound of its group in place of its value
+        (docs/oracle/05, claim: float-reduction-bound).
         """
 
     @property

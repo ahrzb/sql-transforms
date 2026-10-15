@@ -1606,7 +1606,8 @@ def _agg_class(func: str, arg: str | None, sch: dict) -> str | None:
     """The semantic type of `func(arg)` over a table of schema `sch`, or
     None where the expression grammar does not reach it: a DECIMAL
     aggregate (the grammar binds no decimal), a sum or avg of a DOUBLE
-    (confit refuses it by name), or one DuckDB refuses to bind."""
+    (confit serves it only as a whole output column, and refuses it by name
+    in an expression), or one DuckDB refuses to bind."""
     if func == "count":
         return "int"
     t = SEMANTIC.get(sch[arg].rstrip("?"))
@@ -1668,8 +1669,11 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     `x [NOT] IN (SELECT key column ...)`, where x is the key's outer column
     or, one time in ten, that column + 1. About one IN in two is
     `[NOT] x op ANY | SOME | ALL (SELECT key column ...)` instead, with op a
-    comparison. A few subqueries take a form that confit refuses by name: a
-    DOUBLE sum or avg, IS NOT DISTINCT FROM under shape='many', an outer
+    comparison. A DOUBLE sum or avg serves only as a whole output column,
+    and its comparison is within the float-reduction bound. A few subqueries
+    take a form that confit refuses by name: a DOUBLE sum or avg that is not
+    a whole output column or that reads a value that is not finite, IS NOT
+    DISTINCT FROM under shape='many', an outer
     side that can trap after another key or under shape='many', a term over
     the table that can trap, an expression over the aggregates that traps at
     build or over the aggregates of no rows, a left side of IN, ANY or ALL

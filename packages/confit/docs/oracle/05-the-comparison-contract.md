@@ -154,7 +154,7 @@ independent references.
 | DuckDB scalar `cbrt` | at most 1 ulp | gated; claim: cbrt-ulp-tolerance |
 | campaign sklearn second-reference leg | absolute `1e-9` | that self-leg only; sklearn is not DuckDB |
 | `sql_transform` transformer references | family-specific bounds; tree scoring has a bit-exact target with a numerical-equality test | independent C4 contract; see [success measures](../specs/success-measures.md#transformer-parity-c4) |
-| per-row relational `sum` / `avg` over matched `DOUBLE` values | claim: float-reduction-bound below | adopted; no checker implements it, and confit refuses aggregation |
+| per-row relational `sum` / `avg` over matched `DOUBLE` values | claim: float-reduction-bound below | approved; `confit.compare.within_float_bound` in `fuzz.oracle.run_case`, for a whole output column only |
 
 `confit.compare.assert_rows_close` is positional and ulp-based. It distinguishes signed
 zero and treats NaN as self-equal, but at one ulp it can place `DBL_MAX` next to infinity.
@@ -177,14 +177,12 @@ bound is
 
 $$
 \left|\mathrm{ours}-\mathrm{oracle}\right|
-\le 2(n-1)\,\mathrm{eps}\sum_i |v_i|.
+\le B = 2(n-1)\,\mathrm{eps}\sum_i |v_i|.
 $$
 
 Equivalently, in checker notation: `2*(n-1)*eps*sum(abs(v_i))`, with
-`eps = 2^-52`.
-
-For `avg`, divide that sum bound by `n`. The bound is data-dependent because cancellation
-makes a fixed relative tolerance unsuitable.
+`eps = 2^-52`. The bound is data-dependent because cancellation makes a fixed relative
+tolerance unsuitable.
 
 It applies only to per-row relational `sum` / `avg` over matched `DOUBLE` rows. It does not cover scalar
 arithmetic, casts, comparisons, integer or decimal aggregates, ordered list-value
@@ -192,15 +190,54 @@ reductions, variance, standard deviation, or another order-sensitive family. It 
 extend training-round-trip KPI C1, which is bit-exact under its own fixed-thread
 comparison.
 
-The bound does not define reduction algorithm and length, non-finite addends/results,
-intermediate or `sum(abs(v_i))` overflow and underflow, empty/all-NULL reductions,
-`n = 0` and `n = 1`, or the final `avg` division; the formula cannot be applied literally
-at `n = 0`, and no general epsilon substitutes for defining these domains. No checker
-implements the bound.
+On 2026-10-15, the owner approved definitions for the parts that this bound left open
+([decision record](../../../../loops/confit/decisions/closed/double-sum-bound.md)). A group
+is the set of static rows that one key value matches, and the build computes the answer
+of each group once.
+
+- **The sum of confit.** Confit adds the values of the group that are not NULL in table
+  order. The sum starts at +0.0, and each value adds with one IEEE addition, rounded to
+  nearest. n is the number of these values. For an aggregate over DISTINCT values, the
+  values are the distinct values. `avg` divides the sum by n with one IEEE division.
+- **n = 0, n = 1 and n = 2.** The comparison is exact. With no value, both answers are
+  NULL. One value needs no rounding. Two values give the same sum in both orders.
+- **Values that are not finite, and overflow.** If a group has a NaN or an infinite
+  value, confit refuses the build by name. The build checks each group, also a group
+  that no request matches. Confit also refuses the build if
+  $\sum_i |v_i| + B$ is not finite. Then no order of the additions can overflow.
+- **Underflow.** An IEEE addition whose result is below the normal range is exact. So
+  the sum bound needs no term for underflow.
+- **The division of `avg`.** The bound of `avg` is
+  $B/n + \mathrm{eps}\cdot\max(|\mathrm{ours}|, |\mathrm{oracle}|) + 2^{-1074}$. The
+  second term covers the rounding of the two divisions. $2^{-1074}$ is the smallest
+  positive DOUBLE, and it covers a quotient below the normal range.
+- **The computation of B.** Confit computes $\sum_i |v_i|$ exactly and rounds it once,
+  with the algorithm of Python's `math.fsum`. Then it computes B in DOUBLE arithmetic.
+  The checker computes the distance of the two answers exactly.
+
+The bound holds for each order of the additions. For any order, the computed sum
+differs from the exact sum by at most $\gamma_{n-1}\sum_i |v_i|$, with
+$\gamma_k = ku/(1-ku)$ and $u = 2^{-53}$ (N. J. Higham, *Accuracy and Stability of
+Numerical Algorithms*, 2nd edition, 2002, section 4.2). So the answers of two orders
+differ by at most $2\gamma_{n-1}\sum_i |v_i|$. B is about two times this largest
+distance. This margin of a factor of 2 also covers the rounding in the computation of B.
+The decision record gives the proofs.
+
+*Enforced-by:* confit serves the aggregate only as a whole output column, and
+`DuckDBInferFn.plan_facts["bounds"]` names each such column. `fuzz.oracle.run_case`
+builds the query a second time with `float_bounds=True`. In that build, each such
+column holds the bound of its group in place of the value.
+`confit.compare.within_float_bound` then compares the two answers. An agreement that
+needs the bound gets the verdict `AGREE` with `klass` `float-reduction-bound`, and the
+campaign report counts these agreements.
 
 *Evidence:* the premise is a measurement: on one `DOUBLE` table, twenty multi-threaded
 DuckDB runs produced twenty distinct `sum` and `avg` bit patterns, while a
-single-threaded reading matched an in-order loop. That observation is not verification of the bound.
+single-threaded reading was bit-exact with an in-order loop. That observation is not verification of the bound.
+The decision record holds the measurements of the oracle on static tables with up to
+600,000 rows. `packages/confit/tests/test_scalar_subquery.py` holds the tests of the
+DOUBLE `sum` and `avg`, and `packages/confit/tests/test_compare.py` the tests of the
+checker.
 
 **claim: signed-zero.** `-0.0` and `+0.0` are distinct results. Unary float negation
 subtracts from `-0.0`, preserving exact IEEE negation; integer negation retains `0 - x`

@@ -1338,9 +1338,14 @@ fn build_keys<'py>(
 /// rides as its own (false, default) pair), and an int column joined against a
 /// float expression converts here (the declared key type is the
 /// expression's).
-fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyResult<StaticData> {
+fn materialize_map(
+    py: Python<'_>,
+    table: &Py<PyAny>,
+    spec: &StaticSpec,
+    bounds: bool,
+) -> PyResult<StaticData> {
     if let Some(aggs) = &spec.aggs {
-        return materialize_aggs(py, table, spec, aggs);
+        return materialize_aggs(py, table, spec, aggs, bounds);
     }
     let rows = table.bind(py).call_method0("to_pylist")?;
     // `to_pylist` hands `decimal.Decimal` for a DECIMAL column (the ordinary
@@ -1528,16 +1533,117 @@ enum Acc {
     /// The sum, the sum of the absolute values, and the count of the values
     /// that are not NULL.
     Avg(i128, u128, u64),
+    /// A `sum` or `avg` over DOUBLE values: the sum in table order, which
+    /// starts at +0.0 as DuckDB's does, the exact sum of the absolute
+    /// values ([`ExactSum`]), and the count of the values that are not NULL.
+    Float(f64, ExactSum, u64),
 }
 
 impl Acc {
-    fn new(func: plan::AggFunc) -> Acc {
-        match func {
+    fn new(agg: &crate::specializer::AggVal) -> Acc {
+        match agg.func {
+            plan::AggFunc::Sum | plan::AggFunc::Avg if agg.src == Ty::F64 => {
+                Acc::Float(0.0, ExactSum::default(), 0)
+            }
             plan::AggFunc::CountStar | plan::AggFunc::Count => Acc::Count(0),
             plan::AggFunc::Min | plan::AggFunc::Max => Acc::Extreme(None, false),
             plan::AggFunc::Sum => Acc::Sum(0, 0, false),
             plan::AggFunc::Avg => Acc::Avg(0, 0, 0),
         }
+    }
+}
+
+/// The exact sum of finite DOUBLE values, rounded once to a DOUBLE as
+/// Python's `math.fsum` rounds it: the same algorithm (Shewchuk's, in
+/// CPython's `Modules/mathmodule.c`), which holds the exact sum as a list of
+/// DOUBLEs whose bits do not overlap. A test compares the two.
+#[derive(Default)]
+struct ExactSum {
+    partials: Vec<f64>,
+    /// Set when a partial sum is past the range of a DOUBLE.
+    overflow: bool,
+}
+
+impl ExactSum {
+    fn add(&mut self, mut x: f64) {
+        let mut i = 0;
+        for j in 0..self.partials.len() {
+            let mut y = self.partials[j];
+            if x.abs() < y.abs() {
+                std::mem::swap(&mut x, &mut y);
+            }
+            let hi = x + y;
+            let lo = y - (hi - x);
+            if lo != 0.0 {
+                self.partials[i] = lo;
+                i += 1;
+            }
+            x = hi;
+        }
+        self.partials.truncate(i);
+        if x == 0.0 {
+            return;
+        }
+        if x.is_finite() {
+            self.partials.push(x);
+        } else {
+            // Each value is finite, so this is a partial sum past the range.
+            self.overflow = true;
+            self.partials.clear();
+        }
+    }
+
+    /// The exact sum rounded to the nearest DOUBLE, a tie to the even one;
+    /// `None` past the range of a DOUBLE.
+    fn total(&self) -> Option<f64> {
+        if self.overflow {
+            return None;
+        }
+        let p = &self.partials;
+        let Some((&top, rest)) = p.split_last() else {
+            return Some(0.0);
+        };
+        let (mut hi, mut lo, mut n) = (top, 0.0, rest.len());
+        // Add the partials from the top while the sum stays exact.
+        while n > 0 {
+            let x = hi;
+            n -= 1;
+            let y = p[n];
+            hi = x + y;
+            lo = y - (hi - x);
+            if lo != 0.0 {
+                break;
+            }
+        }
+        // A remainder of the same sign as the next partial moves a tie to the
+        // value past it, as `math.fsum` does.
+        if n > 0 && ((lo < 0.0 && p[n - 1] < 0.0) || (lo > 0.0 && p[n - 1] > 0.0)) {
+            let y = lo * 2.0;
+            let x = hi + y;
+            if y == x - hi {
+                hi = x;
+            }
+        }
+        hi.is_finite().then_some(hi)
+    }
+}
+
+/// The scale of the comparison bound B = 2 (n - 1) eps sum|v| of a DOUBLE
+/// `sum`, with eps = 2^-52: 2 eps = 2^-51 (docs/oracle/05, claim:
+/// float-reduction-bound).
+const BOUND_SCALE: f64 = 1.0 / (1u64 << 51) as f64;
+
+/// The bound B of a group of `n` values whose absolute values add up to
+/// `abs`, with one rounding, so that B is finite where `abs` is. For `abs`
+/// of 1 or more, `abs * 2^-51` is exact, and (n - 1) times it rounds once
+/// (finite for n below 2^51). Below 1, (n - 1) * `abs` rounds once, and its
+/// product with 2^-51 is exact unless it is below the normal range.
+fn float_bound(abs: f64, n: u64) -> f64 {
+    let m = (n - 1) as f64;
+    if abs >= 1.0 {
+        abs * BOUND_SCALE * m
+    } else {
+        m * abs * BOUND_SCALE
     }
 }
 
@@ -1650,11 +1756,23 @@ fn rows_batch(
 /// DuckDB keeps (a partial sum could overflow in some order, where DuckDB
 /// traps), and a DOUBLE min or max that ties values with other bits, unless
 /// only a comparison reads it ([`plan::Agg::ties`]).
+///
+/// The one exception is a DOUBLE sum or avg. It adds the values of a group
+/// in table order, from +0.0, as DuckDB does over a small table. DuckDB's
+/// order over a large table can change the last bits of the answer, and the
+/// comparison contract bounds the distance (docs/oracle/05, claim:
+/// float-reduction-bound): B = 2 (n - 1) eps sum|v|, with eps = 2^-52 and
+/// n the count of the values. Such a group refuses if it has a value that
+/// is not finite, or if sum|v| + B is past the range of a DOUBLE. With
+/// `bounds`, the group holds its bound in place of its answer: 0 for two
+/// values or fewer, which add up to one sum in both orders, B for a sum,
+/// and B / n for an avg.
 fn materialize_aggs(
     py: Python<'_>,
     table: &Py<PyAny>,
     spec: &StaticSpec,
     aggs: &[crate::specializer::AggVal],
+    bounds: bool,
 ) -> PyResult<StaticData> {
     use plan::AggFunc;
     if let Some(p) = spec.post.as_ref().filter(|p| p.row) {
@@ -1674,7 +1792,7 @@ fn materialize_aggs(
     type Slot = (Acc, Option<std::collections::HashSet<AggClass>>);
     let fresh = || {
         aggs.iter()
-            .map(|a| (Acc::new(a.func), a.distinct.then(Default::default)))
+            .map(|a| (Acc::new(a), a.distinct.then(Default::default)))
             .collect::<Vec<Slot>>()
     };
     let mut groups: std::collections::BTreeMap<Vec<KeyBits>, Vec<Slot>> = Default::default();
@@ -1779,6 +1897,23 @@ fn materialize_aggs(
                     *abs = abs.checked_add(x.unsigned_abs()).ok_or_else(over)?;
                     *n += 1;
                 }
+                Acc::Float(sum, abs, n) => {
+                    let AggIn::F64(x) = v else {
+                        return Err(build_err("internal: a DOUBLE sum over another type"));
+                    };
+                    if !x.is_finite() {
+                        return Err(build_err(format!(
+                            "unsupported: static table '{}': {} over the rows of one key reads \
+                             the value {x}, and confit serves a DOUBLE sum or avg only over \
+                             finite values",
+                            spec.table,
+                            label(i)
+                        )));
+                    }
+                    *sum += x;
+                    abs.add(x.abs());
+                    *n += 1;
+                }
             }
         }
     }
@@ -1835,6 +1970,36 @@ fn materialize_aggs(
                         return Err(avg_over(&spec.table, &label(i)));
                     }
                     Some(ScalarVal::F64(avg::finalize(src, sum, n)))
+                }
+                Acc::Float(_, _, 0) => None,
+                Acc::Float(sum, abs, n) => {
+                    // The comparison bound B of the group. If the sum of the
+                    // absolute values plus B is past the range of a DOUBLE, a
+                    // partial sum can overflow in some order of the additions.
+                    let Some(bound) = abs
+                        .total()
+                        .map(|a| (a, float_bound(a, n)))
+                        .filter(|(a, b)| (a + b).is_finite())
+                        .map(|(_, b)| b)
+                    else {
+                        return Err(build_err(format!(
+                            "unsupported: static table '{}': {} over the rows of one key adds \
+                             absolute values past the range of a DOUBLE, so a partial sum can \
+                             overflow in some order of the additions",
+                            spec.table,
+                            label(i)
+                        )));
+                    };
+                    let avg = aggs[i].func == AggFunc::Avg;
+                    Some(ScalarVal::F64(match (bounds, avg) {
+                        (false, false) => sum,
+                        // DuckDB divides once, by the count as a DOUBLE.
+                        (false, true) => sum / n as f64,
+                        // Two values add up to one sum in both orders.
+                        (true, _) if n <= 2 => 0.0,
+                        (true, false) => bound,
+                        (true, true) => bound / n as f64,
+                    }))
                 }
             };
             vals.push(val);
@@ -2367,11 +2532,15 @@ fn parse_tree_udf(
 /// Called twice — the cranelift attempt CONSUMES the static data, so the
 /// interpreter fallback rebuilds it. One function so the two paths cannot
 /// drift.
+///
+/// With `bounds`, each DOUBLE `sum` or `avg` of a scalar subquery holds its
+/// comparison bound in place of its answer ([`materialize_aggs`]).
 fn materialize_statics(
     py: Python<'_>,
     prepared: &crate::specializer::Prepared,
     static_tables: &HashMap<String, Py<PyAny>>,
     trees: &[TreeDecl],
+    bounds: bool,
 ) -> PyResult<Vec<StaticData>> {
     let n_join = prepared.statics.len();
     if prepared.program.statics.len() != n_join + prepared.models.len() {
@@ -2423,7 +2592,7 @@ fn materialize_statics(
             values.len(),
             "StaticSpec and StaticTy disagree on value slot arity"
         );
-        data.push(materialize_map(py, table, spec)?);
+        data.push(materialize_map(py, table, spec, bounds)?);
     }
     // Model statics are appended AFTER every join static — that ordering is
     // what keeps existing probes' `@N` from shifting, and this zip asserts it.
@@ -2735,12 +2904,18 @@ pub struct DuckDBInferFn {
     /// rows drop out of the build) and the rows that its build keeps, for
     /// `plan_facts`.
     join_facts: Vec<(crate::specializer::JoinFact, Option<usize>, Option<usize>)>,
+    /// The output fields that are a DOUBLE `sum` or `avg` of a scalar
+    /// subquery, by name, with "sum" or "avg", for `plan_facts`.
+    float_bounds: Vec<(String, &'static str)>,
 }
 
 #[pymethods]
 impl DuckDBInferFn {
+    /// `float_bounds` is for the comparison checker of the campaign
+    /// (`fuzz/oracle.py`): each DOUBLE `sum` or `avg` of a scalar subquery
+    /// answers its comparison bound in place of its value.
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, shape=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, shape=None, *, float_bounds=false))]
     fn new(
         py: Python<'_>,
         sql: String,
@@ -2748,6 +2923,7 @@ impl DuckDBInferFn {
         static_tables: HashMap<String, Py<PyAny>>,
         udfs: Option<Vec<Py<PyAny>>>,
         shape: Option<String>,
+        float_bounds: bool,
     ) -> PyResult<Self> {
         let (udf_decls, tree_decls, sql_macros) = parse_udfs(py, udfs.unwrap_or_default())?;
         let shape_c = Shape::parse(shape.as_deref())?;
@@ -2957,7 +3133,7 @@ impl DuckDBInferFn {
             }
         }
 
-        let data = materialize_statics(py, &prepared, &static_tables, &tree_decls)?;
+        let data = materialize_statics(py, &prepared, &static_tables, &tree_decls, float_bounds)?;
         // The static data is indexed by join id, as the facts are.
         let join_facts = prepared
             .join_facts
@@ -2994,7 +3170,13 @@ impl DuckDBInferFn {
                     Err(CompileError::InterpOnly(_)) => Backend::Interp(
                         compile_ext(
                             &prepared.program,
-                            materialize_statics(py, &prepared, &static_tables, &tree_decls)?,
+                            materialize_statics(
+                                py,
+                                &prepared,
+                                &static_tables,
+                                &tree_decls,
+                                float_bounds,
+                            )?,
                             make_externs(py, &udf_decls),
                         )
                         .map_err(|e| build_err(e.to_string()))?,
@@ -3015,6 +3197,20 @@ impl DuckDBInferFn {
             }
         };
         let plan = emit_plan(&prepared.program.out_cols, &prepared.wide_outputs);
+        // A bound column is never a field of a wide output (the binder
+        // refuses that), so it is a field of its own, named as its column.
+        let float_bounds = prepared
+            .float_bounds
+            .iter()
+            .map(|b| {
+                let name = prepared.program.out_cols[b.out as usize].name.clone();
+                let func = match b.func {
+                    crate::specializer::plan::AggFunc::Avg => "avg",
+                    _ => "sum",
+                };
+                (name, func)
+            })
+            .collect();
         // SPECIALIZER_GENERIC_BOUNDARY pins the pre-marshaller boundary —
         // the bench baseline, mirroring SPECIALIZER_FORCE_INTERP.
         let lanes = prepared.input_lanes().to_vec();
@@ -3040,18 +3236,25 @@ impl DuckDBInferFn {
             row_table,
             shape: shape_c,
             join_facts,
+            float_bounds,
         })
     }
 
     /// Facts of the bound plan, for the exclusion rules
-    /// (`fuzz/exclusions.py`): `{"joins": [{"kind", "static", "keys",
-    /// "residual", "rows", "built"}, ...]}`. `kind` is "inner", "left" (a
+    /// (`fuzz/exclusions.py`) and the comparison checker (`fuzz/oracle.py`):
+    /// `{"joins": [{"kind", "static", "keys", "residual", "rows", "built"},
+    /// ...], "bounds": [...]}`. `kind` is "inner", "left" (a
     /// CROSS JOIN is inner with zero keys) or "aggregate" (the hidden join
     /// of a scalar subquery, whose `static` is the table the subquery
     /// reads); `static` is None for a self-join; `rows` is the static
     /// table's raw row count, and `built` the entries of its build: the rows
     /// that a request can match (a NULL `=` key drops a row, as DuckDB's
     /// hash join drops it), or the groups of a scalar subquery's table.
+    ///
+    /// `bounds` lists the output fields that are a DOUBLE `sum` or `avg` of
+    /// a scalar subquery, `[{"column", "func"}, ...]` with `func` "sum" or
+    /// "avg": the comparison contract compares them within a bound
+    /// (docs/oracle/05, claim: float-reduction-bound).
     #[getter]
     fn plan_facts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let joins = PyList::empty(py);
@@ -3065,8 +3268,16 @@ impl DuckDBInferFn {
             d.set_item("built", *built)?;
             joins.append(d)?;
         }
+        let bounds = PyList::empty(py);
+        for (column, func) in &self.float_bounds {
+            let d = PyDict::new(py);
+            d.set_item("column", column)?;
+            d.set_item("func", *func)?;
+            bounds.append(d)?;
+        }
         let out = PyDict::new(py);
         out.set_item("joins", joins)?;
+        out.set_item("bounds", bounds)?;
         Ok(out.into_any().unbind())
     }
 
