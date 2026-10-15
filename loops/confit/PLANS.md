@@ -106,30 +106,6 @@ lists what it needs from confit under its PLANS "Needs from confit"; this
 loop builds those, ahead of the query classes, since each one unblocks
 catalog entries. Today:
 
-Open, next (asked first by the native loop 2026-10-14, for its reading 6):
-
-- **A query that reads a struct output field by field builds in time
-  that grows about as the square of the fields read, since #456
-  (0def508).** The catalog's query reads each output field as one SELECT
-  item. Release builds, the native loop's machine: 4,000 fields, each a
-  CASE over one of 8 parameters, build in 0.92 to 1.01 s at 4bb88f5 (the
-  commit before #456), 6.18 to 6.34 s at 0def508 and 5.84 to 6.13 s on
-  master a2ba98d; 2,000 fields in 0.41 to 0.53 s against 1.74 to 1.81 s;
-  the struct read whole is unchanged (0.60 to 0.67 s at 4,000). In the
-  catalog, RandomTreesEmbedding of 250 trees of depth 5 (5,690 fields)
-  builds in 42 to 44 s, against 5.9 to 6.5 s at its reading 5, and 100
-  trees of depth 6 in 18 s (3.7 s); splines and the one-hot
-  KBinsDiscretizer build 1.5 to 2 times as long. The catalog's build caps
-  were fitted before #456, so a step estimated within 7 s can take 18 s or
-  more. Reproduction:
-  `/mnt/project-files/transforms-loop/confit-field-reads-456.py`. On this
-  loop's container, a forest of 100 depth-5 trees (`case_forest.py` in
-  #422) read field by field builds in 36 s on master a2ba98d with
-  `CAST(leaf = k AS DOUBLE)` fields (31 s with the select form, where no
-  field read branches), against 6.8 s on master 5c613c8; with `CASE WHEN
-  leaf = k THEN 1.0 ELSE 0.0 END` fields, 45 s (40 s). Read as one list,
-  it builds in 0.9 to 1.1 s on both.
-
 Open, low priority (the catalog builds within its caps):
 
 - **A cheaper pass over a SQL function's body in Python** (asked by the
@@ -152,8 +128,11 @@ Open, low priority (the catalog builds within its caps):
     over 8 features builds in 1.7 s, and in 0.8 s as a list. Since
     2026-10-14 a field read under `null_when` whose field cannot trap is
     no branch (`lower.rs` `null_guard`); one whose field can trap still
-    is. See also "Open, next" above: since #456 such reads build in
-    time about quadratic in the fields.
+    is. From #456 to 2026-10-15 such reads built in time about
+    quadratic in the fields (closed below). Since then the shape of
+    `confit-field-reads-456.py` builds 2,000 fields in 0.40 to 0.52 s,
+    4,000 in 0.97 to 1.16 s and 8,000 in 3.15 to 3.34 s (three builds
+    each): still faster than linear above 4,000 fields, not examined.
   - OneHotEncoder over 8 string features of 50 categories (400 fields)
     builds in 28 s, and in 2.4 s without its input guard (master refused
     it at Cranelift's size limit). The guard's `IN` lists share prefixes
@@ -195,6 +174,36 @@ Open, low priority (the catalog builds within its caps):
   measured meets the verifier error. The gap in `check_size` stays: a
   function that Cranelift's optimizer grows past the index still stops
   with a verifier error.
+
+- **Closed 2026-10-15: a query that reads a struct output field by
+  field built in time about quadratic in the fields read, since #456**
+  (asked first by the native loop 2026-10-14, for its reading 6). The
+  catalog's query reads each output field as one SELECT item. The check
+  of each item for a subquery (`subquery::has_subquery`, which marks an
+  alias that DuckDB refuses to read in the SELECT list) walked the whole
+  SQL function call at every field read, since each read holds the
+  call's marker. Now each level answers a marker once
+  (`Binder::call_subquery`): one marker id always stands for the same
+  expansion and the same arguments. Release builds, one container:
+  - The native loop's reproduction
+    (`/mnt/project-files/transforms-loop/confit-field-reads-456.py`, three
+    builds each): 4,000 fields in 1.00 to 1.12 s, against 25.9 to 28.1 s
+    on master a2ba98d and 23.6 to 27.8 s with #459; 2,000 fields in 0.41
+    to 0.48 s (2.7 to 3.5 s on a2ba98d); 500 in 0.09 to 0.11 s (0.21 to
+    0.26 s). The native loop measured 0.92 to 1.01 s at 4,000 fields on
+    4bb88f5, before #456.
+  - The forest of 100 depth-5 trees (`case_forest.py` in #422), 3,200
+    fields read field by field, one run each: 2.2 s with `CAST(leaf = k AS
+    DOUBLE)` fields and 2.3 s with CASE fields, against 34 s and 39 s
+    with #459 (6.8 s on master 5c613c8, before #422).
+  - The catalog's RandomTreesEmbedding of 250 trees of depth 5 over 8
+    features (5,982 fields on this loop's data, master 8fbdd11's
+    catalog): built in 5.8 to 6.2 s, with `to_native` in 7.6 to 7.8 s,
+    against 158 s and 160 s with #459 (one run).
+  - `test_a_struct_read_field_by_field_builds_in_about_linear_time`
+    (`tests/test_sql_functions.py`) builds 500 and 4,000 fields: 8 times
+    the fields must build in less than 25 times the time (10 to 14 now,
+    40 to 150 before).
 
 - **Closed 2026-10-14: a value that a SQL function builds once and reads
   many times served slowly, about 60 ns a read** (asked by the native loop,

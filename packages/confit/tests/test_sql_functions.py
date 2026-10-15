@@ -396,6 +396,43 @@ def test_a_wide_struct_function_builds_once_per_call():
         infer.infer_arrow(rows.slice(0, 1).set_column(0, "iid", pa.array([7])))
 
 
+def test_a_struct_read_field_by_field_builds_in_about_linear_time():
+    # Each field read holds the call's marker. The check of each SELECT item
+    # for a subquery walked the whole call again at every read, so k reads of
+    # k fields cost k² (#456). Release build, 2026-10-15: 500 fields build in
+    # 0.09 to 0.11 s and 4,000 in 1.0 to 1.1 s; with that walk, 0.18 to
+    # 0.23 s and 24 to 28 s.
+    takes = pa.schema([(f"x{i}", F64) for i in range(8)])
+    args = ", ".join(takes.names)
+
+    def build(k):
+        fn = SqlFunction(
+            "f",
+            takes,
+            pa.struct([(f"f{j}", F64) for j in range(k)]),
+            lambda *x: {
+                f"f{j}": S.case(x[j % 8] < S.lit(j / k), S.lit(1.0)).otherwise(
+                    S.lit(0.0)
+                )
+                for j in range(k)
+            },
+        )
+        sql = "SELECT " + ", ".join(f"f({args}).f{j} AS f{j}" for j in range(k))
+        t = time.perf_counter()
+        DuckDBInferFn(
+            sql + " FROM __THIS__",
+            row_tables={"__THIS__": takes},
+            static_tables={},
+            udfs=[fn],
+        )
+        return time.perf_counter() - t
+
+    small = min(build(500) for _ in range(3))
+    big = build(4_000)
+    # 8 times the fields: 10 to 14 times the time, against 40 and more.
+    assert big < 25 * small, (small, big)
+
+
 def test_a_call_past_the_code_generators_size_limit_refuses_before_compiling():
     # 520 lanes, each a cast that can trap, all read in one sum: every read
     # keeps its 519 siblings for their traps, so the program holds 270k
