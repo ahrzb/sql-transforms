@@ -24,11 +24,16 @@ the widest `Pipeline` never served more slowly than its twin. T38 (#462)
 adds 0.0 to each sum of the projections, because the twin answers 0.0
 where every product is a zero: over seeds 0 to 199 of the parity run, no
 output field then differs from the twin in its sign alone, against 403
-before. The loop runs from the "Transforms Loop" project thread.
+before. T39 (#463) fits the projections' build estimate again on confit
+#459 and #461: `PCA` over 256 features of 64 components builds in 1.1 to
+1.5 s (5.2 to 5.9 s before) and serves 64 rows in 3.7 to 4.3 ms, 8 times
+as fast as its twin (77 to 83 ms before, twice the twin's time). The cap
+now takes about 280 components over 256 features, against 80. The loop
+runs from the "Transforms Loop" project thread.
 
-Next: PLANS "Next" (the projections, `PolynomialFeatures` and the splines
-again on confit #459, and the builds again on confit #461, both merged
-after the reading), then PLANS "Ruled 2026-10-06, to build": the rest of
-the linear projections, then the other families on the parity bound.
+Next: PLANS "Next" (the builds of the forests, the splines,
+`QuantileTransformer` and `IsotonicRegression` again on confit #461),
+then PLANS "Ruled 2026-10-06, to build": the rest of the linear
+projections, then the other families on the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.

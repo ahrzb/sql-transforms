@@ -61,17 +61,20 @@ least room is at 5 features, 1.97 against K = 8. Four steps of 64 features
 stayed Python, each for a whitened component of rounding noise. The
 measured value is evidence for K, not K.
 
-A step builds in about the time of its n·k products, and more past about
-16,000 of them (`_build_estimate`): 64 features of 64 components in 0.8 to
-1.3 s, 256 of 64 in 5.2 to 5.9 s. The entry refuses a step estimated past
-MAX_BUILD_S, before confit is asked: about 80 components over 256
-features, 32 over 512 or 12 over 1,024. Serving 64 rows takes 49 to 191 us
-up to 16 features of 4 components, against the twin's 7.4 to 9.7 ms; 1.7
-to 2.2 ms at 32 of 16 (twin 11.9 to 14.8 ms); 17 to 20 ms at 64 of 64,
-about the twin's time; and 77 to 83 ms at 256 of 64, twice the twin's 37
-to 45 ms. The entry reads each feature once a component, and confit serves
-such a read in about 60 ns (PLANS, "Needs from confit"). Release build,
-master bf42757, one container, 2026-10-14."""
+A step builds in about the time of its n·k products (`_build_estimate`):
+64 features of 64 components in 0.25 to 0.37 s, 256 of 64 in 1.1 to 1.5 s,
+256 of 256 in 5.0 to 6.8 s. The entry refuses a step estimated past
+MAX_BUILD_S, before confit is asked: about 280 components over 256
+features, 140 over 512, 63 over 1,024 or 6 over 4,096. Serving 64 rows
+takes 43 to 138 us up to 16 features of 4 components, against the twin's
+6.9 to 8.8 ms; 0.26 to 0.38 ms at 32 of 16 (twin 10.6 to 13.9 ms); 0.9 to
+1.0 ms at 64 of 64 (twin 16.9 to 21.8 ms); 3.7 to 4.3 ms at 256 of 64
+(twin 29.7 to 34.0 ms); 12.7 to 13.6 ms at 256 of 256 (twin 47 to 53 ms);
+and 17.7 to 19.0 ms at 512 of 128 (twin 56 to 62 ms). Release build,
+master bea1372 with confit #459 and #461, one container, 2026-10-15.
+Before confit #459, the entry served 256 of 64 in 77 to 83 ms, twice the
+twin's time: confit read a value that the body builds once, such as a
+feature's `coalesce(x, NaN)`, in about 60 ns a read."""
 
 from __future__ import annotations
 
@@ -134,13 +137,15 @@ def _build_estimate(n: int, k: int) -> float:
     from its n features and k components. The build is about linear in the
     products n·k, with terms in n²·k and n·k² past that and a term in the
     features. Fitted on the slower of the two returns, a struct and a list,
-    over 79 builds of 1.0 to 26 s (64 to 2,048 features, 1 to 128
+    over 93 builds of 0.3 to 22 s (64 to 4,096 features, 1 to 256
     components; `PCA` with and without `whiten`, and the Gaussian random
-    projection; master bf42757, 2026-10-14): each within 0.82 to 1.30 times
-    the estimate. The cap took on none slower than 7.9 s and refused none
-    faster than 7.2 s."""
+    projection; master bea1372 with confit #459 and #461, 2026-10-15): each
+    within 0.86 to 1.41 times the estimate, and 0.86 to 1.31 over 1 s. The
+    cap took on none slower than 6.9 s and refused none faster than 6.5 s.
+    Before confit #459 and #461, the same builds took 1.3 to 9 times as
+    long, a median of 3.2 (master bf42757)."""
     p = n * k
-    return 2.78e-4 * n + 1.62e-4 * p + 3.93e-7 * p * n + 1.33e-6 * p * k
+    return 5.86e-4 * n + 6.54e-5 * p + 2.72e-8 * p * n + 8.63e-8 * p * k
 
 
 def _tree(terms: list[S.Expr]) -> S.Expr:
