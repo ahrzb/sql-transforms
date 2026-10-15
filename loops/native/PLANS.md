@@ -40,9 +40,14 @@ that request, `to_native(step, allow_bound=True)`. In order:
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
      not served until a normwise S is derived.
-2. **Still open for the owner:** a bounded step inside a composition
-   (decisions/open/bounded-steps-in-compositions.md). `compose.py` keeps
-   refusing one meanwhile.
+2. **A bounded step inside a composition** (ruled 2026-10-15,
+   [decisions/closed/bounded-steps-in-compositions.md](decisions/closed/bounded-steps-in-compositions.md)).
+   With `allow_bound=True`, `compose.py` accepts a bounded step in any
+   position. First serve it as the last step, or as one part of a
+   ColumnTransformer or a FeatureUnion: the step's own bound holds there.
+   Then pass the error scale through affine steps (|A|·S plus their own
+   rounding). After a discontinuous step, `native.check` reports the flip
+   rate in place of a bound.
 
 ## Needs from confit
 

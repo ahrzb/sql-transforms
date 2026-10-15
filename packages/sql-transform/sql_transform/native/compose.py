@@ -19,9 +19,10 @@ read by a later step, is not within k ulps after it (`x - mean_` near
 own bound is not 0 refuses the pipeline. The bound read is the step's, not
 its class's: `FunctionTransformer()` composes, `FunctionTransformer(np.exp)`
 does not (unless this platform's numpy kernel reads 0, `function.py`).
-`to_native(step, allow_bound=True)` does not change this: whether a bounded
-step may compose is an open owner question
-(loops/native/decisions/open/bounded-steps-in-compositions.md).
+`to_native(step, allow_bound=True)` does not change this yet. The owner
+ruled on 2026-10-15 that a bounded step may compose in any position under
+`allow_bound=True` (loops/native/decisions/closed/bounded-steps-in-compositions.md);
+that is not built yet.
 """
 
 from __future__ import annotations

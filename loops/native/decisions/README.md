@@ -5,12 +5,13 @@ scope ([catalog contract](../../../packages/sql-transform/spec/native/catalog-co
 the options, the provisional choice that the loop works under, and the
 evidence. After the owner rules, the record states the ruling.
 
-- [open/](open) holds the records that wait for a ruling:
-  - [a step with a parity bound in a
-    composition](open/bounded-steps-in-compositions.md): may such a step sit
-    in a Pipeline, a ColumnTransformer or a FeatureUnion?
+- [open/](open) holds the records that wait for a ruling. It is empty now.
 - [closed/](closed) holds the owner's rulings. Each ruling below is of
   2026-10-06, unless the list gives a different date:
+  - [a step with a parity bound in a
+    composition](closed/bounded-steps-in-compositions.md) (2026-10-15): such
+    a step may sit in any position. The check proves the bound where a
+    derivation gives it, and reports the flip rate elsewhere.
   - [the worker environment](closed/worker-environment.md) (2026-10-15):
     the Nix dev shell of #428 gives uv and CPython, and no setup script for
     uv is necessary

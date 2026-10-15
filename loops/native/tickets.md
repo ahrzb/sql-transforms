@@ -46,5 +46,6 @@ A draft of the centered projections (T41: `FastICA`,
 `LinearDiscriminantAnalysis` and the PLS family), written while T40 ran
 and never run, is in the project's shared files at
 `transforms-loop/t41-draft/`.
-`decisions/open/bounded-steps-in-compositions.md` waits on the owner;
-`compose.py` keeps refusing bounded steps meanwhile.
+The owner ruled `decisions/closed/bounded-steps-in-compositions.md` on
+2026-10-15 (PLANS.md, "Ruled 2026-10-06, to build", item 2); `compose.py`
+refuses bounded steps until that is built.
