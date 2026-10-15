@@ -135,6 +135,26 @@ pub struct StaticSpec {
     /// Set for a grouped table whose subquery has WHERE terms that read
     /// only the source table: the build groups only the rows it keeps.
     pub filter: Option<FilterSpec>,
+    /// Set for a grouped table whose subquery's SELECT item is an
+    /// expression over its aggregates ([`plan::AggPost`]): `vals` and `aggs`
+    /// then describe the aggregates, and the entry's one value is the
+    /// expression over them.
+    pub post: Option<PostSpec>,
+}
+
+/// The SELECT item of a scalar subquery over its aggregates
+/// ([`plan::AggPost`]), as the build runs it over the groups: one input per
+/// aggregate, one output.
+#[derive(Debug)]
+pub struct PostSpec {
+    pub program: ir::Program,
+    /// Per aggregate: the type of the program's input.
+    pub in_tys: Vec<ir::Ty>,
+    /// The output's declared type and its layout in the entry.
+    pub ty: ir::Ty,
+    pub map: plan::MapVal,
+    /// The item as written, for the refusal of one that traps.
+    pub item: String,
 }
 
 /// The WHERE terms of a scalar subquery that read only its static table
@@ -378,6 +398,7 @@ pub fn prepare_full(
                     vals: Vec::new(),
                     aggs: None,
                     filter: None,
+                    post: None,
                 });
             }
             if let Some(a) = agg_of(j) {
@@ -435,6 +456,7 @@ pub fn prepare_full(
                     .collect(),
                 aggs: None,
                 filter: None,
+                post: None,
             })
         })
         .collect::<Result<Vec<_>, PrepareError>>()?;
@@ -507,8 +529,7 @@ fn agg_spec(
     let n_keys = a.keys.len() as u32;
     let mut vals = Vec::new();
     let mut aggs = Vec::new();
-    for (&c, map) in j.val_cols.iter().zip(plan::map_vals(&grouped.cols, &j.val_cols)) {
-        let agg = a.aggs[(c - n_keys) as usize];
+    let mut push = |agg: plan::Agg, map: plan::MapVal| {
         vals.push(StaticVal {
             path: agg.arg.map_or_else(Vec::new, |l| paths[l as usize].clone()),
             present: false,
@@ -518,7 +539,35 @@ fn agg_spec(
             func: agg.func,
             src: agg.arg.map_or(ir::Ty::I64, |l| source.cols[l as usize].ty.ty),
         });
-    }
+    };
+    let post = match &a.post {
+        // One value per aggregate, in the table's own lanes.
+        None => {
+            for (&c, map) in j.val_cols.iter().zip(plan::map_vals(&grouped.cols, &j.val_cols)) {
+                push(a.aggs[(c - n_keys) as usize], map);
+            }
+            None
+        }
+        // The aggregates as the item's program reads them, then the item
+        // in the table's one value lane.
+        Some(p) => {
+            for (&agg, c) in a.aggs.iter().zip(&p.in_cols) {
+                push(
+                    agg,
+                    plan::MapVal {
+                        ty: c.ty.ty.lane(),
+                        nullable: c.ty.nullable,
+                    },
+                );
+            }
+            let [map] = plan::map_vals(&grouped.cols, &j.val_cols)[..] else {
+                return Err(PrepareError::Internal(
+                    "the grouped table of an expression over aggregates has one value".into(),
+                ));
+            };
+            Some(post_spec(p, map, &grouped.cols[n_keys as usize])?)
+        }
+    };
     Ok(StaticSpec {
         batch: false,
         table: source.name.clone(),
@@ -526,6 +575,43 @@ fn agg_spec(
         vals,
         aggs: Some(aggs),
         filter: a.filter.as_ref().map(filter_spec).transpose()?,
+        post,
+    })
+}
+
+/// The program of a scalar subquery's SELECT item over its aggregates
+/// ([`plan::AggPost`]): over one input per aggregate, the item. The build
+/// runs it on the interpreter, once over all the groups.
+fn post_spec(p: &plan::AggPost, map: plan::MapVal, value: &ir::Col) -> Result<PostSpec, PrepareError> {
+    let plan = plan::Plan {
+        stages: vec![plan::Stage {
+            joins: Vec::new(),
+            pred: None,
+            project: p.project.clone(),
+            lets: Vec::new(),
+        }],
+    };
+    let mut program = lower::lower(
+        &plan,
+        &[],
+        &[],
+        &p.in_cols,
+        p.out_cols.clone(),
+        p.regexes.clone(),
+        &[],
+        "post",
+        false,
+        &[],
+        &[],
+    )?;
+    ir::canonicalize(&mut program);
+    verified(&program)?;
+    Ok(PostSpec {
+        program,
+        in_tys: p.in_cols.iter().map(|c| c.ty.ty).collect(),
+        ty: value.ty.ty,
+        map,
+        item: value.name.clone(),
     })
 }
 

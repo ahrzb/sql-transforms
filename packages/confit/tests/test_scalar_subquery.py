@@ -1,15 +1,20 @@
-"""The correlated scalar subquery with one aggregate over one static table,
+"""The correlated scalar subquery with aggregates over one static table,
 `(SELECT sum(s.v) FROM s WHERE s.k = t.k)` (src/specializer/frontend/subquery.rs).
 
 Confit binds it as a hidden LEFT join to a table that it computes at build:
 one row per group of static rows with equal keys, holding the group's
 aggregate. The WHERE terms that read only the static table filter its rows
 before the build groups them. A request that matches no group reads the
-aggregate of no rows: 0 for count, NULL for the others. The oracle evaluates
-the subquery's WHERE in written order over (distinct outer values) x (static
-rows), and the aggregate's argument over the matched rows only (the pins at
-the end). Only the outer side of a first key can trap, and confit evaluates it
-for the same rows as the oracle; elsewhere the values are what compares.
+aggregate of no rows: 0 for count, NULL for the others. If the item is an
+expression over aggregates, `max(s.v) + 1`, the row holds the expression
+over the group's aggregates, and a request that matches no group reads the
+expression over the aggregates of no rows. The oracle evaluates the
+subquery's WHERE in written order over (distinct outer values) x (static
+rows), the aggregate's argument over the matched rows only, and the item once
+for each distinct outer value (the pins at the end). Only the outer side of a
+first key can trap, and confit evaluates it for the same rows as the oracle;
+an item that traps before any request refuses; elsewhere the values are what
+compares.
 
 Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 """
@@ -464,7 +469,6 @@ def test_static_term_that_calls_a_sql_function_refuses():
         (_sub("sum(f)"), "sum over a DOUBLE column"),
         (_sub("avg(f)"), "avg over a DOUBLE column"),
         (_sub("count(DISTINCT v)"), "DISTINCT"),
-        (_sub("max(v) + 1"), "one aggregate call"),
         (_sub("v"), "one aggregate call"),
         (_sub("count(NULL)"), "must be a column of its table"),
         (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
@@ -792,6 +796,134 @@ def test_a_key_whose_outer_side_can_trap_refuses_by_name(sql, shape, why):
     assert why in v.detail, v.detail
 
 
+# An expression over the aggregates: the build computes it for each group,
+# and a request that matches no group reads it over the aggregates of no
+# rows (0 for a count, NULL for the others).
+
+EXPRESSIONS = [
+    "max(v) + 1",
+    "count(*) + 1",
+    "coalesce(max(v), 0)",
+    "coalesce(sum(v), 0) + count(*)",
+    "max(v) - min(v)",
+    "sum(v) / count(*)",
+    "count(*) > 1",
+    "max(s) || 'x'",
+    "CASE WHEN count(*) > 1 THEN 'many' ELSE 'few' END",
+    "-max(v)",
+    "abs(min(v))",
+    "max(d) + 1",
+    "sum(d) * 2",
+    "avg(v) * 2",
+    "count(v) * 2.5",
+    "max(v) IS NULL",
+    "least(max(v), 3)",
+    "greatest(coalesce(max(v), 9), 3)",
+    "max(v) - max(v)",
+    "count(1) + count(*)",
+    "max(u) + 0",
+    "sum(u) + 1",
+    "min(f) * 2",
+    "max(b) OR count(*) = 0",
+    "CAST(sum(v) AS INTEGER)",
+    "max(s) LIKE 'b%'",
+    "regexp_matches(max(s), 'b')",
+    "min(i8) + 1",
+    "coalesce(max(s), 'none')",
+    "coalesce(sum(d), 1.5)",
+    "coalesce(avg(v), -1.5)",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", None])
+@pytest.mark.parametrize("item", EXPRESSIONS)
+def test_an_expression_over_the_aggregates(item, where, shape):
+    if where is None:
+        sql = f"SELECT id, (SELECT {item} FROM s) AS c FROM __THIS__ AS t"
+    else:
+        sql = _sub(item, where)
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+AT = table(
+    {"id": "int", "k": "int?"},
+    [{"id": 1, "k": 1}, {"id": 2, "k": 2}, {"id": 3, "k": 3}, {"id": 4, "k": None}],
+)
+# The group k = 1 has only NULL values: a match whose aggregates differ from
+# those of no rows.
+AS = table(
+    {"k": "int?", "v": "int?"},
+    [{"k": 1, "v": None}, {"k": 1, "v": None}, {"k": 2, "v": 3}, {"k": None, "v": 4}],
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        _sub("coalesce(max(v), -1) + count(*)"),
+        _sub("count(*) - count(v)"),
+        _sub("coalesce(max(v), -1) + count(*)", "s.k IS NOT DISTINCT FROM t.k"),
+        _sub("count(*) - count(v)", "s.k IS NOT DISTINCT FROM t.k"),
+        # NULL on the match k = 1, and 0 over no rows: the match, not the
+        # value, picks the group's value.
+        _sub("CASE WHEN count(*) = 0 THEN 0 ELSE max(v) END"),
+        _sub("max(v) + 1", "s.k = t.k + 1"),
+        _sub("max(v) * 2", "s.k = t.k AND s.v > 2"),
+        "SELECT id, CASE WHEN t.k > 1 THEN (SELECT count(*) + 1 FROM s "
+        "WHERE s.k = t.k) END AS c FROM __THIS__ AS t",
+        "SELECT id FROM __THIS__ AS t "
+        "WHERE (SELECT count(*) + 1 FROM s WHERE s.k = t.k) > 2",
+        "SELECT id, (SELECT max(v) - min(v) FROM s WHERE s.k = t.k) AS a, "
+        "(SELECT max(v) - min(v) FROM s WHERE s.k = t.k) AS b FROM __THIS__ AS t",
+        "SELECT id, (SELECT max(x.v) * 2 FROM s AS x WHERE x.k = t.k) AS c "
+        "FROM __THIS__ AS t",
+        # No static row passes the filter: every request reads the item over
+        # the aggregates of no rows, with a key and without one.
+        _sub("count(*) + 1", "s.k = t.k AND s.v > 100"),
+        "SELECT id, (SELECT count(*) + 1 FROM s WHERE s.v > 100) AS c "
+        "FROM __THIS__ AS t",
+    ],
+)
+def test_an_expression_over_the_aggregates_of_a_match_and_of_no_rows(sql):
+    assert_parity(sql, AT, statics={"s": AS})
+
+
+class Halve:
+    name = "halve"
+    takes = pa.schema([("x", pa.int64())])
+    returns = pa.float64()
+
+    def __call__(self, x):
+        return (None if x is None else x / 2.0,)
+
+
+@pytest.mark.parametrize(
+    "sql, udfs, why",
+    [
+        (_sub("v + max(v)"), [], "reads v outside an aggregate call"),
+        (_sub("max(v) + t.k"), [], "reads t.k outside an aggregate call"),
+        (_sub("max(max(v))"), [], "must be a column of its table"),
+        (_sub("max(v) + (SELECT 1)"), [], "which holds a subquery"),
+        (_sub("g(max(v)).p"), [G], "which calls a SQL function"),
+        (_sub("halve(max(v))"), [Halve()], "which calls a UDF or a model"),
+        # The oracle evaluates the item for each request that matches no
+        # group (the one with k NULL here), where ln(0) traps.
+        (_sub("ln(count(*))"), [], "traps over the aggregates of no rows"),
+        # The group k = 1 has max(i8) = 127, and TINYINT + 1 overflows there.
+        (_sub("max(i8) + 1"), [], "traps over the rows of one key"),
+        (
+            "SELECT id, (SELECT max(i8) + 1 FROM s) AS c FROM __THIS__ AS t",
+            [],
+            "traps over the table",
+        ),
+    ],
+)
+def test_an_expression_over_the_aggregates_refuses_by_name(sql, udfs, why):
+    v = assert_parity(sql, T, statics={"s": S}, udfs=udfs, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap but in the outer side of a first key, so these facts never
 # change a served answer. They are why a WHERE term that reads only the
@@ -911,3 +1043,42 @@ def test_pin_the_subquery_runs_where_duckdb_plans_it(sql, traps):
         o.load("s2", S2)
         got = o.try_answer(sql)
     assert isinstance(got, Trap) == traps, got
+
+
+# The SELECT item over the aggregates, measured 2026-10-15 over PIN_S: the
+# group k = 1 has z = 0 twice, the group k = 3 has z = 1. The build computes
+# the item for every group and refuses one that traps, and the bind refuses
+# an item that traps over no rows, so these facts never change a served
+# answer.
+
+
+def test_pin_the_item_runs_over_the_groups_that_requests_match():
+    sql = f"SELECT k, (SELECT max(s.z) + {BIG} FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [1, 2]) == [(1, BIG), (2, None)]
+    got = _pin(sql, [1, 3])
+    assert isinstance(got, Trap), got
+    assert "Overflow in addition of INT64" in got.message
+
+
+def test_pin_the_item_runs_over_no_rows_for_a_request_that_matches_no_group():
+    sql = f"SELECT k, (SELECT count(*) - 2 - {BIG} FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [1, 3]) == [(1, -BIG), (3, -BIG - 1)]
+    for keys in ([1, 2], [1, None]):
+        got = _pin(sql, keys)
+        assert isinstance(got, Trap), (keys, got)
+        assert "Overflow in subtraction of INT64" in got.message
+
+
+def test_pin_an_uncorrelated_item_runs_on_every_call():
+    for sql in (
+        f"SELECT k, (SELECT max(s.z) + {BIG} FROM s) FROM t",
+        "SELECT k, (SELECT ln(count(*)) FROM s WHERE s.z > 5) FROM t",
+    ):
+        got = _pin(sql, [])
+        assert isinstance(got, Trap), (sql, got)
+
+
+def test_pin_a_column_outside_an_aggregate_call_is_a_binder_error():
+    got = _pin("SELECT k, (SELECT s.z + max(s.z) FROM s WHERE s.k = t.k) FROM t", [1])
+    assert isinstance(got, Trap), got
+    assert "must appear in the GROUP BY clause" in got.message

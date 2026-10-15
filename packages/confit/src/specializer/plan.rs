@@ -135,6 +135,25 @@ pub struct AggTable {
     /// The subquery's WHERE terms that read only the source table: the
     /// build groups only the rows on which every one is TRUE.
     pub filter: Option<AggFilter>,
+    /// Set when the subquery's SELECT item is an expression over its
+    /// aggregates (`max(v) + 1`): the table then has one value lane, the
+    /// expression over each group's aggregates, which the build computes.
+    pub post: Option<AggPost>,
+}
+
+/// The SELECT item of a scalar subquery that is an expression over its
+/// aggregates, bound as the item of a query of its own whose input is the
+/// aggregates (`frontend/subquery.rs`): the program the build runs over
+/// the groups once it has their aggregates.
+#[derive(Clone)]
+pub struct AggPost {
+    /// Per aggregate of the [`AggTable`], in order: its value as the
+    /// program reads it.
+    pub in_cols: Vec<Col>,
+    /// The item: one entry.
+    pub project: Vec<(String, SExpr)>,
+    pub out_cols: Vec<Col>,
+    pub regexes: Vec<super::ir::ReSpec>,
 }
 
 /// The WHERE terms of a scalar subquery that read only its static table,

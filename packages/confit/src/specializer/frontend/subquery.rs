@@ -1,26 +1,33 @@
-//! The correlated scalar subquery with one aggregate over one static table,
+//! The correlated scalar subquery with aggregates over one static table,
 //! `(SELECT sum(s.v) FROM s WHERE s.k = t.k AND s.v > 5)`. It binds as a
 //! hidden LEFT join to a static table that confit computes at build
 //! ([`AggTable`]): the `s` rows on which every WHERE term that reads only
 //! `s` is TRUE (its filter, [`plan::AggFilter`]), in groups with equal keys,
 //! one row per group holding the group's aggregate. A request reads the row
 //! of the group it matches, and a request that matches no group reads the
-//! aggregate of no rows: 0 for `count`, NULL for the others.
+//! aggregate of no rows: 0 for `count`, NULL for the others. If the SELECT
+//! item is an expression over aggregates, `max(s.v) + 1`, the row holds the
+//! expression over the group's aggregates instead ([`plan::AggPost`]), and a
+//! request that matches no group reads the expression over the aggregates
+//! of no rows, which the bind evaluates.
 //!
-//! DuckDB (1.5.5, optimizer off, measured 2026-10-14) evaluates the
-//! subquery's WHERE over (distinct correlated values) x (static rows), in
-//! written order, and the aggregate's argument over the matched rows only.
+//! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15)
+//! evaluates the subquery's WHERE over (distinct correlated values) x
+//! (static rows), in written order, the aggregate's argument over the
+//! matched rows only, and the item once for each distinct correlated value,
+//! over the aggregates of its matched rows (of no rows if none matches).
 //! It plans the subquery below the operator that holds it: in the SELECT
 //! list it runs over the rows that the WHERE passes, in the WHERE over the
 //! rows that reach the WHERE, under a CASE too. Only one thing served here
 //! can trap: the outer side of the first key ([`Binder::guarded_key`]),
 //! which runs where DuckDB runs it. The inner side of each key is a bare
 //! column, no key casts a VARCHAR, the outer side of a later key cannot trap
-//! (`can_trap`), no filter term can trap, and the aggregates run at build,
-//! where a sum that could overflow refuses. So the filter passes the same
-//! rows in any order, and the hidden join runs after the FROM joins of its
-//! level, before the WHERE when the WHERE reads it and after it otherwise
-//! ([`plan::JoinSpec::after_where`]).
+//! (`can_trap`), no filter term can trap, and the aggregates and the item
+//! run before any request, the item over each group and over no rows, where
+//! a trap or a sum that could overflow refuses. So the filter passes the
+//! same rows in any order, and the hidden join runs after the FROM joins of
+//! its level, before the WHERE when the WHERE reads it and after it
+//! otherwise ([`plan::JoinSpec::after_where`]).
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
@@ -372,7 +379,8 @@ impl Binder<'_> {
             keys.push(key);
         }
 
-        // SELECT: one aggregate over a column of the table, or count(*).
+        // SELECT: one aggregate over a column of the table, or count(*), or
+        // an expression over such aggregates ([`plan::AggPost`]).
         let [item] = select.projection.as_slice() else {
             return Err(form_refusal("more than one SELECT item"));
         };
@@ -383,21 +391,155 @@ impl Binder<'_> {
         while let SqlExpr::Nested(x) = e {
             e = x;
         }
-        let SqlExpr::Function(f) = e else {
-            return Err(form_refusal(&format!("the SELECT item {e} (one aggregate call)")));
-        };
-        let fname = match f.name.0.as_slice() {
-            [p] => p.as_ident().map(|i| i.value.to_ascii_lowercase()),
+        let single = match e {
+            SqlExpr::Function(f) => agg_func(f).map(|func| (f, func)),
             _ => None,
         };
-        let func = match fname.as_deref() {
-            Some("count") => AggFunc::Count,
-            Some("min") => AggFunc::Min,
-            Some("max") => AggFunc::Max,
-            Some("sum") => AggFunc::Sum,
-            Some("avg") => AggFunc::Avg,
-            _ => return Err(form_refusal(&format!("the aggregate {}", f.name))),
+        let (aggs, ty, post) = match single {
+            Some((f, func)) => {
+                let (agg, ty) = self.agg_call(&inner, f, func)?;
+                (vec![agg], ty, None)
+            }
+            None => {
+                let (aggs, post) = self.agg_post(query, select, source, &inner, e)?;
+                let ty = post.project[0].1.ty;
+                (aggs, ty, Some(post))
+            }
         };
+
+        // The grouped table: the key lanes as the source has them, then the
+        // aggregate, or the expression over the aggregates.
+        let mut cols: Vec<Col> = key_lanes.iter().map(|&c| st.cols[c as usize].clone()).collect();
+        let counts = post.is_none() && aggs.iter().all(|a| counts_rows(a.func));
+        cols.push(Col {
+            name: e.to_string(),
+            ty: super::super::ir::ColTy {
+                ty,
+                nullable: !counts,
+            },
+        });
+        let n_keys = key_lanes.len() as u32;
+        // What a request that matches no group reads: the expression over
+        // the aggregates of no rows, which the interpreter evaluates here.
+        // DuckDB evaluates it for each such request (measured 2026-10-15),
+        // so one that traps refuses.
+        let miss = match &post {
+            Some(p) if n_keys > 0 => {
+                let miss = over_no_rows(p.project[0].1.clone(), &aggs);
+                Some(match eval_closed(&miss, p.regexes.clone()) {
+                    Some(Some(v)) => scalar_lit(v, miss.ty),
+                    Some(None) => null_of(miss.ty),
+                    None => {
+                        return Err(form_refusal(&format!(
+                            "the SELECT item {e}, which traps over the aggregates of no rows \
+                             (DuckDB evaluates it for each request that matches no group)"
+                        )))
+                    }
+                })
+            }
+            _ => None,
+        };
+        let filter = match filters.as_slice() {
+            [] => None,
+            _ => Some(self.static_filter(query, select, source, &filters)?),
+        };
+        if let Some(n) = trap_key {
+            let key = keys.remove(0);
+            keys.insert(0, self.guarded_key(query, select, source, &filters[..n], key)?);
+        }
+        let mut tables = self.agg_tables.borrow_mut();
+        let table = self.statics.len() + tables.len();
+        tables.push(AggTable {
+            table: StaticTable::all_scalar(self.statics[source].name.clone(), cols),
+            source,
+            keys: key_lanes,
+            aggs,
+            filter,
+            post,
+        });
+        drop(tables);
+        let mut joins = self.agg_joins.borrow_mut();
+        let join = (self.joins.len() + joins.len()) as u32;
+        joins.push(JoinSpec {
+            table,
+            batch: false,
+            kind: JoinKind::Left,
+            keys,
+            key_cols,
+            val_cols: vec![n_keys],
+            residual: None,
+            after_where: false,
+        });
+        drop(joins);
+        if trap_key.is_some() {
+            self.trap_keys.borrow_mut().push(join);
+        }
+        let read = SExpr {
+            kind: SKind::StaticCol { join, col: 0 },
+            ty,
+            nullable: true,
+        };
+        // A request that matches no group counts 0 rows: COALESCE(read, 0),
+        // the form `coalesce` binds to. Under an expression, the group's
+        // value or the value over no rows: the expression can be NULL on a
+        // match.
+        let value = if let Some(miss) = miss {
+            let hit = SExpr {
+                kind: SKind::JoinHit(join),
+                ty: Ty::I1,
+                nullable: false,
+            };
+            SExpr {
+                kind: SKind::Case {
+                    arms: vec![(hit, read)],
+                    default: match miss.kind {
+                        SKind::NullOf => None,
+                        _ => Some(Box::new(miss)),
+                    },
+                },
+                ty,
+                nullable: true,
+            }
+        } else if counts {
+            SExpr {
+                kind: SKind::Case {
+                    arms: vec![(
+                        SExpr {
+                            kind: SKind::IsNull {
+                                negated: true,
+                                inner: Box::new(read.clone()),
+                            },
+                            ty: Ty::I1,
+                            nullable: false,
+                        },
+                        read,
+                    )],
+                    default: Some(Box::new(SExpr {
+                        kind: SKind::Lit(Lit::I64(0)),
+                        ty: Ty::I64,
+                        nullable: false,
+                    })),
+                },
+                ty: Ty::I64,
+                nullable: false,
+            }
+        } else {
+            read
+        };
+        self.agg_reads.borrow_mut().push((query.clone(), value.clone()));
+        Ok(value)
+    }
+
+    /// One served aggregate call, `count(*)`, `count`, `min`, `max`, `sum`
+    /// or `avg` over a column of the subquery's table (`func` names it), and
+    /// the type of its answer.
+    fn agg_call(
+        &self,
+        inner: &Inner<'_>,
+        f: &sqlparser::ast::Function,
+        func: AggFunc,
+    ) -> Result<(Agg, Ty), PrepareError> {
+        let st = inner.st;
         if f.uses_odbc_syntax
             || !matches!(f.parameters, FunctionArguments::None)
             || f.filter.is_some()
@@ -492,88 +634,132 @@ impl Binder<'_> {
                 )))
             }
         };
+        Ok((Agg { func, arg }, ty))
+    }
 
-        // The grouped table: the key lanes as the source has them, then the
-        // aggregate.
-        let mut cols: Vec<Col> = key_lanes.iter().map(|&c| st.cols[c as usize].clone()).collect();
-        let counts = matches!(func, AggFunc::CountStar | AggFunc::Count);
-        cols.push(Col {
-            name: f.to_string(),
-            ty: super::super::ir::ColTy {
-                ty,
-                nullable: !counts,
-            },
-        });
-        let n_keys = key_lanes.len() as u32;
-        let filter = match filters.as_slice() {
-            [] => None,
-            _ => Some(self.static_filter(query, select, source, &filters)?),
-        };
-        if let Some(n) = trap_key {
-            let key = keys.remove(0);
-            keys.insert(0, self.guarded_key(query, select, source, &filters[..n], key)?);
-        }
-        let mut tables = self.agg_tables.borrow_mut();
-        let table = self.statics.len() + tables.len();
-        tables.push(AggTable {
-            table: StaticTable::all_scalar(self.statics[source].name.clone(), cols),
-            source,
-            keys: key_lanes,
-            aggs: vec![Agg { func, arg }],
-            filter,
-        });
-        drop(tables);
-        let mut joins = self.agg_joins.borrow_mut();
-        let join = (self.joins.len() + joins.len()) as u32;
-        joins.push(JoinSpec {
-            table,
-            batch: false,
-            kind: JoinKind::Left,
-            keys,
-            key_cols,
-            val_cols: vec![n_keys],
-            residual: None,
-            after_where: false,
-        });
-        drop(joins);
-        if trap_key.is_some() {
-            self.trap_keys.borrow_mut().push(join);
-        }
-        let read = SExpr {
-            kind: SKind::StaticCol { join, col: 0 },
-            ty,
-            nullable: true,
-        };
-        // A request that matches no group counts 0 rows: COALESCE(read, 0),
-        // the form `coalesce` binds to.
-        let value = if counts {
-            SExpr {
-                kind: SKind::Case {
-                    arms: vec![(
-                        SExpr {
-                            kind: SKind::IsNull {
-                                negated: true,
-                                inner: Box::new(read.clone()),
-                            },
-                            ty: Ty::I1,
-                            nullable: false,
-                        },
-                        read,
-                    )],
-                    default: Some(Box::new(SExpr {
-                        kind: SKind::Lit(Lit::I64(0)),
-                        ty: Ty::I64,
-                        nullable: false,
-                    })),
-                },
-                ty: Ty::I64,
-                nullable: false,
+    /// The SELECT item of a subquery that is an expression over its
+    /// aggregates, such as `max(v) + 1` or `coalesce(sum(v), 0)`: each
+    /// served aggregate call becomes an input of a query of its own, which
+    /// the build runs over the aggregates of each group ([`plan::AggPost`]).
+    /// DuckDB evaluates the item once per distinct outer value, over the
+    /// aggregates of the rows that it matches (measured 2026-10-15), so the
+    /// values are the same. A column of the table, or of the outer query,
+    /// outside an aggregate call refuses, as does a call of a SQL function
+    /// and a subquery.
+    fn agg_post(
+        &self,
+        query: &sqlparser::ast::Query,
+        select: &sqlparser::ast::Select,
+        source: usize,
+        inner: &Inner<'_>,
+        e: &SqlExpr,
+    ) -> Result<(Vec<Agg>, plan::AggPost), PrepareError> {
+        use super::resolve::Walk;
+        let mut aggs: Vec<Agg> = Vec::new();
+        let mut in_cols: Vec<Col> = Vec::new();
+        let mut inputs: Vec<(SqlExpr, u32)> = Vec::new();
+        let mut outside = None;
+        self.walk_expr(e, &mut |x| {
+            if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() {
+                return Err(form_refusal(&format!(
+                    "the SELECT item {e}, which calls a SQL function"
+                )));
             }
-        } else {
-            read
+            Ok(match x {
+                SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => {
+                    return Err(form_refusal(&format!("the SELECT item {e}, which holds a subquery")))
+                }
+                SqlExpr::Function(f) => match agg_func(f) {
+                    Some(func) => {
+                        let (agg, ty) = self.agg_call(inner, f, func)?;
+                        let i = match aggs.iter().position(|a| *a == agg) {
+                            Some(i) => i,
+                            None => {
+                                aggs.push(agg);
+                                in_cols.push(Col {
+                                    name: f.to_string(),
+                                    ty: super::super::ir::ColTy {
+                                        ty,
+                                        nullable: !counts_rows(func),
+                                    },
+                                });
+                                aggs.len() - 1
+                            }
+                        };
+                        inputs.push((x.clone(), i as u32));
+                        Walk::Over
+                    }
+                    None => Walk::Into,
+                },
+                SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => {
+                    outside.get_or_insert_with(|| x.to_string());
+                    Walk::Over
+                }
+                _ => Walk::Into,
+            })
+        })?;
+        if aggs.is_empty() {
+            return Err(match e {
+                SqlExpr::Function(f) => form_refusal(&format!("the aggregate {}", f.name)),
+                _ => form_refusal(&format!("the SELECT item {e} (one aggregate call)")),
+            });
+        }
+        if let Some(x) = outside {
+            return Err(form_refusal(&format!(
+                "the SELECT item {e}, which reads {x} outside an aggregate call"
+            )));
+        }
+        // The subquery's own FROM, without its alias: every name the item
+        // reads is inside an aggregate call, which binds as its input.
+        let mut sel = select.clone();
+        sel.selection = None;
+        sel.projection = vec![SelectItem::UnnamedExpr(e.clone())];
+        if let Some(TableFactor::Table { alias, .. }) = sel.from.first_mut().map(|t| &mut t.relation) {
+            *alias = None;
+        }
+        let mut q = query.clone();
+        q.body = Box::new(SetExpr::Select(Box::new(sel)));
+        let env = Env {
+            this_name: &self.statics[source].name,
+            in_cols: &in_cols,
+            opaque: &[],
+            structs: &[],
+            statics: &[],
+            many: false,
+            udfs: self.udfs,
+            models: self.models,
+            bind_eval: self.bind_eval,
+            agg_inputs: &inputs,
         };
-        self.agg_reads.borrow_mut().push((query.clone(), value.clone()));
-        Ok(value)
+        let bound = bind_query(&q, None, &env, &[])?;
+        let [stage] = <[Stage; 1]>::try_from(bound.stages).map_err(|_| {
+            PrepareError::Internal("a scalar subquery's SELECT item bound to more than one stage".into())
+        })?;
+        if stage.project.len() != 1
+            || !bound.joins.is_empty()
+            || stage.pred.is_some()
+            || !stage.lets.is_empty()
+            || !bound.wide_outs.is_empty()
+        {
+            return Err(form_refusal(&format!(
+                "the SELECT item {e}, which does not bind one scalar value"
+            )));
+        }
+        // The build runs the item with no UDF and no model.
+        if calls_extern(&mut stage.project[0].1.clone()) {
+            return Err(form_refusal(&format!(
+                "the SELECT item {e}, which calls a UDF or a model"
+            )));
+        }
+        Ok((
+            aggs,
+            plan::AggPost {
+                in_cols,
+                project: stage.project,
+                out_cols: bound.out_cols,
+                regexes: bound.ctx.regexes,
+            },
+        ))
     }
 
     /// Whether `t` reads only `inner`'s table: each column it names is one
@@ -665,6 +851,7 @@ impl Binder<'_> {
             udfs: self.udfs,
             models: self.models,
             bind_eval: self.bind_eval,
+            agg_inputs: &[],
         };
         let bound = bind_query(&q, None, &env, &[])?;
         let [stage] = <[Stage; 1]>::try_from(bound.stages).map_err(|_| {
@@ -765,6 +952,7 @@ impl Binder<'_> {
                 arg: None,
             }],
             filter,
+            post: None,
         });
         drop(tables);
         let mut joins = self.agg_joins.borrow_mut();
@@ -804,6 +992,56 @@ impl Binder<'_> {
             nullable: true,
         })
     }
+}
+
+/// The aggregate that a served name calls, or `None`.
+fn agg_func(f: &sqlparser::ast::Function) -> Option<AggFunc> {
+    let [p] = f.name.0.as_slice() else {
+        return None;
+    };
+    Some(match p.as_ident()?.value.to_ascii_lowercase().as_str() {
+        "count" => AggFunc::Count,
+        "min" => AggFunc::Min,
+        "max" => AggFunc::Max,
+        "sum" => AggFunc::Sum,
+        "avg" => AggFunc::Avg,
+        _ => return None,
+    })
+}
+
+/// Whether an aggregate counts rows: 0 over no rows, never NULL.
+fn counts_rows(func: AggFunc) -> bool {
+    matches!(func, AggFunc::CountStar | AggFunc::Count)
+}
+
+/// The SELECT item `e` of an [`plan::AggPost`] over the aggregates of no
+/// rows: each count is 0, and each other aggregate is NULL.
+fn over_no_rows(mut e: SExpr, aggs: &[Agg]) -> SExpr {
+    fn walk(e: &mut SExpr, aggs: &[Agg]) {
+        if let SKind::Col(i) = e.kind {
+            *e = if counts_rows(aggs[i as usize].func) {
+                lit_i64(0)
+            } else {
+                SExpr {
+                    kind: SKind::NullOf,
+                    ty: e.ty,
+                    nullable: true,
+                }
+            };
+            return;
+        }
+        for c in e.children_mut() {
+            walk(c, aggs);
+        }
+    }
+    walk(&mut e, aggs);
+    e
+}
+
+/// Whether `e` calls a UDF or scores a model.
+fn calls_extern(e: &mut SExpr) -> bool {
+    matches!(e.kind, SKind::ExternCall { .. } | SKind::TreePredict { .. })
+        || e.children_mut().into_iter().any(calls_extern)
 }
 
 /// Whether `e` reads join `j`: a value column or its match flag.
