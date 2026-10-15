@@ -754,6 +754,123 @@ fn case_forms_null_conditions_and_type_unification() {
 }
 
 #[test]
+fn a_small_case_that_cannot_trap_lowers_to_selects() {
+    // No part can trap and each CASE has few operations (lower.rs
+    // `select_case`): one block, and a CASE read twice in it is computed
+    // once. The answers are those of the chain of arms.
+    let schema = cols(&[
+        ("a", Ty::I64, true),
+        ("x", Ty::F64, true),
+        ("s", Ty::Str, true),
+    ]);
+    let sql = "SELECT CASE WHEN a > 1 THEN x WHEN a = 1 THEN x * 2 END AS u, \
+               CASE WHEN a > 0 AND x > 0.0 THEN 'both' WHEN a > 0 OR x > 0.0 THEN 'one' \
+               ELSE s END AS v, \
+               coalesce(x, a, 0) AS w, coalesce(x, a, 0) * 2 AS w2 FROM __THIS__";
+    let p = prep(sql, &schema).unwrap();
+    assert_eq!(p.blocks.len(), 1, "{}", print(&p));
+    let got = run_sql(
+        sql,
+        &schema,
+        batch(
+            5,
+            vec![
+                c_i64(&[Some(2), Some(1), None, Some(0), Some(-1)]),
+                c_f64(&[Some(1.5), Some(-2.0), None, None, Some(3.0)]),
+                c_str(&[Some("p"), None, Some("q"), None, Some("r")]),
+            ],
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["1.5", "both", "1.5", "3.0"],
+            &["-4.0", "one", "-2.0", "-4.0"],
+            // NULL conditions are never TRUE: no ELSE answers NULL, an ELSE
+            // its own value.
+            &["NULL", "q", "0.0", "0.0"],
+            &["NULL", "NULL", "0.0", "0.0"],
+            &["NULL", "one", "3.0", "6.0"],
+        ])
+    );
+}
+
+#[test]
+fn a_case_that_can_trap_or_has_many_operations_keeps_its_arms() {
+    let schema = cols(&[("k", Ty::I64, false), ("x", Ty::F64, true)]);
+    let blocks = |sql: &str| prep(sql, &schema).unwrap().blocks.len();
+    // An integer sum can overflow: it runs only where its arm is taken.
+    assert!(blocks("SELECT CASE WHEN k > 0 THEN k + 1 ELSE 0 END AS o FROM __THIS__") > 1);
+    let trap = run_sql(
+        "SELECT CASE WHEN k > 0 THEN k + 1 ELSE 0 END AS o FROM __THIS__",
+        &schema,
+        batch(
+            2,
+            vec![
+                c_i64(&[Some(i64::MIN), Some(i64::MAX)]),
+                c_f64(&[None, None]),
+            ],
+        ),
+    )
+    .unwrap_err();
+    assert!(trap.contains("Overflow"), "{trap}");
+    // Ten operations: three arms of `x > c AND x < d`, and the CASE.
+    let arms: Vec<String> = (0..3)
+        .map(|i| format!("WHEN x > {i}.0 AND x < {}.5 THEN {i}.25", i + 1))
+        .collect();
+    let sql = format!("SELECT CASE {} END AS o FROM __THIS__", arms.join(" "));
+    assert!(blocks(&sql) > 1);
+    assert!(blocks("SELECT CASE WHEN x > 0.0 AND x < 1.5 THEN 0.25 END AS o FROM __THIS__") == 1);
+}
+
+#[test]
+fn a_null_guard_over_a_value_that_cannot_trap_lowers_to_selects() {
+    // `CASE WHEN c THEN NULL ELSE v END`, the shape of each field read of a
+    // SQL function with a null_when (lower.rs `null_guard`): `v` cannot
+    // trap, so it is computed on every row whatever its size, in one block.
+    let schema = cols(&[("k", Ty::I64, true), ("x", Ty::F64, true)]);
+    let blocks = |sql: &str| prep(sql, &schema).unwrap().blocks.len();
+    // Ten operations: eight in `v`, the IS NULL and the CASE.
+    let v = "x * 1.5 + x * 2.5 + x * 3.5 + x * 4.5 + x";
+    let sql = format!("SELECT CASE WHEN k IS NULL THEN NULL ELSE {v} END AS o FROM __THIS__");
+    assert_eq!(blocks(&sql), 1);
+    let got = run_sql(
+        &sql,
+        &schema,
+        batch(
+            3,
+            vec![
+                c_i64(&[Some(1), None, Some(2)]),
+                c_f64(&[Some(2.0), Some(1.0), None]),
+            ],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["26.0"], &["NULL"], &["NULL"]]));
+    // A value that can trap runs only on the rows that reach it.
+    let trap = format!(
+        "SELECT CASE WHEN x IS NULL THEN NULL ELSE CAST(k + 1 AS DOUBLE) * {v} END AS o \
+         FROM __THIS__"
+    );
+    assert!(blocks(&trap) > 1);
+    let got = run_sql(
+        &trap,
+        &schema,
+        batch(1, vec![c_i64(&[Some(i64::MAX)]), c_f64(&[None])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL"]]));
+    // A condition of nine operations is not a guard, nor is a large arm
+    // with a NULL default: rows may seldom take it.
+    let cond = "x > 1.0 AND x < 2.0 OR x > 3.0 AND x < 4.0 OR x > 5.0";
+    let wide = format!("SELECT CASE WHEN {cond} THEN NULL ELSE {v} END AS o FROM __THIS__");
+    let arm = format!("SELECT CASE WHEN k IS NULL THEN {v} END AS o FROM __THIS__");
+    assert!(blocks(&wide) > 1);
+    assert!(blocks(&arm) > 1);
+}
+
+#[test]
 fn cast_matrix() {
     let schema = cols(&[
         ("s", Ty::Str, false),
