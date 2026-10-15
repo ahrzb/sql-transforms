@@ -494,12 +494,12 @@ The first five are ruled, in this order; the rest follow.
   outer side that can trap or reads a joined table, a VARCHAR key against
   another type, a subquery in FROM, in JOIN ON or inside the subquery, the
   request table, and a scalar subquery under `shape='many'` in a two-level
-  query. `can_trap` counts LIKE and the string functions as trapping: of the
-  59 static terms that campaign refused as trapping, 42 hold LIKE and 12 a
-  string function. Next, in this order: step (1) of "Comma-join term order
-  over-refuses" below, which serves both; outer sides that can trap (they
-  trap only when the static table has rows, which the build knows); an
-  expression over the aggregate.
+  query. Of the 59 static terms that campaign refused as trapping, 42 held
+  LIKE and 12 a string function; `can_trap` now names those that cannot trap
+  (see "Comma-join term order over-refuses"), which served 46 more subquery
+  cases on 30,050,000..30,099,999. Next, in this order: outer sides that can
+  trap (they trap only when the static table has rows, which the build
+  knows); an expression over the aggregate.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
@@ -566,11 +566,18 @@ The first five are ruled, in this order; the rest follow.
   AGREE_TRAP): 206 name the generator's BIGINT-max addition, 25 other integer
   arithmetic, a UDF or ln/sin/cos/pow, and 66 only LIKE and string functions
   (`replace`, `ltrim`, `upper`, `reverse`, `length`, `strpos`, `concat`,
-  `repeat`, `lpad`), many of them constant. To serve more, each measured on
-  DuckDB 1.5.5 first: (1) `can_trap` learns the LIKE and string forms that
-  cannot fail, and `fold` folds constant LIKE and string calls; (2) a prefix
-  of WHERE terms that read only the request row runs before the probe
-  (DuckDB evaluates such a term over every pair, with one answer for all the
+  `repeat`, `lpad`), many of them constant. `can_trap` now names LIKE
+  without ESCAPE, GLOB, concat, trim, the searches, replace, translate, a
+  VARCHAR slice, upper, lower, the lengths, unicode, ord, ascii,
+  strip_accents and reverse (each measured: `tests/test_string_ops_cannot_trap.py`);
+  substr, lpad/rpad, repeat, a VARCHAR subscript and the edit distances can
+  trap. On 30,050,000..30,099,999 that served 25 more comma-join cases, and
+  one more DIVERGE_OPT of the trapping-key-first class. To serve more, each
+  measured on DuckDB 1.5.5 first: (1) `fold` folds constant string calls
+  (`lpad('a', 3, 'x')`), so a constant term whose call can trap, but not on
+  its constants, serves; (2) a prefix of WHERE terms that read only the
+  request row runs before the probe (DuckDB evaluates such a term over every
+  pair, with one answer for all the
   static rows; an empty static table is the `empty-static-trap-timing`
   exclusion); (3) under `shape='many'`, a refused order runs as DuckDB runs
   it, a loop over every static row with the WHERE terms in written order.

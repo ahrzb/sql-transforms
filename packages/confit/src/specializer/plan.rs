@@ -714,7 +714,8 @@ pub enum SKind {
         a: Box<SExpr>,
         b: Box<SExpr>,
     },
-    /// String search (haystack, needle) — total, NULL-propagating.
+    /// Two strings in (haystack, needle), NULL-propagating. The searches and
+    /// GLOB are total; the edit distances, jaccard and hamming can trap.
     Str2 {
         op: super::ir::StrOp2,
         a: Box<SExpr>,
@@ -791,7 +792,8 @@ pub enum SKind {
         b: Box<SExpr>,
         c: Box<SExpr>,
     },
-    /// repeat / VARCHAR array_extract — (Str, I64) -> Str, total.
+    /// repeat / VARCHAR array_extract — (Str, I64) -> Str. Both can trap:
+    /// repeat past the string-builder budget, the subscript outside ±2^32.
     Str2i {
         op: super::ir::StrOp2i,
         a: Box<SExpr>,
@@ -999,7 +1001,7 @@ pub fn can_trap(e: &SExpr) -> bool {
 /// [`can_trap`] where `facts` hold: each a CASE condition with whether it
 /// was taken (TRUE) or passed (FALSE or NULL) on the way to `e`.
 fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool {
-    use super::ir::NumOp1 as Op;
+    use super::ir::{NumOp1 as Op, StrOp2};
     let any = |xs: &[&'a SExpr], facts: &mut Vec<(&'a SExpr, bool)>| {
         xs.iter().any(|x| can_trap_under(x, facts))
     };
@@ -1063,6 +1065,26 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
         }
         SKind::Seq { items, .. } => items.iter().any(|x| can_trap_under(x, facts)),
         SKind::Extreme { args, .. } => args.iter().any(|x| can_trap_under(x, facts)),
+        // String operations that raise on no input: their kernels return no
+        // error, and DuckDB 1.5.5 raises none over the inputs of
+        // `tests/test_string_ops_cannot_trap.py`. LIKE raises only through
+        // its ESCAPE. substr, lpad/rpad, repeat, a VARCHAR subscript and the
+        // edit distances can raise, so they stay unnamed.
+        SKind::Like { a, p, esc: None, .. }
+        | SKind::Concat { a, b: p }
+        | SKind::Trim { a, chars: p, .. }
+        | SKind::Str2 {
+            op: StrOp2::Find | StrOp2::Contains | StrOp2::Starts | StrOp2::Ends | StrOp2::Glob,
+            a,
+            b: p,
+        } => any(&[a, p], facts),
+        SKind::Str3 { a, b, c, .. } => any(&[a, b, c], facts),
+        SKind::Sslice { a, lo, hi } => any(&[a, lo, hi], facts),
+        SKind::StrCase { a, .. }
+        | SKind::SLen { a, .. }
+        | SKind::Sord { a, .. }
+        | SKind::StripAccents(a)
+        | SKind::Reverse(a) => any(&[a], facts),
         _ => can_trap_here(e),
     }
 }
