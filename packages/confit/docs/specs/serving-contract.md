@@ -109,8 +109,8 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build |
-| A scalar subquery of another form, for example with a DOUBLE `sum` or `avg`, or with an item that calls a UDF. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
+| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build. A DOUBLE `sum` or `avg` compares within a bound ([claim: float-reduction-bound](../oracle/05-the-comparison-contract.md#floating-point-comparisons)) |
+| A scalar subquery of another form, for example with an item that calls a UDF, or with a DOUBLE `sum` or `avg` that is not a whole output column. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
 | Under `shape='many'`: (1) a self-join after another join; (2) a join or a scalar subquery over a static table, in a query that also has a derived table or a CTE | 2 inside, refused | refused by name; without a derived table or a CTE, any number of joins serves, with a self-join only as the first join |
@@ -145,10 +145,13 @@ SELECT t.id, (SELECT sum(s.v) FROM s WHERE s.k = t.k) AS total FROM __THIS__ AS 
 ```
 
 The aggregate is `count(*)`, `count` of a column or of a constant that is not
-NULL, `min` or `max` of a column, `sum` of an integer, BOOLEAN or DECIMAL
-column, or `avg` of an integer or DECIMAL column. On a platform other than
-x86_64 Linux, confit serves `avg` only for SMALLINT and for a DECIMAL with a
-precision of 4 or less (see below).
+NULL, `min` or `max` of a column, `sum` of an integer, BOOLEAN, DECIMAL or
+DOUBLE column, or `avg` of an integer, DECIMAL or DOUBLE column. On a platform
+other than x86_64 Linux, confit serves `avg` only for SMALLINT, for a DECIMAL
+with a precision of 4 or less, and for DOUBLE. The oracle divides these in
+`double`, which is the same on each platform (see below). A DOUBLE `sum` or
+`avg` must be the whole SELECT item of a subquery that is a whole output column
+(see below).
 
 An aggregate of a column can read each distinct value of the column once, for
 example `count(DISTINCT s.v)`. Two values are one distinct value if the oracle
@@ -475,7 +478,36 @@ If an `avg` reads a BOOLEAN or VARCHAR column, the oracle stops with the error
 `No function matches the given name and argument types 'avg(BOOLEAN)'` (or
 `'avg(VARCHAR)'`). Confit stops the build with the same error message.
 
-Confit also refuses the build, with an error that names the reason, in four
+The answer of a DOUBLE `sum` or `avg` depends on the order of the additions.
+Confit adds the values of a group that are not NULL in table order. Table order
+is the order of the rows in the Arrow table that the caller gives for `s`. The
+sum starts at +0.0, as the sum of the oracle does, and each addition rounds
+once. For `avg`, confit divides this sum by the count of the values, and the
+division rounds once, as in the oracle.
+
+In the measurements of the
+[decision record](../../../../loops/confit/decisions/closed/double-sum-bound.md),
+the oracle adds the values of a table of 5,000 rows in the same order, and the
+two answers are equal bit for bit. Over a table of 300,000 rows, the oracle
+adds parts of the table in parallel. Then its answer can differ from the answer
+of confit in the last bits, and from its own answer in another run. For an
+aggregate over DISTINCT values, the oracle adds the values in the order of a
+hash table, also over a table of three rows. So the comparison contract
+accepts the answer of confit if its distance from the answer of the oracle is
+at most a bound B. For the n values of a group, B is 2(n − 1)·2^-52 times the
+sum of their absolute values
+([claim: float-reduction-bound](../oracle/05-the-comparison-contract.md#floating-point-comparisons)).
+
+The comparison applies the bound only to a whole output column. So confit
+serves a DOUBLE `sum` or `avg` only as the whole SELECT item of a subquery that
+is a whole output column, for example
+`(SELECT avg(s.f) FROM s WHERE s.k = t.k) AS c`. A derived table or a CTE can
+pass this column on with no change. If another part of the query reads the
+value, confit refuses the build by name. Examples are an expression such as
+`(SELECT sum(s.f) FROM s WHERE s.k = t.k) + 1`, a WHERE or a join condition
+that reads the column, and a struct or a list output that holds the column.
+
+Confit also refuses the build, with an error that names the reason, in these
 cases that depend on the rows of `s`:
 
 - The sum of the absolute values of a group is past the range of the type in
@@ -484,6 +516,11 @@ cases that depend on the rows of `s`:
   is the range of HUGEINT. Then a partial sum can overflow in some order of
   the additions. For an aggregate over DISTINCT values, the sum adds each
   distinct value once.
+- A group of a DOUBLE `sum` or `avg` has a NaN or an infinite value. The bound
+  B of the comparison contract applies only to finite values.
+- For a DOUBLE `sum` or `avg`, the sum of the absolute values of a group, plus
+  the bound B of the group, is past the range of a DOUBLE. Then a partial sum
+  can overflow in some order of the additions.
 - A DOUBLE `min` or `max` finds two values that compare as equal but have
   different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
   of the oracle depends on the order of the rows. This refusal does not apply

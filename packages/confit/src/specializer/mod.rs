@@ -222,12 +222,27 @@ pub struct JoinFact {
     pub residual: bool,
 }
 
+/// An output column whose value is a DOUBLE `sum` or `avg` of a scalar
+/// subquery over a static table. The build adds the values of each group in
+/// table order. DuckDB adds them in an order that can change the last bits
+/// of the answer, so the comparison contract compares this column within a
+/// bound (docs/oracle/05, claim: float-reduction-bound).
+#[derive(Clone, Copy, Debug)]
+pub struct FloatBound {
+    /// The output column, by index into the program's out columns.
+    pub out: u32,
+    pub func: plan::AggFunc,
+}
+
 /// The output of stage 1: a verified program plus, per map static, the
 /// recipe the caller uses to turn its table data into `StaticData`.
 #[derive(Debug)]
 pub struct Prepared {
     /// Every join of the plan, in plan order (see [`JoinFact`]).
     pub join_facts: Vec<JoinFact>,
+    /// The output columns that are a DOUBLE `sum` or `avg` of a scalar
+    /// subquery, in output order ([`FloatBound`]).
+    pub float_bounds: Vec<FloatBound>,
     pub program: ir::Program,
     pub statics: Vec<StaticSpec>,
     /// Wide output fields (lists and structs), in projection order (see
@@ -349,6 +364,7 @@ pub fn prepare_full(
             .map(|i| &aggs[i])
     };
     let one_row_blocker = one_row_blocker(&plan, &joins, &catalog);
+    let float_bounds = float_bounds(&plan, &joins, &aggs, statics, &out_cols, &wide_outputs)?;
     let join_facts = joins
         .iter()
         .map(|j| JoinFact {
@@ -508,6 +524,7 @@ pub fn prepare_full(
     );
     Ok(Prepared {
         join_facts,
+        float_bounds,
         program,
         statics: specs,
         wide_outputs,
@@ -702,6 +719,107 @@ fn filter_spec(f: &plan::AggFilter) -> Result<FilterSpec, PrepareError> {
         program,
         lanes: plan::input_lanes(&f.in_cols, &[]),
     })
+}
+
+/// The output columns that are a DOUBLE `sum` or `avg` of a scalar subquery
+/// ([`FloatBound`]). Such a value may only be a whole output column: the
+/// subquery itself, or a column of a query level below that is the subquery
+/// itself. A bound on the answer bounds nothing else, since a comparison or
+/// an expression over it can turn a difference in the last bit into any
+/// other answer. So any other read refuses by name: in an expression, a
+/// WHERE, a join condition or a value that a SQL function reads more than
+/// once, and as a field of a struct or list output.
+fn float_bounds(
+    plan: &plan::Plan,
+    joins: &[plan::JoinSpec],
+    aggs: &[plan::AggTable],
+    statics: &[plan::StaticTable],
+    out_cols: &[ir::Col],
+    wide: &[WideOut],
+) -> Result<Vec<FloatBound>, PrepareError> {
+    use plan::{AggFunc, SExpr, SKind};
+    use std::collections::HashMap;
+    // The hidden joins whose value is such an aggregate.
+    let bounded: HashMap<u32, AggFunc> = joins
+        .iter()
+        .enumerate()
+        .filter_map(|(j, spec)| {
+            let a = (!spec.batch).then(|| spec.table.checked_sub(statics.len())).flatten()?;
+            let a = &aggs[a];
+            match (&a.post, a.aggs.as_slice()) {
+                (
+                    None,
+                    [plan::Agg {
+                        func: func @ (AggFunc::Sum | AggFunc::Avg),
+                        arg: Some(c),
+                        ..
+                    }],
+                ) if statics[a.source].cols[*c as usize].ty.ty == ir::Ty::F64 => {
+                    Some((j as u32, *func))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    if bounded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let refusal = |place: &str| {
+        PrepareError::Unsupported(format!(
+            "{place} reads a DOUBLE sum or avg of a scalar subquery -- the order of the \
+             additions can change the last bits of its answer, so confit serves it only as a \
+             whole output column"
+        ))
+    };
+    fn reads(e: &mut SExpr, leaf: &dyn Fn(&SExpr) -> Option<AggFunc>) -> bool {
+        leaf(e).is_some() || e.children_mut().into_iter().any(|c| reads(c, leaf))
+    }
+    // Per stage: the columns of the stage below that are such a value.
+    let mut below: HashMap<u32, AggFunc> = HashMap::new();
+    for stage in &plan.stages {
+        let leaf = |e: &SExpr| match e.kind {
+            SKind::StaticCol { join, .. } => bounded.get(&join).copied(),
+            SKind::Slot(i) => below.get(&i).copied(),
+            _ => None,
+        };
+        let mut here = HashMap::new();
+        for (i, (name, e)) in stage.project.iter().enumerate() {
+            match leaf(e) {
+                Some(func) => {
+                    here.insert(i as u32, func);
+                }
+                None if reads(&mut e.clone(), &leaf) => {
+                    return Err(refusal(&format!("the expression of the column '{name}'")))
+                }
+                None => {}
+            }
+        }
+        if stage.pred.as_ref().is_some_and(|p| reads(&mut p.clone(), &leaf)) {
+            return Err(refusal("a WHERE clause"));
+        }
+        if stage.lets.iter().any(|l| reads(&mut l.clone(), &leaf)) {
+            return Err(refusal("a value that a SQL function reads more than once"));
+        }
+        for &j in &stage.joins {
+            let spec = &joins[j as usize];
+            if spec.keys.iter().chain(&spec.residual).any(|k| reads(&mut k.clone(), &leaf)) {
+                return Err(refusal("a join condition"));
+            }
+        }
+        below = here;
+    }
+    let mut out: Vec<FloatBound> = below
+        .into_iter()
+        .map(|(out, func)| FloatBound { out, func })
+        .collect();
+    out.sort_by_key(|b| b.out);
+    for b in &out {
+        if let Some(w) = wide.iter().find(|w| (w.first..w.first + w.shape.lanes()).contains(&b.out)) {
+            return Err(refusal(&format!("the struct or list output '{}'", w.name)));
+        }
+        debug_assert!((b.out as usize) < out_cols.len(), "a bound past the out columns");
+    }
+    Ok(out)
 }
 
 /// The static exactly-one-row proof behind `shape="map"`, over every stage:

@@ -163,6 +163,13 @@ Agreement between confit and a reference, bit-exact unless the comparison
 contract approves a bound.
 _Avoid_: equivalence, compatibility
 
+**Float-reduction bound**:
+The maximum distance that the comparison contract allows between confit and
+the oracle for a DOUBLE `sum` or `avg` over the static rows that one request
+matches. For the n values v_i of a group, the bound of a sum is
+B = 2(n − 1)·eps·Σ|v_i|, with eps = 2^-52.
+_Avoid_: tolerance
+
 **Pin**:
 A recorded oracle fact: the SQL and inputs sent to DuckDB, and the exact
 answer or error that it returned.

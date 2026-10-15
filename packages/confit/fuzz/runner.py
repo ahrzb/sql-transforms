@@ -447,6 +447,20 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
     print("\n== verdicts ==")
     for k, c in kinds.most_common():
         print(f"  {k:14} {c}")
+    # An AGREE that needed the bound of a DOUBLE sum or avg (docs/oracle/05,
+    # claim: float-reduction-bound), so that a bound which starts to carry
+    # many cases shows.
+    bound = [
+        r
+        for r in results
+        if r["kind"] == "AGREE" and r["klass"] == "float-reduction-bound"
+    ]
+    if bound:
+        more = ", ..." if len(bound) > 5 else ""
+        some = ", ".join(str(r["seed"]) for r in bound[:5]) + more
+        print(
+            f"  of AGREE, within the float-reduction bound: {len(bound)} (seeds {some})"
+        )
 
     # The same verdicts by category, over an explicit population.
     cats = collections.Counter(CATEGORY.get(r["kind"], "unresolved") for r in results)

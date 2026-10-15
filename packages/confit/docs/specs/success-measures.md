@@ -34,8 +34,9 @@ They do not count as acceptance of the original syntax.
 [optimizer-off DuckDB oracle](../oracle/README.md), with the same declared UDFs
 registered, or refuse construction with an error naming the unsupported construct.
 The [comparison contract](../oracle/05-the-comparison-contract.md) specifies the
-order axis and the one approved value exception, the `cbrt` bound. No ledger
-entry permits a further deviation.
+order axis and the two approved value exceptions: the `cbrt` bound, and the
+float-reduction bound of a DOUBLE `sum` or `avg` over the static rows that one
+request matches. No ledger entry permits a further deviation.
 
 Gates: `packages/confit/tests/test_duckdb_*.py`, `test_params_joins.py`,
 `test_udfs.py`, and the refusal suites. The internal byte-for-byte

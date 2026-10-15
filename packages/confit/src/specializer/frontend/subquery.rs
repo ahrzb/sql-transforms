@@ -1320,13 +1320,12 @@ impl Binder<'_> {
             }
             (AggFunc::Sum, Some(t)) if t.is_integer() || t == Ty::I1 => Ty::I128,
             (AggFunc::Sum, Some(Ty::Dec(_, s))) => Ty::Dec(38, s),
-            (AggFunc::Sum, Some(Ty::F64)) => {
-                return Err(unsup(
-                    "sum over a DOUBLE column in a scalar subquery -- the order of the \
-                     additions changes the answer, and its comparison bound waits on a \
-                     decision",
-                ))
-            }
+            // DuckDB adds DOUBLE values in an order that can change the last
+            // bits of the answer. The build adds them in table order, and the
+            // comparison contract compares the answer within a bound
+            // (docs/oracle/05, claim: float-reduction-bound), so only a whole
+            // output column may read it ([`crate::specializer::FloatBound`]).
+            (AggFunc::Sum | AggFunc::Avg, Some(Ty::F64)) => Ty::F64,
             (AggFunc::Sum, Some(Ty::Str)) => {
                 return Err(PrepareError::Bind(
                     "No function matches the given name and argument types 'sum(VARCHAR)'"
@@ -1343,13 +1342,6 @@ impl Binder<'_> {
                     )));
                 }
                 Ty::F64
-            }
-            (AggFunc::Avg, Some(Ty::F64)) => {
-                return Err(unsup(
-                    "avg over a DOUBLE column in a scalar subquery -- the order of the \
-                     additions changes the answer, and its comparison bound waits on a \
-                     decision",
-                ))
             }
             (AggFunc::Avg, Some(t @ (Ty::I1 | Ty::Str))) => {
                 return Err(PrepareError::Bind(format!(
@@ -1434,6 +1426,14 @@ impl Binder<'_> {
                 SqlExpr::Function(f) => match agg_func(f) {
                     Some(func) => {
                         let (agg, ty) = self.agg_call(inner, f, func)?;
+                        if adds_doubles(&agg, inner.st) {
+                            return Err(unsup(format!(
+                                "a subquery whose SELECT item {e} computes over {f}, a DOUBLE \
+                                 sum or avg -- the order of the additions can change the last \
+                                 bits of its answer, so confit serves it only as the whole \
+                                 SELECT item of a subquery that is a whole output column"
+                            )));
+                        }
                         let i = match aggs.iter().position(|a| *a == agg) {
                             Some(i) => i,
                             None => {
@@ -1955,6 +1955,13 @@ fn agg_func(f: &sqlparser::ast::Function) -> Option<AggFunc> {
 /// Whether an aggregate counts rows: 0 over no rows, never NULL.
 fn counts_rows(func: AggFunc) -> bool {
     matches!(func, AggFunc::CountStar | AggFunc::Count)
+}
+
+/// Whether `agg` adds DOUBLE values, a `sum` or `avg` over a DOUBLE column of
+/// `st`: the order of its additions can change its answer.
+fn adds_doubles(agg: &Agg, st: &StaticTable) -> bool {
+    matches!(agg.func, AggFunc::Sum | AggFunc::Avg)
+        && agg.arg.is_some_and(|c| st.cols[c as usize].ty.ty == Ty::F64)
 }
 
 /// The SELECT item `e` of an [`plan::AggPost`] over the aggregates of no

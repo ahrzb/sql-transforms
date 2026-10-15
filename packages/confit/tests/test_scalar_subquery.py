@@ -27,6 +27,8 @@ Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 
 from __future__ import annotations
 
+import math
+import random
 import struct
 import sys
 from datetime import datetime
@@ -479,8 +481,10 @@ def test_static_term_that_calls_a_sql_function_refuses():
     "sql, why",
     [
         (_sub("median(v)"), "function median"),
-        (_sub("sum(f)"), "sum over a DOUBLE column"),
-        (_sub("avg(f)"), "avg over a DOUBLE column"),
+        (
+            _sub("sum(f) + 1"),
+            "computes over sum(f), a DOUBLE sum or avg",
+        ),
         (_sub("count(NULL)"), "must be a column of its table"),
         (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
         (_sub("count(*)", "s.k + 1 = t.k"), "the WHERE term s.k + 1 = t.k"),
@@ -625,6 +629,232 @@ def test_avg_past_the_range_of_its_sum_refuses_the_build():
     assert "past the range of the sum that DuckDB keeps for it" in v.detail
 
 
+# A DOUBLE sum or avg. Confit adds the values of a group in table order, from
+# +0.0. The oracle adds them in the same order over a small table. Over a
+# large table it adds parts in parallel, and its answer can differ in the
+# last bits from one run to the next. The comparison contract compares such
+# an output column within the bound B = 2 (n - 1) 2^-52 sum|v| of its group
+# (docs/oracle/05, claim: float-reduction-bound), and the verdict applies it:
+# AGREE with the class `float-reduction-bound`. Group 1 of FS cancels: its
+# sum is 0.1 in table order and 1.1 in another order.
+
+DMAX = 1.7976931348623157e308
+
+FS = table(
+    {"k": "int64?", "f": "double?"},
+    [
+        {"k": 1, "f": 1e16},
+        {"k": 1, "f": 1.0},
+        {"k": 1, "f": -1e16},
+        {"k": 1, "f": 0.1},
+        {"k": 2, "f": -0.0},
+        {"k": 2, "f": None},
+        {"k": 3, "f": 0.1},
+        {"k": 3, "f": 0.2},
+        {"k": None, "f": 5e-324},
+        {"k": 4, "f": -0.0},
+        {"k": 4, "f": 0.0},
+        {"k": 4, "f": 1.5},
+    ],
+)
+
+DOUBLE_SUMS = ["sum(f)", "avg(f)", "sum(DISTINCT f)", "avg(DISTINCT f)", "sum(ALL f)"]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(
+    "where", ["s.k = t.k", "s.k = t.k AND s.f > 0", "s.f < 1", None]
+)
+@pytest.mark.parametrize("agg", DOUBLE_SUMS)
+def test_a_double_sum_or_avg(agg, where, shape):
+    cond = f" WHERE {where}" if where else ""
+    sql = f"SELECT id, (SELECT {agg} FROM s{cond}) AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": FS}, shape=shape, expect="AGREE")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Through a derived table and a CTE, and beside another subquery.
+        "SELECT * FROM (SELECT id, (SELECT sum(f) FROM s WHERE s.k = t.k) AS c "
+        "FROM __THIS__ AS t) AS q",
+        "WITH q AS (SELECT id, (SELECT avg(f) FROM s WHERE s.k = t.k) AS c "
+        "FROM __THIS__ AS t) SELECT c, id FROM q",
+        "SELECT (SELECT sum(f) FROM s WHERE s.k = t.k) AS a, "
+        "(SELECT avg(f) FROM s) AS b, (SELECT count(*) FROM s WHERE s.k = t.k) AS n "
+        "FROM __THIS__ AS t",
+        # A lateral alias as the key, and the same subquery twice.
+        "SELECT id, k AS kk, (SELECT sum(f) FROM s WHERE s.k = kk) AS c "
+        "FROM __THIS__ AS t",
+        "SELECT (SELECT sum(f) FROM s WHERE s.k = t.k) AS a, "
+        "(SELECT sum(f) FROM s WHERE s.k = t.k) AS b FROM __THIS__ AS t",
+        # A WHERE that reads another column.
+        "SELECT id, (SELECT avg(f) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t "
+        "WHERE t.j = 1",
+    ],
+)
+def test_a_double_sum_or_avg_forms(sql):
+    assert_parity(sql, T, statics={"s": FS}, expect="AGREE")
+
+
+@pytest.mark.parametrize(
+    "sql, why",
+    [
+        (
+            "SELECT id, (SELECT sum(f) FROM s WHERE s.k = t.k) + 1 AS c "
+            "FROM __THIS__ AS t",
+            "the expression of the column 'c' reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT id, coalesce((SELECT sum(f) FROM s WHERE s.k = t.k), 0) AS c "
+            "FROM __THIS__ AS t",
+            "the expression of the column 'c' reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT id, (SELECT avg(f) FROM s WHERE s.k = t.k) IS NULL AS c "
+            "FROM __THIS__ AS t",
+            "the expression of the column 'c' reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT id, CAST((SELECT avg(f) FROM s WHERE s.k = t.k) AS VARCHAR) AS c "
+            "FROM __THIS__ AS t",
+            "the expression of the column 'c' reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT c * 2 AS d FROM (SELECT (SELECT sum(f) FROM s "
+            "WHERE s.k = t.k) AS c FROM __THIS__ AS t) AS q",
+            "the expression of the column 'd' reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT id, (SELECT sum(f) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t "
+            "WHERE c > 0",
+            "a WHERE clause reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT id FROM (SELECT id, (SELECT sum(f) FROM s WHERE s.k = t.k) AS c "
+            "FROM __THIS__ AS t) AS q WHERE q.c IS NOT NULL",
+            "a WHERE clause reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT q.id, s2.k FROM (SELECT id, (SELECT sum(f) FROM s WHERE s.k = t.k) "
+            "AS c FROM __THIS__ AS t) AS q LEFT JOIN s AS s2 ON s2.f = q.c",
+            "a join condition reads a DOUBLE sum or avg",
+        ),
+        (
+            "SELECT id, struct_pack(a := (SELECT sum(f) FROM s WHERE s.k = t.k)) AS c "
+            "FROM __THIS__ AS t",
+            "the struct or list output 'c' reads a DOUBLE sum or avg",
+        ),
+        (
+            _sub("coalesce(avg(f), 0)"),
+            "computes over avg(f), a DOUBLE sum or avg",
+        ),
+        (
+            _sub("sum(f) / count(*)"),
+            "computes over sum(f), a DOUBLE sum or avg",
+        ),
+    ],
+)
+def test_a_double_sum_or_avg_that_is_not_a_whole_column_refuses_by_name(sql, why):
+    v = assert_parity(sql, T, statics={"s": FS}, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
+@pytest.mark.parametrize("bad", [NAN, float("inf"), float("-inf")])
+@pytest.mark.parametrize("agg", ["sum(f)", "avg(DISTINCT f)"])
+def test_a_double_sum_over_a_value_that_is_not_finite_refuses_the_build(agg, bad):
+    rows = [{"k": 1, "f": 1.0}, {"k": 2, "f": bad}]
+    s = table({"k": "int64", "f": "double"}, rows)
+    v = assert_parity(_sub(agg), T, statics={"s": s}, expect="REFUSED")
+    assert "confit serves a DOUBLE sum or avg only over finite values" in v.detail
+
+
+@pytest.mark.parametrize(
+    "vals, served",
+    [
+        ([DMAX, DMAX], False),
+        # The sum of the absolute values fits, but not with the bound added.
+        ([DMAX / 3] * 3, False),
+        ([DMAX / 3] * 2, True),
+        # The rule reads the absolute values, so it also refuses this sum,
+        # whose partial sums do not overflow in any order.
+        ([DMAX, -DMAX, 1.0], False),
+        ([DMAX / 4, -DMAX / 4, 1.0], True),
+        # (n - 1) times the sum of the absolute values is past the range, but
+        # this sum with the bound added is not.
+        ([DMAX * 0.375, -DMAX * 0.375, 1.0], True),
+        # The sum of the absolute values is DMAX, so B is finite. In table
+        # order the last addition rounds to inf, and DuckDB answers inf. In
+        # the reverse order each addition is exact, and the sum is DMAX.
+        ([2.0**1023 - 2.0**970, 2.0**1022, 2.0**1022 - 2.0**970], False),
+    ],
+)
+def test_a_double_sum_past_the_range_refuses_the_build(vals, served):
+    s = table({"k": "int64", "f": "double"}, [{"k": 1, "f": v} for v in vals])
+    if served:
+        assert_parity(_sub("sum(f)"), T, statics={"s": s}, expect="AGREE")
+        return
+    v = assert_parity(_sub("avg(f)"), T, statics={"s": s}, expect="REFUSED")
+    assert "adds absolute values past the range of a DOUBLE" in v.detail
+
+
+def test_the_bound_build_answers_the_bound_of_each_group():
+    # The bound that the build computes, against Python's `math.fsum` for the
+    # sum of the absolute values: B = (n - 1) * fsum * 2^-51 for a sum, B / n
+    # for an avg, 0.0 for two values or fewer, and NULL for none.
+    rng = random.Random(20261015)
+    rows = []
+    for g in range(300):
+        for _ in range(rng.choice([0, 1, 2, 3, 7, 40])):
+            e = rng.randrange(-30, 30)
+            f = None if rng.random() < 0.1 else rng.uniform(-1, 1) * 2.0**e
+            rows.append({"k": g, "f": f})
+    rng.shuffle(rows)
+    s = table({"k": "int64", "f": "double?"}, rows)
+    t = table({"id": "int64", "k": "int64?"}, [{"id": g, "k": g} for g in range(301)])
+    for func in ("sum", "avg"):
+        sql = (
+            f"SELECT id, (SELECT {func}(f) FROM s WHERE s.k = t.k) AS c "
+            "FROM __THIS__ AS t"
+        )
+        fn = DuckDBInferFn(
+            sql,
+            row_tables={"__THIS__": t.schema},
+            static_tables={"s": s},
+            float_bounds=True,
+        )
+        assert fn.plan_facts["bounds"] == [{"column": "c", "func": func}]
+        got = {r["id"]: r["c"] for r in fn.infer_arrow(t).to_pylist()}
+        for g in range(301):
+            vals = [r["f"] for r in rows if r["k"] == g and r["f"] is not None]
+            n = len(vals)
+            b = (n - 1) * math.fsum(abs(v) for v in vals) * 2.0**-51
+            want = None if n == 0 else 0.0 if n <= 2 else b if func == "sum" else b / n
+            assert repr(got[g]) == repr(want), (func, g, vals)
+
+
+def test_a_large_table_agrees_within_the_bound():
+    # 300,000 rows in 300 groups: the oracle adds the parts of a group in
+    # parallel, so its answer can differ from the table-order sum.
+    rng = random.Random(7)
+    n = 300_000
+    s = pa.table(
+        {
+            "k": pa.array([rng.randrange(300) for _ in range(n)], pa.int64()),
+            "f": pa.array(
+                [
+                    rng.uniform(-1e6, 1e6) * 10.0 ** rng.randrange(-3, 4)
+                    for _ in range(n)
+                ],
+                pa.float64(),
+            ),
+        }
+    )
+    t = table({"id": "int64", "k": "int64?"}, [{"id": g, "k": g} for g in range(300)])
+    sql = "SELECT id, (SELECT avg(f) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t"
+    assert_parity(sql, t, statics={"s": s}, expect="AGREE")
+
+
 def test_plan_facts_name_the_aggregate_join():
     fn = DuckDBInferFn(
         _sub("sum(v)"),
@@ -638,6 +868,7 @@ def test_plan_facts_name_the_aggregate_join():
         1,
         S.num_rows,
     )
+    assert fn.plan_facts["bounds"] == []
 
 
 # A first key whose outer side can trap. DuckDB evaluates that side over the
@@ -1104,7 +1335,8 @@ def test_an_aggregate_over_distinct_values(agg, where, shape):
     [
         (_sub("count(DISTINCT *)"), "the aggregate call count(DISTINCT *)"),
         (_sub("count(DISTINCT 1)"), "must be a column of its table"),
-        (_sub("sum(DISTINCT f)"), "sum over a DOUBLE column"),
+        # DS holds a NaN, and confit adds only finite DOUBLE values.
+        (_sub("sum(DISTINCT f)"), "a DOUBLE sum or avg only over finite values"),
         (_sub("sum(v ORDER BY v)"), "ORDER BY or another clause"),
         # The class -0.0 = 0.0 of the group k = 1: which value DuckDB keeps
         # depends on the order of the rows.
