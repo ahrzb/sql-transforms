@@ -10,7 +10,8 @@ explicit qualification, the four ways to read a struct field, `<>` as
 For each pair, the outcome must match: both refuse, both trap, or both serve
 the same rows with the same types. The refusal messages themselves may
 differ. A mismatch is a finding, unless a rewrite tolerance in
-`fuzz/exclusions.py` names it by rewrite and refusal text.
+`fuzz/exclusions.py` names it by rewrite and refusal text. A panic on either
+side is always a finding.
 
     uv run python -m fuzz.metamorphic --n 2000 --workers 4
 """
@@ -32,7 +33,8 @@ from fuzz import coverage, exclusions, gen, oracle
 
 
 def outcome(case: gen.Case, sql: str) -> tuple:
-    """`("refuse", msg)`, `("trap", msg)` or `("serve", rows, types)`."""
+    """`("refuse", msg)`, `("trap", msg)`, `("serve", rows, types)`, or
+    `("panic", msg)` when the engine panicked."""
     try:
         fn = oracle._build(
             sql,
@@ -44,16 +46,32 @@ def outcome(case: gen.Case, sql: str) -> tuple:
         )
     except Exception as e:  # noqa: BLE001 -- every build failure is a refusal here
         return ("refuse", f"{type(e).__name__}: {e}")
+    except BaseException as e:
+        return _panic(e)
     try:
         out = fn.infer_arrow(oracle._arrow_table(case.row_schema, case.rows))
     except Exception as e:  # noqa: BLE001
         return ("trap", f"{type(e).__name__}: {e}")
+    except BaseException as e:
+        return _panic(e)
     rows = repr([tuple(r.values()) for r in out.to_pylist()]).lower()
     return ("serve", rows, [str(f.type).lower() for f in out.schema])
 
 
+def _panic(e: BaseException) -> tuple:
+    """A Rust panic as an outcome. pyo3 raises it as `PanicException`, a
+    BaseException, so `except Exception` misses it, and a pool worker cannot
+    send it back: it does not pickle, and the whole run died of that
+    (nightly of 2026-10-15). Any other BaseException is raised again."""
+    if type(e).__name__ != "PanicException":
+        raise e
+    return ("panic", f"PanicException: {e}")
+
+
 def agree(a: tuple, b: tuple) -> bool:
-    if a[0] != b[0]:
+    """Both spellings refuse, both trap, or both serve the same rows with the
+    same types. A panic agrees with nothing, not even another panic."""
+    if a[0] != b[0] or a[0] == "panic":
         return False
     return a[0] != "serve" or a[1:] == b[1:]
 
@@ -224,16 +242,19 @@ def check(seed: int) -> tuple[collections.Counter, list[Finding]]:
         counts[(name, "checked")] += 1
         if agree(base, other):
             continue
+        # No tolerance excuses a panic on either side.
+        panicked = "panic" in (base[0], other[0])
         # Qualifying a bare name resolves an ambiguity DuckDB also refuses:
         # the qualified query is a different query, not a respelling.
         if (
-            name == "qualify-row-cols"
+            not panicked
+            and name == "qualify-row-cols"
             and base[0] == "refuse"
             and "ambiguous" in base[1]
         ):
             counts[(name, "not-equivalent")] += 1
             continue
-        if _known(name, base, other):
+        if not panicked and _known(name, base, other):
             counts[(name, "known")] += 1
             continue
         counts[(name, "finding")] += 1

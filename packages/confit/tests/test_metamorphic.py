@@ -99,3 +99,76 @@ def test_a_reserved_keyword_starts_no_column_reference(sql, kind):
     v = assert_parity(sql, T, expect=kind)
     if kind == "REFUSED":
         assert v.oracle == "rejects", v
+
+
+# ------------------------------------------------ a panic is a finding
+# The nightly of 2026-10-15 died in this suite: a Rust panic reaches Python
+# as pyo3's `PanicException`, a BaseException, which `outcome` did not
+# catch, and a pool worker cannot send it back, since it does not pickle.
+
+
+class PanicException(BaseException):
+    """pyo3's exception for a Rust panic, by name: it has no module that
+    imports."""
+
+
+def _panics(*_args):
+    raise PanicException("assertion `left == right` failed")
+
+
+class _PanicsOnRun:
+    def infer_arrow(self, _table):
+        raise PanicException("index out of bounds")
+
+
+@pytest.mark.parametrize(
+    "build, msg",
+    [
+        (_panics, "PanicException: assertion `left == right` failed"),
+        (lambda *_args: _PanicsOnRun(), "PanicException: index out of bounds"),
+    ],
+)
+def test_a_panic_in_the_build_or_the_run_is_an_outcome(monkeypatch, build, msg):
+    monkeypatch.setattr(metamorphic.oracle, "_build", build)
+    case = metamorphic.gen.gen(0)
+    assert metamorphic.outcome(case, "SELECT 1") == ("panic", msg)
+
+
+def test_an_interrupt_is_not_a_panic(monkeypatch):
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(metamorphic.oracle, "_build", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        metamorphic.outcome(metamorphic.gen.gen(0), "SELECT 1")
+
+
+def test_a_panic_is_a_finding_even_when_both_spellings_panic(monkeypatch):
+    monkeypatch.setattr(metamorphic.oracle, "_build", _panics)
+    counts, findings = metamorphic.check(0)
+    assert findings
+    assert sum(counts[(n, "finding")] for n in metamorphic.REWRITES) == len(findings)
+    assert all(f.base[0] == f.other[0] == "panic" for f in findings)
+    assert "panic: PanicException" in findings[0].line()
+
+
+def test_no_tolerance_excuses_a_panic(monkeypatch):
+    # The base spelling refuses as ambiguous, which excuses a qualified
+    # spelling's other outcome as a different query, but not its panic.
+    base = metamorphic.gen.render(metamorphic.gen.gen(0).query)
+    monkeypatch.setattr(
+        metamorphic, "REWRITES", {"qualify-row-cols": lambda case: "SELECT 2"}
+    )
+    monkeypatch.setattr(
+        metamorphic,
+        "outcome",
+        lambda case, sql: (
+            ("refuse", "BinderException: ambiguous column c0")
+            if sql == base
+            else ("panic", "PanicException: boom")
+        ),
+    )
+    counts, findings = metamorphic.check(0)
+    assert counts[("qualify-row-cols", "finding")] == 1
+    assert counts[("qualify-row-cols", "not-equivalent")] == 0
+    assert [f.other[0] for f in findings] == ["panic"]
