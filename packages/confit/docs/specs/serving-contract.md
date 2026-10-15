@@ -209,19 +209,24 @@ pass the WHERE:
 3. The rows whose item is not NULL.
 
 Then `x IN (...)` is TRUE if count 1 is above 0. Else it is FALSE if count 2
-is 0. Else it is NULL if `x` is NULL or count 3 is less than count 2. Else it
-is FALSE. The pins at the end of `tests/test_scalar_subquery.py` record that
-the oracle gives the same values.
+is 0. Else it is NULL if count 3 is less than count 2. Else it is NULL if `x`
+is NULL. Else it is FALSE. The pins at the end of
+`tests/test_scalar_subquery.py` record that the oracle gives the same values.
 
 The oracle evaluates `x` only if a row of `s` passes the whole WHERE of the
-subquery, both bounds of a BETWEEN included. If this WHERE has no key, the
-rows that pass it are the same for all the requests. Then confit counts these
-rows at build, and it evaluates `x` only if the count is above 0. If the WHERE
-has a key, the oracle evaluates `x` for every request of the batch once one
-request matches a row of `s`. So if `x` can trap, whether the oracle traps for
-a request depends on the other requests in the same batch. Confit serves only
-answers that do not depend on the other requests, so it refuses an `x` that
-can trap over a WHERE with a key.
+subquery and the item of this row is not NULL. The whole WHERE includes both
+bounds of a BETWEEN. If this WHERE has no key, the rows that pass it are the
+same for all the requests. Then confit computes count 3 at build. It evaluates
+`x` for count 1 only if count 3 is above 0. It tests whether `x` is NULL only
+after count 2 is above 0 and count 3 is not less than count 2, so also only if
+count 3 is above 0.
+
+If the WHERE has a key, the oracle evaluates `x` for every request of the
+batch once one request matches a row of `s`. This is also true if the item of
+this row is NULL. So if `x` can trap, whether the oracle traps for a request
+depends on the other requests in the same batch. Confit serves only answers
+that do not depend on the other requests, so it refuses an `x` that can trap
+over a WHERE with a key.
 
 Each term of the WHERE has one of two forms. A key compares a column of `s`
 with an expression of the outer query, its outer expression, by `=` or

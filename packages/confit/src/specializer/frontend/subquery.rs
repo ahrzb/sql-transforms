@@ -466,11 +466,12 @@ impl Binder<'_> {
             key_lanes.push(col);
             keys.push(key);
         }
-        // The IN test: DuckDB evaluates `x` once the subquery has a row, so
-        // without another key the guard of the first key holds it, over
-        // every term of the WHERE (the IN test is not one of them), both
-        // bounds of BETWEEN too.
-        let mut halves = true;
+        // The IN test: DuckDB evaluates `x` once the subquery has an item
+        // that is not NULL (its hash table holds no NULL), so without
+        // another key the guard of the first key holds it, over every term
+        // of the WHERE (the IN test is not one of them), both bounds of
+        // BETWEEN too.
+        let mut guard = Guard::Key;
         if let Some((c, x)) = member {
             let Some(col) = inner.col(c)? else {
                 return Err(in_item_refusal(c));
@@ -497,7 +498,7 @@ impl Binder<'_> {
                     )));
                 }
                 trap_key = Some(filters.len());
-                halves = false;
+                guard = Guard::InItem(col);
             }
             key_cols.push(JoinKey {
                 src: KeySrc::Lane(key_lanes.len() as u32),
@@ -573,7 +574,7 @@ impl Binder<'_> {
         };
         if let Some(n) = trap_key {
             let key = keys.remove(0);
-            keys.insert(0, self.guarded_key(query, select, source, &filters[..n], key, halves)?);
+            keys.insert(0, self.guarded_key(query, select, source, &filters[..n], key, guard)?);
         }
         let mut tables = self.agg_tables.borrow_mut();
         let table = self.statics.len() + tables.len();
@@ -704,11 +705,12 @@ impl Binder<'_> {
     /// rows whose `s.c` equals `x` (the IN test, one more key); `rows`, all
     /// of them; and `values`, those whose `s.c` is not NULL. As DuckDB
     /// answers (measured 2026-10-15), IN is TRUE if `hit > 0`, else FALSE if
-    /// `rows = 0`, else NULL if `x` is NULL or `values < rows`, else FALSE.
-    /// DuckDB evaluates `x` for each request once the subquery has a row.
-    /// Over a WHERE without a key, the build knows whether it has one; over
-    /// a WHERE with a key, that depends on the other requests of the batch,
-    /// so there an `x` that can trap refuses.
+    /// `rows = 0`, else NULL if `values < rows` or `x` is NULL, else FALSE.
+    /// DuckDB evaluates `x` for each request once the subquery has an item
+    /// that is not NULL. Over a WHERE without a key, the build knows whether
+    /// it has one, and the CASE tests `x` only after `values < rows`, so
+    /// only when `values > 0`; over a WHERE with a key, that depends on the
+    /// other requests of the batch, so there an `x` that can trap refuses.
     pub(super) fn in_subquery(
         &self,
         x: &SqlExpr,
@@ -740,17 +742,10 @@ impl Binder<'_> {
             ty: Ty::I1,
             nullable: false,
         };
-        let unknown = SExpr {
-            kind: SKind::Or {
-                a: Box::new(SExpr {
-                    kind: SKind::IsNull {
-                        negated: false,
-                        inner: Box::new(x),
-                    },
-                    ty: Ty::I1,
-                    nullable: false,
-                }),
-                b: Box::new(cmp_i64(CmpPred::Lt, values, rows.clone())),
+        let x_null = SExpr {
+            kind: SKind::IsNull {
+                negated: false,
+                inner: Box::new(x),
             },
             ty: Ty::I1,
             nullable: false,
@@ -759,8 +754,9 @@ impl Binder<'_> {
             kind: SKind::Case {
                 arms: vec![
                     (cmp_i64(CmpPred::Gt, hit, lit_i64(0)), lit(!negated)),
-                    (cmp_i64(CmpPred::Eq, rows, lit_i64(0)), lit(negated)),
-                    (unknown, null_of(Ty::I1)),
+                    (cmp_i64(CmpPred::Eq, rows.clone(), lit_i64(0)), lit(negated)),
+                    (cmp_i64(CmpPred::Lt, values, rows), null_of(Ty::I1)),
+                    (x_null, null_of(Ty::I1)),
                 ],
                 default: Some(Box::new(lit(negated))),
             },
@@ -1190,8 +1186,9 @@ impl Binder<'_> {
     /// the grouped table is empty, so the NULL key misses as the key would.
     /// DuckDB's planner moves the upper half of `x BETWEEN lo AND hi` to the
     /// end of the WHERE, after every key (see `where_conjuncts`), so only
-    /// the lower half of such a term counts here (`halves`). The IN test
-    /// runs after the whole WHERE, so for it the whole term counts.
+    /// the lower half of such a term counts for a key. The IN test runs
+    /// after the whole WHERE, so for it the whole term counts, and only the
+    /// rows whose item is not NULL ([`Guard::InItem`]).
     fn guarded_key(
         &self,
         query: &sqlparser::ast::Query,
@@ -1199,8 +1196,9 @@ impl Binder<'_> {
         source: usize,
         pre: &[&SqlExpr],
         key: SExpr,
-        halves: bool,
+        guard: Guard,
     ) -> Result<SExpr, PrepareError> {
+        let halves = matches!(guard, Guard::Key);
         let filter = match pre {
             [] => None,
             _ => {
@@ -1224,8 +1222,15 @@ impl Binder<'_> {
                 Some(f)
             }
         };
+        let (func, arg) = match guard {
+            Guard::Key => (AggFunc::CountStar, None),
+            Guard::InItem(c) => (AggFunc::Count, Some(c)),
+        };
         let count = Col {
-            name: "count_star()".into(),
+            name: match arg {
+                None => "count_star()".into(),
+                Some(c) => format!("count({})", self.statics[source].cols[c as usize].name),
+            },
             ty: super::super::ir::ColTy {
                 ty: Ty::I64,
                 nullable: false,
@@ -1238,8 +1243,8 @@ impl Binder<'_> {
             source,
             keys: Vec::new(),
             aggs: vec![Agg {
-                func: AggFunc::CountStar,
-                arg: None,
+                func,
+                arg,
                 distinct: false,
             }],
             filter,
@@ -1283,6 +1288,17 @@ impl Binder<'_> {
             nullable: true,
         })
     }
+}
+
+/// What the guard of an outer expression that can trap counts
+/// ([`Binder::guarded_key`]).
+#[derive(Clone, Copy)]
+enum Guard {
+    /// The first key of the WHERE: the rows that the terms before it pass.
+    Key,
+    /// The left side of IN: the rows that the whole WHERE passes whose item,
+    /// this lane of the table, is not NULL.
+    InItem(u32),
 }
 
 /// The aggregate that a served name calls, or `None`.

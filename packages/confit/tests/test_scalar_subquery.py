@@ -1319,9 +1319,10 @@ def test_exists_refuses_by_name(sql, why):
 # x IN (SELECT ...) and NOT IN: three counts of the rows that the WHERE
 # matches, those whose item equals x (the IN test, one more key), all of them,
 # and those whose item is not NULL. The item is a column of the table. The
-# oracle evaluates x once the subquery has a row: without a key in the WHERE
-# the build knows whether it has one; with a key it depends on the other
-# requests of the batch, so there an x that can trap refuses (the pins).
+# oracle evaluates x once the subquery has an item that is not NULL: without
+# a key in the WHERE the build knows whether it has one; with a key it
+# depends on the other requests of the batch, so there an x that can trap
+# refuses (the pins).
 
 
 def _in(x="t.k", item="s.v", where="s.k = t.k", neg=False):
@@ -1439,6 +1440,11 @@ def _kin(x: str, where: str | None = None, neg: bool = False, tail: str = "") ->
         # The IN test runs after the whole WHERE, both bounds of BETWEEN too.
         (_kin(TRAP, "s.v BETWEEN 2 AND 1"), ROWS_OR_OPT),
         (_kin(TRAP, "s.v BETWEEN 1 AND 3", True), "AGREE_TRAP"),
+        # x runs only if an item that passes the WHERE is not NULL: here the
+        # one row that passes has the item NULL.
+        (_kin(TRAP, "s.f IS NULL"), ROWS_OR_OPT),
+        (_kin(TRAP, "s.f IS NULL", True), ROWS_OR_OPT),
+        (_kin(TRAP, "s.f IS NULL OR s.f = 1"), "AGREE_TRAP"),
         # In the SELECT list after the outer WHERE, in the WHERE before it,
         # and under CASE for every request.
         (_kin(TRAP, tail=" WHERE x = 0 OR x IS NULL"), "AGREE"),
@@ -1782,10 +1788,10 @@ def test_pin_exists_over_an_aggregate_is_true():
 
 # IN, measured 2026-10-15 over PIN_S: the group k = 1 has z = 0 twice, the
 # group k = 3 has z = 1. Its value is a CASE over three counts. The oracle
-# evaluates x once the subquery has a row: without a key, after the whole
-# WHERE; with a key, for every request of the batch once one request matches
-# a static row. Its item runs over the matched rows, so an item that can trap
-# refuses.
+# evaluates x once the subquery has an item that is not NULL: without a key,
+# after the whole WHERE; with a key, for every request of the batch once one
+# request matches a static row. Its item runs over the matched rows, so an
+# item that can trap refuses.
 IN_COUNTS = (
     "CASE WHEN (SELECT count(*) FROM v WHERE v.c = t.k) > 0 THEN TRUE "
     "WHEN (SELECT count(*) FROM v) = 0 THEN FALSE "
@@ -1808,29 +1814,39 @@ def test_pin_in_answers_as_three_counts(vals, neg):
     assert got.column(0).to_pylist() == want.column(0).to_pylist()
 
 
-def test_pin_in_runs_its_left_side_once_its_subquery_has_a_row():
-    sql = f"SELECT k, (k + {BIG}) IN (SELECT s.z FROM s{{}}) FROM t"
+def test_pin_in_runs_its_left_side_once_its_subquery_has_an_item_not_null():
+    sql = f"SELECT k, (k + {BIG}) {{}}IN (SELECT {{}} FROM s{{}}) FROM t"
     # The row z = 1 passes the lower bound of BETWEEN 1 AND 0, and x does not
     # run: it runs after the whole WHERE.
     for where in [" WHERE s.z > 5", " WHERE s.z BETWEEN 1 AND 0"]:
-        assert _pin(sql.format(where), [1]) == [(1, False)], where
-    for where in ["", " WHERE s.z BETWEEN 0 AND 0"]:
-        got = _pin(sql.format(where), [1])
-        assert isinstance(got, Trap), (where, got)
+        assert _pin(sql.format("", "s.z", where), [1]) == [(1, False)], where
+    # The rows k = 1 pass, and NULLIF makes their items NULL: the hash table
+    # of the oracle holds no NULL, so x does not run. IN is NULL.
+    for not_ in ["", "NOT "]:
+        got = _pin(sql.format(not_, "NULLIF(s.z, 0)", " WHERE s.k = 1"), [1])
+        assert got == [(1, None)], (not_, got)
+    for item, where in [
+        ("s.z", ""),
+        ("s.z", " WHERE s.z BETWEEN 0 AND 0"),
+        ("NULLIF(s.z, 0)", ""),
+    ]:
+        got = _pin(sql.format("", item, where), [1])
+        assert isinstance(got, Trap), (item, where, got)
         assert "Overflow in addition of INT64" in got.message
 
 
 def test_pin_in_with_a_key_runs_its_left_side_over_the_whole_batch():
     # Once the request k = 1 matches a static row, x runs for k = 2 too,
-    # which matches none.
+    # which matches none. This holds also if the items of the matched rows
+    # are NULL (NULLIF makes them NULL).
     sql = (
-        "SELECT k, k * 4611686018427387904 IN (SELECT s.z FROM s WHERE s.k = t.k) "
-        "FROM t"
+        "SELECT k, k * 4611686018427387904 IN (SELECT {} FROM s WHERE s.k = t.k) FROM t"
     )
-    assert _pin(sql, [2]) == [(2, False)]
-    got = _pin(sql, [1, 2])
-    assert isinstance(got, Trap), got
-    assert "(2 * 4611686018427387904)" in got.message
+    for item in ["s.z", "NULLIF(s.z, 0)"]:
+        assert _pin(sql.format(item), [2]) == [(2, False)], item
+        got = _pin(sql.format(item), [1, 2])
+        assert isinstance(got, Trap), (item, got)
+        assert "(2 * 4611686018427387904)" in got.message
 
 
 def test_pin_the_item_under_in_runs_over_the_matched_rows():
