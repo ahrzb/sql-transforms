@@ -149,14 +149,14 @@ def test_a_float32_fit_without_a_mean_serves(make):
 def test_a_projection_takes_a_fit_by_its_estimated_build():
     from sql_transform.native.project import MAX_BUILD_S, _build_estimate
 
-    # 32 components over 512 features built in 6.9 to 7.1 s, 12 over 1,024
-    # in 7.2 to 7.7 s (project.py, `_build_estimate`).
-    assert _build_estimate(512, 32) <= MAX_BUILD_S
-    assert _build_estimate(1024, 12) > MAX_BUILD_S
-    x = np.random.default_rng(6).normal(size=(10, 1024))
-    est = GaussianRandomProjection(n_components=64, random_state=0).fit(x)
+    # 128 components over 512 features built in 5.9 to 6.3 s, 32 over 2,048
+    # in 8.1 to 8.8 s (project.py, `_build_estimate`).
+    assert _build_estimate(512, 128) <= MAX_BUILD_S
+    assert _build_estimate(2048, 32) > MAX_BUILD_S
+    x = np.random.default_rng(6).normal(size=(10, 2048))
+    est = GaussianRandomProjection(n_components=32, random_state=0).fit(x)
     with pytest.raises(
         NotNative,
-        match=r"an estimated \d+ s build, past 7 s \(64 components over 1,024",
+        match=r"an estimated \d+ s build, past 7 s \(32 components over 2,048",
     ):
         to_native(_step(est), strict=True, allow_bound=True)
