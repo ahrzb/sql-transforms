@@ -58,5 +58,5 @@ transformers as SQL-defined transforms instead (a design under discussion,
 > Honestly the non 1-1 modes we can ignore for now and not even support. Or partially support
 
 So the loop plans no new work for the shapes `filter` and `many`. What confit serves under these two shapes
-today stays. Confit already serves class 4 of the order above, more than one join under
-`shape='many'` (#449). The loop does not widen it further.
+today stays. Confit already serves item 4 of the order above, more than one join under
+`shape='many'` (pull request #449). The loop does not widen it further.
