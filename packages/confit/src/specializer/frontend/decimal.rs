@@ -318,6 +318,26 @@ pub(super) fn dec_common(x: Ty, y: Ty) -> Option<Ty> {
     }
 }
 
+/// The type at which a comparison operator compares two numeric types where
+/// at least one is a DECIMAL (§7, `BindComparison`). It is [`dec_common`],
+/// except for two DECIMALs past 38 digits: the comparison keeps the larger
+/// scale, DECIMAL(38, s), where the common type keeps the integer digits.
+/// The cast of a side with more than `38 - s` integer digits can then fail
+/// per row. Measured 2026-10-15: EXPLAIN shows `CAST(a AS DECIMAL(38,4)) <
+/// CAST(b AS DECIMAL(38,4))` for a DECIMAL(9,4) `a` and a DECIMAL(38,0)
+/// `b`, and the same casts under `=`, IS DISTINCT FROM, BETWEEN, an IN
+/// list, a simple CASE and nullif. ANY over a subquery and greatest
+/// compare at [`dec_common`] instead.
+pub(super) fn cmp_common(x: Ty, y: Ty) -> Option<Ty> {
+    match (x, y) {
+        (Ty::Dec(p1, s1), Ty::Dec(p2, s2)) => {
+            let s = s1.max(s2);
+            Some(Ty::Dec(((p1 - s1).max(p2 - s2) + s).min(38), s))
+        }
+        _ => dec_common(x, y),
+    }
+}
+
 /// An operand at the §7 common type: a DOUBLE through `dec_to_float`, a
 /// DECIMAL or integer through the checked conversion.
 pub(super) fn to_common(e: SExpr, to: Ty) -> SExpr {

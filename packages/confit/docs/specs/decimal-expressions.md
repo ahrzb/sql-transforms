@@ -94,16 +94,35 @@ texts:
 
 Unchecked widths cannot overflow by construction.
 
-## 7. Common type (comparisons, CASE, COALESCE, IN)
+## 7. Common type, and the type of a comparison
 
-`src/common/types.cpp`, `MaxLogicalType` / `DecimalSizeCheck`.
+`src/common/types.cpp`, `MaxLogicalType` / `DecimalSizeCheck`, gives the
+common type. The results of CASE and COALESCE use it, and so do `greatest`,
+`least`, a list value such as `[a, b]`, and IN or ANY over a subquery.
 
 - DECIMAL with DECIMAL: `int = max(p_i - s_i)`, `s = max s_i`, `p = int + s`. If
   `p > 38`, then `p = 38` and `s = 38 - int` (the scale is truncated).
 - DECIMAL `(p,s)` with an integer of decimal width `w` (§2): if `w > p - s`,
-  the result is `DECIMAL(min(w + s, 38), s)`; otherwise it is `(p,s)`. confit's
-  `promote_dec` covers the comparison side of this today.
+  the result is `DECIMAL(min(w + s, 38), s)`; otherwise it is `(p,s)`.
 - DECIMAL with DOUBLE: DOUBLE (`dec_to_float` exists).
+
+A comparison operator (`=`, `<>`, `<`, `<=`, `>`, `>=` and IS [NOT] DISTINCT
+FROM) casts both sides to the type of the comparison
+(`BoundComparisonExpression::BindComparison`). BETWEEN, an IN list such as
+`x IN (a, b)`, a simple CASE and `nullif` use this type too. It is the
+common type, except for two DECIMALs past 38 digits:
+
+- The type of the comparison keeps the scale: it is `DECIMAL(38, s)`, with
+  `s = max s_i`. The common type keeps the integer digits instead.
+- The cast of a side with more than `38 - s` integer digits can fail. Then
+  the oracle traps with `Casting value "..." to type DECIMAL(38,s) failed:
+  value is out of range!` for that row.
+
+For example, the oracle compares a DECIMAL(9,4) with a DECIMAL(38,0) at
+DECIMAL(38,4), but their common type is DECIMAL(38,0). For the values 1.5
+and 2, `<` gives TRUE. At the common type, 1.5 rounds to 2, and `<` would
+give FALSE. EXPLAIN on the oracle showed these casts (measured
+2026-10-15).
 
 ## 8. Casts out of and within DECIMAL
 
@@ -144,9 +163,10 @@ DECIMAL as DOUBLE, DuckDB's implicit decimal->double cast.
 The IR carries `Dec(p,s)` on an `i128` lane. `Dop` does §3-§6, `Dcast` does
 §8 (`DcastOk` gives TRY_CAST its NULL), `Dunary` does §9, and `Dtos` formats
 a decimal. Each has one kernel in `exec/kernels.rs` that both backends call.
-The binder rules are in `frontend/decimal.rs`.
+The binder rules are in `frontend/decimal.rs`. There, `dec_common` gives
+the common type of §7 and `cmp_common` the type of a comparison.
 
 Refused by name: casts from DOUBLE, VARCHAR or BOOLEAN into a DECIMAL
 (DuckDB's double->decimal rounding and its string parser), a DECIMAL join key
-expression against a non-DOUBLE build key, and `IN`/`BETWEEN` families
-capped at 38 digits.
+whose type of comparison is past 38 digits, and BETWEEN or an IN list past
+38 digits.

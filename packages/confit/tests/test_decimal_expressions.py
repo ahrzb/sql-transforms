@@ -7,6 +7,7 @@ traps against the optimizer-off oracle.
 """
 
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
@@ -252,6 +253,128 @@ def test_a_failing_try_cast_is_null(expr):
 )
 def test_a_decimal_unifies_like_duckdb(expr):
     assert_parity(_q(expr), ROWS, expect="AGREE")
+
+
+# ------------------------------------------- comparison past 38 digits
+# §7: a comparison casts two DECIMALs past 38 digits to DECIMAL(38, the
+# larger scale), where their common type keeps the integer digits. So a
+# DECIMAL(9,4) 1.5 is below a DECIMAL(38,0) 2 (the common type, DECIMAL(38,0),
+# would round 1.5 to 2), and the cast of a DECIMAL(38,0) with more than 34
+# integer digits to DECIMAL(38,4) traps.
+
+
+def _dec(values, p, s):
+    return pa.array(
+        [None if v is None else Decimal(v) for v in values], pa.decimal128(p, s)
+    )
+
+
+WIDE = pa.table(
+    {
+        "k": pa.array([1, 2, 3, 4, 5], pa.int32()),
+        "d": _dec(["1.5", "2", "-0.5", None, "2.5"], 9, 4),
+        "e": _dec(["1.5", "2", "-0.49", None, "2.5"], 4, 2),
+        "g": _dec(["1.5", "2.000001", "-0.5", None, "2.499999"], 18, 6),
+        "h": _dec(["2", "2", "-1", None, "2"], 38, 0),
+    }
+)
+WIDE_BIG = pa.table(
+    {
+        "k": pa.array([1, 2], pa.int32()),
+        "d": _dec(["1.5", "2"], 9, 4),
+        "h": _dec(["2", "1" + "0" * 35], 38, 0),
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "d < h",
+        "d <= h",
+        "d = h",
+        "d <> h",
+        "d > h",
+        "h > d",
+        "e = h",
+        "g = h",
+        "g < h",
+        "1.5 = h",
+        "CAST(k AS DECIMAL(9,4)) + 0.5 < CAST(2 AS DECIMAL(38,0))",
+        "d IS DISTINCT FROM h",
+        "d IS NOT DISTINCT FROM h",
+        "CASE d WHEN h THEN 1 ELSE 0 END",
+        "nullif(d, h)",
+        "nullif(h, d)",
+        "CASE WHEN k < 3 THEN d < h END",
+        # The common type, which rounds d: unchanged.
+        "greatest(d, h)",
+        "CASE WHEN k > 2 THEN d ELSE h END",
+    ],
+)
+def test_a_comparison_past_38_digits_keeps_the_scale(expr):
+    assert_parity(_q(expr), WIDE, expect="AGREE")
+
+
+def test_a_filter_past_38_digits_keeps_the_scale():
+    assert_parity("SELECT k FROM __THIS__ WHERE d < h", WIDE, expect="AGREE")
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "d < h",
+        "h = d",
+        "d IS DISTINCT FROM h",
+        "CASE d WHEN h THEN 1 END",
+        "nullif(h, d)",
+        "k < 2 AND d < h",
+    ],
+)
+def test_a_comparison_past_38_digits_traps_like_duckdb(expr):
+    trap = r"to type DECIMAL\(38,4\) failed: value is out of range"
+    assert_parity(_q(expr), WIDE_BIG, trap=trap)
+
+
+def test_a_comparison_past_38_digits_traps_only_where_it_runs():
+    assert_parity(_q("CASE WHEN k < 2 THEN d < h END"), WIDE_BIG, expect="AGREE")
+
+
+def test_a_comparison_past_38_digits_with_a_subquery():
+    s = pa.table({"sk": pa.array([1, 2], pa.int64()), "sh": _dec(["2", "3"], 38, 0)})
+    sql = "SELECT k, d < (SELECT max(s.sh) FROM s) AS x FROM __THIS__"
+    assert_parity(sql, WIDE, statics={"s": s}, expect="AGREE")
+    big = pa.table(
+        {"sk": pa.array([1, 2], pa.int64()), "sh": _dec(["2", "1" + "0" * 35], 38, 0)}
+    )
+    trap = r"to type DECIMAL\(38,4\) failed: value is out of range"
+    assert_parity(sql, WIDE, statics={"s": big}, trap=trap)
+
+
+def test_a_static_where_term_past_38_digits_refuses():
+    # `s.sh > 1.5` compares at DECIMAL(38,1), whose cast of `s.sh` can trap,
+    # and the WHERE of a subquery serves only static terms that cannot.
+    s = pa.table({"sk": pa.array([1, 2], pa.int64()), "sh": _dec(["2", "3"], 38, 0)})
+    sql = "SELECT k, (SELECT count(*) FROM s WHERE s.sh > 1.5) AS x FROM __THIS__"
+    v = assert_parity(sql, WIDE, statics={"s": s}, expect="REFUSED")
+    assert "can trap" in v.detail
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A comparison between the two sides of a JOIN ON: DuckDB evaluates
+        # each side over its whole table.
+        "SELECT k, s.sh FROM __THIS__ AS t LEFT JOIN s ON s.sk = t.k AND s.sh > t.d",
+        # A comma join's WHERE term before the key: DuckDB evaluates it over
+        # every pair of rows.
+        "SELECT k, s.sh FROM __THIS__ AS t, s WHERE s.sh > t.d AND s.sk = t.k",
+    ],
+)
+def test_a_join_term_past_38_digits_refuses(sql):
+    s = pa.table({"sk": pa.array([1, 2], pa.int64()), "sh": _dec(["2", "3"], 38, 0)})
+    v = assert_parity(sql, WIDE, statics={"s": s}, shape="many", expect="REFUSED")
+    assert "trap" in v.detail
 
 
 # -------------------------------------------------------------- builtins
