@@ -66,9 +66,9 @@ promise.
 
 *Decision:* [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
-Severity follows [the four-rung ladder](08-the-severity-ladder.md). Trap elision is a
-contract entry rather than an engine-versus-oracle value divergence, but is indexed
-where readers expect it.
+Severity follows [the four-rung ladder](08-the-severity-ladder.md). Trap elision and the
+subquery LIMIT ceiling are contract entries rather than engine-versus-oracle value
+divergences, but are indexed where readers expect them.
 
 | divergence | kind / severity | current status | ruling |
 |---|---|---|---|
@@ -110,9 +110,11 @@ Slugs are stable when multiple entries describe one mechanism.
   `known-limitations.md` §5; `known_divergences/test_trap_elision.py`.
 - **divergence: subquery-limit-ceiling.** Optimizer-on DuckDB plans a correlated
   `(SELECT ... ORDER BY o LIMIT n)` with one ORDER BY term without NULLS FIRST and no
-  OFFSET as `arg_min` or `arg_max` with n. That function raises an error if n is
-  1,000,000 or more, `LIMIT NULL` and `LIMIT ALL` included. Optimizer-off DuckDB and
-  confit serve the query, and the campaign reports it as `DIVERGE_OPT`. Evidence:
+  OFFSET as the aggregate `arg_min` (`arg_max` for DESC), with n as its third argument.
+  That aggregate raises an error if n is 1,000,000 or more, `LIMIT NULL` and `LIMIT ALL`
+  included. Optimizer-off DuckDB and confit serve the query, and the campaign reports it
+  as `DIVERGE_OPT`. Against the optimizer-on reading, this is severity 3, because
+  confit serves where DuckDB raises an error. Evidence:
   `known-limitations.md` §5;
   `test_scalar_subquery.py::test_a_limit_of_a_million_or_more_serves_where_duckdbs_optimizer_raises`;
   campaign seeds 40336742, 40383913, 40835198 and 42686262.

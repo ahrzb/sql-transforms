@@ -745,7 +745,8 @@ The first five are ruled, in this order; the rest follow.
   40,100,000..44,099,999 that draw them gave 3,371 AGREE, 117 AGREE_TRAP,
   2,928 REFUSED, 26 DIVERGE_OPT (4 of them the arg_min class above), 11
   EXCLUDED and 0 gated; of the refusals, 402 keep more than one row of a key
-  (DuckDB traps in 369) and 200 name a tie.
+  (DuckDB traps in 369) and 200 name a tie; 36,690 metamorphic pairs gave
+  no finding.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the

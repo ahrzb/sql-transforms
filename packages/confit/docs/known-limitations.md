@@ -112,8 +112,9 @@ says whether each form is inside the model.
   request matches or that the subquery's ORDER BY and LIMIT keep
   ([serving contract](specs/serving-contract.md#scalar-subqueries-over-a-static-table)).
 - `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT` — row-independent transforms
-  don't reorder or deduplicate. `LIMIT ALL` and `LIMIT NULL` keep every row
-  in DuckDB, so they serve as no LIMIT.
+  don't reorder or deduplicate. Confit serves a query that ends with
+  `LIMIT ALL` or `LIMIT NULL`, without OFFSET, as a query without LIMIT. The
+  oracle keeps every row for these two clauses.
 - A CTE read twice, `UNION`/`INTERSECT`/`EXCEPT`, multiple statements.
 - Subqueries, except a derived table, a CTE read once and the scalar
   subquery above.
@@ -324,18 +325,21 @@ These are served, but with a consciously chosen surface — know them:
   This way the divergence is always a loud trap or refusal, never a
   different served value. If it bites you, `PRAGMA disable_optimizer` in
   your DuckDB session reproduces exactly what confit does.
-- **A LIMIT of a million or more in a scalar subquery serves where
-  DuckDB's optimizer raises an error.** With the optimizer on, DuckDB
-  plans `(SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT n)` as
-  `arg_min(s.v, s.o, n)` for each key. It does so if the subquery has one
-  ORDER BY term without NULLS FIRST and no OFFSET. This function raises
+- **Confit serves a LIMIT of a million or more in a scalar subquery, where
+  DuckDB with the optimizer on raises an error.** With the optimizer on,
+  DuckDB plans `(SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT n)` as
+  `arg_min(s.v, s.o, n)` for each value of `s.k`. It does so if the subquery
+  has one ORDER BY term without NULLS FIRST and no OFFSET. This aggregate
+  gives the values of `s.v` in the n rows with the least `s.o`, and
+  `arg_max` takes its place for DESC. It raises
   `Invalid input for arg_min/arg_max: n value must be < 1000000` if n is
   1,000,000 or more. DuckDB reads `LIMIT NULL` and `LIMIT ALL` as the
-  greatest BIGINT, so they raise the error too. With the optimizer off,
-  DuckDB serves the query, and confit serves the same answer. The campaign
-  labels these cases `DIVERGE_OPT`. `PRAGMA disable_optimizer` in your
-  DuckDB session gives the answer of confit (measured on DuckDB 1.5.5,
-  2026-10-15).
+  greatest BIGINT, so with the optimizer on they raise the error too. With
+  the optimizer off, DuckDB serves the query, and confit serves the same
+  answer. The campaign labels these cases `DIVERGE_OPT`. With
+  `PRAGMA disable_optimizer` in your DuckDB session and the other settings
+  at their defaults, DuckDB gives the answer of confit (measured on DuckDB
+  1.5.5, 2026-10-15).
 - **`%`-by-zero NaN bit pattern is platform-libm** — pinned as
   engine==oracle bit agreement per platform, not a constant.
 - **Schema qualifiers are registry-noise**: the engine's table
