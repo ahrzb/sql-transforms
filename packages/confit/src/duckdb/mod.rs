@@ -27,7 +27,7 @@ use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
 use crate::specializer::frontend::macros::SqlMacro;
-use crate::specializer::{prepare_full, StaticSpec, WideOut, WideShape};
+use crate::specializer::{prepare_full, FilterSpec, StaticSpec, WideOut, WideShape};
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
 /// Arrow is what the caller wrote.
@@ -1518,6 +1518,80 @@ fn agg_in(
     }))
 }
 
+/// The input batch of `rows` (dicts, or objects read by attribute) for
+/// `lanes`: the generic boundary, which the marshaller only outruns.
+/// `table` names the rows' table in an error.
+fn rows_batch(
+    lanes: &[plan::InputLane],
+    rows: &[Bound<'_, PyAny>],
+    table: &str,
+) -> PyResult<Batch> {
+    let n = rows.len();
+    let mut cols: Vec<ColData> = lanes.iter().map(|l| col_for_lane(l, n)).collect();
+    for bound in rows {
+        // Dict rows are part of the API surface; the baseline path must
+        // accept the same inputs as the marshaller, differing only in
+        // cost.
+        let dict = bound.cast::<PyDict>().ok();
+        for (lane, col) in lanes.iter().zip(&mut cols) {
+            let mut segs = lane.path.iter().map(|s| s.as_str());
+            let first = segs.next().expect("a path is never empty");
+            let mut attr = match dict {
+                Some(d) => d.get_item(first)?.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Row for table '{table}' is missing attribute '{}'",
+                        lane.name
+                    ))
+                })?,
+                None => bound.getattr(first).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Row for table '{table}' is missing attribute '{}': {e}",
+                        lane.name
+                    ))
+                })?,
+            };
+            // Struct leaf lanes: walk the dotted path (None -> NULL).
+            for seg in segs {
+                if attr.is_none() {
+                    break;
+                }
+                attr = match attr.cast::<PyDict>() {
+                    Ok(d) => d.get_item(seg)?.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{table}' is missing attribute '{}'",
+                            lane.name
+                        ))
+                    })?,
+                    Err(_) => attr.getattr(seg).map_err(|e| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{table}' is missing attribute '{}': {e}",
+                            lane.name
+                        ))
+                    })?,
+                };
+            }
+            let null = attr.is_none();
+            match lane.kind {
+                // A PRESENCE lane's VALUE is that validity.
+                plan::LaneKind::Present => {
+                    present_node(&attr, &lane.name)?;
+                    col.push_present(!null)
+                }
+                plan::LaneKind::Value(ct) => {
+                    if null && !ct.nullable {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "column '{}' is not nullable but a row has None",
+                            lane.name
+                        )));
+                    }
+                    push_input_cell(col, &lane.name, ct, &attr, null)?;
+                }
+            }
+        }
+    }
+    Ok(Batch { rows: n, cols })
+}
+
 /// One grouped static of a scalar subquery (`plan::AggTable`), per its
 /// `StaticSpec` recipe: the source rows grouped by their converted keys, one
 /// entry per group, valued by the group's aggregates. A row `build_keys`
@@ -1536,7 +1610,15 @@ fn materialize_aggs(
     aggs: &[crate::specializer::AggVal],
 ) -> PyResult<StaticData> {
     use plan::AggFunc;
-    let rows = table.bind(py).call_method0("to_pylist")?;
+    let rows: Vec<Bound<'_, PyAny>> = table
+        .bind(py)
+        .call_method0("to_pylist")?
+        .try_iter()?
+        .collect::<PyResult<_>>()?;
+    let keep = match &spec.filter {
+        Some(f) => Some(filter_rows(f, &rows, &spec.table)?),
+        None => None,
+    };
     let fresh = || aggs.iter().map(|a| Acc::new(a.func)).collect::<Vec<_>>();
     let mut groups: std::collections::BTreeMap<Vec<KeyBits>, Vec<Acc>> = Default::default();
     if spec.keys.is_empty() {
@@ -1555,8 +1637,10 @@ fn materialize_aggs(
         };
         format!("{f}({arg})")
     };
-    for item in rows.try_iter()? {
-        let row = item?;
+    for (r, row) in rows.iter().enumerate() {
+        if keep.as_ref().is_some_and(|k| !k[r]) {
+            continue;
+        }
         let row = row.cast::<PyDict>().map_err(|_| {
             build_err(format!(
                 "static table '{}': to_pylist row is not a dict",
@@ -1715,6 +1799,38 @@ fn materialize_aggs(
         entries.push((keys, vals));
     }
     Ok(StaticData::Map(entries))
+}
+
+/// The rows of a scalar subquery's static table that its WHERE terms
+/// reading only that table keep ([`FilterSpec`]): those on which every term
+/// is TRUE. No term can trap, so the interpreter runs each over every row.
+fn filter_rows(f: &FilterSpec, rows: &[Bound<'_, PyAny>], table: &str) -> PyResult<Vec<bool>> {
+    // Not a ValueError: each failure here is an engine bug, never a refusal.
+    let internal =
+        |e: String| pyo3::exceptions::PyRuntimeError::new_err(format!("internal error: {e}"));
+    let fun = compile_ext(&f.program, Vec::new(), Vec::new()).map_err(|e| internal(e.to_string()))?;
+    let batch = rows_batch(&f.lanes, rows, table)?;
+    let mut st = fun.new_state();
+    fun.run(&batch, &mut st).map_err(|t| {
+        internal(format!("static table '{table}': a WHERE term of a scalar subquery trapped: {}", t.0))
+    })?;
+    let mut keep = vec![true; rows.len()];
+    for col in &st.out {
+        match col {
+            OutCol::I1(v) if v.len() == rows.len() => {
+                for (k, &(valid, x)) in keep.iter_mut().zip(v) {
+                    *k &= valid && x;
+                }
+            }
+            _ => {
+                return Err(internal(format!(
+                    "static table '{table}': a WHERE term of a scalar subquery answered no \
+                     BOOLEAN per row"
+                )))
+            }
+        }
+    }
+    Ok(keep)
 }
 
 /// The refusal of an `avg` whose absolute values add up past the range of
@@ -2553,72 +2669,8 @@ impl DuckDBInferFn {
             }
         }
 
-        let n = rows.len();
-        let mut cols: Vec<ColData> = lanes.iter().map(|l| col_for_lane(l, n)).collect();
-        for row_obj in rows {
-            let bound = row_obj.bind(py);
-            // Dict rows are part of the API surface; the baseline path must
-            // accept the same inputs as the marshaller, differing only in
-            // cost.
-            let dict = bound.cast::<PyDict>().ok();
-            for (lane, col) in lanes.iter().zip(&mut cols) {
-                let mut segs = lane.path.iter().map(|s| s.as_str());
-                let first = segs.next().expect("a path is never empty");
-                let mut attr = match dict {
-                    Some(d) => d.get_item(first)?.ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(format!(
-                            "Row for table '{}' is missing attribute '{}'",
-                            self.row_table, lane.name
-                        ))
-                    })?,
-                    None => bound.getattr(first).map_err(|e| {
-                        pyo3::exceptions::PyValueError::new_err(format!(
-                            "Row for table '{}' is missing attribute '{}': {e}",
-                            self.row_table, lane.name
-                        ))
-                    })?,
-                };
-                // Struct leaf lanes: walk the dotted path (None -> NULL).
-                for seg in segs {
-                    if attr.is_none() {
-                        break;
-                    }
-                    attr = match attr.cast::<PyDict>() {
-                        Ok(d) => d.get_item(seg)?.ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err(format!(
-                                "Row for table '{}' is missing attribute '{}'",
-                                self.row_table, lane.name
-                            ))
-                        })?,
-                        Err(_) => attr.getattr(seg).map_err(|e| {
-                            pyo3::exceptions::PyValueError::new_err(format!(
-                                "Row for table '{}' is missing attribute '{}': {e}",
-                                self.row_table, lane.name
-                            ))
-                        })?,
-                    };
-                }
-                let null = attr.is_none();
-                match lane.kind {
-                    // A PRESENCE lane's VALUE is that validity.
-                    plan::LaneKind::Present => {
-                        present_node(&attr, &lane.name)?;
-                        col.push_present(!null)
-                    }
-                    plan::LaneKind::Value(ct) => {
-                        if null && !ct.nullable {
-                            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                                "column '{}' is not nullable but a row has None",
-                                lane.name
-                            )));
-                        }
-                        push_input_cell(col, &lane.name, ct, &attr, null)?;
-                    }
-                }
-            }
-        }
-
-        let batch = Batch { rows: n, cols };
+        let bound: Vec<Bound<'_, PyAny>> = rows.iter().map(|r| r.bind(py).clone()).collect();
+        let batch = rows_batch(lanes, &bound, &self.row_table)?;
         let mut st = fun.new_state();
         fun.run(&batch, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;

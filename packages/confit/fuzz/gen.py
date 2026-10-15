@@ -459,20 +459,27 @@ class Like(Node):
 class ScalarSub(Node):
     """A scalar subquery with one aggregate over one static table:
     `(SELECT func(arg) FROM table [AS alias] WHERE alias.col = outer AND
-    ...)`. Its kids are the outer sides of the WHERE terms."""
+    ...)`. Its WHERE terms are the keys, and the terms that read only the
+    table, each written before the key at its position. Its kids are the
+    outer sides of the keys, then those terms."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
     table: str
     keys: list[tuple[str, str, Node]]  # (column of `table`, operator, outer side)
     alias: str | None = None
+    preds: list[tuple[int, Node]] = field(default_factory=list)  # (position, term)
 
     def kids(self):
-        return [o for _, _, o in self.keys]
+        return [o for _, _, o in self.keys] + [p for _, p in self.preds]
 
     def swap(self, i, new):
-        c, op, _ = self.keys[i]
-        self.keys[i] = (c, op, new)
+        if i < len(self.keys):
+            c, op, _ = self.keys[i]
+            self.keys[i] = (c, op, new)
+        else:
+            at, _ = self.preds[i - len(self.keys)]
+            self.preds[i - len(self.keys)] = (at, new)
 
 
 @dataclass
@@ -978,10 +985,10 @@ def rexpr(e: Node) -> str:
         scope = _ident(e.alias or e.table)
         frm = _ident(e.table) + (f" AS {_ident(e.alias)}" if e.alias else "")
         arg = "*" if e.arg is None else f"{scope}.{_ident(e.arg)}"
-        terms = " AND ".join(
-            f"{scope}.{_ident(c)} {op} {rexpr(o)}" for c, op, o in e.keys
-        )
-        where = f" WHERE {terms}" if terms else ""
+        terms = [f"{scope}.{_ident(c)} {op} {rexpr(o)}" for c, op, o in e.keys]
+        for at, p in sorted(e.preds, key=lambda x: -x[0]):
+            terms.insert(min(at, len(terms)), rexpr(p))
+        where = f" WHERE {' AND '.join(terms)}" if terms else ""
         return f"(SELECT {e.func}({arg}) FROM {frm}{where})"  # noqa: S608
     raise TypeError(e)
 
@@ -1502,16 +1509,38 @@ def _as_storage(v, storage: str):
     return v
 
 
+def _table_test(rng, env) -> Node:
+    """One test of a column of `env` that cannot trap: a comparison with a
+    literal, BETWEEN, IN, LIKE, IS NULL, or the column itself."""
+    t, n, ty = rng.choice(env.cols)
+    c = Col(n, t, ty)
+    r = rng.random()
+    if r < 0.15:
+        return IsNull(c, neg=rng.random() < 0.5)
+    if ty == "bool":
+        return c if r < 0.6 else Un("NOT", c)
+    if ty == "str" and r < 0.45:
+        pat = rng.choice(["%", "a%", "%e%", "_", "O''Brien", "%☃%", "a_c", ""])
+        return Like(c, pat, neg=rng.random() < 0.3)
+    if ty in ("int", "float") and r < 0.45:
+        return Between(c, lit(rng, ty), lit(rng, ty), neg=rng.random() < 0.3)
+    if ty in ("int", "str") and r < 0.6:
+        items = [lit(rng, ty) for _ in range(rng.randrange(1, 4))]
+        return InList(c, items, neg=rng.random() < 0.3)
+    return Bin(rng.choice(CMP), c, lit(rng, ty))
+
+
 def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     """Add one or two items to the outer query that read a scalar subquery
     with one aggregate over a new static table, and maybe a WHERE term that
     reads one, from a generator of its own so no other seed's draws move.
-    Each WHERE term of a subquery compares a key column of the table with a
-    column of the request table. About half of the table's keys come from
-    that column, repeats included, so a request matches several rows. A few
-    subqueries take a form that confit refuses by name: a DOUBLE sum or avg,
-    IS NOT DISTINCT FROM under shape='many', an outer side that can trap. An
-    avg over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
+    A WHERE term of a subquery compares a key column of the table with a
+    column of the request table, or reads only the table. About half of the
+    table's keys come from that column, repeats included, so a request
+    matches several rows. A few subqueries take a form that confit refuses
+    by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under shape='many', an
+    outer side that can trap, a term over the table that can trap. An avg
+    over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1536,6 +1565,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
                 r[kc] = qrng.choice(seen)
     statics[name] = (sch, srows)
     scope = f"{name}x" if qrng.random() < 0.25 else None
+    made: list[ScalarSub] = []
 
     def sub(func=None) -> ScalarSub:
         arg = None if qrng.random() < 0.3 else qrng.choice(list(sch))
@@ -1553,7 +1583,8 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
                 o = Bin("+", o, Lit(1, "int"))  # can trap: confit refuses
             op = "IS NOT DISTINCT FROM" if qrng.random() < 0.15 else "="
             terms.append((kc, op, o))
-        return ScalarSub(func, arg, name, terms, scope)
+        made.append(ScalarSub(func, arg, name, terms, scope))
+        return made[-1]
 
     for _ in range(qrng.choice([1, 1, 2])):
         s = sub()
@@ -1568,6 +1599,19 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     if qrng.random() < 0.2:
         term = Bin(">", sub("count"), Lit(0, "int"))
         b.where = term if b.where is None else Bin("AND", b.where, term)
+    # Terms that read only the table, drawn after every draw above, so a
+    # subquery that gets none is the one it was before they existed. Most
+    # are one test over the table's columns, which cannot trap (confit's
+    # `can_trap` still counts LIKE as one that can); a deeper one may trap,
+    # and then confit refuses the subquery by name.
+    tenv = Env([(scope or name, c, t) for c, t, _ in leaves(sch)], [], None)
+    for s in made:
+        if qrng.random() < 0.5:
+            continue
+        for _ in range(qrng.randrange(1, 3)):
+            deep = qrng.random() < 0.25 or not tenv.cols
+            p = expr(qrng, tenv, "bool", 2) if deep else _table_test(qrng, tenv)
+            s.preds.append((qrng.randrange(len(s.keys) + 1), p))
     tags.append("scalar-subquery")
     return True
 

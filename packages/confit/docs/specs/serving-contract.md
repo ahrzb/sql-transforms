@@ -109,7 +109,7 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery with one aggregate over one static table, keyed by equalities with the outer query ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate over the static rows that one request matches, read through a join to a table that confit computes at build |
+| A scalar subquery with one aggregate over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate over the static rows that one request matches, read through a join to a table that confit computes at build |
 | A scalar subquery of another form, for example with a DOUBLE `sum` or `avg`, or with an expression over the aggregate. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
@@ -148,18 +148,21 @@ The aggregate is `count(*)`, `count` of a column or of a constant that is not
 NULL, `min` or `max` of a column, `sum` of an integer, BOOLEAN or DECIMAL
 column, or `avg` of an integer or DECIMAL column. On a platform other than
 x86_64 Linux, confit serves `avg` only for SMALLINT and for a DECIMAL with a
-precision of 4 or less (see below). Each term of the WHERE compares a column of
+precision of 4 or less (see below). A term of the WHERE compares a column of
 `s` with an expression of the outer query, by `=` or `IS NOT DISTINCT FROM`.
-The WHERE can also be absent. Confit refuses the subquery if an outer
-expression can trap. It also refuses an outer expression that reads a table
-that the outer query joins.
+Or the term reads only `s`, such as `s.v > 5`. The WHERE can also be absent.
+Confit refuses the subquery if an outer expression or a term that reads only
+`s` can trap. It also refuses an outer expression that reads a table that the
+outer query joins, and a term that reads only `s` but holds a subquery or
+calls a SQL function.
 
-At build, confit puts the rows of `s` into groups with equal keys and computes
-the aggregate of each group. The keys are the columns of `s` that the WHERE
-compares. If the WHERE is absent, all rows of `s` make one group. A request
-reads the aggregate of the group that it matches, through a LEFT join. If a
-request matches no group, it reads 0 for `count` and NULL for the other
-aggregates.
+At build, confit keeps the rows of `s` on which each term that reads only `s`
+is TRUE. It puts these rows into groups with equal keys and computes the
+aggregate of each group. The keys are the columns of `s` that the WHERE
+compares with the outer query. If no term compares one, all the rows that
+confit keeps make one group. A request reads the aggregate of the group that
+it matches, through a LEFT join. If a request matches no group, it reads 0 for
+`count` and NULL for the other aggregates.
 
 The oracle evaluates the WHERE of the subquery in written order, for each
 pair of a distinct outer value and a row of `s`. It evaluates the argument of

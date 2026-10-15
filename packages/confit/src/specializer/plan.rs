@@ -132,6 +132,23 @@ pub struct AggTable {
     pub keys: Vec<u32>,
     /// Per aggregate lane: what it computes over a group.
     pub aggs: Vec<Agg>,
+    /// The subquery's WHERE terms that read only the source table: the
+    /// build groups only the rows on which every one is TRUE.
+    pub filter: Option<AggFilter>,
+}
+
+/// The WHERE terms of a scalar subquery that read only its static table,
+/// bound as the items of a query of their own over that table
+/// (`frontend/subquery.rs`): the program the build runs over the table's
+/// rows before it groups them.
+#[derive(Clone)]
+pub struct AggFilter {
+    /// The table's scalar columns in declared order: the query's input.
+    pub in_cols: Vec<Col>,
+    /// Per term, in written order: the term as a BOOLEAN that cannot trap.
+    pub project: Vec<(String, SExpr)>,
+    pub out_cols: Vec<Col>,
+    pub regexes: Vec<super::ir::ReSpec>,
 }
 
 /// One aggregate of an [`AggTable`].
@@ -1177,7 +1194,8 @@ fn can_trap_here(e: &SExpr) -> bool {
         // A cast that cannot fail: TRY_CAST (a failure is NULL), and the
         // conversions that are total -- an integer or a DOUBLE to DOUBLE,
         // anything numeric or BOOLEAN to VARCHAR, an integer to a width
-        // that holds its whole range, BOOLEAN to an integer.
+        // that holds its whole range, BOOLEAN to an integer, an integer or
+        // a DOUBLE to BOOLEAN.
         SKind::Cast { inner, trying } if *trying || cast_is_total(inner.ty, e.ty) => {
             can_trap(inner)
         }
@@ -1205,6 +1223,9 @@ fn cast_is_total(from: Ty, to: Ty) -> bool {
         (a, Ty::F64) => a.is_integer() || a == Ty::I1,
         (a, Ty::Str) => a.is_integer() || a == Ty::I1 || a == Ty::F64 || a.dec().is_some(),
         (Ty::I1, b) => b.is_integer(),
+        // Nonzero is TRUE, NaN and the infinities included (measured,
+        // DuckDB 1.5.5): the cast of a WHERE term that is not a BOOLEAN.
+        (a, Ty::I1) => a.is_integer() || a == Ty::F64,
         (a, b) if a.is_integer() && b.is_integer() => {
             let range = |t: Ty| t.int_range128().expect("an integer width");
             let ((alo, ahi), (blo, bhi)) = (range(a), range(b));

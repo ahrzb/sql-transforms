@@ -471,25 +471,33 @@ The first five are ruled, in this order; the rest follow.
   subquery with one `count`, `min`, `max`, integer, BOOLEAN or DECIMAL `sum`,
   or integer or DECIMAL `avg` over one static table, keyed by `=` or IS NOT
   DISTINCT FROM between a bare column of the table and an outer expression
-  that cannot trap. It binds as a hidden LEFT join to a table grouped at
-  build (`src/specializer/frontend/subquery.rs`, `AggTable` in `plan.rs`;
-  claim `scalar-subquery-as-join`; `tests/test_scalar_subquery.py`;
-  generator gate 33 mod 43, tag `scalar-subquery`; 2,400 gated seeds, 0
-  findings besides 10 DIVERGE_OPT of the known trap-elision class). `avg`
+  that cannot trap, and filtered by WHERE terms that read only the table and
+  cannot trap. It binds as a hidden LEFT join to a table that the build
+  filters and groups (`src/specializer/frontend/subquery.rs`, `AggTable` and
+  `AggFilter` in `plan.rs`; claim `scalar-subquery-as-join`;
+  `tests/test_scalar_subquery.py`; generator gate 33 mod 43, tag
+  `scalar-subquery`; 2,400 gated seeds, 0 findings besides 10 DIVERGE_OPT of
+  the known trap-elision class). `avg`
   follows DuckDB's finalization exactly (`src/duckdb/avg.rs`): `double` for
   SMALLINT and DECIMAL(<=4, s), x87 `long double` for the rest (sum, divisor
   and quotient rounded to 64 bits, then to 53), so it serves on x86_64 Linux
   only; refused past i128 in Σ|v| (HUGEINT addition traps). The tests hold
   groups per storage type that tell the models apart; 24,000 gated seeds
   after avg gave 0 gated verdicts, with 2,013 cases of a subquery avg (778
-  AGREE, 31 AGREE_TRAP).
+  AGREE, 31 AGREE_TRAP). The generator draws the static terms after every
+  other draw; on 30,000,000..30,049,999, 672 subquery cases gained terms (309
+  AGREE, 10 AGREE_TRAP), and the campaign gave 0 gated verdicts.
   Still refused by name: DOUBLE `sum`/`avg` (decision below), DISTINCT,
   an expression over the aggregate, several aggregates, a WHERE term that is
-  not a key (a static predicate traps on unmatched rows), an outer side that
-  can trap or reads a joined table, a VARCHAR key against another type, a
-  subquery in FROM, in JOIN ON or inside the subquery, the request table, and
-  a scalar subquery under `shape='many'` in a two-level query. Next, in this
-  order: static predicates that cannot trap; outer sides that can trap (they
+  neither a key nor reads only the table, a static term that can trap (DuckDB
+  runs it over unmatched rows), holds a subquery or calls a SQL function, an
+  outer side that can trap or reads a joined table, a VARCHAR key against
+  another type, a subquery in FROM, in JOIN ON or inside the subquery, the
+  request table, and a scalar subquery under `shape='many'` in a two-level
+  query. `can_trap` counts LIKE and the string functions as trapping: of the
+  59 static terms that campaign refused as trapping, 42 hold LIKE and 12 a
+  string function. Next, in this order: step (1) of "Comma-join term order
+  over-refuses" below, which serves both; outer sides that can trap (they
   trap only when the static table has rows, which the build knows); an
   expression over the aggregate.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in

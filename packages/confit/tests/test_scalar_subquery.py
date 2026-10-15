@@ -3,11 +3,12 @@
 
 Confit binds it as a hidden LEFT join to a table that it computes at build:
 one row per group of static rows with equal keys, holding the group's
-aggregate. A request that matches no group reads the aggregate of no rows: 0
-for count, NULL for the others. The oracle evaluates the subquery's WHERE in
-written order over (distinct outer values) x (static rows), and the
-aggregate's argument over the matched rows only (the pins at the end). Nothing
-served here can trap, so the values are what compares.
+aggregate. The WHERE terms that read only the static table filter its rows
+before the build groups them. A request that matches no group reads the
+aggregate of no rows: 0 for count, NULL for the others. The oracle evaluates
+the subquery's WHERE in written order over (distinct outer values) x (static
+rows), and the aggregate's argument over the matched rows only (the pins at
+the end). Nothing served here can trap, so the values are what compares.
 
 Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 """
@@ -15,6 +16,7 @@ Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -173,7 +175,7 @@ KEYS = [
     "s.u = t.k",
     "s.i8 = t.k",
     "s.k = t.id",
-    "s.k = 1",  # a constant outer side
+    "s.k = 1",  # reads only the table: a filter, not a key
     "t.k = s.k",  # the outer side first
     "s.k = t.k AND s.j = t.j",
     "s.k = t.k AND s.k = t.j",
@@ -229,6 +231,113 @@ def test_keys(where, shape):
     assert_parity(_sub("sum(v)", where), T, statics={"s": S}, shape=shape)
 
 
+# WHERE terms that read only the static table: the build keeps the rows on
+# which every one is TRUE, then groups them.
+STATIC_TERMS = [
+    "s.k = t.k AND s.v > 5",
+    "s.v > 5 AND s.k = t.k",  # before the key
+    "s.k = t.k AND s.f < 1.0",  # NaN and -0.0
+    "s.k = t.k AND s.b",
+    "s.k = t.k AND NOT s.b",
+    "s.k = t.k AND s.v",  # a BIGINT term: nonzero is TRUE
+    "s.k = t.k AND s.f",  # a DOUBLE term: NaN is TRUE, -0.0 FALSE
+    "s.k = t.k AND s.u",
+    "s.k = t.k AND s.s IS NULL",
+    "s.k = t.k AND s.v BETWEEN 0 AND 10",
+    "s.k = t.k AND s.v IN (10, 20)",
+    "s.k = t.k AND (s.j > 1 OR s.k IS NULL)",
+    "s.k = t.k AND CASE WHEN s.b THEN s.v > 5 ELSE s.f > 0 END",
+    "s.k = t.k AND coalesce(s.v, 0) > 5",
+    "s.k = t.k AND TRY_CAST(s.s AS BIGINT) IS NULL",
+    "s.k = t.k AND s.d > 1.5",
+    "s.k = t.k AND s.s > 'a'",
+    "s.k = t.k AND s.j = s.k",  # two columns of the table
+    "s.k = t.k AND NULL",  # no row passes
+    "s.k = t.k AND TRUE",
+    "s.k = t.k AND FALSE",
+    "s.k = k",  # `k` names s.k: the inner scope binds first
+    "s.v > 5",  # uncorrelated
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", STATIC_TERMS)
+def test_static_terms(where, shape):
+    for agg in ["count(*)", "sum(v)", "max(s)", "avg(d)"]:
+        assert_parity(_sub(agg, where), T, statics={"s": S}, shape=shape)
+
+
+@pytest.mark.parametrize("agg", AGGREGATES)
+def test_aggregate_over_the_rows_a_static_term_keeps(agg):
+    assert_parity(_sub(agg, "s.k = t.k AND s.j = 1"), T, statics={"s": S})
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # The names of the table, aliased with its columns renamed, and
+        # qualified by schema and by catalog.
+        "SELECT id, (SELECT count(*) FROM s AS x(kk, jj) "
+        "WHERE x.kk = t.k AND x.jj = 2) AS c FROM __THIS__ AS t",
+        "SELECT id, (SELECT sum(v) FROM main.s "
+        "WHERE main.s.v > 5 AND main.s.k = t.k) AS c FROM __THIS__ AS t",
+        "SELECT id, (SELECT sum(v) FROM memory.main.s "
+        "WHERE memory.main.s.v > 5 AND s.k = t.k) AS c FROM __THIS__ AS t",
+        # Two subqueries over one table, each with terms of its own.
+        "SELECT id, (SELECT count(*) FROM s WHERE s.k = t.k AND s.v > 5) "
+        "+ (SELECT sum(v) FROM s WHERE s.k = t.k AND s.v < 15) AS c FROM __THIS__ AS t",
+        "SELECT id, (SELECT count(*) FROM s WHERE s.k = t.k AND s.v > 5) AS c "
+        "FROM __THIS__ AS t WHERE c > 0",
+    ],
+)
+def test_static_term_forms(sql):
+    assert_parity(sql, T, statics={"s": S})
+
+
+def test_static_terms_over_a_table_with_columns_it_does_not_serve():
+    # A struct and a timestamp column beside the plain ones: a term reads
+    # the plain columns, and a term that reads the others refuses by name.
+    w = pa.table(
+        {
+            "k": pa.array([1, 1, 2, None], pa.int64()),
+            "ts": pa.array([datetime(2020, 1, 1)] * 4, pa.timestamp("us")),
+            "st": pa.array(
+                [{"a": 1}, None, {"a": 3}, {"a": 4}], pa.struct([("a", pa.int64())])
+            ),
+            "v": pa.array([5, 6, None, 8], pa.int64()),
+        }
+    )
+    assert_parity(_sub("sum(v)", "s.k = t.k AND s.v > 5"), T, statics={"s": w})
+    v = assert_parity(
+        _sub("sum(v)", "s.k = t.k AND s.st.a > 1"),
+        T,
+        statics={"s": w},
+        expect="REFUSED",
+    )
+    assert "a struct field" in v.detail, v.detail
+    v = assert_parity(
+        _sub("sum(v)", "s.k = t.k AND s.ts IS NULL"),
+        T,
+        statics={"s": w},
+        expect="REFUSED",
+    )
+    assert "column 'ts' has type timestamp[us]" in v.detail, v.detail
+    # A term that reads no column, over a table with no plain column.
+    only = w.select(["ts", "st"])
+    for where in ["TRUE", "FALSE", "NULL"]:
+        assert_parity(_sub("count(*)", where), T, statics={"s": only})
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+def test_static_terms_over_an_empty_table_and_an_empty_batch(shape):
+    where = "s.k = t.k AND s.v > 5"
+    assert_parity(_sub("count(*)", where), T, statics={"s": S.slice(0, 0)}, shape=shape)
+    assert_parity(_sub("sum(v)", where), T.slice(0, 0), statics={"s": S}, shape=shape)
+    assert_parity(
+        _sub("max(v)", "s.v > 5"), T.slice(0, 0), statics={"s": S}, shape=shape
+    )
+
+
 @pytest.mark.parametrize("shape", [None, "many"])
 @pytest.mark.parametrize("sql", FORMS)
 def test_forms(sql, shape):
@@ -244,6 +353,7 @@ def test_forms(sql, shape):
         _sub("count(*)", "s.k IS NOT DISTINCT FROM t.k"),
         _sub("count(*)", "s.f IS NOT DISTINCT FROM t.x"),
         _sub("sum(v)", "s.k = t.k AND s.j IS NOT DISTINCT FROM t.j"),
+        _sub("count(*)", "s.v IS NULL AND s.k IS NOT DISTINCT FROM t.k"),
         "SELECT id, (SELECT count(*) FROM s WHERE s.k = t.k) AS c "
         "FROM (SELECT * FROM __THIS__) AS t",
         "WITH w AS (SELECT id, (SELECT count(*) FROM s WHERE s.k = t.k) AS c "
@@ -335,6 +445,17 @@ def test_select_list_alias_of_a_call_beside_one_over_a_subquery_serves():
     )
 
 
+def test_static_term_that_calls_a_sql_function_refuses():
+    v = assert_parity(
+        _sub("count(*)", "s.k = t.k AND g(s.v).p > 0"),
+        T,
+        statics={"s": S},
+        udfs=[G],
+        expect="REFUSED",
+    )
+    assert "reads only its table and calls a SQL function" in v.detail, v.detail
+
+
 @pytest.mark.parametrize(
     "sql, why",
     [
@@ -345,14 +466,17 @@ def test_select_list_alias_of_a_call_beside_one_over_a_subquery_serves():
         (_sub("max(v) + 1"), "one aggregate call"),
         (_sub("v"), "one aggregate call"),
         (_sub("count(NULL)"), "must be a column of its table"),
-        (_sub("count(*)", "s.k = t.k AND s.v > 5"), "the WHERE term s.v > 5"),
-        (_sub("count(*)", "s.k = k"), "the WHERE term s.k = k"),
+        (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
+        (_sub("count(*)", "s.k + 1 = t.k"), "the WHERE term s.k + 1 = t.k"),
         (_sub("sum(v)", "s.k = t.k + 1"), "can trap"),
-        (_sub("count(*)", "s.s = t.k"), "compares VARCHAR with another type"),
         (
-            _sub("count(*)", "s.k = (SELECT max(k) FROM s)"),
-            "outer side of a scalar subquery",
+            _sub("count(*)", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
+            "reads only its table and can trap",
         ),
+        (_sub("count(*)", "s.k = t.k AND s.s"), "reads only its table and can trap"),
+        (_sub("count(*)", "s.s = t.k"), "compares VARCHAR with another type"),
+        (_sub("count(*)", "s.k = (SELECT max(k) FROM s)"), "which holds a subquery"),
+        (_sub("count(*)", "s.v > (SELECT min(v) FROM s)"), "which holds a subquery"),
         (
             "SELECT id, (SELECT count(*) FROM __THIS__ AS r WHERE r.k = t.k) AS c "
             "FROM __THIS__ AS t",
@@ -499,7 +623,8 @@ def test_plan_facts_name_the_aggregate_join():
 
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap, so these facts never change a served answer. They are why a
-# static WHERE term and an outer side that can trap refuse today.
+# WHERE term that reads only the table and can trap, and an outer side that
+# can trap, refuse today.
 
 BIG = 2**63 - 1
 PIN_S = pa.table(
