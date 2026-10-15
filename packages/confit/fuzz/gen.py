@@ -475,8 +475,9 @@ class ScalarSub(Node):
     `distinct` read DISTINCT values. With `exists` set it is
     `[NOT] EXISTS (SELECT item FROM ...)` over the same WHERE instead, and
     reads no aggregate; with `in_` set it is `x [NOT] IN (SELECT column FROM
-    ...)`. Its kids are the outer sides of the keys, then those terms, then
-    x."""
+    ...)`, and with `quant` set too `[NOT] x op ANY (SELECT column FROM ...)`,
+    SOME or ALL in place of ANY. Its kids are the outer sides of the keys,
+    then those terms, then x."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -491,6 +492,8 @@ class ScalarSub(Node):
     exists: tuple[bool, str] | None = None
     # (NOT, x, the SELECT item: a column of `table`)
     in_: tuple[bool, Node, str] | None = None
+    # (the comparison, ANY | SOME | ALL), over `in_`
+    quant: tuple[str, str] | None = None
 
     def kids(self):
         x = [] if self.in_ is None else [self.in_[1]]
@@ -1040,6 +1043,9 @@ def rexpr(e: Node) -> str:
             neg, x, it = e.in_
             not_ = "NOT " if neg else ""
             sub = f"SELECT {scope}.{_ident(it)} FROM {frm}{where}"  # noqa: S608
+            if e.quant is not None:
+                op, q = e.quant
+                return f"{not_}{rexpr(x)} {op} {q} ({sub})"
             return f"{rexpr(x)} {not_}IN ({sub})"
         return f"(SELECT {item} FROM {frm}{where})"  # noqa: S608
     raise TypeError(e)
@@ -1629,13 +1635,15 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     or the operand of IS NULL, is `[NOT] EXISTS (SELECT * | 1 | column ...)`
     over the same WHERE instead, and about one in five of the others is
     `x [NOT] IN (SELECT key column ...)`, where x is the key's outer column
-    or, one time in ten, that column + 1. A few subqueries take a form that confit
-    refuses by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under
-    shape='many', an outer side that can trap after another key or under
-    shape='many', a term over the table that can trap, an expression over
-    the aggregates that traps at build or over the aggregates of no rows, a
-    left side of IN that can trap over a WHERE with a key. An avg over a
-    BOOLEAN or VARCHAR column is DuckDB's binder error."""
+    or, one time in ten, that column + 1. About one IN in two is
+    `[NOT] x op ANY | SOME | ALL (SELECT key column ...)` instead, with op a
+    comparison. A few subqueries take a form that confit refuses by name: a
+    DOUBLE sum or avg, IS NOT DISTINCT FROM under shape='many', an outer
+    side that can trap after another key or under shape='many', a term over
+    the table that can trap, an expression over the aggregates that traps at
+    build or over the aggregates of no rows, a left side of IN, ANY or ALL
+    that can trap over a WHERE with a key. An avg over a BOOLEAN or VARCHAR
+    column is DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1755,6 +1763,12 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
             if ot == "int" and qrng.random() < 0.1:
                 x = Bin("+", x, Lit(1, "int"))  # can trap
             s.in_ = (qrng.random() < 0.4, x, kc)
+    # ANY, SOME or ALL with a comparison in place of about one IN in two,
+    # drawn last too, over the same x and column.
+    for s in alone:
+        if s.in_ is not None and qrng.random() < 0.5:
+            op = qrng.choice(["=", "<>", "<", "<=", ">", ">="])
+            s.quant = (op, qrng.choice(["ANY", "SOME", "ALL"]))
     tags.append("scalar-subquery")
     return True
 

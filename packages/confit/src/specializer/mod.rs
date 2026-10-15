@@ -177,6 +177,9 @@ pub struct AggVal {
     pub src: ir::Ty,
     /// Whether it reads each distinct value once ([`plan::Agg::distinct`]).
     pub distinct: bool,
+    /// Whether a tie of DOUBLE values with other bits may answer
+    /// ([`plan::Agg::ties`]).
+    pub ties: bool,
 }
 
 /// One join of the bound plan, as the exclusion rules read it
@@ -541,6 +544,7 @@ fn agg_spec(
             func: agg.func,
             src: agg.arg.map_or(ir::Ty::I64, |l| source.cols[l as usize].ty.ty),
             distinct: agg.distinct,
+            ties: agg.ties,
         });
     };
     let post = match &a.post {

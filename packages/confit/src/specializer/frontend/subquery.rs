@@ -14,7 +14,10 @@
 //! `EXISTS (SELECT * FROM s WHERE ...)` binds as the count of the same rows
 //! above 0 ([`Binder::exists_subquery`]), and `x IN (SELECT s.c FROM s WHERE
 //! ...)` from three such counts, one with the IN test as one more key
-//! ([`Binder::in_subquery`]).
+//! ([`Binder::in_subquery`]). `x < ANY (SELECT s.c FROM s WHERE ...)`, and
+//! ANY or ALL with another comparison, binds as IN with a test of `x`
+//! against the extremes of `s.c` in place of the first count, the residual
+//! of one more hidden join ([`Binder::quantified_subquery`]).
 //!
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15)
 //! evaluates the subquery's WHERE over (distinct correlated values) x
@@ -23,9 +26,10 @@
 //! over the aggregates of its matched rows (of no rows if none matches).
 //! It plans the subquery below the operator that holds it: in the SELECT
 //! list it runs over the rows that the WHERE passes, in the WHERE over the
-//! rows that reach the WHERE, under a CASE too. Only one thing served here
-//! can trap: the outer side of the first key ([`Binder::guarded_key`]),
-//! which runs where DuckDB runs it. The inner side of each key is a bare
+//! rows that reach the WHERE, under a CASE too. Only two things served here
+//! can trap, and both run where DuckDB runs them: the outer side of the
+//! first key ([`Binder::guarded_key`]), and the left side of ANY or ALL
+//! ([`Binder::quantified_residual`]). The inner side of each key is a bare
 //! column, no key casts a VARCHAR, the outer side of a later key cannot trap
 //! (`can_trap`), no filter term can trap, and the aggregates and the item
 //! run before any request, the item over each group and over no rows, where
@@ -195,7 +199,11 @@ fn outer_form_refusal(e: &SqlExpr) -> PrepareError {
 pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareError> {
     use super::resolve::Walk;
     let at = |x: &SqlExpr| match x {
-        SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => Walk::Stop,
+        SqlExpr::Subquery(_)
+        | SqlExpr::Exists { .. }
+        | SqlExpr::InSubquery { .. }
+        | SqlExpr::AnyOp { .. }
+        | SqlExpr::AllOp { .. } => Walk::Stop,
         _ => Walk::Into,
     };
     let none = b.walk_expr(e, &mut |x| {
@@ -224,18 +232,79 @@ fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "a subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) FROM s \
          WHERE ...) with f one of count, min, max, sum and avg, or an expression over such \
-         aggregates, [NOT] EXISTS (SELECT * | constants | columns of s FROM s WHERE ...), and \
-         x [NOT] IN (SELECT a column of s FROM s WHERE ...), over one static table, each WHERE \
-         term s.k = <outer expression> or a term that reads only s, and none that can trap \
-         but the outer expression of the first key, or x over a WHERE without a key"
+         aggregates, [NOT] EXISTS (SELECT * | constants | columns of s FROM s WHERE ...), \
+         x [NOT] IN (SELECT a column of s FROM s WHERE ...), and x op ANY | SOME | ALL (SELECT \
+         a column of s FROM s WHERE ...) with op a comparison, over one static table, each \
+         WHERE term s.k = <outer expression> or a term that reads only s, and none that can \
+         trap but the outer expression of the first key, or x over a WHERE without a key"
     ))
 }
 
-/// The refusal of a SELECT item under IN that is not a column of the table.
-fn in_item_refusal(item: &dyn std::fmt::Display) -> PrepareError {
+/// The refusal of a SELECT item under IN, ANY or ALL (`form`) that is not
+/// a column of the table.
+fn item_refusal(item: &dyn std::fmt::Display, form: &str) -> PrepareError {
     form_refusal(&format!(
-        "the SELECT item {item} under IN (the item must be a column of its table)"
+        "the SELECT item {item} under {form} (the item must be a column of its table)"
     ))
+}
+
+/// The refusal of a left side `x` of IN, ANY or ALL (`form`) that can trap,
+/// over a WHERE with a key: whether DuckDB evaluates it for a request
+/// depends on the other requests of the batch (measured 2026-10-15).
+fn left_side_trap_refusal(x: &SqlExpr, form: &str) -> PrepareError {
+    form_refusal(&format!(
+        "the left side {x} of {form}, which can trap, over a WHERE with a key -- whether \
+         DuckDB evaluates it for a request depends on the other requests of the batch"
+    ))
+}
+
+/// The extremes of the item that the comparison `x pred c` reads over a
+/// group ([`Binder::quantified_residual`]): the greatest under < and <=,
+/// the least under > and >=, and both under <>. None under =, which binds
+/// as IN.
+fn extremes(pred: CmpPred) -> &'static [AggFunc] {
+    match pred {
+        CmpPred::Lt | CmpPred::Le => &[AggFunc::Max],
+        CmpPred::Gt | CmpPred::Ge => &[AggFunc::Min],
+        CmpPred::Ne => &[AggFunc::Min, AggFunc::Max],
+        CmpPred::Eq => &[],
+    }
+}
+
+/// What [`Binder::subquery_value`] binds besides the subquery as written.
+#[derive(Clone, Copy)]
+enum Member<'e> {
+    /// Nothing: the value of its SELECT item.
+    Value,
+    /// The IN test of [`Binder::in_subquery`]: one more key after every
+    /// term of the WHERE, the column `c` of the table equal to the outer
+    /// expression `x`. `form` names the test in a refusal.
+    In {
+        c: &'e SqlExpr,
+        x: &'e SqlExpr,
+        form: &'e str,
+    },
+    /// The comparison `x pred c` of [`Binder::quantified_subquery`], with
+    /// `c` a column of the table: the value is whether a row of the group
+    /// that a request matches passes it.
+    Cmp {
+        c: &'e SqlExpr,
+        x: &'e SqlExpr,
+        pred: CmpPred,
+        form: &'e str,
+    },
+}
+
+impl Member<'_> {
+    /// What tells two bindings of one subquery apart in the reads that
+    /// [`Binder::subquery_value`] keeps; the name of the form does not.
+    fn key(self) -> Option<(SqlExpr, SqlExpr, Option<CmpPred>)> {
+        match self {
+            Member::Value => None,
+            Member::In { c, x, .. } => Some((c.clone(), x.clone(), None)),
+            Member::Cmp { c, x, pred, .. } => Some((c.clone(), x.clone(), Some(pred))),
+        }
+    }
 }
 
 /// `count(arg)`, parsed as the binder reads it.
@@ -317,22 +386,21 @@ impl Binder<'_> {
     /// read through a hidden LEFT join this level runs after its FROM
     /// joins. The same text bound again at this level reads the same join.
     pub(super) fn scalar_subquery(&self, query: &sqlparser::ast::Query) -> Result<SExpr, PrepareError> {
-        self.subquery_value(query, None)
+        self.subquery_value(query, Member::Value)
     }
 
-    /// [`Binder::scalar_subquery`], where `member` = `(c, x)` adds one more
-    /// key after every term of the WHERE: the column `c` of the table equals
-    /// the outer expression `x` (the IN test of [`Binder::in_subquery`]).
+    /// [`Binder::scalar_subquery`], with what `member` adds to the
+    /// subquery as written ([`Member`]).
     fn subquery_value(
         &self,
         query: &sqlparser::ast::Query,
-        member: Option<(&SqlExpr, &SqlExpr)>,
+        member: Member<'_>,
     ) -> Result<SExpr, PrepareError> {
         if !self.subqueries.get() {
             return Err(unsup("a subquery in FROM or in a JOIN condition"));
         }
         self.bound_subquery.set(true);
-        let member_key = member.map(|(c, x)| (c.clone(), x.clone()));
+        let member_key = member.key();
         if let Some((_, _, e)) =
             self.agg_reads.borrow().iter().find(|(q, m, _)| q == query && *m == member_key)
         {
@@ -472,30 +540,12 @@ impl Binder<'_> {
         // of the WHERE (the IN test is not one of them), both bounds of
         // BETWEEN too.
         let mut guard = Guard::Key;
-        if let Some((c, x)) = member {
-            let Some(col) = inner.col(c)? else {
-                return Err(in_item_refusal(c));
-            };
-            let key = self.key_side(x)?;
-            if refs_join(&mut key.clone()) {
-                return Err(form_refusal(&format!(
-                    "the left side {x} of IN, which reads a joined table"
-                )));
-            }
-            if (key.ty == Ty::Str) != (st.cols[col as usize].ty.ty == Ty::Str) {
-                return Err(form_refusal(&format!(
-                    "the left side {x} of IN against {c}, which compares VARCHAR with another \
-                     type"
-                )));
-            }
+        if let Member::In { c, x, form } = member {
+            let (col, key) = self.member_sides(&inner, c, x, form)?;
             let key = promote_key(key, st, col)?;
             if can_trap(&key) {
                 if !keys.is_empty() {
-                    return Err(form_refusal(&format!(
-                        "the left side {x} of IN, which can trap, over a WHERE with a key -- \
-                         DuckDB evaluates it for every request of the batch once one request \
-                         matches a static row, so whether it traps depends on the other requests"
-                    )));
+                    return Err(left_side_trap_refusal(x, form));
                 }
                 trap_key = Some(filters.len());
                 guard = Guard::InItem(col);
@@ -507,67 +557,124 @@ impl Binder<'_> {
             key_lanes.push(col);
             keys.push(key);
         }
-
-        // SELECT: one aggregate over a column of the table, or count(*), or
-        // an expression over such aggregates ([`plan::AggPost`]).
-        let [item] = select.projection.as_slice() else {
-            return Err(form_refusal("more than one SELECT item"));
-        };
-        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else {
-            return Err(form_refusal("a star in its SELECT"));
-        };
-        let mut e = e;
-        while let SqlExpr::Nested(x) = e {
-            e = x;
-        }
-        let single = match e {
-            SqlExpr::Function(f) => agg_func(f).map(|func| (f, func)),
+        // The comparison of ANY or ALL: `x` against the item, a column of
+        // the table, which a residual of the join tests over the extremes
+        // of the item in the group ([`Binder::quantified_residual`]). It is
+        // bound here once to refuse before any table is added; the join's
+        // index comes later.
+        let compared = match member {
+            Member::Cmp { c, x, pred, form } => {
+                let (col, key) = self.member_sides(&inner, c, x, form)?;
+                let item = st.cols[col as usize].clone();
+                let (_, traps) = self.quantified_residual(u32::MAX, &key, item.ty.ty, pred, c, form)?;
+                if traps && !keys.is_empty() {
+                    return Err(left_side_trap_refusal(x, form));
+                }
+                Some((col, item, key, pred, c, form, traps))
+            }
             _ => None,
-        };
-        let (aggs, ty, post) = match single {
-            Some((f, func)) => {
-                let (agg, ty) = self.agg_call(&inner, f, func)?;
-                (vec![agg], ty, None)
-            }
-            None => {
-                let (aggs, post) = self.agg_post(query, select, source, &inner, e)?;
-                let ty = post.project[0].1.ty;
-                (aggs, ty, Some(post))
-            }
         };
 
         // The grouped table: the key lanes as the source has them, then the
-        // aggregate, or the expression over the aggregates.
+        // value lanes.
         let mut cols: Vec<Col> = key_lanes.iter().map(|&c| st.cols[c as usize].clone()).collect();
-        let counts = post.is_none() && aggs.iter().all(|a| counts_rows(a.func));
-        cols.push(Col {
-            name: e.to_string(),
-            ty: super::super::ir::ColTy {
-                ty,
-                nullable: !counts,
-            },
-        });
         let n_keys = key_lanes.len() as u32;
-        // What a request that matches no group reads: the expression over
-        // the aggregates of no rows, which the interpreter evaluates here.
-        // DuckDB evaluates it for each such request (measured 2026-10-15),
-        // so one that traps refuses.
-        let miss = match &post {
-            Some(p) if n_keys > 0 => {
-                let miss = over_no_rows(p.project[0].1.clone(), &aggs);
-                Some(match eval_closed(&miss, p.regexes.clone()) {
-                    Some(Some(v)) => scalar_lit(v, miss.ty),
-                    Some(None) => null_of(miss.ty),
-                    None => {
-                        return Err(form_refusal(&format!(
-                            "the SELECT item {e}, which traps over the aggregates of no rows \
-                             (DuckDB evaluates it for each request that matches no group)"
-                        )))
-                    }
-                })
+        let (aggs, ty, post, counts, miss) = match &compared {
+            // The count of the group's rows, then the extremes of its item.
+            Some((col, item, _, pred, ..)) => {
+                cols.push(Col {
+                    name: "count_star()".into(),
+                    ty: super::super::ir::ColTy {
+                        ty: Ty::I64,
+                        nullable: false,
+                    },
+                });
+                let mut aggs = vec![Agg {
+                    func: AggFunc::CountStar,
+                    arg: None,
+                    distinct: false,
+                    ties: false,
+                }];
+                for &func in extremes(*pred) {
+                    let name = if func == AggFunc::Min { "min" } else { "max" };
+                    cols.push(Col {
+                        name: format!("{name}({})", item.name),
+                        ty: super::super::ir::ColTy {
+                            ty: item.ty.ty,
+                            nullable: true,
+                        },
+                    });
+                    aggs.push(Agg {
+                        func,
+                        arg: Some(*col),
+                        distinct: false,
+                        ties: true,
+                    });
+                }
+                (aggs, Ty::I1, None, false, None)
             }
-            _ => None,
+            // SELECT: one aggregate over a column of the table, or count(*),
+            // or an expression over such aggregates ([`plan::AggPost`]).
+            None => {
+                let [item] = select.projection.as_slice() else {
+                    return Err(form_refusal("more than one SELECT item"));
+                };
+                let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item
+                else {
+                    return Err(form_refusal("a star in its SELECT"));
+                };
+                let mut e = e;
+                while let SqlExpr::Nested(x) = e {
+                    e = x;
+                }
+                let single = match e {
+                    SqlExpr::Function(f) => agg_func(f).map(|func| (f, func)),
+                    _ => None,
+                };
+                let (aggs, ty, post) = match single {
+                    Some((f, func)) => {
+                        let (agg, ty) = self.agg_call(&inner, f, func)?;
+                        (vec![agg], ty, None)
+                    }
+                    None => {
+                        let (aggs, post) = self.agg_post(query, select, source, &inner, e)?;
+                        let ty = post.project[0].1.ty;
+                        (aggs, ty, Some(post))
+                    }
+                };
+                let counts = post.is_none() && aggs.iter().all(|a| counts_rows(a.func));
+                cols.push(Col {
+                    name: e.to_string(),
+                    ty: super::super::ir::ColTy {
+                        ty,
+                        nullable: !counts,
+                    },
+                });
+                // What a request that matches no group reads: the expression
+                // over the aggregates of no rows, which the interpreter
+                // evaluates here. DuckDB evaluates it for each such request
+                // (measured 2026-10-15), so one that traps refuses.
+                let miss = match &post {
+                    Some(p) if n_keys > 0 => {
+                        let miss = over_no_rows(p.project[0].1.clone(), &aggs);
+                        Some(match eval_closed(&miss, p.regexes.clone()) {
+                            Some(Some(v)) => scalar_lit(v, miss.ty),
+                            Some(None) => null_of(miss.ty),
+                            None => {
+                                return Err(form_refusal(&format!(
+                                    "the SELECT item {e}, which traps over the aggregates of no \
+                                     rows (DuckDB evaluates it for each request that matches no \
+                                     group)"
+                                )))
+                            }
+                        })
+                    }
+                    _ => None,
+                };
+                (aggs, ty, post, counts, miss)
+            }
         };
+        let val_cols: Vec<u32> = (n_keys..cols.len() as u32).collect();
         let filter = match filters.as_slice() {
             [] => None,
             _ => Some(self.static_filter(query, select, source, &filters)?),
@@ -587,21 +694,37 @@ impl Binder<'_> {
             post,
         });
         drop(tables);
-        let mut joins = self.agg_joins.borrow_mut();
-        let join = (self.joins.len() + joins.len()) as u32;
-        joins.push(JoinSpec {
+        let join = (self.joins.len() + self.agg_joins.borrow().len()) as u32;
+        let residual = match &compared {
+            Some((_, item, key, pred, c, form, _)) => {
+                Some(self.quantified_residual(join, key, item.ty.ty, *pred, c, form)?.0)
+            }
+            None => None,
+        };
+        self.agg_joins.borrow_mut().push(JoinSpec {
             table,
             batch: false,
             kind: JoinKind::Left,
             keys,
             key_cols,
-            val_cols: vec![n_keys],
-            residual: None,
+            val_cols,
+            residual,
             after_where: false,
         });
-        drop(joins);
-        if trap_key.is_some() {
+        // A probe that evaluates an outer expression that can trap: the
+        // outer side of the first key, or the left side of ANY or ALL in
+        // the residual.
+        if trap_key.is_some() || compared.as_ref().is_some_and(|c| c.6) {
             self.trap_keys.borrow_mut().push(join);
+        }
+        if compared.is_some() {
+            let hit = SExpr {
+                kind: SKind::JoinHit(join),
+                ty: Ty::I1,
+                nullable: false,
+            };
+            self.agg_reads.borrow_mut().push((query.clone(), member_key, hit.clone()));
+            return Ok(hit);
         }
         let read = SExpr {
             kind: SKind::StaticCol { join, col: 0 },
@@ -705,36 +828,142 @@ impl Binder<'_> {
     /// rows whose `s.c` equals `x` (the IN test, one more key); `rows`, all
     /// of them; and `values`, those whose `s.c` is not NULL. As DuckDB
     /// answers (measured 2026-10-15), IN is TRUE if `hit > 0`, else FALSE if
-    /// `rows = 0`, else NULL if `values < rows` or `x` is NULL, else FALSE.
-    /// DuckDB evaluates `x` for each request once the subquery has an item
-    /// that is not NULL. Over a WHERE without a key, the build knows whether
-    /// it has one, and the CASE tests `x` only after `values < rows`, so
-    /// only when `values > 0`; over a WHERE with a key, that depends on the
-    /// other requests of the batch, so there an `x` that can trap refuses.
+    /// `rows = 0`, else NULL if `values < rows` or `x` is NULL, else FALSE
+    /// ([`Binder::member_value`]). DuckDB evaluates `x` for each request
+    /// once the subquery has an item that is not NULL. Over a WHERE without
+    /// a key, the build knows whether it has one, and the CASE tests `x`
+    /// only after `values < rows`, so only when `values > 0`; over a WHERE
+    /// with a key, that depends on the other requests of the batch, so
+    /// there an `x` that can trap refuses. `form` names the test in a
+    /// refusal: IN, or `= ANY` and `<> ALL`, which DuckDB answers as IN and
+    /// NOT IN.
     pub(super) fn in_subquery(
         &self,
         x: &SqlExpr,
         query: &sqlparser::ast::Query,
         negated: bool,
+        form: &str,
     ) -> Result<SExpr, PrepareError> {
+        let c = self.member_item(x, query, form)?;
+        let rows_q = with_item(query, count_of("*")?);
+        let hit = self.subquery_value(&rows_q, Member::In { c, x, form })?;
+        self.member_value(x, query, c, cmp_i64(CmpPred::Gt, hit, lit_i64(0)), !negated)
+    }
+
+    /// Bind `x op ANY (SELECT s.c FROM s WHERE ...)`, SOME alike, and
+    /// `x op ALL (...)`. DuckDB answers ALL as NOT over ANY with the
+    /// opposite comparison, `x > ALL (q)` as `NOT (x <= ANY (q))`, and
+    /// `= ANY` as IN ([`Binder::in_subquery`]), which it runs as a hash
+    /// join. It runs ANY with another comparison as a nested loop join:
+    /// `x op ANY (q)` is TRUE if `x op c` is TRUE for the item `c` of a row
+    /// that passes the WHERE, else FALSE if no row passes it, else NULL if
+    /// `x` or such an item is NULL, else FALSE, and it evaluates `x` once a
+    /// row passes the whole WHERE, NULL items too (measured 2026-10-15).
+    /// The first test is the residual of one more hidden join
+    /// ([`Binder::quantified_residual`]), and the others are the counts of
+    /// IN ([`Binder::member_value`]).
+    pub(super) fn quantified_subquery(
+        &self,
+        x: &SqlExpr,
+        op: &BinaryOperator,
+        right: &SqlExpr,
+        all: bool,
+    ) -> Result<SExpr, PrepareError> {
+        let mut right = right;
+        while let SqlExpr::Nested(r) = right {
+            right = r;
+        }
+        let SqlExpr::Subquery(query) = right else {
+            return Err(unsup(format!(
+                "expression ANY/ALL over {right} -- served: x op ANY (SELECT ...) and \
+                 x op ALL (SELECT ...) over a static table"
+            )));
+        };
+        let pred = match op {
+            BinaryOperator::Eq => CmpPred::Eq,
+            BinaryOperator::NotEq => CmpPred::Ne,
+            BinaryOperator::Lt => CmpPred::Lt,
+            BinaryOperator::LtEq => CmpPred::Le,
+            BinaryOperator::Gt => CmpPred::Gt,
+            BinaryOperator::GtEq => CmpPred::Ge,
+            _ => return Err(unsup(format!("expression ANY/ALL with the operator {op}"))),
+        };
+        let form = format!("{op} {}", if all { "ALL" } else { "ANY" });
+        // ALL is NOT over ANY with the opposite comparison.
+        let pred = if all {
+            match pred {
+                CmpPred::Eq => CmpPred::Ne,
+                CmpPred::Ne => CmpPred::Eq,
+                CmpPred::Lt => CmpPred::Ge,
+                CmpPred::Le => CmpPred::Gt,
+                CmpPred::Gt => CmpPred::Le,
+                CmpPred::Ge => CmpPred::Lt,
+            }
+        } else {
+            pred
+        };
+        if pred == CmpPred::Eq {
+            return self.in_subquery(x, query, all, &form);
+        }
+        let c = self.member_item(x, query, &form)?;
+        let hit = self.subquery_value(
+            query,
+            Member::Cmp {
+                c,
+                x,
+                pred,
+                form: &form,
+            },
+        )?;
+        self.member_value(x, query, c, hit, !all)
+    }
+
+    /// The item `c` of `x form (SELECT c FROM s ...)`, checked as IN, ANY
+    /// and ALL need it: one item, a column of the table, and an `x` that
+    /// holds no subquery.
+    fn member_item<'q>(
+        &self,
+        x: &SqlExpr,
+        query: &'q sqlparser::ast::Query,
+        form: &str,
+    ) -> Result<&'q SqlExpr, PrepareError> {
         let SetExpr::Select(select) = query.body.as_ref() else {
             return Err(form_refusal("a body that is not one SELECT"));
         };
         let c = match select.projection.as_slice() {
             [SelectItem::UnnamedExpr(c) | SelectItem::ExprWithAlias { expr: c, .. }] => c,
-            [item] => return Err(in_item_refusal(item)),
-            _ => return Err(form_refusal("more than one SELECT item under IN")),
+            [item] => return Err(item_refusal(item, form)),
+            _ => return Err(form_refusal(&format!("more than one SELECT item under {form}"))),
         };
         // A FROM that the counts refuse is left to them.
         if self.over_table(select, |inner| inner.col(c))? == Some(None) {
-            return Err(in_item_refusal(c));
+            return Err(item_refusal(c, form));
         }
         if has_subquery(self, x)? {
-            return Err(form_refusal(&format!("the left side {x} of IN, which holds a subquery")));
+            return Err(form_refusal(&format!(
+                "the left side {x} of {form}, which holds a subquery"
+            )));
         }
-        let rows_q = with_item(query, count_of("*")?);
-        let hit = self.subquery_value(&rows_q, Some((c, x)))?;
-        let rows = self.subquery_value(&rows_q, None)?;
+        Ok(c)
+    }
+
+    /// The value of IN, ANY or ALL from `hit`, whether a row of the
+    /// subquery passes its test: `on_hit` if one does. Else it is the
+    /// opposite if no row passes the WHERE, else NULL if the item `c` of
+    /// such a row is NULL or `x` is NULL, else the opposite. Two counts of
+    /// the same FROM and WHERE tell these apart: `rows`, all the rows, and
+    /// `values`, those whose item is not NULL. The CASE tests whether `x`
+    /// is NULL last, so it evaluates `x` only if `values > 0`
+    /// ([`Binder::in_subquery`]).
+    fn member_value(
+        &self,
+        x: &SqlExpr,
+        query: &sqlparser::ast::Query,
+        c: &SqlExpr,
+        hit: SExpr,
+        on_hit: bool,
+    ) -> Result<SExpr, PrepareError> {
+        let rows = self.scalar_subquery(&with_item(query, count_of("*")?))?;
         let values = self.scalar_subquery(&with_item(query, count_of(&c.to_string())?))?;
         let x = self.expr(x)?;
         let lit = |v: bool| SExpr {
@@ -753,16 +982,137 @@ impl Binder<'_> {
         Ok(SExpr {
             kind: SKind::Case {
                 arms: vec![
-                    (cmp_i64(CmpPred::Gt, hit, lit_i64(0)), lit(!negated)),
-                    (cmp_i64(CmpPred::Eq, rows.clone(), lit_i64(0)), lit(negated)),
+                    (hit, lit(on_hit)),
+                    (cmp_i64(CmpPred::Eq, rows.clone(), lit_i64(0)), lit(!on_hit)),
                     (cmp_i64(CmpPred::Lt, values, rows), null_of(Ty::I1)),
                     (x_null, null_of(Ty::I1)),
                 ],
-                default: Some(Box::new(lit(negated))),
+                default: Some(Box::new(lit(!on_hit))),
             },
             ty: Ty::I1,
             nullable: true,
         })
+    }
+
+    /// The item `c` of IN, ANY or ALL (`form`) as a lane of the table, and
+    /// the left side `x` bound as an outer expression of a probe. An item
+    /// that is not a column refuses, as do an `x` that reads a joined table
+    /// and a VARCHAR against another type, which DuckDB stops with a binder
+    /// error.
+    fn member_sides(
+        &self,
+        inner: &Inner<'_>,
+        c: &SqlExpr,
+        x: &SqlExpr,
+        form: &str,
+    ) -> Result<(u32, SExpr), PrepareError> {
+        let Some(col) = inner.col(c)? else {
+            return Err(item_refusal(c, form));
+        };
+        let key = self.key_side(x)?;
+        if refs_join(&mut key.clone()) {
+            return Err(form_refusal(&format!(
+                "the left side {x} of {form}, which reads a joined table"
+            )));
+        }
+        if (key.ty == Ty::Str) != (inner.st.cols[col as usize].ty.ty == Ty::Str) {
+            return Err(form_refusal(&format!(
+                "the left side {x} of {form} against {c}, which compares VARCHAR with another \
+                 type"
+            )));
+        }
+        Ok((col, key))
+    }
+
+    /// The residual of the hidden join of ANY and ALL ([`Member::Cmp`]):
+    /// whether a row of the matched group passes `x pred c`. Lane 0 of the
+    /// join is the count of the group's rows, and lanes 1 and 2 the
+    /// extremes of its item ([`extremes`]). A row passes `x < c` iff the
+    /// greatest item does, `x > c` iff the least does, and `x <> c` iff the
+    /// least or the greatest does: DuckDB's order is total (NaN above every
+    /// number, -0.0 equal to 0.0), and the cast of a side to the type of
+    /// the comparison keeps it. So a tie of the extremes with other bits
+    /// answers alike ([`plan::Agg::ties`]). The CASE evaluates `x` only if
+    /// the count is above 0: DuckDB evaluates it once a row passes the
+    /// WHERE, NULL items too (measured 2026-10-15). With the residual,
+    /// whether the side of `x` can trap. An item whose cast can trap
+    /// refuses: DuckDB casts every item, not the extremes only.
+    ///
+    /// DuckDB casts both sides of ANY to their max type, which for two
+    /// DECIMALs past 38 digits keeps the integer digits and drops scale
+    /// ([`dec_common`]; EXPLAIN shows `CAST(x AS DECIMAL(38,0))` for a
+    /// DECIMAL(9,4) against a DECIMAL(38,0), measured 2026-10-15). The
+    /// comparison operator keeps the scale instead, so the sides take the
+    /// max type here, before [`Binder::cmp`].
+    fn quantified_residual(
+        &self,
+        join: u32,
+        x: &SExpr,
+        item: Ty,
+        pred: CmpPred,
+        c: &SqlExpr,
+        form: &str,
+    ) -> Result<(SExpr, bool), PrepareError> {
+        let read = |col: u32, ty: Ty| SExpr {
+            kind: SKind::StaticCol { join, col },
+            ty,
+            nullable: true,
+        };
+        let common = dec_common(x.ty, item);
+        let side = |e: SExpr| match common {
+            Some(t) => to_common(e, t),
+            None => e,
+        };
+        let mut traps = false;
+        let mut test = |col: u32| -> Result<SExpr, PrepareError> {
+            let e = self.cmp(pred, side(x.clone()), side(read(col, item)))?;
+            let SKind::Cmp { a, b, .. } = &e.kind else {
+                return Err(PrepareError::Internal(format!(
+                    "the comparison of {form} did not bind as one"
+                )));
+            };
+            if can_trap(b) {
+                return Err(form_refusal(&format!(
+                    "the item {c} under {form}, whose cast to the type of the comparison can \
+                     trap (DuckDB casts every item)"
+                )));
+            }
+            traps |= can_trap(a);
+            Ok(e)
+        };
+        let test = match extremes(pred) {
+            [_] => test(1)?,
+            [_, _] => {
+                let (lo, hi) = (test(1)?, test(2)?);
+                SExpr {
+                    kind: SKind::Or {
+                        a: Box::new(lo),
+                        b: Box::new(hi),
+                    },
+                    ty: Ty::I1,
+                    nullable: true,
+                }
+            }
+            _ => return Err(PrepareError::Internal(format!("{form} has no residual"))),
+        };
+        let any = SExpr {
+            kind: SKind::Cmp {
+                pred: CmpPred::Gt,
+                a: Box::new(read(0, Ty::I64)),
+                b: Box::new(lit_i64(0)),
+            },
+            ty: Ty::I1,
+            nullable: true,
+        };
+        let residual = SExpr {
+            kind: SKind::Case {
+                arms: vec![(any, test)],
+                default: None,
+            },
+            ty: Ty::I1,
+            nullable: true,
+        };
+        Ok((residual, traps))
     }
 
     /// Run `f` over the subquery's table when its FROM is one static table;
@@ -905,7 +1255,15 @@ impl Binder<'_> {
         // The least or greatest of the distinct values is the least or
         // greatest of all of them.
         let distinct = distinct && !matches!(func, AggFunc::Min | AggFunc::Max);
-        Ok((Agg { func, arg, distinct }, ty))
+        Ok((
+            Agg {
+                func,
+                arg,
+                distinct,
+                ties: false,
+            },
+            ty,
+        ))
     }
 
     /// The SELECT item of a subquery that is an expression over its
@@ -937,7 +1295,11 @@ impl Binder<'_> {
                 )));
             }
             Ok(match x {
-                SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => {
+                SqlExpr::Subquery(_)
+                | SqlExpr::Exists { .. }
+                | SqlExpr::InSubquery { .. }
+                | SqlExpr::AnyOp { .. }
+                | SqlExpr::AllOp { .. } => {
                     return Err(form_refusal(&format!("the SELECT item {e}, which holds a subquery")))
                 }
                 SqlExpr::Function(f) => match agg_func(f) {
@@ -1046,7 +1408,11 @@ impl Binder<'_> {
                 return Ok(Walk::Into);
             }
             Ok(match x {
-                SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => {
+                SqlExpr::Subquery(_)
+                | SqlExpr::Exists { .. }
+                | SqlExpr::InSubquery { .. }
+                | SqlExpr::AnyOp { .. }
+                | SqlExpr::AllOp { .. } => {
                     return Err(form_refusal(&format!("the WHERE term {t}, which holds a subquery")))
                 }
                 SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => match inner.col(x)? {
@@ -1246,6 +1612,7 @@ impl Binder<'_> {
                 func,
                 arg,
                 distinct: false,
+                ties: false,
             }],
             filter,
             post: None,

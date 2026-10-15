@@ -182,6 +182,12 @@ pub struct Agg {
     /// 2026-10-15). Never set for `min` and `max`, whose answer DISTINCT
     /// does not change.
     pub distinct: bool,
+    /// Whether `min` or `max` may answer either of two values that DuckDB's
+    /// order calls equal but whose bits differ (-0.0 and 0.0, or two NaN
+    /// payloads). Set where only a comparison reads the answer, under ANY
+    /// and ALL; else the build refuses such a tie, as DuckDB answers the
+    /// first one in the order of the rows.
+    pub ties: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1094,6 +1100,10 @@ fn can_trap_under<'a>(e: &'a SExpr, facts: &mut Vec<(&'a SExpr, bool)>) -> bool 
         SKind::Cast { inner, trying } if *trying || cast_is_total(inner.ty, e.ty) => {
             any(&[inner], facts)
         }
+        // A DECIMAL to DOUBLE is total, as is a cast to a DECIMAL that holds
+        // every value of the source.
+        SKind::DecToFloat(a) => any(&[a], facts),
+        SKind::DecCast(a) if dec_cast_is_total(a.ty, e.ty) => any(&[a], facts),
         SKind::Seq { items, .. } => items.iter().any(|x| can_trap_under(x, facts)),
         SKind::Extreme { args, .. } => args.iter().any(|x| can_trap_under(x, facts)),
         // String operations that raise on no input: their kernels return no
@@ -1266,6 +1276,31 @@ fn can_trap_here(e: &SExpr) -> bool {
             SKind::Lit(_) | SKind::NullOf
         ),
         _ => true,
+    }
+}
+
+/// Whether every value of `from` converts to `to` through
+/// [`SKind::DecCast`]: a DECIMAL to VARCHAR, a DECIMAL to one with no fewer
+/// integer digits, and one more if the scale shrinks (rounding can carry
+/// into a new digit: 9.99 to 10.0), and an integer whose whole range has
+/// fewer digits than the integer part of `to`.
+fn dec_cast_is_total(from: Ty, to: Ty) -> bool {
+    match (from, to) {
+        (Ty::Dec(..), Ty::Str) => true,
+        (Ty::Dec(p1, s1), Ty::Dec(p2, s2)) => {
+            let (i1, i2) = (p1 - s1, p2 - s2);
+            if s2 >= s1 {
+                i2 >= i1
+            } else {
+                i2 > i1
+            }
+        }
+        (a, Ty::Dec(p, s)) if a.is_integer() => {
+            let lim = 10i128.pow(u32::from(p - s));
+            let (lo, hi) = a.int_range128().expect("an integer width");
+            -lim < lo && hi < lim
+        }
+        _ => false,
     }
 }
 

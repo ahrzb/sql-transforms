@@ -1625,7 +1625,8 @@ fn rows_batch(
 /// result that could depend on the order of the rows refuses the build by
 /// name: a sum or avg whose absolute values add up past the range of the sum
 /// DuckDB keeps (a partial sum could overflow in some order, where DuckDB
-/// traps), and a DOUBLE min or max that ties values with other bits.
+/// traps), and a DOUBLE min or max that ties values with other bits, unless
+/// only a comparison reads it ([`plan::Agg::ties`]).
 fn materialize_aggs(
     py: Python<'_>,
     table: &Py<PyAny>,
@@ -1763,7 +1764,7 @@ fn materialize_aggs(
             let val = match acc {
                 Acc::Count(n) => Some(ScalarVal::I64(n)),
                 Acc::Extreme(None, _) => None,
-                Acc::Extreme(Some(_), true) => {
+                Acc::Extreme(Some(_), true) if !aggs[i].ties => {
                     return Err(build_err(format!(
                         "unsupported: static table '{}': {} over the rows of one key ties \
                          DOUBLE values with other bits (-0.0 and 0.0, or two NaNs), and \
@@ -1772,7 +1773,7 @@ fn materialize_aggs(
                         label(i)
                     )))
                 }
-                Acc::Extreme(Some(v), false) => Some(match (v, ty) {
+                Acc::Extreme(Some(v), _) => Some(match (v, ty) {
                     (AggIn::Int(x), Ty::I64) => ScalarVal::I64(x as i64),
                     (AggIn::Int(x), Ty::I128) => ScalarVal::I128(x),
                     (AggIn::Int(x), Ty::Dec(p, s)) => ScalarVal::Dec(x, p, s),
