@@ -489,7 +489,10 @@ The first five are ruled, in this order; the rest follow.
   can trap or reads a joined table, a VARCHAR key against another type, a
   subquery in FROM, in JOIN ON or inside the subquery, the request table, and
   a scalar subquery under `shape='many'` in a two-level query. Next, in this
-  order: static predicates that cannot trap; outer sides that can trap (they
+  order: static predicates that cannot trap (a draft on 620112e, parked at
+  the wind-down of 2026-10-15, is in the project files at
+  `confit-loop/class5-slice3/`; its README lists what is left); outer sides
+  that can trap (they
   trap only when the static table has rows, which the build knows); an
   expression over the aggregate.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
