@@ -187,9 +187,11 @@ pub fn frontend(
         lets,
     } = macros::expand(tokens, macros)?;
     let rewrite = |tokens| {
-        super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
-            super::rewrite::rewrite_parenless_replace(super::rewrite::rewrite_from_colon_aliases(
-                super::rewrite::rewrite_colon_aliases(tokens),
+        super::rewrite::rewrite_limit_all(super::rewrite::rewrite_glob(
+            super::rewrite::rewrite_star_filters(super::rewrite::rewrite_parenless_replace(
+                super::rewrite::rewrite_from_colon_aliases(super::rewrite::rewrite_colon_aliases(
+                    tokens,
+                )),
             )),
         ))
     };
@@ -636,7 +638,17 @@ fn level_select(query: &sqlparser::ast::Query) -> Result<&sqlparser::ast::Select
     if query.order_by.is_some() {
         return Err(unsup("ORDER BY"));
     }
-    if query.limit_clause.is_some() {
+    // `LIMIT NULL`, and `LIMIT ALL`, which the token rewrite spells so,
+    // keep every row.
+    let no_limit = matches!(
+        &query.limit_clause,
+        Some(sqlparser::ast::LimitClause::LimitOffset {
+            limit: Some(SqlExpr::Value(v)),
+            offset: None,
+            limit_by,
+        }) if matches!(v.value, SqlValue::Null) && limit_by.is_empty()
+    );
+    if query.limit_clause.is_some() && !no_limit {
         return Err(unsup("LIMIT/OFFSET"));
     }
     refuse_unhandled_query(query)?;

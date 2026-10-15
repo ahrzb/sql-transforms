@@ -464,6 +464,10 @@ class Like(Node):
         self.e = new
 
 
+# ORDER BY terms (a column, or None for the item), the LIMIT, the OFFSET
+_Order = tuple[list[tuple[str | None, str, str]], str | None, str | None]
+
+
 @dataclass
 class ScalarSub(Node):
     """A scalar subquery with one aggregate over one static table:
@@ -478,8 +482,10 @@ class ScalarSub(Node):
     ...)`, and with `quant` set too `[NOT] x op ANY (SELECT column FROM ...)`,
     SOME or ALL in place of ANY. With `row` set its SELECT item is `row`, an
     expression over the columns of the table with no aggregate, which reads
-    the row that a request matches. Its kids are the outer sides of the
-    keys, then those terms, then x."""
+    the row that a request matches; with `order` set too, ORDER BY, LIMIT
+    and OFFSET follow the WHERE, and pick that row of the rows that the
+    request matches. Its kids are the outer sides of the keys, then those
+    terms, then x."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -498,6 +504,12 @@ class ScalarSub(Node):
     quant: tuple[str, str] | None = None
     # The SELECT item over one row, in place of the aggregate
     row: Node | None = None
+    # After the WHERE, over `row`: the ORDER BY terms (a column of `table`,
+    # or None for the item: its position 1, or its alias `named`), each with
+    # "", ASC or DESC and "", NULLS FIRST or NULLS LAST; then the LIMIT (a
+    # count, NULL or ALL) and the OFFSET (a count or NULL), or None for none
+    order: _Order | None = None
+    named: str | None = None  # the alias of `row`
 
     def kids(self):
         x = [] if self.in_ is None else [self.in_[1]]
@@ -1035,7 +1047,7 @@ def rexpr(e: Node) -> str:
         finally:
             _AGG_CALLS.pop()
         if e.row is not None:
-            item = rexpr(e.row)
+            item = rexpr(e.row) + (f" AS {_ident(e.named)}" if e.named else "")
         terms = [f"{scope}.{_ident(c)} {op} {rexpr(o)}" for c, op, o in e.keys]
         for at, p in sorted(e.preds, key=lambda x: -x[0]):
             terms.insert(min(at, len(terms)), rexpr(p))
@@ -1053,7 +1065,20 @@ def rexpr(e: Node) -> str:
                 op, q = e.quant
                 return f"{not_}{rexpr(x)} {op} {q} ({sub})"
             return f"{rexpr(x)} {not_}IN ({sub})"
-        return f"(SELECT {item} FROM {frm}{where})"  # noqa: S608
+        tail = ""
+        if e.order is not None:
+            by, limit, offset = e.order
+            it = _ident(e.named) if e.named else "1"
+            terms = [
+                " ".join(
+                    x for x in (it if c is None else f"{scope}.{_ident(c)}", d, n) if x
+                )
+                for c, d, n in by
+            ]
+            tail += f" ORDER BY {', '.join(terms)}" if terms else ""
+            tail += "" if limit is None else f" LIMIT {limit}"
+            tail += "" if offset is None else f" OFFSET {offset}"
+        return f"(SELECT {item} FROM {frm}{where}{tail})"  # noqa: S608
     raise TypeError(e)
 
 
@@ -1782,6 +1807,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     # that subquery (only its first row if it has no key), so that a
     # request matches one row at most; else a key of more rows refuses by
     # name, where DuckDB traps if a request matches it.
+    rowed: list[tuple[ScalarSub, bool]] = []
     for s in alone:
         if s.exists is None and s.in_ is None and qrng.random() < 0.2:
             if tenv.cols and qrng.random() < 0.35:
@@ -1791,10 +1817,40 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
                 s.row = Col(
                     c, scope or name, SEMANTIC.get(sch[c].rstrip("?"), "decimal")
                 )
-            if qrng.random() < 0.67:
-                _one_row_per_key(srows, [kc for kc, _, _ in s.keys])
+            rowed.append((s, qrng.random() < 0.67))
+    # ORDER BY, LIMIT and OFFSET after the WHERE of about one of these
+    # subqueries in two, drawn last too, and then the table keeps all its
+    # rows: the ORDER BY picks one of the rows of a key. A tie of two rows
+    # whose items differ refuses by name, as does a LIMIT that keeps more
+    # than one row of a key.
+    for s, _ in rowed:
+        if qrng.random() < 0.5:
+            s.order = _row_order(qrng, list(sch))
+            if qrng.random() < 0.3:
+                s.named = f"{name}r"
+    for s, one in rowed:
+        if one and s.order is None:
+            _one_row_per_key(srows, [kc for kc, _, _ in s.keys])
     tags.append("scalar-subquery")
     return True
+
+
+def _row_order(qrng, cols: list[str]):
+    """ORDER BY, LIMIT and OFFSET for an item over one row (`ScalarSub.order`):
+    up to two ORDER BY terms, each a column of the table or, one time in
+    four, the item. LIMIT 1 about two times in three, else 0, 2, NULL, ALL
+    or none, and an OFFSET about one time in four."""
+    by = []
+    for _ in range(qrng.choice([0, 1, 1, 1, 2])):
+        c = None if qrng.random() < 0.25 else qrng.choice(cols)
+        d = qrng.choice(["", "", "ASC", "DESC"])
+        n = qrng.choice(["", "", "", "NULLS FIRST", "NULLS LAST"])
+        by.append((c, d, n))
+    limit = qrng.choices(["1", "0", "2", "NULL", "ALL", None], [65, 7, 8, 5, 5, 10])[0]
+    offset = qrng.choice(["0", "1", "1", "2", "NULL"]) if qrng.random() < 0.25 else None
+    if not by and limit is None and offset is None:
+        limit = "1"
+    return by, limit, offset
 
 
 def _one_row_per_key(rows: list[dict], cols: list[str]) -> None:
