@@ -15,7 +15,16 @@ Easiest first; each is one PR.
    S = 0), within the bound. Add 0.0 to each output field of `project.py`
    (`x + 0.0`, as `compose.py` does for a sparse stack since T36), and
    check that no field of the parity run then differs in its sign alone.
-2. **The build estimates after confit #456** (reading 6, finding 76).
+2. **The projections, `PolynomialFeatures` and the splines on confit
+   #459.** #459 (merged 2026-10-15, master 8fbdd11) lowers a CASE that
+   cannot trap to selects when it is small or a field read's NULL guard,
+   the need "A value read many times" below. On the confit loop's
+   container the catalog's `PCA` over 256 features of 64 components serves
+   64 rows in 4.9-5.2 ms (59 ms before) and builds in 3.2 s (7.3-7.5 s).
+   Measure the width curves of these families again; if the projections'
+   builds changed, fit `project._build_estimate` again, which now keeps
+   about 80 components over 256 features Python. Then remove that need.
+3. **The build estimates after confit #456** (reading 6, finding 76).
    Since #456, a struct read field by field builds in about the square of
    its fields, past the estimates of `trees.py`, `spline.py` and
    `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,
@@ -86,11 +95,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`, sent
   to the confit loop. It sets the speed of the linear projections (T37):
   `PCA` over 256 features of 64 components serves 64 rows in 78 ms,
-  against the twin's 39 ms. The confit loop's #459 (open, 2026-10-15)
-  lowers a CASE that cannot trap to selects when it is small or a field
-  read's NULL guard; on its container that `PCA` serves 64 rows in 4.9 to
-  5.2 ms, against 59 ms on master. When it lands, measure the
-  projections, `PolynomialFeatures` and the splines again.
+  against the twin's 39 ms. Delivered by confit #459 (merged
+  2026-10-15): it lowers a CASE that cannot trap to selects when it is
+  small or a field read's NULL guard; on the confit loop's container that
+  `PCA` serves 64 rows in 4.9 to 5.2 ms, against 59 ms before. Measure
+  ("Next", item 2), then remove this item.
 - **A struct output read field by field, built once for the call.**
   Where a query reads each field of a struct output one by one
   (`to_native`'s trial build does, and so does a serving query that names

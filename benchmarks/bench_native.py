@@ -16,8 +16,7 @@ fitted categories; a row the twin still rejects is drawn again):
 The speedup is twin / native. Timings need confit's release build. A
 configuration within a bound above 0 is measured too, as
 `to_native(step, allow_bound=True)` serves it. The bench fails where a
-native step serves a call more slowly than its twin, as the widest
-`Pipeline` did from T25 to T28 (95-99 ms against 85 ms).
+native step serves a call more slowly than its twin.
 
 With --build-curve, it times the build alone against the width instead,
 `to_native` on one step shape over n DOUBLE features: PolynomialFeatures

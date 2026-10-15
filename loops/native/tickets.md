@@ -23,9 +23,10 @@ commits on reading 4's confit (finding 74): with each commit's own confit,
 the widest `Pipeline` never served more slowly than its twin. The loop
 runs from the "Transforms Loop" project thread.
 
-Next: PLANS "Next" (the projections' signed zeros; the builds again once
-the confit loop's fix of finding 76 merges), then PLANS "Ruled 2026-10-06,
-to build": the rest of the linear projections, then the other families on
+Next: PLANS "Next" (the projections' signed zeros; the projections again
+on confit #459, which merged after the reading; the builds again once the
+confit loop's fix of finding 76 merges), then PLANS "Ruled 2026-10-06, to
+build": the rest of the linear projections, then the other families on
 the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.
