@@ -33,10 +33,11 @@ now takes about 280 components over 256 features, against 80. T40
 `QuantileTransformer` and the splines again on confit #461: the caps now
 take about 10,300 output fields of a forest over 8 features (5,990
 before), 19,700 isotonic thresholds (11,700), 13,400 quantile leaves
-(8,200) and SPLINE_BOARD. The loop ran from the "Transforms Loop" project
-thread. On 2026-10-15 the owner asked the loops to wind down: finish the
-work in flight and pick no new ticket. After T40 and a short reading, the
-loop stops.
+(8,200) and 170 to 230 spline features of degree 3 and 8 knots (150 to
+200). The loop ran from the "Transforms Loop" project thread. On
+2026-10-15 the owner asked the loops to wind down: finish the work in
+flight and pick no new ticket. After T40 and a short reading, the loop
+stops.
 
 Next, on a restart: PLANS "Ruled 2026-10-06, to build", item 1, the rest
 of the linear projections, then the other families on the parity bound.

@@ -229,9 +229,10 @@ def _build_estimate(leaves: int, arms: int, features: int) -> float:
     2026-10-15): each within 0.84 to 1.31 times the estimate. The cap took
     on none slower than 6.1 s and refused none faster than 7.9 s, and it
     reaches 7 s at about 13,400 leaves over 1 to 64 features, or 7,000 over
-    800. Past the estimate confit refused two fits at 4,000,000 tokens (50
-    quantiles over 512 and 800 features). Fitted before #456 (master
-    94d7bb1), the estimate reached 7 s at about 8,200 leaves."""
+    800. Past the estimate, confit refused 50 quantiles over 512 features
+    as a struct and over 800 features as either return (past 4,000,000
+    tokens). Fitted before #456 (master 94d7bb1), the estimate reached 7 s
+    at about 8,200 leaves."""
     n = leaves + 0.4 * arms
     return 3.52e-4 * n + 1.25e-8 * n**2 + 6.14e-6 * features**2
 

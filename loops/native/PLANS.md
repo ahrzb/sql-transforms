@@ -268,10 +268,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   output field.
   Knots that are not sorted, partly NaN, or span past a double, and a
   spline whose `c` is not sklearn's shape (no fit makes these). A step
-  past an estimated 7 s build, per estimator (`spline._build_estimate`):
-  of the 359 configurations measured, none up to 64 features, and 7 of
-  96 and 128 features that build in 8.0 to 12.5 s (since T28; 43 before
-  confit #430); and any
+  past an estimated 7 s build, per estimator (`spline._build_estimate`),
+  at about 170 to 230 features of degree 3 and 8 knots, or 100 to 140 of
+  degree 5: of the 172 configurations measured (T40, master 318575b),
+  none up to 64 features, 4 of 128 features (degree 5, 8 knots: 7.7 to
+  9.4 s) and 11 of the 12 of 192 and 256 features (6.3 to 16.3 s; confit
+  refuses the struct return of the three of 256 features at degree 5,
+  past 4,000,000 tokens); and any
   step where scipy's `BSpline` does not round as the unfused recurrence
   (`spline.bspline_is_scipys`, an FMA build). `extrapolation="error"`
   with a feature whose knots are NaN: the twin raises on every number

@@ -149,15 +149,19 @@ def _build_estimate(fields: list[S.Expr], est: Any) -> float:
     added before confit #430 stopped building the guard's tests again at
     each field read. The guard has a test a feature on NaN and ±inf under
     `handle_missing="error"`; under `extrapolation="error"`, a test on the
-    knots, whose term is about twice as large, with or without the first.
-    Fitted on 276 warm builds of one instance over 0.3 s (8 to 128 features,
-    degrees 1 to 5, 5 and 8 knots, the five extrapolations, up to 1,536
-    output fields; 16 of them again under `handle_missing="zeros"`; 0.3 to
-    12.5 s): each within 0.82 to 1.42 times the estimate (master b4b8d03
-    with confit #430, 2026-10-14). confit builds all 359 configurations, and
-    the cap took on none slower than 7.5 s and refused none faster than
-    8.0 s. The estimate is one estimator's: a step's instances compound it
-    linearly."""
+    knots, whose term is about 1.6 times as large, with or without the
+    first. Fitted on the slower of a struct and a list return over 114 warm
+    builds of one instance over 0.3 s (8 to 256 features, degrees 1, 3 and
+    5, 5 and 8 knots, the five extrapolations, up to 2,560 output fields;
+    15 of them again under `handle_missing="zeros"`; 0.3 to 16.3 s): each
+    within 0.79 to 1.20 times the estimate (master 318575b with confit #459
+    and #461, 2026-10-15). The cap took on none slower than 6.32 s and
+    refused none faster than 6.25 s, and it reaches 7 s at about 170 to 230
+    features of degree 3 and 8 knots, or 100 to 140 of degree 5, by the
+    extrapolation (150 to 200, and 86 to 120, fitted on master b4b8d03 with
+    confit #430). Past the estimate, confit refuses the struct return of
+    256 features of degree 5 and 8 knots (past 4,000,000 tokens). The
+    estimate is one estimator's: a step's instances compound it linearly."""
     seen: set[int] = set()
     stack = list(fields)
     while stack:  # no recursion: a recurrence can be deep
@@ -167,13 +171,13 @@ def _build_estimate(fields: list[S.Expr], est: Any) -> float:
             stack.extend(e.children)
     nodes, width = len(seen), len(fields)
     if est.extrapolation == "error":
-        guard = 6.29e-6
+        guard = 5.66e-6
     elif est.handle_missing == "error":
-        guard = 3.36e-6
+        guard = 3.64e-6
     else:
         guard = 0.0
     return (
-        3.58e-5 * nodes + 1.24e-8 * nodes * width + guard * width * est.n_features_in_
+        2.94e-5 * nodes + 9.12e-9 * nodes * width + guard * width * est.n_features_in_
     )
 
 

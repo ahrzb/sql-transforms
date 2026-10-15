@@ -2074,9 +2074,9 @@ def test_spline_refuses(params, reason):
 
 
 def test_spline_refuses_a_build_past_the_cap():
-    # 128 features of degree 5, 8 knots, "continue": estimated at 12 s, and
-    # built in 12.5 s (spline.py, `_build_estimate`). The estimate refuses
-    # it before confit is asked.
+    # 128 features of degree 5, 8 knots, "continue": estimated at 10 s, and
+    # built in 9.4 s (spline.py, `_build_estimate`). The estimate refuses it
+    # before confit is asked.
     X = np.random.default_rng(0).normal(size=(50, 128)) * 10
     est = SplineTransformer(degree=5, n_knots=8, extrapolation="continue").fit(X)
     takes = pa.schema([(f"x{j}", pa.float64()) for j in range(128)])
