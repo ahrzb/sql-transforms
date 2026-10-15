@@ -80,6 +80,7 @@ divergences, but are indexed where readers expect them.
 | **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
 | **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../../../../loops/confit/decisions/closed/empty-static-join-trap-timing.md), extended by [all-NULL-key static](../../../../loops/confit/decisions/closed/all-null-key-static.md) and [error category](../../../../loops/confit/decisions/closed/empty-static-witness-trap-order.md) |
+| **divergence: oracle-timeout-before-a-trap** | execution order / n/a | excluded with a witness | **ruled** by [oracle timeout before a trap](../../../../loops/confit/decisions/closed/oracle-timeout-before-a-trap.md) |
 | **divergence: wrapped-query-refusals** | metamorphic rewrite tolerance / n/a | kept | **ruled** by [the row-local subqueries design](../specs/2026-09-26-row-local-subqueries-design.md) |
 | **divergence: decimal-literal-typing** | closed | shipped: literals are DECIMAL | n/a |
 | **divergence: decimal-cast-rounding** | closed | shipped: DECIMAL casts round half away from zero | n/a |
@@ -142,6 +143,21 @@ Slugs are stable when multiple entries describe one mechanism.
   table. Evidence: `empty-static-join-trap-timing.md`, `all-null-key-static.md` and
   `empty-static-witness-trap-order.md` in `loops/confit/decisions/closed/`; nightly
   seeds 1994509, 2286807, 4001288, 4100483, 4313391, 4889739, 7242549, 7829571.
+- **divergence: oracle-timeout-before-a-trap.** Confit evaluates the whole query for
+  one request before the next request. So it traps on an ordinary error, such as an
+  overflow, and does not build a long string for a later request. The oracle evaluates
+  one expression for all the requests before the next expression. So it first builds
+  each string that `lpad`, `rpad` or `repeat` makes from a computed length, up to
+  2^31 - 1 characters, and it runs past the time limit of the case. The runner of the
+  campaign (`fuzz.runner`) then stops the process of the case, and a new process runs
+  the witness under the same time limit. The witness runs the query again on the oracle,
+  with each such length above 1,000 replaced by 1,000. The rule excuses the case only if
+  confit traps on both backends, the witness replaces at least one length, and the
+  oracle then raises an error. The error must have the kind that the error of confit
+  names, such as "Out of Range Error". If the error of confit names no kind, any error
+  counts.
+  Evidence: `oracle-timeout-before-a-trap.md` in `loops/confit/decisions/closed/`;
+  nightly seeds 4226438, 4657943, 8249704, 9195711 and campaign seed 946454.
 - **divergence: wrapped-query-refusals.** Wrapping a query in a derived table or CTE
   reaches two named refusals the unwrapped query does not (a struct slot in a derived
   table; a subquery under a `shape='many'` join). Evidence: the rewrite tolerances in
@@ -176,8 +192,9 @@ Slugs are stable when multiple entries describe one mechanism.
 
 **claim: one-exclusion-registry.** Every exclusion from parity is a record in
 `packages/confit/fuzz/exclusions.py`, and nothing else excuses a case: the campaign's
-verdict rules (`fuzz.oracle.run_case`), the metamorphic rewrite tolerances, and the
-DuckDB test-corpus source exclusions all read it. A record narrows the comparison for
+verdict rules (`fuzz.oracle.run_case`, and `fuzz.runner` once the oracle runs past the
+time limit of a case), the metamorphic rewrite tolerances, and the DuckDB test-corpus
+source exclusions all read it. A record narrows the comparison for
 one mechanism: a scope read off the bound plan's facts (`DuckDBInferFn.plan_facts`),
 the outcome it accepts, and a witness that the difference is that mechanism. An
 excused campaign case is EXCLUDED with the rule's id as its class and keeps its raw
@@ -193,6 +210,7 @@ below is the registry's own output (`python -m fuzz.exclusions --ledger`).
 |---|---|---|---|---|---|---|
 | `resource-ceiling` | verdict | exclusion: resource-ceilings | ruled | `specs/serving-contract.md` | DuckDB 1.5.5 | 1 |
 | `empty-static-trap-timing` | verdict | divergence: empty-static-trap-timing | ruled | `loops/confit/decisions/closed/empty-static-join-trap-timing.md`, extended by `loops/confit/decisions/closed/all-null-key-static.md` and `loops/confit/decisions/closed/empty-static-witness-trap-order.md` | DuckDB 1.5.5 | 8 |
+| `oracle-timeout-before-a-trap` | verdict | divergence: oracle-timeout-before-a-trap | ruled | `loops/confit/decisions/closed/oracle-timeout-before-a-trap.md` | DuckDB 1.5.5 | 5 |
 | `wrap-derived: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
 | `wrap-cte: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
 | `wrap-derived: many join` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |

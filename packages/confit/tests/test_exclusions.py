@@ -70,13 +70,35 @@ def test_the_ledger_table_is_the_registry():
 
 @pytest.mark.parametrize(
     "rule, seed",
-    [pytest.param(r, s, id=f"{r.id}-{s}") for r in X.RULES for s in r.canaries],
+    [
+        pytest.param(r, s, id=f"{r.id}-{s}")
+        for r in X.RULES
+        if r.timeout is None
+        for s in r.canaries
+    ],
 )
 def test_a_canary_is_still_excused(rule, seed):
     v = oracle.run_case(gen.gen(seed), report=False)
     assert (v.kind, v.klass) == ("EXCLUDED", rule.id), f"{v.kind} {v.klass}: {v.detail}"
     if rule.post is not None:
         assert v.raw, "an excused case keeps its raw verdict"
+
+
+@pytest.mark.parametrize(
+    "rule, seed",
+    [
+        pytest.param(r, s, id=f"{r.id}-{s}")
+        for r in X.RULES
+        if r.timeout is not None
+        for s in r.canaries
+    ],
+)
+def test_a_timeout_canary_is_still_excused(rule, seed):
+    """The oracle's own reading of these seeds runs past the time limit of
+    the campaign, which the runner (`fuzz.runner`) owns; only the witness
+    that follows it runs here."""
+    hit = X.after_timeout(gen.gen(seed))
+    assert hit is not None and hit[0] == rule.id, hit
 
 
 @pytest.mark.parametrize(
@@ -374,3 +396,78 @@ def test_the_padding_case_keeps_the_original_inputs(static):
     before = list(c.statics["s"][1])
     oracle.run_case(c)
     assert c.statics["s"][1] == before
+
+
+# ------------------------------------------------------------ timeout witness
+
+# The shape of the oracle-timeout rule: confit traps on the first request
+# (a TINYINT overflow) and never builds the string of the second, whose
+# length is 2^31 - 1. The oracle builds the string for every request first.
+LONG = 2**31 - 1
+LENGTHS = table(
+    {"c0": "int8", "n": "int32"}, [{"c0": 100, "n": 5}, {"c0": 1, "n": LONG}]
+)
+TIMEOUT_RULE = "oracle-timeout-before-a-trap"
+
+
+def _long(builder="lpad('x', n, 'y')", other="c0 + c0", rows=LENGTHS):
+    return case(f"SELECT {builder} AS a, {other} AS b FROM __THIS__", rows)
+
+
+@pytest.mark.parametrize(
+    "builder", ["lpad('x', n, 'y')", "rpad('x', n, 'y')", "repeat('x', n)"]
+)
+def test_a_trap_before_a_long_string_is_excused(builder):
+    hit = X.after_timeout(_long(builder))
+    assert hit is not None and hit[0] == TIMEOUT_RULE, hit
+    assert "Overflow in addition of INT8" in hit[1]
+
+
+def test_a_witness_that_caps_no_length_excuses_nothing():
+    # Each length is below the cap, so the long string does not cause the
+    # time limit.
+    rows = table({"c0": "int8", "n": "int32"}, [{"c0": 100, "n": 5}, {"c0": 1, "n": 7}])
+    assert X.after_timeout(_long(rows=rows)) is None
+
+
+def test_a_planted_trap_where_the_capped_oracle_returns_rows_is_not_excused(plant):
+    # Nothing traps in the query, so the capped oracle answers rows.
+    plant("Out of Range Error: planted")
+    assert X.after_timeout(_long(other="c0")) is None
+
+
+def test_a_planted_trap_of_another_kind_is_not_excused(plant):
+    # The capped oracle raises an Out of Range Error. A cap can change what
+    # the query computes, so an error of another kind can be the cap's own.
+    plant("Conversion Error: planted")
+    assert X.after_timeout(_long()) is None
+
+
+def test_a_planted_trap_that_names_no_kind_is_excused(plant):
+    # Some of confit's trap texts name no kind of error, such as "cannot take
+    # square root of a negative number". Then any error of the oracle counts.
+    plant("planted, with no kind")
+    hit = X.after_timeout(_long())
+    assert hit is not None and hit[0] == TIMEOUT_RULE, hit
+
+
+def test_a_planted_trap_on_one_backend_is_not_excused_after_a_timeout(monkeypatch):
+    # Nothing traps in the query. The Cranelift build traps and the
+    # interpreter answers rows: a backend split, never excused.
+    real = oracle._build
+
+    def build(sql, schema, statics, udf_objs, shape, force_interp):
+        fn = real(sql, schema, statics, udf_objs, shape, force_interp)
+        return fn if force_interp else _Inject(fn, "Out of Range Error: planted")
+
+    monkeypatch.setattr(oracle, "_build", build)
+    assert X.after_timeout(_long(other="c0")) is None
+
+
+def test_a_timeout_rule_off_its_oracle_version_excuses_nothing(monkeypatch):
+    rules = tuple(
+        dataclasses.replace(r, oracle="0.0.0") if r.timeout is not None else r
+        for r in X.RULES
+    )
+    monkeypatch.setattr(X, "RULES", rules)
+    assert X.after_timeout(_long()) is None

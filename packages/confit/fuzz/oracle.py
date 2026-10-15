@@ -1165,6 +1165,19 @@ def run_case_json(seed: int, *, report: bool = True, baseline=None) -> dict:
     return line(v)
 
 
+def timeout_json(seed: int) -> dict:
+    """What a new worker answers for a seed whose oracle reading ran past
+    the time limit of the campaign (`fuzz.runner`): `{"excused": [rule id,
+    detail]}` when an exclusion's witness excuses the case
+    (`fuzz.exclusions.after_timeout`), else `{"excused": None}`. A witness
+    that raises excuses nothing, and its error comes back as `error`."""
+    try:
+        hit = X.after_timeout(G.gen(seed))
+    except Exception as e:  # noqa: BLE001 -- the TIMEOUT stands
+        return {"excused": None, "error": f"{type(e).__name__}: {e}"}
+    return {"excused": list(hit) if hit is not None else None}
+
+
 def refusal_json(seed: int) -> dict:
     """What completes `run_case_json(seed, report=False)`'s REFUSED line, as
     keys to merge into it: `{"oracle": outcome}`, or -- when the reading
