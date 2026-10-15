@@ -40,9 +40,14 @@ that request, `to_native(step, allow_bound=True)`. In order:
      K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
      max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
      not served until a normwise S is derived.
-2. **Still open for the owner:** a bounded step inside a composition
-   (decisions/open/bounded-steps-in-compositions.md). `compose.py` keeps
-   refusing one meanwhile.
+2. **A bounded step inside a composition** (ruled 2026-10-15,
+   [decisions/closed/bounded-steps-in-compositions.md](decisions/closed/bounded-steps-in-compositions.md)).
+   With `allow_bound=True`, `compose.py` accepts a bounded step in any
+   position. First serve it as the last step, or as one part of a
+   ColumnTransformer or a FeatureUnion: the step's own bound holds there.
+   Then pass the error scale through affine steps (|A|·S plus their own
+   rounding). After a discontinuous step, `native.check` reports the flip
+   rate in place of a bound.
 
 ## Needs from confit
 
@@ -322,6 +327,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
   function size): `to_native` builds it first.
 
 ## Later
+
+- The CPython of the Nix dev shell (#428) has no profile-guided
+  optimization. On it, a 64-row call of a twin took a median of 1.23 times
+  as long (reading 5, section 3). Measure the timings of a reading on the
+  same CPython each time, or pin a CPython with this optimization in
+  `flake.nix`. The ruling is
+  [the worker environment](decisions/closed/worker-environment.md).
+- In the dev shell, `maturin develop --release` stops, because Nix marks
+  its CPython as externally managed. Use `--skip-install`, and write this
+  in the build steps of the worker brief.
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,

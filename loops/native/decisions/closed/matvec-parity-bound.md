@@ -414,5 +414,6 @@ one amendment after the downstream verification.
   is S_full, and the chi2 record counts its `cosh` constant as not shared.
 - **The interface of check:** this is work for the loop, not a question.
   PLANS.md lists it.
-- **A bounded step in a composition:** this question stays open, in
-  [open/bounded-steps-in-compositions.md](../open/bounded-steps-in-compositions.md).
+- **A bounded step in a composition:** this question stayed open. The owner
+  ruled it on 2026-10-15, in
+  [bounded-steps-in-compositions.md](bounded-steps-in-compositions.md).

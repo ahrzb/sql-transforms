@@ -94,3 +94,16 @@ after the owner resumed the native loop on 2026-10-14:
 
 #428 may answer the question of this record. If the owner rules that #428
 answers it, this record moves to `closed/`, with #428 as the ruling.
+
+**Ruling (owner, 2026-10-15).** #428 answers the question. Each cloud
+session enters the Nix dev shell, and that shell gives the uv and the
+CPython that `flake.nix` and `flake.lock` pin. The owner adds no setup
+script for uv. On 2026-10-15, a project thread session ran in the dev shell
+with uv 0.12.22 and CPython 3.14.7, and `sql_transform` imported there.
+
+The two facts above about the CPython of Nix do not need a ruling. The
+native loop's plans keep them as open work:
+
+- The CPython of Nix has no profile-guided optimization. A 64-row call of
+  a twin took 1.23 times as long on it.
+- In the dev shell, `maturin develop --release` needs `--skip-install`.
