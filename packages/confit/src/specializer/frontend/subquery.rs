@@ -1,19 +1,21 @@
 //! The correlated scalar subquery with one aggregate over one static table,
-//! `(SELECT sum(s.v) FROM s WHERE s.k = t.k)`. It binds as a hidden LEFT
-//! join to a static table that confit computes at build ([`AggTable`]): one
-//! row per group of `s` rows with equal keys, holding the group's aggregate.
-//! A request reads the row of the group it matches, and a request that
-//! matches no group reads the aggregate of no rows: 0 for `count`, NULL for
-//! the others.
+//! `(SELECT sum(s.v) FROM s WHERE s.k = t.k AND s.v > 5)`. It binds as a
+//! hidden LEFT join to a static table that confit computes at build
+//! ([`AggTable`]): the `s` rows on which every WHERE term that reads only
+//! `s` is TRUE (its filter, [`plan::AggFilter`]), in groups with equal keys,
+//! one row per group holding the group's aggregate. A request reads the row
+//! of the group it matches, and a request that matches no group reads the
+//! aggregate of no rows: 0 for `count`, NULL for the others.
 //!
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14) evaluates the
 //! subquery's WHERE over (distinct correlated values) x (static rows), in
 //! written order, and the aggregate's argument over the matched rows only.
 //! Nothing served here can trap: each key's outer side cannot
-//! (`can_trap`), its inner side is a bare column, no key casts a VARCHAR,
-//! and the aggregates run at build, where a sum that could overflow
-//! refuses. So the timing of that evaluation cannot show, and the hidden
-//! join runs after the FROM joins of its level.
+//! (`can_trap`), its inner side is a bare column, no key casts a VARCHAR, no
+//! filter term can trap, and the aggregates run at build, where a sum that
+//! could overflow refuses. So the timing of that evaluation cannot show:
+//! the filter passes the same rows in any order, and the hidden join runs
+//! after the FROM joins of its level.
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
@@ -202,8 +204,16 @@ pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareE
 fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "a scalar subquery with {what} -- served: (SELECT count(*) | count(c) | min(c) | \
-         max(c) | sum(c) | avg(c) FROM s WHERE s.k = <outer expression> AND ...) over one \
-         static table"
+         max(c) | sum(c) | avg(c) FROM s WHERE ...) over one static table, each WHERE term \
+         s.k = <outer expression> or a term that reads only s, and none that can trap"
+    ))
+}
+
+/// The refusal of a WHERE term that is neither a key nor a filter.
+fn term_refusal(t: &SqlExpr) -> PrepareError {
+    form_refusal(&format!(
+        "the WHERE term {t} (each term must be an equality between a column of its table \
+         and an outer expression, or read only its table)"
     ))
 }
 
@@ -273,8 +283,9 @@ impl Binder<'_> {
             schema: if alias.is_some() { String::new() } else { name.schema() },
         };
 
-        // WHERE: each term an equality between a column of the table and an
-        // expression of the outer scope that cannot trap.
+        // WHERE: each term reads only the table (a filter the build applies
+        // to its rows), or is an equality between a column of the table and
+        // an expression of the outer scope (a key). No term can trap.
         let mut terms = Vec::new();
         if let Some(w) = &select.selection {
             collect_conjuncts(w, &mut terms);
@@ -282,10 +293,15 @@ impl Binder<'_> {
         let mut keys = Vec::new();
         let mut key_cols = Vec::new();
         let mut key_lanes = Vec::new();
+        let mut filters = Vec::new();
         for t in terms {
             let mut t = t;
             while let SqlExpr::Nested(x) = t {
                 t = x;
+            }
+            if self.reads_only(&inner, t)? {
+                filters.push(t);
+                continue;
             }
             let (left, right, cmp) = match t {
                 SqlExpr::BinaryOp {
@@ -294,22 +310,12 @@ impl Binder<'_> {
                     right,
                 } => (left, right, KeyCmp::Eq),
                 SqlExpr::IsNotDistinctFrom(left, right) => (left, right, KeyCmp::NotDistinct),
-                _ => {
-                    return Err(form_refusal(&format!(
-                        "the WHERE term {t} (each term must be an equality between a column \
-                         of its table and an outer expression)"
-                    )))
-                }
+                _ => return Err(term_refusal(t)),
             };
             let (col, outer) = match (inner.col(left)?, inner.col(right)?) {
                 (Some(c), None) => (c, right.as_ref()),
                 (None, Some(c)) => (c, left.as_ref()),
-                _ => {
-                    return Err(form_refusal(&format!(
-                        "the WHERE term {t} (each term must be an equality between a column \
-                         of its table and an outer expression)"
-                    )))
-                }
+                _ => return Err(term_refusal(t)),
             };
             if inner.reads(outer)? {
                 return Err(form_refusal(&format!(
@@ -484,6 +490,10 @@ impl Binder<'_> {
             },
         });
         let n_keys = key_lanes.len() as u32;
+        let filter = match filters.as_slice() {
+            [] => None,
+            _ => Some(self.static_filter(query, select, source, &filters)?),
+        };
         let mut tables = self.agg_tables.borrow_mut();
         let table = self.statics.len() + tables.len();
         tables.push(AggTable {
@@ -491,6 +501,7 @@ impl Binder<'_> {
             source,
             keys: key_lanes,
             aggs: vec![Agg { func, arg }],
+            filter,
         });
         drop(tables);
         let mut joins = self.agg_joins.borrow_mut();
@@ -540,6 +551,136 @@ impl Binder<'_> {
         };
         self.agg_reads.borrow_mut().push((query.clone(), value.clone()));
         Ok(value)
+    }
+
+    /// Whether `t` reads only `inner`'s table: each column it names is one
+    /// of the table's. A constant reads only the table too. A term that
+    /// holds a subquery, or that reads only the table and calls a SQL
+    /// function, refuses by name.
+    fn reads_only(&self, inner: &Inner<'_>, t: &SqlExpr) -> Result<bool, PrepareError> {
+        use super::resolve::Walk;
+        let mut calls_fn = false;
+        let only = self.walk_expr(t, &mut |x| {
+            if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() {
+                calls_fn = true;
+                return Ok(Walk::Into);
+            }
+            Ok(match x {
+                SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => {
+                    return Err(form_refusal(&format!("the WHERE term {t}, which holds a subquery")))
+                }
+                SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => match inner.col(x)? {
+                    Some(_) => Walk::Over,
+                    None => Walk::Stop,
+                },
+                _ => Walk::Into,
+            })
+        })?;
+        if only && calls_fn {
+            return Err(form_refusal(&format!(
+                "the WHERE term {t}, which reads only its table and calls a SQL function"
+            )));
+        }
+        Ok(only)
+    }
+
+    /// The WHERE terms that read only the static table at `source`, bound
+    /// as the items of a query of their own over that table, each cast to
+    /// BOOLEAN as DuckDB casts a WHERE term. The build keeps the rows on
+    /// which every term is TRUE. It evaluates each term over every row,
+    /// where DuckDB evaluates it over the rows that the terms before it
+    /// pass: so a term that can trap refuses, and the others pass the same
+    /// rows on both engines.
+    fn static_filter(
+        &self,
+        query: &sqlparser::ast::Query,
+        select: &sqlparser::ast::Select,
+        source: usize,
+        terms: &[&SqlExpr],
+    ) -> Result<plan::AggFilter, PrepareError> {
+        let st = &self.statics[source];
+        // The scalar columns in declared order, each nullable: a NULL in a
+        // column declared NOT NULL still reads as NULL. A struct, or a
+        // column of a type this engine does not serve, is opaque at its
+        // position, as a column-alias list counts it.
+        let mut in_cols = Vec::new();
+        let mut opaque = Vec::new();
+        for (pos, c) in st.star.iter().enumerate() {
+            match c {
+                plan::StarCol::Real(i) => {
+                    let mut col = st.cols[*i as usize].clone();
+                    col.ty.nullable = true;
+                    in_cols.push(col);
+                }
+                plan::StarCol::Opaque(name) => opaque.push((pos, name.clone())),
+            }
+        }
+        // The subquery's own FROM, so its names bind as they did there.
+        let mut sel = select.clone();
+        sel.selection = None;
+        sel.projection = terms
+            .iter()
+            .map(|t| {
+                SelectItem::UnnamedExpr(SqlExpr::Cast {
+                    kind: CastKind::Cast,
+                    expr: Box::new((*t).clone()),
+                    data_type: sqlparser::ast::DataType::Boolean,
+                    array: false,
+                    format: None,
+                })
+            })
+            .collect();
+        let mut q = query.clone();
+        q.body = Box::new(SetExpr::Select(Box::new(sel)));
+        let env = Env {
+            this_name: &st.name,
+            in_cols: &in_cols,
+            opaque: &opaque,
+            structs: &[],
+            statics: &[],
+            many: false,
+            udfs: self.udfs,
+            models: self.models,
+            bind_eval: self.bind_eval,
+        };
+        let bound = bind_query(&q, None, &env, &[])?;
+        let [stage] = <[Stage; 1]>::try_from(bound.stages).map_err(|_| {
+            PrepareError::Internal("a scalar subquery's filter bound to more than one stage".into())
+        })?;
+        if stage.project.len() != terms.len() {
+            return Err(form_refusal(&format!(
+                "the WHERE terms {}, which do not bind one value each",
+                terms.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" AND ")
+            )));
+        }
+        if !bound.joins.is_empty()
+            || stage.pred.is_some()
+            || !stage.lets.is_empty()
+            || !bound.wide_outs.is_empty()
+        {
+            return Err(PrepareError::Internal(
+                "a scalar subquery's filter bound more than its terms".into(),
+            ));
+        }
+        for ((_, e), t) in stage.project.iter().zip(terms) {
+            if e.ty != Ty::I1 {
+                return Err(PrepareError::Internal(format!(
+                    "the WHERE term {t} bound to {}, not BOOLEAN",
+                    e.ty.name()
+                )));
+            }
+            if can_trap(e) {
+                return Err(form_refusal(&format!(
+                    "the WHERE term {t}, which reads only its table and can trap"
+                )));
+            }
+        }
+        Ok(plan::AggFilter {
+            in_cols,
+            project: stage.project,
+            out_cols: bound.out_cols,
+            regexes: bound.ctx.regexes,
+        })
     }
 }
 

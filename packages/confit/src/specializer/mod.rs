@@ -132,6 +132,20 @@ pub struct StaticSpec {
     /// `aggs[i]` over the group. Each `vals[i]` then holds the aggregate's
     /// layout and its argument's path (empty for `count(*)`).
     pub aggs: Option<Vec<AggVal>>,
+    /// Set for a grouped table whose subquery has WHERE terms that read
+    /// only the source table: the build groups only the rows it keeps.
+    pub filter: Option<FilterSpec>,
+}
+
+/// The WHERE terms of a scalar subquery that read only its static table
+/// ([`plan::AggFilter`]), as the build runs them over that table's rows: it
+/// keeps a row when every output of `program` is TRUE on it.
+#[derive(Debug)]
+pub struct FilterSpec {
+    /// One BOOLEAN output per term; it cannot trap.
+    pub program: ir::Program,
+    /// The program's input: the table's scalar columns, read by name.
+    pub lanes: Vec<plan::InputLane>,
 }
 
 /// One aggregate of a grouped static table at the boundary.
@@ -357,20 +371,21 @@ pub fn prepare_full(
         .iter()
         .map(|j| {
             if j.batch {
-                return StaticSpec {
+                return Ok(StaticSpec {
                     batch: true,
                     table: String::new(),
                     keys: Vec::new(),
                     vals: Vec::new(),
                     aggs: None,
-                };
+                    filter: None,
+                });
             }
             if let Some(a) = agg_of(j) {
                 return agg_spec(j, a, &statics[a.source], &catalog[j.table]);
             }
             let t = &statics[j.table];
             let paths = plan::lane_paths(&t.cols, &t.structs);
-            StaticSpec {
+            Ok(StaticSpec {
                 batch: false,
                 table: t.name.clone(),
                 keys: j
@@ -419,9 +434,10 @@ pub fn prepare_full(
                     })
                     .collect(),
                 aggs: None,
-            }
+                filter: None,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, PrepareError>>()?;
     // DOCUMENTATION, not the guarantee. `all_in` above is this very vector's
     // projection, taken a few lines apart, so this compares a list against
     // itself. What actually keeps the boundary's lanes and the program's
@@ -469,7 +485,7 @@ fn agg_spec(
     a: &plan::AggTable,
     source: &plan::StaticTable,
     grouped: &plan::StaticTable,
-) -> StaticSpec {
+) -> Result<StaticSpec, PrepareError> {
     let paths = plan::lane_paths(&source.cols, &source.structs);
     let keys = j
         .key_cols
@@ -503,13 +519,47 @@ fn agg_spec(
             src: agg.arg.map_or(ir::Ty::I64, |l| source.cols[l as usize].ty.ty),
         });
     }
-    StaticSpec {
+    Ok(StaticSpec {
         batch: false,
         table: source.name.clone(),
         keys,
         vals,
         aggs: Some(aggs),
-    }
+        filter: a.filter.as_ref().map(filter_spec).transpose()?,
+    })
+}
+
+/// The program of a scalar subquery's WHERE terms that read only its
+/// table ([`plan::AggFilter`]): over the table's scalar columns, one BOOLEAN
+/// output per term. The build runs it on the interpreter.
+fn filter_spec(f: &plan::AggFilter) -> Result<FilterSpec, PrepareError> {
+    let plan = plan::Plan {
+        stages: vec![plan::Stage {
+            joins: Vec::new(),
+            pred: None,
+            project: f.project.clone(),
+            lets: Vec::new(),
+        }],
+    };
+    let mut program = lower::lower(
+        &plan,
+        &[],
+        &[],
+        &f.in_cols,
+        f.out_cols.clone(),
+        f.regexes.clone(),
+        &[],
+        "filter",
+        false,
+        &[],
+        &[],
+    )?;
+    ir::canonicalize(&mut program);
+    verified(&program)?;
+    Ok(FilterSpec {
+        program,
+        lanes: plan::input_lanes(&f.in_cols, &[]),
+    })
 }
 
 /// The static exactly-one-row proof behind `shape="map"`, over every stage:
