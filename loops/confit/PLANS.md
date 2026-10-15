@@ -632,7 +632,11 @@ The first five are ruled, in this order; the rest follow.
   the 5,655 cases of 36,100,000..40,099,999 that read ANY, SOME or ALL gave
   3,235 AGREE, 136 AGREE_TRAP, 2,255 REFUSED (152 name an `x` that can trap
   over a WHERE with a key), 23 DIVERGE_OPT, 0 gated, and no unexplained
-  metamorphic finding. ABLATIONS.
+  metamorphic finding. Each part fails its tests when removed alone: the
+  ties flag (10 tests), the guard `count > 0` (12), a guard that counts only
+  items that are not NULL (12), the DECIMAL arms of `can_trap` (38), the
+  `trap_keys` entry (5), the refusal of a keyed `x` that can trap (4), and the
+  refusal of an item cast that can trap (1).
   Found on master while measuring the compare type: `cmp` compares two
   DECIMALs at a capped width at `dec_common` (DECIMAL(38,0) for
   DECIMAL(9,4) against DECIMAL(38,0), which rounds x), where DuckDB's
