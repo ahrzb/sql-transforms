@@ -27,7 +27,9 @@ use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
 use crate::specializer::frontend::macros::SqlMacro;
-use crate::specializer::{prepare_full, FilterSpec, PostSpec, StaticSpec, WideOut, WideShape};
+use crate::specializer::{
+    prepare_full, FilterSpec, OrderSpec, PostSpec, SortSpec, StaticSpec, WideOut, WideShape,
+};
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
 /// Arrow is what the caller wrote.
@@ -1462,6 +1464,31 @@ impl AggIn {
         }
     }
 
+    /// The value as an entry holds it at the lane type `ty`.
+    fn into_val(self, ty: Ty) -> PyResult<ScalarVal> {
+        Ok(match (self, ty) {
+            (AggIn::Int(x), Ty::I64) => ScalarVal::I64(x as i64),
+            (AggIn::Int(x), Ty::I128) => ScalarVal::I128(x),
+            (AggIn::Int(x), Ty::Dec(p, s)) => ScalarVal::Dec(x, p, s),
+            (AggIn::F64(x), _) => ScalarVal::F64(x),
+            (AggIn::Str(x), _) => ScalarVal::Str(x),
+            (AggIn::Bool(x), _) => ScalarVal::I1(x),
+            (_, t) => return Err(build_err(format!("internal: a column value as {}", t.name()))),
+        })
+    }
+
+    /// A value of the item, as an ORDER BY term reads it: one type per
+    /// item, so a DECIMAL's scaled integer orders as its value.
+    fn of_val(v: &ScalarVal) -> AggIn {
+        match v {
+            ScalarVal::I1(b) => AggIn::Bool(*b),
+            ScalarVal::I64(x) => AggIn::Int(i128::from(*x)),
+            ScalarVal::I128(x) | ScalarVal::Dec(x, ..) => AggIn::Int(*x),
+            ScalarVal::F64(x) => AggIn::F64(*x),
+            ScalarVal::Str(x) => AggIn::Str(x.clone()),
+        }
+    }
+
     /// Whether two values DuckDB's order calls equal differ in their bits:
     /// -0.0 and 0.0, or two NaN payloads.
     fn other_bits(&self, other: &AggIn) -> bool {
@@ -1514,17 +1541,13 @@ impl Acc {
     }
 }
 
-/// The value of one source cell as aggregate `agg` reads it; `None` for
-/// NULL.
-fn agg_in(
-    v: &pyo3::Bound<'_, PyAny>,
-    agg: &crate::specializer::AggVal,
-    what: &str,
-) -> PyResult<Option<AggIn>> {
+/// The value of one source cell of type `src`, as an aggregate or an ORDER
+/// BY reads it; `None` for NULL.
+fn agg_in(v: &pyo3::Bound<'_, PyAny>, src: Ty, what: &str) -> PyResult<Option<AggIn>> {
     if v.is_none() {
         return Ok(None);
     }
-    Ok(Some(match agg.src {
+    Ok(Some(match src {
         Ty::I1 => AggIn::Bool(v.extract()?),
         Ty::F64 => AggIn::F64(v.extract()?),
         Ty::Str => AggIn::Str(v.extract()?),
@@ -1634,6 +1657,9 @@ fn materialize_aggs(
     aggs: &[crate::specializer::AggVal],
 ) -> PyResult<StaticData> {
     use plan::AggFunc;
+    if let Some(p) = spec.post.as_ref().filter(|p| p.row) {
+        return materialize_rows(py, table, spec, aggs, p);
+    }
     let rows: Vec<Bound<'_, PyAny>> = table
         .bind(py)
         .call_method0("to_pylist")?
@@ -1699,7 +1725,7 @@ fn materialize_aggs(
                 continue;
             }
             let what = format!("static table '{}' column '{}'", spec.table, spec.vals[i].path.join("."));
-            let Some(v) = agg_in(&get(&spec.vals[i].path)?, agg, &what)? else {
+            let Some(v) = agg_in(&get(&spec.vals[i].path)?, agg.src, &what)? else {
                 continue;
             };
             if seen.as_mut().is_some_and(|s| !s.insert(v.class())) {
@@ -1756,22 +1782,6 @@ fn materialize_aggs(
             }
         }
     }
-    // An item over one row: DuckDB traps if a request matches a group of
-    // more than one row (measured 2026-10-15), so such a group refuses,
-    // before any other check reads its rows.
-    let row = spec.post.as_ref().is_some_and(|p| p.row);
-    if row {
-        for slots in groups.values() {
-            match slots.last() {
-                Some((Acc::Count(n), _)) if *n <= 1 => {}
-                Some((Acc::Count(n), _)) => {
-                    let item = spec.post.as_ref().map_or("", |p| p.item.as_str());
-                    return Err(more_rows(&spec.table, item, *n, spec.keys.is_empty()));
-                }
-                _ => return Err(build_err("internal: an item over one row without a count")),
-            }
-        }
-    }
     let mut found = Vec::with_capacity(groups.len());
     for (keys, slots) in groups {
         let mut vals = Vec::with_capacity(spec.vals.len());
@@ -1789,15 +1799,7 @@ fn materialize_aggs(
                         label(i)
                     )))
                 }
-                Acc::Extreme(Some(v), _) => Some(match (v, ty) {
-                    (AggIn::Int(x), Ty::I64) => ScalarVal::I64(x as i64),
-                    (AggIn::Int(x), Ty::I128) => ScalarVal::I128(x),
-                    (AggIn::Int(x), Ty::Dec(p, s)) => ScalarVal::Dec(x, p, s),
-                    (AggIn::F64(x), _) => ScalarVal::F64(x),
-                    (AggIn::Str(x), _) => ScalarVal::Str(x),
-                    (AggIn::Bool(x), _) => ScalarVal::I1(x),
-                    (_, t) => return Err(build_err(format!("internal: an extreme as {}", t.name()))),
-                }),
+                Acc::Extreme(Some(v), _) => Some(v.into_val(ty)?),
                 Acc::Sum(_, _, false) => None,
                 Acc::Sum(sum, abs, true) => {
                     // DuckDB sums into a HUGEINT, or a DECIMAL(38, s).
@@ -1843,24 +1845,10 @@ fn materialize_aggs(
     let maps: Vec<plan::MapVal> = match &spec.post {
         None => spec.vals.iter().map(|vc| vc.map).collect(),
         Some(p) => {
-            // An item over one row reads the row of each group that has
-            // one, and a group of no rows answers NULL: the item does not
-            // run over it.
-            let mut live = vec![true; found.len()];
-            if row {
-                for ((_, vals), live) in found.iter_mut().zip(&mut live) {
-                    *live = vals.pop() == Some(Some(ScalarVal::I64(1)));
-                }
-            }
-            let values: Vec<&[Option<ScalarVal>]> = found
-                .iter()
-                .zip(&live)
-                .filter(|(_, &l)| l)
-                .map(|((_, vals), _)| vals.as_slice())
-                .collect();
-            let mut items = post_values(p, &values, &spec.table, spec.keys.is_empty())?.into_iter();
-            for ((_, vals), l) in found.iter_mut().zip(live) {
-                *vals = vec![if l { items.next().flatten() } else { None }];
+            let values: Vec<&[Option<ScalarVal>]> = found.iter().map(|(_, vals)| vals.as_slice()).collect();
+            let items = post_values(p, &values, &spec.table, spec.keys.is_empty())?;
+            for ((_, vals), item) in found.iter_mut().zip(items) {
+                *vals = vec![item];
             }
             vec![p.map]
         }
@@ -1869,21 +1857,259 @@ fn materialize_aggs(
     for (keys, found) in found {
         let mut vals = Vec::with_capacity(maps.len() * 2);
         for (val, map) in found.into_iter().zip(&maps) {
-            match (map.nullable, val) {
-                (true, None) => vals.extend(exec::null_val_slots(map.ty)),
-                (true, Some(v)) => {
-                    vals.push(ScalarVal::I1(true));
-                    vals.push(v);
-                }
-                (false, Some(v)) => vals.push(v),
-                (false, None) => {
-                    return Err(build_err("internal: a NULL count"));
-                }
-            }
+            push_entry_val(&mut vals, *map, val)?;
         }
         entries.push((keys, vals));
     }
     Ok(StaticData::Map(entries))
+}
+
+/// Append one value of an entry, or NULL, in the layout of `map`: a
+/// nullable value as its validity and its payload.
+fn push_entry_val(vals: &mut Vec<ScalarVal>, map: plan::MapVal, val: Option<ScalarVal>) -> PyResult<()> {
+    match (map.nullable, val) {
+        (true, None) => vals.extend(exec::null_val_slots(map.ty)),
+        (true, Some(v)) => {
+            vals.push(ScalarVal::I1(true));
+            vals.push(v);
+        }
+        (false, Some(v)) => vals.push(v),
+        (false, None) => {
+            return Err(build_err("internal: a NULL count"));
+        }
+    }
+    Ok(())
+}
+
+/// One grouped static of a scalar subquery whose SELECT item reads one row
+/// ([`PostSpec::row`]), per its `StaticSpec` recipe: the source rows that
+/// pass the filter, grouped by their converted keys as in
+/// [`materialize_aggs`], and per group the item over the row that the
+/// subquery's ORDER BY, LIMIT and OFFSET keep ([`OrderSpec`]). Each
+/// aggregate names a column that the item reads.
+///
+/// DuckDB evaluates the item over every row that a request matches, before
+/// it sorts them, and traps if the item traps on one of them (measured
+/// 2026-10-15). It traps too if a request matches a group that keeps more
+/// than one row. Confit cannot know at build which groups the requests
+/// match, so each of these refuses the build by name. A group that keeps
+/// one row reads the item over that row, unless the ORDER BY ties the row
+/// with a row whose item has other bits: DuckDB does not specify which of
+/// them it keeps. A group that keeps no row answers NULL.
+fn materialize_rows(
+    py: Python<'_>,
+    table: &Py<PyAny>,
+    spec: &StaticSpec,
+    aggs: &[crate::specializer::AggVal],
+    p: &PostSpec,
+) -> PyResult<StaticData> {
+    let rows: Vec<Bound<'_, PyAny>> = table
+        .bind(py)
+        .call_method0("to_pylist")?
+        .try_iter()?
+        .collect::<PyResult<_>>()?;
+    let keep = match &spec.filter {
+        Some(f) => Some(filter_rows(f, &rows, &spec.table)?),
+        None => None,
+    };
+    let unordered = OrderSpec {
+        keys: Vec::new(),
+        limit: None,
+        offset: 0,
+    };
+    let order = p.order.as_ref().unwrap_or(&unordered);
+    // Per row that a request can match: the item's inputs, and the value of
+    // each ORDER BY term (the item's terms are set once the item runs).
+    let mut inputs: Vec<Vec<Option<ScalarVal>>> = Vec::new();
+    let mut sorts: Vec<Vec<Option<AggIn>>> = Vec::new();
+    let mut groups: std::collections::BTreeMap<Vec<KeyBits>, Vec<usize>> = Default::default();
+    if spec.keys.is_empty() {
+        groups.insert(Vec::new(), Vec::new());
+    }
+    let what = |path: &[String]| format!("static table '{}' column '{}'", spec.table, path.join("."));
+    for (r, row) in rows.iter().enumerate() {
+        if keep.as_ref().is_some_and(|k| !k[r]) {
+            continue;
+        }
+        let row = row.cast::<PyDict>().map_err(|_| {
+            build_err(format!(
+                "static table '{}': to_pylist row is not a dict",
+                spec.table
+            ))
+        })?;
+        let get = |path: &[String]| row_value(&row, path, &spec.table);
+        let Some(mut keys) = build_keys(spec, &get)? else {
+            continue;
+        };
+        // One group per key class, as in `materialize_aggs`.
+        for kb in keys.iter_mut() {
+            if let KeyBits::F64(bits) = kb {
+                *bits = exec::canon_f64_bits(f64::from_bits(*bits));
+            }
+        }
+        let mut vals = Vec::with_capacity(aggs.len());
+        for (agg, vc) in aggs.iter().zip(&spec.vals) {
+            vals.push(match agg_in(&get(&vc.path)?, agg.src, &what(&vc.path))? {
+                Some(v) => Some(v.into_val(vc.map.ty)?),
+                None => None,
+            });
+        }
+        let mut sort = Vec::with_capacity(order.keys.len());
+        for k in &order.keys {
+            sort.push(match &k.col {
+                Some((path, ty)) => agg_in(&get(path)?, *ty, &what(path))?,
+                None => None,
+            });
+        }
+        groups.entry(keys).or_default().push(inputs.len());
+        inputs.push(vals);
+        sorts.push(sort);
+    }
+    // How many rows a group of `n` rows keeps. Under a key, DuckDB keeps
+    // the rows numbered `offset < r <= offset + limit`, with an addition
+    // that wraps ([`plan::RowOrder::limit`]).
+    let wraps = !spec.keys.is_empty()
+        && order.limit.is_some_and(|l| order.offset + l > i64::MAX as u64);
+    let kept = |n: usize| {
+        let n = (n as u64).saturating_sub(order.offset);
+        match order.limit {
+            _ if wraps => 0,
+            Some(l) => n.min(l),
+            None => n,
+        }
+    };
+    // A group that keeps more than one row, before any other check reads
+    // its rows.
+    let limited = order.limit.is_some() || order.offset > 0;
+    for rows in groups.values() {
+        let n = kept(rows.len());
+        if n > 1 {
+            return Err(more_rows(
+                &spec.table,
+                &p.item,
+                n,
+                limited.then_some(rows.len()),
+                spec.keys.is_empty(),
+            ));
+        }
+    }
+    // The item over every row, as DuckDB evaluates it.
+    let values: Vec<&[Option<ScalarVal>]> = inputs.iter().map(Vec::as_slice).collect();
+    let items = post_values(p, &values, &spec.table, spec.keys.is_empty())?;
+    for (sort, item) in sorts.iter_mut().zip(&items) {
+        for (v, k) in sort.iter_mut().zip(&order.keys) {
+            if k.col.is_none() {
+                *v = item.as_ref().map(AggIn::of_val);
+            }
+        }
+    }
+    let mut entries = Vec::with_capacity(groups.len());
+    for (keys, mut rows) in groups {
+        let val = if kept(rows.len()) == 0 {
+            None
+        } else {
+            // The sort is stable, but DuckDB does not specify the order of
+            // the rows that the ORDER BY ties: each of them must give the
+            // same item.
+            let cmp = |a: &usize, b: &usize| sort_cmp(&order.keys, &sorts[*a], &sorts[*b]);
+            rows.sort_by(cmp);
+            let at = rows[order.offset as usize];
+            if let Some(&other) = rows
+                .iter()
+                .find(|&&r| cmp(&r, &at).is_eq() && !same_bits(&items[r], &items[at]))
+            {
+                return Err(tie_refusal(
+                    &spec.table,
+                    &p.item,
+                    (&items[at], &items[other]),
+                    order.keys.is_empty(),
+                    spec.keys.is_empty(),
+                ));
+            }
+            items[at].clone()
+        };
+        let mut vals = Vec::with_capacity(2);
+        push_entry_val(&mut vals, p.map, val)?;
+        entries.push((keys, vals));
+    }
+    Ok(StaticData::Map(entries))
+}
+
+/// The order of two rows under the ORDER BY terms `keys`, from the values
+/// of the terms ([`AggIn::cmp`]): NULLs last unless a term says NULLS
+/// FIRST, under DESC too.
+fn sort_cmp(keys: &[SortSpec], a: &[Option<AggIn>], b: &[Option<AggIn>]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for (k, (x, y)) in keys.iter().zip(a.iter().zip(b)) {
+        let o = match (x, y) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) if k.nulls_first => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) if k.nulls_first => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) if k.desc => y.cmp(x),
+            (Some(x), Some(y)) => x.cmp(y),
+        };
+        if o.is_ne() {
+            return o;
+        }
+    }
+    Ordering::Equal
+}
+
+/// Whether two values of an item are the same bits: -0.0 and 0.0 differ,
+/// as do two NaN payloads.
+fn same_bits(a: &Option<ScalarVal>, b: &Option<ScalarVal>) -> bool {
+    match (a, b) {
+        (Some(ScalarVal::F64(x)), Some(ScalarVal::F64(y))) => x.to_bits() == y.to_bits(),
+        _ => a == b,
+    }
+}
+
+/// The refusal of a scalar subquery whose ORDER BY ties the row that a
+/// group keeps with a row whose item differs (`items`): DuckDB does not
+/// specify which of them it keeps. Without ORDER BY, every row of a group
+/// ties.
+fn tie_refusal(
+    table: &str,
+    item: &str,
+    items: (&Option<ScalarVal>, &Option<ScalarVal>),
+    unordered: bool,
+    keyless: bool,
+) -> PyErr {
+    let show = |v: &Option<ScalarVal>| match v {
+        None => "NULL".to_string(),
+        Some(ScalarVal::I1(b)) => b.to_string(),
+        Some(ScalarVal::I64(x)) => x.to_string(),
+        Some(ScalarVal::I128(x)) => x.to_string(),
+        Some(ScalarVal::F64(x)) => format!("{x:?}"),
+        Some(ScalarVal::Str(x)) => format!("'{}'", x.replace('\'', "''")),
+        Some(ScalarVal::Dec(x, _, s)) => {
+            let digits = format!("{:0>w$}", x.unsigned_abs(), w = usize::from(*s) + 1);
+            let (int, frac) = digits.split_at(digits.len() - usize::from(*s));
+            let sign = if *x < 0 { "-" } else { "" };
+            if frac.is_empty() {
+                format!("{sign}{int}")
+            } else {
+                format!("{sign}{int}.{frac}")
+            }
+        }
+    };
+    let of = if keyless { "the table" } else { "one key" };
+    let (a, b) = (show(items.0), show(items.1));
+    build_err(if unordered {
+        format!(
+            "unsupported: static table '{table}': the scalar subquery with the SELECT item \
+             {item} keeps one row of {of} without an ORDER BY, and the item differs between \
+             its rows ({a} and {b}): DuckDB does not specify which row it keeps"
+        )
+    } else {
+        format!(
+            "unsupported: static table '{table}': the scalar subquery with the SELECT item \
+             {item} keeps one row of {of}, and its ORDER BY ties that row with a row whose \
+             item differs ({a} and {b}): DuckDB does not specify which of them it keeps"
+        )
+    })
 }
 
 /// The rows of a scalar subquery's static table that its WHERE terms
@@ -1956,9 +2182,9 @@ fn post_values(
             p.item,
             match (keyless, p.row) {
                 (true, false) => "over the table",
-                (true, true) => "over the one row of the table",
+                (true, true) => "over a row of the table",
                 (false, false) => "over the rows of one key",
-                (false, true) => "over the row of one key",
+                (false, true) => "over a row of one key",
             },
             t.0,
             if keyless {
@@ -2051,14 +2277,18 @@ fn push_scalar(col: &mut ColData, v: Option<&ScalarVal>) -> Result<(), String> {
 }
 
 /// The refusal of a scalar subquery whose SELECT item reads one row
-/// ([`PostSpec::row`]) over a group of `n` rows: DuckDB traps if a request
+/// ([`PostSpec::row`]) over a group that keeps `n` rows, of `of` rows when
+/// its LIMIT or OFFSET keeps fewer than all: DuckDB traps if a request
 /// matches the group, and without keys on every request, even over no
 /// requests (measured 2026-10-15).
-fn more_rows(table: &str, item: &str, n: i64, keyless: bool) -> PyErr {
+fn more_rows(table: &str, item: &str, n: u64, of: Option<usize>, keyless: bool) -> PyErr {
+    let rows = match of {
+        Some(all) => format!("keeps {n} of the {all} rows"),
+        None => format!("reads {n} rows"),
+    };
     build_err(format!(
         "unsupported: static table '{table}': the scalar subquery with the SELECT item {item} \
-         reads {n} rows {} ('More than one row returned by a subquery used as an \
-         expression')",
+         {rows} {} ('More than one row returned by a subquery used as an expression')",
         if keyless {
             "of the table, where DuckDB traps on every call"
         } else {

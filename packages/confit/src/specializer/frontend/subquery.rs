@@ -45,7 +45,8 @@
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
 use sqlparser::ast::{
-    DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArguments, WildcardAdditionalOptions,
+    DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArguments, LimitClause, OrderByKind,
+    WildcardAdditionalOptions,
 };
 
 /// The subquery's one static table, as its WHERE and its aggregate see it.
@@ -236,9 +237,9 @@ fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "a subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) FROM s \
          WHERE ...) with f one of count, min, max, sum and avg, or an expression over such \
-         aggregates, (SELECT an expression over the columns of s FROM s WHERE ...) over \
-         a table where a request matches at most one row, [NOT] EXISTS (SELECT * | constants \
-         | columns of s FROM s WHERE ...), \
+         aggregates, (SELECT an expression over the columns of s FROM s WHERE ... [ORDER BY \
+         columns of s] [LIMIT n] [OFFSET m]) where a request reads at most one row, [NOT] \
+         EXISTS (SELECT * | constants | columns of s FROM s WHERE ...), \
          x [NOT] IN (SELECT a column of s FROM s WHERE ...), and x op ANY | SOME | ALL (SELECT \
          a column of s FROM s WHERE ...) with op a comparison, over one static table, each \
          WHERE term s.k = <outer expression> or a term that reads only s, and none that can \
@@ -387,6 +388,91 @@ fn term_refusal(t: &SqlExpr) -> PrepareError {
     ))
 }
 
+/// The ORDER BY, LIMIT and OFFSET of a scalar subquery as written, before
+/// the SELECT item binds ([`plan::RowOrder`]): each ORDER BY term with
+/// whether it sorts descending and whether NULLs come first, and the values
+/// of LIMIT and OFFSET.
+struct OrderDraft<'q> {
+    terms: Vec<(&'q SqlExpr, bool, bool)>,
+    limit: Option<u64>,
+    offset: u64,
+}
+
+/// The [`OrderDraft`] of `query`, `None` without ORDER BY, LIMIT and
+/// OFFSET. A form that DuckDB reads otherwise, or that it stops with an
+/// error, refuses by name: ORDER BY ALL, ClickHouse's WITH FILL,
+/// INTERPOLATE and LIMIT BY, MySQL's `LIMIT m, n`, and a LIMIT or OFFSET
+/// that is not a whole number or NULL.
+fn order_draft(query: &sqlparser::ast::Query) -> Result<Option<OrderDraft<'_>>, PrepareError> {
+    if query.order_by.is_none() && query.limit_clause.is_none() {
+        return Ok(None);
+    }
+    let mut terms = Vec::new();
+    if let Some(ob) = &query.order_by {
+        if ob.interpolate.is_some() {
+            return Err(form_refusal("INTERPOLATE"));
+        }
+        let exprs = match &ob.kind {
+            OrderByKind::All(_) => return Err(form_refusal("ORDER BY ALL")),
+            OrderByKind::Expressions(e) => e,
+        };
+        for o in exprs {
+            if o.with_fill.is_some() {
+                return Err(form_refusal("WITH FILL"));
+            }
+            terms.push((&o.expr, o.options.asc == Some(false), o.options.nulls_first == Some(true)));
+        }
+    }
+    let (limit, offset) = match &query.limit_clause {
+        None => (None, 0),
+        Some(LimitClause::LimitOffset {
+            limit,
+            offset,
+            limit_by,
+        }) => {
+            if !limit_by.is_empty() {
+                return Err(form_refusal("LIMIT BY"));
+            }
+            let limit = match limit {
+                Some(l) => Some(row_count(l, "LIMIT")?.unwrap_or(i64::MAX as u64)),
+                None => None,
+            };
+            let offset = match offset {
+                Some(o) => row_count(&o.value, "OFFSET")?.unwrap_or(0),
+                None => 0,
+            };
+            (limit, offset)
+        }
+        Some(LimitClause::OffsetCommaLimit { .. }) => {
+            return Err(form_refusal("LIMIT <offset>, <count>"))
+        }
+    };
+    Ok(Some(OrderDraft {
+        terms,
+        limit,
+        offset,
+    }))
+}
+
+/// The value of a LIMIT or OFFSET (`what`): a whole number that a BIGINT
+/// holds, or `None` for NULL, which DuckDB reads as the greatest BIGINT
+/// under LIMIT and as 0 under OFFSET (measured 2026-10-15,
+/// [`plan::RowOrder::limit`]). Any other value refuses by name.
+fn row_count(e: &SqlExpr, what: &str) -> Result<Option<u64>, PrepareError> {
+    match e {
+        SqlExpr::Nested(x) => row_count(x, what),
+        SqlExpr::Value(v) if matches!(v.value, SqlValue::Null) => Ok(None),
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(n, _) => match n.parse::<i64>() {
+                Ok(n) if n >= 0 => Ok(Some(n as u64)),
+                _ => Err(form_refusal(&format!("{what} {e}"))),
+            },
+            _ => Err(form_refusal(&format!("{what} {e}"))),
+        },
+        _ => Err(form_refusal(&format!("{what} {e}, which is not a number or NULL"))),
+    }
+}
+
 impl Binder<'_> {
     /// Bind `(SELECT agg(..) FROM s WHERE s.k = outer AND ...)`: its value,
     /// read through a hidden LEFT join this level runs after its FROM
@@ -415,9 +501,14 @@ impl Binder<'_> {
         if query.with.is_some() {
             return Err(form_refusal("WITH"));
         }
-        if query.order_by.is_some() || query.limit_clause.is_some() {
-            return Err(form_refusal("ORDER BY or LIMIT"));
-        }
+        // ORDER BY, LIMIT and OFFSET serve over an item that reads one row.
+        let order = match member {
+            Member::Value => order_draft(query)?,
+            _ if query.order_by.is_some() || query.limit_clause.is_some() => {
+                return Err(form_refusal("ORDER BY or LIMIT"))
+            }
+            _ => None,
+        };
         refuse_unhandled_query(query)?;
         let select = match query.body.as_ref() {
             SetExpr::Select(s) => s.as_ref(),
@@ -637,7 +728,7 @@ impl Binder<'_> {
                     SqlExpr::Function(f) => agg_func(f).map(|func| (f, func)),
                     _ => None,
                 };
-                let (aggs, ty, post) = match single {
+                let (aggs, ty, mut post) = match single {
                     Some((f, func)) => {
                         let (agg, ty) = self.agg_call(&inner, f, func)?;
                         (vec![agg], ty, None)
@@ -648,6 +739,18 @@ impl Binder<'_> {
                         (aggs, ty, Some(post))
                     }
                 };
+                if let Some(d) = &order {
+                    let Some(p) = post.as_mut().filter(|p| p.row) else {
+                        return Err(form_refusal(
+                            "ORDER BY or LIMIT, and an aggregate call in its SELECT item",
+                        ));
+                    };
+                    let alias = match item {
+                        SelectItem::ExprWithAlias { alias, .. } => Some(alias),
+                        _ => None,
+                    };
+                    p.order = Some(self.row_order(&inner, alias, d)?);
+                }
                 let counts = post.is_none() && aggs.iter().all(|a| counts_rows(a.func));
                 cols.push(Col {
                     name: e.to_string(),
@@ -825,6 +928,9 @@ impl Binder<'_> {
             }
             Ok(())
         })?;
+        if query.order_by.is_some() || query.limit_clause.is_some() {
+            return Err(form_refusal("ORDER BY or LIMIT"));
+        }
         let count = self.scalar_subquery(&with_item(query, count_of("*")?))?;
         Ok(cmp_i64(if negated { CmpPred::Eq } else { CmpPred::Gt }, count, lit_i64(0)))
     }
@@ -1429,6 +1535,9 @@ impl Binder<'_> {
         }
         let mut q = query.clone();
         q.body = Box::new(SetExpr::Select(Box::new(sel)));
+        // The item runs over every row: ORDER BY and LIMIT are the build's.
+        q.order_by = None;
+        q.limit_clause = None;
         let env = Env {
             this_name: &self.statics[source].name,
             in_cols: &in_cols,
@@ -1466,14 +1575,6 @@ impl Binder<'_> {
                 "the SELECT item {e}, which DuckDB types as NULL"
             )));
         }
-        if row {
-            aggs.push(Agg {
-                func: AggFunc::CountStar,
-                arg: None,
-                distinct: false,
-                ties: false,
-            });
-        }
         Ok((
             aggs,
             plan::AggPost {
@@ -1482,8 +1583,83 @@ impl Binder<'_> {
                 out_cols: bound.out_cols,
                 regexes: bound.ctx.regexes,
                 row,
+                order: None,
             },
         ))
+    }
+
+    /// The ORDER BY, LIMIT and OFFSET of an item over one row
+    /// ([`plan::RowOrder`]). Each ORDER BY term is a column of the table, or
+    /// the item, named by its position 1 or by its alias: DuckDB binds a
+    /// bare name to the alias before a column of that name, but not to the
+    /// name of an item without an alias (measured 2026-10-15). A term that
+    /// reads the outer query refuses, as does any other expression and a
+    /// position or a literal that DuckDB's binder refuses.
+    fn row_order(
+        &self,
+        inner: &Inner<'_>,
+        alias: Option<&Ident>,
+        d: &OrderDraft<'_>,
+    ) -> Result<plan::RowOrder, PrepareError> {
+        let mut keys = Vec::with_capacity(d.terms.len());
+        for &(term, desc, nulls_first) in &d.terms {
+            let mut x = term;
+            while let SqlExpr::Nested(y) = x {
+                x = y;
+            }
+            let lane = match x {
+                SqlExpr::Value(v) => match &v.value {
+                    SqlValue::Number(n, _) if n.parse::<i64>() == Ok(1) => None,
+                    SqlValue::Number(n, _) if n.parse::<i64>().is_ok() => {
+                        return Err(form_refusal(&format!(
+                            "the ORDER BY position {term} (DuckDB's binder stops with 'ORDER \
+                             term out of range')"
+                        )))
+                    }
+                    _ => {
+                        return Err(form_refusal(&format!(
+                            "the ORDER BY term {term} (DuckDB's binder stops with 'ORDER BY \
+                             non-integer literal has no effect')"
+                        )))
+                    }
+                },
+                SqlExpr::Identifier(id) if alias.is_some_and(|a| a.value.eq_ignore_ascii_case(&id.value)) => None,
+                _ => match inner.col(x)? {
+                    Some(lane) => Some(lane),
+                    None if matches!(x, SqlExpr::Identifier(id) if id.value.eq_ignore_ascii_case(&inner.name)) => {
+                        return Err(form_refusal(&format!(
+                            "the ORDER BY term {term}, which reads the whole row of {}",
+                            inner.name
+                        )))
+                    }
+                    None if matches!(x, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)) => {
+                        // A name that the outer query does not bind either
+                        // answers the binder's error.
+                        self.key_side(x)?;
+                        return Err(form_refusal(&format!(
+                            "the ORDER BY term {term}, which reads the outer query"
+                        )));
+                    }
+                    None => {
+                        return Err(form_refusal(&format!(
+                            "the ORDER BY term {term} (each term must be a column of {}, the \
+                             position 1 or the alias of the SELECT item)",
+                            inner.name
+                        )))
+                    }
+                },
+            };
+            keys.push(plan::OrderKey {
+                lane,
+                desc,
+                nulls_first,
+            });
+        }
+        Ok(plan::RowOrder {
+            keys,
+            limit: d.limit,
+            offset: d.offset,
+        })
     }
 
     /// Whether `t` reads only `inner`'s table: each column it names is one
@@ -1569,6 +1745,8 @@ impl Binder<'_> {
             .collect();
         let mut q = query.clone();
         q.body = Box::new(SetExpr::Select(Box::new(sel)));
+        q.order_by = None;
+        q.limit_clause = None;
         let env = Env {
             this_name: &st.name,
             in_cols: &in_cols,

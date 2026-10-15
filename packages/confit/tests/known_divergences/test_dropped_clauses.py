@@ -73,6 +73,29 @@ def test_ordinary_query_still_builds(oracle):
     assert got == oracle.execute(sql).fetchall()
 
 
+@pytest.mark.parametrize("tail", ["LIMIT ALL", "LIMIT NULL", "limit all"])
+def test_a_limit_that_keeps_every_row_builds(oracle, tail):
+    """DuckDB keeps every row under `LIMIT ALL` and `LIMIT NULL` (measured
+    2026-10-15), so they serve as no LIMIT. sqlparser drops `LIMIT ALL`; a
+    token rewrite spells it `LIMIT NULL`, which the frontend reads."""
+    sql = f"SELECT k, ts FROM __THIS__ {tail}"
+    got = _run(sql, QUAL_SCHEMA, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
+    oracle.table("__THIS__", "k BIGINT, ts BIGINT", _QUAL_ROWS)
+    assert got == oracle.execute(sql).fetchall() == _QUAL_ROWS
+
+
+@pytest.mark.parametrize(
+    "tail", ["LIMIT ALL OFFSET 1", "LIMIT NULL OFFSET 1", "OFFSET 1"]
+)
+def test_a_limit_with_an_offset_still_refuses(tail):
+    with pytest.raises(ValueError, match="LIMIT/OFFSET"):
+        _run(
+            f"SELECT k, ts FROM __THIS__ {tail}",
+            QUAL_SCHEMA,
+            [{"k": k, "ts": t} for k, t in _QUAL_ROWS],
+        )
+
+
 # The SAME class for table names: a `TableFactor::Table { name, alias, .. }`
 # pattern swallows every modifier sqlparser can hang off a table name, so
 # `TABLESAMPLE 3 ROWS` would be dropped: DuckDB returns 3 rows, a dropping

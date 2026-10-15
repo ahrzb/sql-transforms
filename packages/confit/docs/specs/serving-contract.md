@@ -109,7 +109,7 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build |
+| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build |
 | A scalar subquery of another form, for example with a DOUBLE `sum` or `avg`, or with an item that calls a UDF. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
@@ -177,6 +177,46 @@ Confit also refuses these items:
 - the item `NULL`, to which the oracle gives the type NULL, which confit does
   not have;
 - an item that holds a subquery or calls a SQL function, a UDF or a tree model.
+
+The subquery of such an item can also end with ORDER BY, LIMIT and OFFSET,
+for example `(SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o DESC LIMIT 1)`.
+For a request, the oracle sorts the rows that pass the WHERE by the ORDER BY
+terms. Then it skips the first m rows for `OFFSET m`, and it keeps the next n
+rows for `LIMIT n`. The value is the item over the row that it keeps. The value
+is NULL if the oracle keeps no row. If the oracle keeps more than one row, it
+stops with the error
+`More than one row returned by a subquery used as an expression`. These rules
+apply to the clauses:
+
+- Each ORDER BY term is a column of `s` or the item. A term names the item by
+  its position `1` or by its alias. If `s` has a column with the same name as
+  the alias, a term with this name names the item, not the column, as in the
+  oracle.
+- Each term can have ASC or DESC, and NULLS FIRST or NULLS LAST. If a term
+  does not say where NULL values go, they go last, under ASC and under DESC.
+- The oracle sorts a NaN after all other DOUBLE values, and it sorts `-0.0`
+  and `0.0` as equal values. It sorts VARCHAR values by their bytes, and FALSE
+  before TRUE.
+- LIMIT and OFFSET each take a whole number or NULL. `OFFSET NULL` skips no
+  row. Without a key (see the next paragraph), `LIMIT NULL` and `LIMIT ALL`
+  keep all the rows after the OFFSET.
+
+The subquery has a key if its WHERE compares a column of `s` with the outer
+query. With a key, the oracle keeps the rows whose number r in the sorted
+order has m < r ≤ m + n. It computes m + n as a BIGINT, and this sum wraps
+past the greatest BIGINT to a negative number. The oracle reads `LIMIT NULL`
+and `LIMIT ALL` as the greatest BIGINT.
+
+So with a key, `LIMIT NULL OFFSET 1` keeps no row, and the value is NULL for
+each request. Without a key, `LIMIT NULL OFFSET 1` keeps all the rows after the
+first. Confit gives the same values in both cases. The pin
+`test_pin_a_limit_under_a_key_keeps_rows_up_to_a_sum_that_wraps` in
+`tests/test_scalar_subquery.py` records them, and the table of
+[inherited quirks](../oracle/02-inherited-quirks.md) lists this quirk.
+
+Confit refuses an ORDER BY term of another form, such as an expression or a
+column of the outer query. It also refuses ORDER BY and LIMIT in a subquery
+whose item has an aggregate, and in EXISTS, IN, ANY, SOME and ALL.
 
 Confit also serves `EXISTS` and `NOT EXISTS` over such a subquery, for example
 `EXISTS (SELECT * FROM s WHERE s.k = t.k)`. Each SELECT item of this subquery
@@ -327,8 +367,13 @@ aggregate of each group. An aggregate over DISTINCT values reads each distinct
 value of the group once. The keys are the columns of `s` that the WHERE
 compares with the outer query. If no term compares a column of `s` with the
 outer query, all the rows that confit keeps make one group. If the item is an
-expression, confit computes it over the aggregates of each group. If the item
-has no aggregate, confit computes it over the one row of each group.
+expression, confit computes it over the aggregates of each group.
+
+If the item has no aggregate, confit computes it over each row of each group,
+as the oracle does. Without LIMIT and OFFSET, the value of a group is the item
+over its one row. With LIMIT or OFFSET, confit sorts the rows of each group in
+the order of the ORDER BY terms, as the oracle does. The value of the group is
+then the item over the row that the oracle keeps.
 
 A request reads the value of the group that it matches, through a LEFT join. If
 a request matches no group, it reads 0 for `count` and NULL for the other
@@ -341,9 +386,12 @@ The oracle evaluates the WHERE of the subquery in written order, for each
 pair of a distinct outer value and a row of `s`. It evaluates the argument of
 the aggregate for the matched rows only. It evaluates the item once for each
 distinct outer value, over the aggregates of the matched rows. If no row
-matches, it evaluates the item over the aggregates of no rows. The pins at the
-end of `tests/test_scalar_subquery.py` record these facts. The order of
-evaluation matters only where an evaluation can trap. In a served subquery,
+matches, it evaluates the item over the aggregates of no rows. The oracle
+evaluates an item with no aggregate in another way. It evaluates this item
+over each matched row, before ORDER BY, LIMIT and OFFSET. So this item can
+raise an error over a row that LIMIT does not keep. The pins at the end of
+`tests/test_scalar_subquery.py` record these facts. The order of evaluation
+matters only where an evaluation can trap. In a served subquery,
 only the outer expression of the first key, and the left side `x` of IN, ANY
 or ALL over a WHERE without a key, can trap. The argument of the aggregate, if it has one,
 is a column or a constant. Only
@@ -441,12 +489,24 @@ cases that depend on the rows of `s`:
   of the oracle depends on the order of the rows. This refusal does not apply
   to the least and the greatest item of ANY and ALL.
 - At build, an expression item raises an error over the aggregates of a
-  group, or an item with no aggregate raises an error over the row of a group.
-- A group of an item with no aggregate has more than one row. Confit refuses
-  the build even if no request matches this group. The oracle stops with an
-  error only for a request that matches the group. If the subquery has no key,
-  the oracle stops with this error each time it runs the query, even for a
-  batch with no requests.
+  group, or an item with no aggregate raises an error over a row of a group.
+- The subquery of an item with no aggregate keeps more than one row of a
+  group. Without LIMIT and OFFSET, it keeps all the rows of the group. Confit
+  refuses the build even if no request matches this group. The oracle stops
+  with the error `More than one row returned by a subquery used as an
+  expression` only for a request that matches the group. If the subquery has
+  no key, the oracle stops with this error each time it runs the query, even
+  for a batch with no requests.
+- LIMIT and OFFSET keep one row of a group, and a row that ties with this row
+  has a different item. Two rows of a group tie if they have the same values
+  in all the ORDER BY terms. Without ORDER BY, all the rows of a group tie.
+  The oracle does not specify the order of two rows that tie, so it can keep
+  either of them. Its answer is then not a function of the query and its
+  inputs
+  ([claim: nondeterminism-axiom](../oracle/03-nondeterminism.md#decision-rule)).
+  In this check, two DOUBLE items are different if their bits are different.
+  So `-0.0` and `0.0` are different items, although they sort as equal
+  values.
 
 A SELECT item can read the alias of an earlier item. The oracle rejects such
 a read if the earlier item holds a subquery. Its error starts with
@@ -471,7 +531,13 @@ as in `NOT x op ANY (...)`. About one in five of the other subqueries that are
 an item or the operand of IS NULL has a SELECT item with no aggregate in place
 of its aggregate. These are the subqueries that are not EXISTS, IN, ANY, SOME
 or ALL. In about two cases in three, this item is a column of `s`. In the other
-cases, it is an expression over the columns of `s`. In about two cases in
+cases, it is an expression over the columns of `s`. About one in two of the
+subqueries with such an item end with ORDER BY, LIMIT or OFFSET. Such a
+subquery has up to two ORDER BY terms. Each term is a column of `s` or, in
+about one case in four, the item, by its position or by its alias. The LIMIT
+is 1 in about two cases in three, and else 0, 2, NULL, ALL or no LIMIT. About
+one of these subqueries in four has an OFFSET of 0, 1, 2 or NULL. For a
+subquery with such an item and without these clauses, in about two cases in
 three, the generator also removes from `s` each row that has the same values
 in the key columns of this subquery as an earlier row, so that a request
 matches one row at most.

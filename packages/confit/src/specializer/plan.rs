@@ -156,14 +156,52 @@ pub struct AggPost {
     pub out_cols: Vec<Col>,
     pub regexes: Vec<super::ir::ReSpec>,
     /// Set when the item reads the columns of a row, not aggregates
-    /// (`(SELECT s.v FROM s WHERE s.k = t.k)`): each input is `min` of a
-    /// column, which over a group of one row is the row's value, and the
-    /// [`AggTable`] has one more aggregate after them, `count(*)`. DuckDB
-    /// traps when a request matches a group of more than one row, so the
-    /// build refuses such a group by name. A group of no rows, which only a
-    /// table without keys has, answers NULL, as a request that matches no
-    /// group does: the item is not evaluated.
+    /// (`(SELECT s.v FROM s WHERE s.k = t.k)`): each input is a column of
+    /// the row, which the [`AggTable`] lists as the aggregate `min` of that
+    /// column, its value over one row. The build evaluates the item over
+    /// each row of a group, and the group's value is the item over the row
+    /// that [`AggPost::order`] keeps. DuckDB traps when a request matches a
+    /// group that keeps more than one row, so the build refuses such a
+    /// group by name. A group that keeps no row answers NULL, as a request
+    /// that matches no group does.
     pub row: bool,
+    /// The ORDER BY, LIMIT and OFFSET of an item over one row; `None`
+    /// without them, where a group keeps all its rows.
+    pub order: Option<RowOrder>,
+}
+
+/// The ORDER BY, LIMIT and OFFSET of a scalar subquery whose item reads one
+/// row ([`AggPost::row`]), `(SELECT s.v FROM s WHERE s.k = t.k ORDER BY
+/// s.o DESC LIMIT 1)`. DuckDB evaluates the item over every row that a
+/// request matches, sorts these rows, and keeps the rows from position
+/// `offset` on, at most `limit` of them (measured 2026-10-15). The build
+/// does the same over each group. DuckDB does not specify the order of the
+/// rows that the ORDER BY ties, so a group whose kept row ties rows with
+/// another item refuses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RowOrder {
+    /// The ORDER BY terms, in written order; empty without ORDER BY.
+    pub keys: Vec<OrderKey>,
+    /// `LIMIT n`, at most the greatest BIGINT; `None` without LIMIT.
+    /// DuckDB reads `LIMIT NULL` as that greatest BIGINT: under a key, it
+    /// keeps the rows numbered `offset < r <= offset + limit`, with an
+    /// addition that wraps, so a sum past that BIGINT keeps no row
+    /// (measured 2026-10-15).
+    pub limit: Option<u64>,
+    /// `OFFSET m`; 0 without OFFSET or with `OFFSET NULL`.
+    pub offset: u64,
+}
+
+/// One ORDER BY term of a [`RowOrder`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrderKey {
+    /// The source lane it sorts by; `None` for the SELECT item, which the
+    /// term names by its position 1 or by its name.
+    pub lane: Option<u32>,
+    pub desc: bool,
+    /// Whether NULLs sort first. DuckDB sorts them last by default, under
+    /// DESC too (measured 2026-10-15).
+    pub nulls_first: bool,
 }
 
 /// The WHERE terms of a scalar subquery that read only its static table,

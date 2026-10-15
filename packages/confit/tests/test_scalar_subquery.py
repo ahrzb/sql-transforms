@@ -685,6 +685,14 @@ def _ksub(where: str, agg: str = "count(*)", tail: str = "") -> str:
         (_ksub(f"s.k = {TRAP}", "sum(v)", " WHERE x = 0 OR x IS NULL"), "AGREE"),
         (_ksub(f"s.k = {TRAP}", "max(v)", " WHERE x = 0 OR x IS NULL"), "AGREE"),
         (_ksub(f"s.k = {TRAP}", "s.v", " WHERE x = 0 OR x IS NULL"), "AGREE"),
+        (
+            _ksub(
+                f"s.k = {TRAP} ORDER BY s.v DESC LIMIT 1",
+                "s.v",
+                " WHERE x = 0 OR x IS NULL",
+            ),
+            "AGREE",
+        ),
         (_ksub(f"s.f = 1 AND s.k = {TRAP}", tail=" WHERE x = 0"), "AGREE"),
         (_ksub(f"s.k = {TRAP}"), "AGREE_TRAP"),
         (_ksub(f"s.k = {TRAP}", "s.v * 2"), "AGREE_TRAP"),
@@ -694,6 +702,7 @@ def _ksub(where: str, agg: str = "count(*)", tail: str = "") -> str:
         # A term before the key that passes no row: the side never runs.
         (_ksub(f"s.f = 7 AND s.k = {TRAP}"), ROWS_OR_OPT),
         (_ksub(f"s.f = 7 AND s.k = {TRAP}", "s.v"), ROWS_OR_OPT),
+        (_ksub(f"s.f = 7 AND s.k = {TRAP} ORDER BY s.v LIMIT 1", "s.v"), ROWS_OR_OPT),
         (_ksub(f"s.f = NULL AND s.k = {TRAP}"), ROWS_OR_OPT),
         (_ksub(f"s.v NOT BETWEEN 0 AND 10 AND s.k = {TRAP}"), ROWS_OR_OPT),
         (_ksub(f"(s.v BETWEEN 0 AND -1 OR s.f = 9) AND s.k = {TRAP}"), ROWS_OR_OPT),
@@ -702,6 +711,10 @@ def _ksub(where: str, agg: str = "count(*)", tail: str = "") -> str:
         # A term before the key that passes a row, and terms after the key.
         (_ksub(f"s.f = 0 AND s.k = {TRAP}"), "AGREE_TRAP"),
         (_ksub(f"s.k = {TRAP} AND s.f = 7"), "AGREE_TRAP"),
+        (
+            _ksub(f"s.f = 0 AND s.k = {TRAP} ORDER BY s.v LIMIT 1 OFFSET 1", "s.v"),
+            "AGREE_TRAP",
+        ),
         # The upper bound of BETWEEN moves after the key.
         (_ksub(f"s.v BETWEEN 0 AND -1 AND s.k = {TRAP}"), TRAP_OR_OPT),
         (_ksub(f"(s.v BETWEEN 0 AND -1 AND s.f = 1) AND s.k = {TRAP}"), TRAP_OR_OPT),
@@ -2076,13 +2089,13 @@ ST = pa.table(
             "reads 3 rows of the table, where DuckDB traps on every call",
         ),
         # The item traps over the row k = 1, and over the one row v > 15.
-        (_sub("s.v + 9223372036854775807"), LS, [], "traps over the row of one key"),
-        (_sub("s.i8 - 1"), LS, [], "traps over the row of one key"),
+        (_sub("s.v + 9223372036854775807"), LS, [], "traps over a row of one key"),
+        (_sub("s.i8 - 1"), LS, [], "traps over a row of one key"),
         (
             _sub("s.v + 9223372036854775807", "s.v > 15"),
             LS,
             [],
-            "traps over the one row of the table",
+            "traps over a row of the table",
         ),
         (_sub("s.v + t.j"), LS, [], "which reads t.j of the outer query"),
         (_sub("s.v + zz"), LS, [], "column 'zz' does not exist"),
@@ -2102,6 +2115,553 @@ ST = pa.table(
 )
 def test_an_item_over_one_row_refuses_by_name(sql, statics, udfs, why):
     v = assert_parity(sql, T, statics={"s": statics}, udfs=udfs, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
+# ORDER BY, LIMIT and OFFSET over an item that reads one row: per key, the
+# build sorts the rows of the group, keeps those from position OFFSET on, at
+# most LIMIT of them, and reads the item over the one row kept. Per key of
+# OS, each of the columns o, f, s and d, and the pair (b, o), orders the rows
+# without a tie; j ties the rows j = 1 of k = 1. The requests k = 1 match
+# four rows, k = 2 two and k = 3 one.
+
+INF = float("inf")
+OS = table(
+    {
+        "k": "int64?",
+        "v": "int64?",
+        "o": "int64?",
+        "f": "double?",
+        "s": "string?",
+        "b": "bool?",
+        "d": "decimal(9,4)?",
+        "j": "int32",
+        "i8": "int8?",
+    },
+    [
+        {
+            "k": 1,
+            "v": 10,
+            "o": 3,
+            "f": 1.5,
+            "s": "b",
+            "b": True,
+            "d": Decimal("1.5"),
+            "j": 1,
+            "i8": 1,
+        },
+        {
+            "k": 1,
+            "v": 20,
+            "o": 1,
+            "f": -0.0,
+            "s": "B",
+            "b": False,
+            "d": Decimal("-2.25"),
+            "j": 1,
+            "i8": 2,
+        },
+        {
+            "k": 1,
+            "v": 30,
+            "o": None,
+            "f": NAN,
+            "s": "é",
+            "b": None,
+            "d": None,
+            "j": 2,
+            "i8": 3,
+        },
+        {
+            "k": 1,
+            "v": 40,
+            "o": 2,
+            "f": -INF,
+            "s": "a",
+            "b": True,
+            "d": Decimal("0.5"),
+            "j": 1,
+            "i8": 4,
+        },
+        {
+            "k": 2,
+            "v": 50,
+            "o": 5,
+            "f": INF,
+            "s": "",
+            "b": False,
+            "d": Decimal("0"),
+            "j": 1,
+            "i8": 5,
+        },
+        {
+            "k": 2,
+            "v": None,
+            "o": 4,
+            "f": None,
+            "s": None,
+            "b": True,
+            "d": Decimal("3"),
+            "j": 1,
+            "i8": None,
+        },
+        {
+            "k": 3,
+            "v": 70,
+            "o": 7,
+            "f": 2.0,
+            "s": "z",
+            "b": True,
+            "d": Decimal("0.1"),
+            "j": 2,
+            "i8": 7,
+        },
+        {
+            "k": None,
+            "v": 80,
+            "o": 0,
+            "f": 0.0,
+            "s": "y",
+            "b": False,
+            "d": Decimal("9"),
+            "j": 1,
+            "i8": 8,
+        },
+    ],
+)
+
+ORDER_BYS = [
+    "s.o",
+    "o",
+    "s.o DESC",
+    "s.o NULLS FIRST",
+    "s.o DESC NULLS FIRST",
+    "s.o ASC NULLS LAST",
+    "s.f",  # -inf, -0.0, 1.5, NaN
+    "s.f DESC",
+    "s.f NULLS FIRST",
+    "s.s",  # byte order: 'B', 'a', 'b', 'é'
+    "s.s DESC",
+    "s.d",
+    "s.d DESC NULLS FIRST",
+    "s.b, s.o",
+    "s.b DESC, s.o DESC",
+    "s.j DESC, s.o",
+    "1",  # the item
+    "1 DESC",
+]
+
+LIMITS = [
+    "LIMIT 1",
+    "LIMIT 1 OFFSET 1",
+    "LIMIT 1 OFFSET 3",  # past the rows of k = 2: NULL
+    "LIMIT 0",
+    "LIMIT 1 OFFSET 9",
+    "OFFSET 3",
+    "LIMIT NULL OFFSET 3",
+    "LIMIT 5 OFFSET 3",
+    "LIMIT 1 OFFSET NULL",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("limit", LIMITS)
+@pytest.mark.parametrize("order", ORDER_BYS)
+def test_an_item_over_one_row_ordered(order, limit, shape):
+    sql = _sub("v", f"s.k = t.k ORDER BY {order} {limit}")
+    assert_parity(sql, T, statics={"s": OS}, shape=shape)
+
+
+ORDER_ITEMS = [
+    "v",
+    "s.o",
+    "s.f",
+    "s.s",
+    "s.b",
+    "s.d",
+    "s.i8",
+    "s.v * 2 + s.o",
+    "coalesce(s.v, -1)",
+    "upper(s.s) || 'x'",  # 'B' and 'b' give one item: a tie under 1
+    "s.k",
+    "1",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "ORDER BY s.o DESC LIMIT 1",
+        "ORDER BY s.f LIMIT 1 OFFSET 2",
+        "ORDER BY 1 OFFSET 3",
+    ],
+)
+@pytest.mark.parametrize("item", ORDER_ITEMS)
+def test_an_item_over_one_row_ordered_items(item, tail, shape):
+    sql = _sub(item, f"s.k = t.k {tail}")
+    assert_parity(sql, T, statics={"s": OS}, shape=shape)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(
+    "where",
+    [
+        "t.k = s.k",
+        "s.k IS NOT DISTINCT FROM t.k",  # the row k = NULL
+        "s.k = t.k AND s.j = t.j",
+        "s.k = t.k AND s.v > 15",
+        "s.f = t.x",  # -0.0 and 0.0 are one key: two rows
+        "s.s = t.name",
+        "s.v > 15",  # no key: the rows of the table
+        "s.k > 100",  # no key: no row
+    ],
+)
+def test_an_item_over_one_row_ordered_keys(where, shape):
+    sql = _sub("s.v", f"{where} ORDER BY s.o DESC LIMIT 1")
+    if shape == "many" and "IS NOT DISTINCT FROM" in where:
+        v = assert_parity(sql, T, statics={"s": OS}, shape=shape, expect="REFUSED")
+        assert "IS NOT DISTINCT FROM" in v.detail, v.detail
+        return
+    assert_parity(sql, T, statics={"s": OS}, shape=shape)
+
+
+ORDER_FORMS = [
+    # DuckDB's names of unaliased subqueries: ASC, DESC and NULLS as
+    # written, LIMIT before OFFSET, and LIMIT ALL as LIMIT NULL.
+    "SELECT (SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT 1), "
+    "(SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o DESC NULLS FIRST LIMIT 1 "
+    "OFFSET 0), (SELECT x.v FROM s AS x WHERE x.k = t.k ORDER BY x.o ASC NULLS LAST "
+    "LIMIT 1 OFFSET 1), "
+    "(SELECT v FROM s WHERE k = t.k ORDER BY 1 DESC LIMIT NULL OFFSET 3), "
+    "(SELECT s.v AS w FROM s WHERE s.k = t.k ORDER BY w LIMIT ALL OFFSET 3), "
+    "(SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o OFFSET 1 ROWS LIMIT 1), "
+    "(SELECT s.v FROM s WHERE s.k = t.k ORDER BY (s.o) LIMIT (1) OFFSET (2)) "
+    "FROM __THIS__ AS t",
+    # Two orders of one subquery, and the same subquery twice.
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT 1) "
+    "- (SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o DESC LIMIT 1) "
+    "+ (SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT 1) AS c "
+    "FROM __THIS__ AS t",
+    # Beside an aggregate of the same table.
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT 1) "
+    "* (SELECT count(*) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t",
+    "SELECT id, coalesce((SELECT s.s FROM s WHERE s.k = t.k ORDER BY s.f DESC "
+    "LIMIT 1), "
+    "'-') AS c FROM __THIS__ AS t",
+    "SELECT id, CASE WHEN t.k > 1 THEN (SELECT s.v FROM s WHERE s.k = t.k "
+    "ORDER BY s.o LIMIT 1) END AS c FROM __THIS__ AS t",
+    "SELECT id FROM __THIS__ AS t WHERE (SELECT s.v FROM s WHERE s.k = t.k "
+    "ORDER BY s.o LIMIT 1) > 15",
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o LIMIT 1) AS c "
+    "FROM __THIS__ AS t WHERE c > 15",
+    # Without a WHERE.
+    "SELECT id, (SELECT s.v FROM s ORDER BY s.o DESC LIMIT 1) AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.d FROM s WHERE s.k = t.k ORDER BY s.d DESC LIMIT 1) * 2 AS c "
+    "FROM __THIS__ AS t",
+    # A lateral alias as the outer side.
+    "SELECT id, k AS kk, (SELECT s.s FROM s WHERE s.k = kk ORDER BY s.s LIMIT 1) AS c "
+    "FROM __THIS__ AS t",
+    # The item's alias names the item, before the column o, in any case; a
+    # qualified name names the column.
+    "SELECT id, (SELECT s.v AS o FROM s WHERE s.k = t.k ORDER BY o DESC LIMIT 1) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.v AS O FROM s WHERE s.k = t.k ORDER BY o LIMIT 1 "
+    "OFFSET 1) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.v AS o FROM s WHERE s.k = t.k ORDER BY s.o LIMIT 1) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k ORDER BY (1) DESC LIMIT 1) AS c "
+    "FROM __THIS__ AS t",
+    # Without ORDER BY: a group whose rows give one item.
+    "SELECT id, (SELECT s.k FROM s WHERE s.k = t.k LIMIT 1) AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k AND s.j = 2 OFFSET 0) AS c "
+    "FROM __THIS__ AS t",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("sql", ORDER_FORMS)
+def test_an_item_over_one_row_ordered_forms(sql, shape):
+    assert_parity(sql, T, statics={"s": OS}, shape=shape)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(
+    "where, tail",
+    [
+        # Under a key, LIMIT NULL is the greatest BIGINT, and a LIMIT plus
+        # the OFFSET past that BIGINT keeps no row.
+        ("s.k = t.k", "LIMIT NULL OFFSET 1"),
+        ("s.k = t.k", "LIMIT ALL OFFSET 3"),
+        ("s.k = t.k", "OFFSET 3 LIMIT NULL"),
+        ("s.k = t.k", "LIMIT 9223372036854775804 OFFSET 3"),
+        ("s.k = t.k", "LIMIT 9223372036854775805 OFFSET 3"),
+        ("s.k = t.k", "LIMIT 1 OFFSET 9223372036854775807"),
+        ("s.k = t.k", "OFFSET 9223372036854775807"),
+        # Without a key, no addition wraps.
+        ("s.v > 0", "LIMIT NULL OFFSET 6"),
+        ("s.v > 0", "LIMIT 9223372036854775807 OFFSET 6"),
+        ("s.v > 0", "LIMIT 1 OFFSET 9223372036854775807"),
+    ],
+)
+def test_an_item_over_one_row_ordered_at_the_greatest_bigint(where, tail, shape):
+    sql = _sub("v", f"{where} ORDER BY s.o {tail}")
+    assert_parity(sql, T, statics={"s": OS}, shape=shape)
+
+
+ONE_PER_KEY = table(
+    {"k": "int64?", "v": "int64?", "o": "int64?"},
+    [
+        {"k": 1, "v": 10, "o": 3},
+        {"k": 2, "v": None, "o": None},
+        {"k": 3, "v": 70, "o": 7},
+    ],
+)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "ORDER BY s.o LIMIT NULL",
+        "ORDER BY s.o LIMIT ALL",
+        "ORDER BY s.o DESC LIMIT 1000000",
+        "ORDER BY 1 ASC NULLS LAST LIMIT NULL",
+    ],
+)
+def test_a_limit_of_a_million_or_more_serves_where_duckdbs_optimizer_raises(tail):
+    # With the optimizer on, DuckDB plans one ORDER BY term without NULLS
+    # FIRST and no OFFSET as arg_min or arg_max with n = the LIMIT, and that
+    # aggregate refuses an n of a million or more. The oracle, with the
+    # optimizer off, serves (measured 2026-10-15). The divergence ledger
+    # lists this as subquery-limit-ceiling.
+    sql = _sub("v", f"s.k = t.k {tail}")
+    v = assert_parity(sql, T, statics={"s": ONE_PER_KEY}, expect="DIVERGE_OPT")
+    assert "n value must be < 1000000" in v.detail, v.detail
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "ORDER BY s.o LIMIT 999999",
+        "ORDER BY s.o NULLS FIRST LIMIT NULL",
+        "ORDER BY s.o, s.v LIMIT NULL",
+        "ORDER BY s.o LIMIT NULL OFFSET 0",
+    ],
+)
+def test_other_forms_of_a_limit_of_a_million_or_more_agree(tail):
+    assert_parity(_sub("v", f"s.k = t.k {tail}"), T, statics={"s": ONE_PER_KEY})
+
+
+DUP_FV = table({"f": "double", "v": "int64"}, [{"f": 0.0, "v": 1}, {"f": -0.0, "v": 2}])
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+def test_an_item_over_one_row_ordered_ties_that_give_one_item(shape):
+    # -0.0 and 0.0 tie under ORDER BY, and -0.0 + 0 is 0.0: one item.
+    sql = _sub("s.f + 0", "s.f = t.x ORDER BY s.f LIMIT 1")
+    assert_parity(sql, T, statics={"s": DUP_FV}, shape=shape)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", "s.v > 5", None])
+def test_an_item_over_one_row_ordered_over_an_empty_table_and_an_empty_batch(
+    where, shape
+):
+    w = "" if where is None else f" WHERE {where}"
+    sql = (
+        f"SELECT id, (SELECT s.v FROM s{w} ORDER BY s.o LIMIT 1) AS c "
+        "FROM __THIS__ AS t"
+    )
+    assert_parity(sql, T, statics={"s": OS.slice(0, 0)}, shape=shape)
+    assert_parity(sql, T.slice(0, 0), statics={"s": OS}, shape=shape)
+
+
+TS = pa.table(
+    {
+        "k": pa.array([1, 2], pa.int64()),
+        "v": pa.array([1, 2], pa.int64()),
+        "ts": pa.array([datetime(2026, 1, 1), None], pa.timestamp("us")),
+        "st": pa.array([{"a": 1}, None], pa.struct([("a", pa.int64())])),
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "sql, statics, why",
+    [
+        # Ties: j ties the rows j = 1 of k = 1, and without ORDER BY each
+        # row of a group ties.
+        (
+            _sub("v", "s.k = t.k ORDER BY s.j LIMIT 1"),
+            OS,
+            "its ORDER BY ties that row with a row whose item differs (10 and 20)",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.b DESC LIMIT 1"),
+            OS,
+            "its ORDER BY ties that row with a row whose item differs (10 and 40)",
+        ),
+        (
+            _sub("v", "s.k = t.k LIMIT 1"),
+            OS,
+            "keeps one row of one key without an ORDER BY, and the item differs",
+        ),
+        (
+            _sub("v", "s.v > 0 LIMIT 1 OFFSET 2"),
+            OS,
+            "keeps one row of the table without an ORDER BY",
+        ),
+        # -0.0 and 0.0 tie, and as items they differ.
+        (_sub("s.v", "s.f = t.x ORDER BY s.f LIMIT 1"), DUP_FV, "(1 and 2)"),
+        (_sub("s.f", "s.f = t.x ORDER BY s.f LIMIT 1"), DUP_FV, "(0.0 and -0.0)"),
+        # More than one row kept.
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT 2"),
+            OS,
+            "keeps 2 of the 4 rows of one key",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o OFFSET 1"),
+            OS,
+            "keeps 3 of the 4 rows of one key",
+        ),
+        (_sub("v", "s.k = t.k ORDER BY s.o"), OS, "reads 4 rows of one key"),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT NULL"),
+            OS,
+            "keeps 4 of the 4 rows of one key",
+        ),
+        (
+            _sub("v", "s.v > 0 ORDER BY s.o LIMIT 2"),
+            OS,
+            "keeps 2 of the 7 rows of the table, where DuckDB traps on every call",
+        ),
+        # The item runs over every row of a group, the rows that the
+        # OFFSET skips too.
+        (
+            _sub("s.i8 * 100", "s.k = t.k ORDER BY s.o LIMIT 1 OFFSET 9"),
+            OS,
+            "traps over a row of one key",
+        ),
+        (
+            _sub("s.v + 9223372036854775807", "s.v > 5 ORDER BY s.o LIMIT 0"),
+            OS,
+            "traps over a row of the table",
+        ),
+        # ORDER BY terms.
+        (
+            _sub("v", "s.k = t.k ORDER BY t.k LIMIT 1"),
+            OS,
+            "the ORDER BY term t.k, which reads the outer query",
+        ),
+        (_sub("v", "s.k = t.k ORDER BY zz LIMIT 1"), OS, "column 'zz' does not exist"),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o + 1 LIMIT 1"),
+            OS,
+            "the ORDER BY term s.o + 1 (each term",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY -s.o LIMIT 1"),
+            OS,
+            "the ORDER BY term -s.o (each term",
+        ),
+        (_sub("v", "s.k = t.k ORDER BY s.s COLLATE nocase LIMIT 1"), OS, "(each term"),
+        (
+            _sub("s.v AS x", "s.k = t.k ORDER BY x + 1 LIMIT 1"),
+            OS,
+            "the ORDER BY term x + 1",
+        ),
+        (_sub("v", "s.k = t.k ORDER BY 2 LIMIT 1"), OS, "'ORDER term out of range'"),
+        (_sub("v", "s.k = t.k ORDER BY 0 LIMIT 1"), OS, "'ORDER term out of range'"),
+        (
+            _sub("v", "s.k = t.k ORDER BY 'a' LIMIT 1"),
+            OS,
+            "'ORDER BY non-integer literal",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY NULL LIMIT 1"),
+            OS,
+            "'ORDER BY non-integer literal",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY 1.5 LIMIT 1"),
+            OS,
+            "'ORDER BY non-integer literal",
+        ),
+        (
+            _sub("s.k", "s.k = t.k ORDER BY s LIMIT 1"),
+            ST,
+            "the ORDER BY term s, which reads the whole row",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.st LIMIT 1"),
+            TS,
+            "is a struct where a scalar is needed",
+        ),
+        (_sub("v", "s.k = t.k ORDER BY s.ts LIMIT 1"), TS, "has type timestamp"),
+        # LIMIT and OFFSET.
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT -1"),
+            OS,
+            "LIMIT -1, which is not a number",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT 1.0"),
+            OS,
+            "a subquery with LIMIT 1.0 --",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT '1'"),
+            OS,
+            "a subquery with LIMIT '1' --",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT 1 + 0"),
+            OS,
+            "LIMIT 1 + 0, which is not",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o OFFSET t.k"),
+            OS,
+            "OFFSET t.k, which is not",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT 9223372036854775808"),
+            OS,
+            "LIMIT 9223372036854775808 --",
+        ),
+        (_sub("v", "s.k = t.k ORDER BY s.o LIMIT 1, 1"), OS, "LIMIT <offset>, <count>"),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o LIMIT 1 BY s.k"),
+            OS,
+            "a subquery with LIMIT BY",
+        ),
+        (
+            _sub("v", "s.k = t.k ORDER BY s.o FETCH FIRST 1 ROWS ONLY"),
+            OS,
+            "FETCH FIRST",
+        ),
+        # An aggregate call in the item.
+        (
+            _sub("max(v)", "s.k = t.k LIMIT 1"),
+            OS,
+            "and an aggregate call in its SELECT item",
+        ),
+        (
+            _sub("count(*)", "s.k = t.k ORDER BY s.o"),
+            OS,
+            "and an aggregate call in its SELECT",
+        ),
+        (
+            _sub("max(v) + 1", "s.k = t.k LIMIT 1"),
+            OS,
+            "and an aggregate call in its SELECT",
+        ),
+    ],
+)
+def test_an_item_over_one_row_ordered_refuses_by_name(sql, statics, why):
+    v = assert_parity(sql, T, statics={"s": statics}, expect="REFUSED")
     assert why in v.detail, v.detail
 
 
@@ -2177,7 +2737,12 @@ KTRAP = TRAP.replace("x", "t.x")
     ],
 )
 @pytest.mark.parametrize(
-    "form", ["(SELECT count(*) FROM s WHERE {})", "EXISTS (SELECT 1 FROM s WHERE {})"]
+    "form",
+    [
+        "(SELECT count(*) FROM s WHERE {})",
+        "EXISTS (SELECT 1 FROM s WHERE {})",
+        "(SELECT s.v FROM s WHERE {} ORDER BY s.v LIMIT 1)",
+    ],
 )
 def test_pin_the_outer_side_of_a_key_runs_over_the_rows_the_terms_before_it_pass(
     where, traps, form
@@ -2551,3 +3116,138 @@ def test_pin_an_uncorrelated_item_over_more_than_one_row_traps_on_every_call():
     assert _pin("SELECT k, (SELECT s.z FROM s WHERE s.k = 2) FROM t", [1]) == [
         (1, None)
     ]
+
+
+# ORDER BY, LIMIT and OFFSET over an item that reads one row, measured
+# 2026-10-15 over PIN_O: the group k = 1 has three rows, the group k = 3
+# one. The build sorts the rows of a group as DuckDB does, and refuses a tie
+# that changes the item, a group that keeps more than one row, and an item
+# that traps over a row, so these facts never change a served answer.
+
+PIN_O = pa.table(
+    {
+        "k": pa.array([1, 1, 1, 3], pa.int64()),
+        "z": pa.array([0, 1, 2, 9], pa.int64()),
+        "o": pa.array([2, None, 1, 0], pa.int64()),
+    }
+)
+
+
+def _pin_o(sql, keys, s=PIN_O):
+    with Oracle() as o:
+        o.table("t", "k BIGINT", [(k,) for k in keys])
+        o.load("s", s)
+        got = o.try_answer(sql)
+    if isinstance(got, Trap):
+        return got
+    return [tuple(r.values()) for r in got.to_pylist()]
+
+
+@pytest.mark.parametrize(
+    "order, z",
+    [
+        # o: 1 (z = 2), 2 (z = 0) and NULL (z = 1).
+        ("s.o", 1),
+        ("s.o ASC", 1),
+        ("s.o DESC", 1),
+        ("s.o NULLS FIRST", 0),
+        ("s.o DESC NULLS FIRST", 2),
+    ],
+)
+def test_pin_order_by_sorts_nulls_last_under_asc_and_desc(order, z):
+    sql = (
+        "SELECT k, (SELECT s.z FROM s WHERE s.k = t.k "
+        f"ORDER BY {order} LIMIT 1 OFFSET 2) FROM t"
+    )
+    assert _pin_o(sql, [1]) == [(1, z)]
+
+
+@pytest.mark.parametrize("tail", ["ORDER BY s.o LIMIT 1 OFFSET 1", "LIMIT 0"])
+def test_pin_the_item_runs_over_every_matched_row_before_limit_and_offset(tail):
+    # The one row of k = 3, which the OFFSET skips and LIMIT 0 drops.
+    sql = f"SELECT k, (SELECT s.z + {BIG} FROM s WHERE s.k = t.k {tail}) FROM t"
+    got = _pin_o(sql, [3])
+    assert isinstance(got, Trap), got
+    assert "Overflow in addition of INT64" in got.message
+    # A group that no request matches: the item does not run.
+    assert _pin_o(sql, [2]) == [(2, None)]
+
+
+def test_pin_a_limit_that_keeps_more_than_one_row_traps():
+    for tail in [
+        "ORDER BY s.o LIMIT 2",
+        "ORDER BY s.o LIMIT NULL",
+        "ORDER BY s.o OFFSET 1",
+    ]:
+        sql = f"SELECT k, (SELECT s.z FROM s WHERE s.k = t.k {tail}) FROM t"
+        assert _pin_o(sql, [3, 2]) == [
+            (3, 9 if "OFFSET" not in tail else None),
+            (2, None),
+        ]
+        got = _pin_o(sql, [1])
+        assert isinstance(got, Trap), (tail, got)
+        assert "More than one row returned by a subquery" in got.message
+    # OFFSET NULL skips no row.
+    sql = (
+        "SELECT k, (SELECT s.z FROM s WHERE s.k = t.k "
+        "ORDER BY s.o LIMIT 1 OFFSET NULL) FROM t"
+    )
+    assert _pin_o(sql, [1]) == [(1, 2)]
+
+
+def test_pin_a_limit_under_a_key_keeps_rows_up_to_a_sum_that_wraps():
+    # Under a key, DuckDB keeps the rows numbered offset < r <= offset +
+    # limit, LIMIT NULL is the greatest BIGINT, and the sum wraps.
+    sql = "SELECT k, (SELECT s.z FROM s WHERE s.k = t.k ORDER BY s.o {}) FROM t"
+    assert _pin_o(sql.format("LIMIT NULL OFFSET 2"), [1]) == [(1, None)]
+    assert _pin_o(sql.format("OFFSET 2"), [1]) == [(1, 1)]
+    assert _pin_o(sql.format(f"LIMIT {BIG - 2} OFFSET 2"), [1]) == [(1, 1)]
+    assert _pin_o(sql.format(f"LIMIT {BIG - 1} OFFSET 2"), [1]) == [(1, None)]
+    # Without a key, the same LIMIT keeps the row.
+    sql = "SELECT k, (SELECT s.z FROM s WHERE s.k < 3 ORDER BY s.o {}) FROM t"
+    assert _pin_o(sql.format("LIMIT NULL OFFSET 2"), [1]) == [(1, 1)]
+    assert _pin_o(sql.format(f"LIMIT {BIG - 1} OFFSET 2"), [1]) == [(1, 1)]
+
+
+def test_pin_order_by_names_the_alias_before_a_column():
+    sql = (
+        "SELECT k, (SELECT s.z AS o FROM s WHERE s.k = t.k "
+        "ORDER BY {} DESC LIMIT 1) FROM t"
+    )
+    assert _pin_o(sql.format("o"), [1]) == [(1, 2)]
+    assert _pin_o(sql.format("O"), [1]) == [(1, 2)]
+    assert _pin_o(sql.format("s.o"), [1]) == [(1, 0)]
+    # Not the name of an item without an alias.
+    sql = (
+        "SELECT k, (SELECT s.z + 0 FROM s WHERE s.k = t.k "
+        'ORDER BY "(s.z + 0)" LIMIT 1) FROM t'
+    )
+    got = _pin_o(sql, [1])
+    assert isinstance(got, Trap), got
+    assert "not found in FROM clause" in got.message
+
+
+def test_pin_the_order_of_doubles_strings_and_booleans():
+    s = pa.table(
+        {
+            "k": pa.array([1] * 5, pa.int64()),
+            "v": pa.array([1, 2, 3, 4, 5], pa.int64()),
+            "f": pa.array([0.0, -0.0, NAN, INF, -INF], pa.float64()),
+            "s": pa.array(["b", "B", "é", "a", ""], pa.string()),
+            "b": pa.array([True, False, True, None, False], pa.bool_()),
+        }
+    )
+    sql = (
+        "SELECT k, (SELECT s.v FROM s WHERE s.k = t.k "
+        "ORDER BY {} LIMIT 1 OFFSET {}) FROM t"
+    )
+
+    def order(by):
+        return [_pin_o(sql.format(by, i), [1], s)[0][1] for i in range(5)]
+
+    # -0.0 and 0.0 tie, so v orders them both ways; NaN sorts above inf.
+    assert order("s.f, s.v") == [5, 1, 2, 4, 3]
+    assert order("s.f DESC, s.v") == [3, 4, 1, 2, 5]
+    # Byte order.
+    assert order("s.s") == [5, 2, 4, 1, 3]
+    assert order("s.b, s.v") == [2, 5, 1, 3, 4]

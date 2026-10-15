@@ -156,8 +156,31 @@ pub struct PostSpec {
     /// The item as written, for the refusal of one that traps.
     pub item: String,
     /// Whether the item reads the columns of one row ([`plan::AggPost::row`]):
-    /// the last aggregate then counts the group's rows.
+    /// each aggregate then names a column that the build reads per row.
     pub row: bool,
+    /// The ORDER BY, LIMIT and OFFSET of an item over one row
+    /// ([`plan::RowOrder`]).
+    pub order: Option<OrderSpec>,
+}
+
+/// The ORDER BY, LIMIT and OFFSET of a scalar subquery's item over one row
+/// ([`plan::RowOrder`]), as the build reads them.
+#[derive(Debug)]
+pub struct OrderSpec {
+    /// The ORDER BY terms, in written order.
+    pub keys: Vec<SortSpec>,
+    pub limit: Option<u64>,
+    pub offset: u64,
+}
+
+/// One ORDER BY term of an [`OrderSpec`].
+#[derive(Debug)]
+pub struct SortSpec {
+    /// The source column it sorts by, as its path and its type; `None` for
+    /// the item.
+    pub col: Option<(Vec<String>, ir::Ty)>,
+    pub desc: bool,
+    pub nulls_first: bool,
 }
 
 /// The WHERE terms of a scalar subquery that read only its static table
@@ -559,33 +582,44 @@ fn agg_spec(
             None
         }
         // The aggregates as the item's program reads them, then the item
-        // in the table's one value lane. An item over one row has one more
-        // aggregate, the count of the group's rows, which it does not read.
+        // in the table's one value lane.
         Some(p) => {
-            if a.aggs.len() != p.in_cols.len() + usize::from(p.row) {
+            if a.aggs.len() != p.in_cols.len() {
                 return Err(PrepareError::Internal(
                     "the item of a grouped table reads other aggregates than the table has".into(),
                 ));
             }
-            for (i, &agg) in a.aggs.iter().enumerate() {
-                let map = match p.in_cols.get(i) {
-                    Some(c) => plan::MapVal {
+            for (&agg, c) in a.aggs.iter().zip(&p.in_cols) {
+                push(
+                    agg,
+                    plan::MapVal {
                         ty: c.ty.ty.lane(),
                         nullable: c.ty.nullable,
                     },
-                    None => plan::MapVal {
-                        ty: ir::Ty::I64,
-                        nullable: false,
-                    },
-                };
-                push(agg, map);
+                );
             }
             let [map] = plan::map_vals(&grouped.cols, &j.val_cols)[..] else {
                 return Err(PrepareError::Internal(
                     "the grouped table of an expression over aggregates has one value".into(),
                 ));
             };
-            Some(post_spec(p, map, &grouped.cols[n_keys as usize])?)
+            let mut post = post_spec(p, map, &grouped.cols[n_keys as usize])?;
+            post.order = p.order.as_ref().map(|o| OrderSpec {
+                keys: o
+                    .keys
+                    .iter()
+                    .map(|k| SortSpec {
+                        col: k
+                            .lane
+                            .map(|l| (paths[l as usize].clone(), source.cols[l as usize].ty.ty)),
+                        desc: k.desc,
+                        nulls_first: k.nulls_first,
+                    })
+                    .collect(),
+                limit: o.limit,
+                offset: o.offset,
+            });
+            Some(post)
         }
     };
     Ok(StaticSpec {
@@ -633,6 +667,7 @@ fn post_spec(p: &plan::AggPost, map: plan::MapVal, value: &ir::Col) -> Result<Po
         map,
         item: value.name.clone(),
         row: p.row,
+        order: None,
     })
 }
 
