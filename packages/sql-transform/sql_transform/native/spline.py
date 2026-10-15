@@ -89,25 +89,29 @@ the five extrapolations, `include_bias`, both knot strategies, both
 Widths. The recurrence reads each round's values twice, so an output field's
 text doubles per degree (about 3 KB of SQL per output field at degree 3, 8
 knots, 33 KB at degree 5); `continue` keeps three times that (its outer
-sums), and `periodic` repeats its mapped `x` at every read. confit binds
-once a value that a SQL function body reads more than once (#412), so the
-build follows the distinct nodes, not the text. Release build, master
-b4b8d03 with confit #430, one instance, a struct return, 10,000-row batches,
-32 features at degree 3 and 8 knots (320 output fields; `periodic` 224):
-`constant`, `linear` and `error` build in 0.7-0.9 s and serve 121-131 us per
-row (the input guard of `error` tests the knots); `continue` 1.0 s and
-106 us; `periodic` 0.9 s and 47 us; the twin serves the `continue` step in
-1,190 us per row. 64 features of `continue`: 2.7 s and 205 us; 16 features
-of degree 5, 7 knots, `continue`: 0.9 s and 50 us; 64 features of degree 5,
-8 knots, `continue`: 5.7 s and 308 us. One feature at degree 3, 5 knots:
-0.02 s and 0.69 us, against the twin's 154 us (2026-10-14). The entry
-refuses a step whose estimated build passes MAX_BUILD_S (`_build_estimate`),
-as quantile.py and isotonic.py cap theirs. Up to 64 features it takes on
-every configuration measured (degrees 1 to 5, 5 and 8 knots, the five
-extrapolations). Of 96 and 128 features it refuses 7, which build in 8.0 to
-12.5 s (degrees 4 and 5 at 8 knots), before confit is asked. Since #430
-confit builds every configuration measured: it refused four past Cranelift's
-size limit before (128 features of degree 3 to 5 at 8 knots, `error`).
+sums), and `periodic` repeats its mapped `x` at every read. confit binds once
+a value that a SQL function body reads more than once (#412), so the build
+follows the distinct nodes, not the text. Release build, master 318575b with
+confit #459 and #461, one instance, a struct return, 10,000-row batches, 32
+features at degree 3 and 8 knots (320 output fields; `periodic` 224):
+`constant`, `linear` and `error` build in 0.7 s and serve 94-99 us per row
+(the input guard of `error` tests the knots); `continue` 0.85 s and 71 us;
+`periodic` 0.6 s and 33 us; the twin serves the `continue` step in 894 us per
+row. 64 features of `continue`: 1.8 s and 154 us; 128 features: 4.5 s and 335
+us; 16 features of degree 5, 7 knots, `continue`: 0.6 s and 37 us; 64
+features of degree 5, 8 knots, `continue`: 4.0 s and 229 us; 128 features:
+9.2 s and 508 us, with the cap lifted (the entry refuses it). One feature at
+degree 3, 5 knots: 0.01 s and 0.3 us, against the twin's 135 us
+(2026-10-15). The entry refuses a step
+whose estimated build passes MAX_BUILD_S (`_build_estimate`), as quantile.py
+and isotonic.py cap theirs. Up to 64 features it takes on every configuration
+measured (degrees 1, 3 and 5, 5 and 8 knots, the five extrapolations). Of 128
+features it refuses 4, which build in 7.7 to 9.4 s (degree 5 at 8 knots), and
+of 192 and 256 features 11 of the 12 measured, which build in 6.3 to 16.3 s,
+before confit is asked. confit builds every configuration measured but the
+struct return of 256 features of degree 5 at 8 knots, past 4,000,000 tokens;
+before #430 it refused four past Cranelift's size limit (128 features of
+degree 3 to 5 at 8 knots, `error`).
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 16
