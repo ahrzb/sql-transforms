@@ -161,6 +161,20 @@ the columns of `s` only inside its aggregates. If it reads a column outside
 them, the oracle stops with a binder error. Confit refuses an expression that
 holds a subquery or calls a SQL function, a UDF or a tree model.
 
+Confit also serves `EXISTS` and `NOT EXISTS` over such a subquery, for example
+`EXISTS (SELECT * FROM s WHERE s.k = t.k)`. Each SELECT item of this subquery
+is `*`, a constant or a column of `s`. The oracle evaluates these items over
+the matched rows. So confit refuses an item that can trap there, such as
+`s.v + 1`. It also refuses an aggregate item, such as `count(*)`, and LIMIT.
+
+For a request, `EXISTS` is TRUE if a row of `s` passes the WHERE, and
+`NOT EXISTS` is TRUE if no row passes it. Confit computes `EXISTS` as
+`count(*) > 0` over the same FROM and WHERE, and `NOT EXISTS` as
+`count(*) = 0`. The oracle gives the same values and the same traps for these
+forms. Pins at the end of `tests/test_scalar_subquery.py` record this. In the
+oracle, `NOT EXISTS (...) IS NULL` means `NOT (EXISTS (...) IS NULL)`, as for
+any other `NOT`, and confit parses it in the same way.
+
 Each term of the WHERE has one of two forms. A key compares a column of `s`
 with an expression of the outer query, its outer expression, by `=` or
 `IS NOT DISTINCT FROM`. Each other term reads only `s`, such as `s.v > 5`.
@@ -299,7 +313,8 @@ If it adds the form, it tags the case `scalar-subquery`. About one subquery in
 ten that it adds selects an expression over aggregates. It adds up to three
 subqueries to a case, so about one case in six of those tagged
 `scalar-subquery` has such an expression. About one aggregate of a column in
-five reads DISTINCT values.
+five reads DISTINCT values. About one subquery in five that is an item of the
+outer query, or the operand of IS NULL, is `EXISTS` or `NOT EXISTS` instead.
 
 ## UDF and model boundary
 

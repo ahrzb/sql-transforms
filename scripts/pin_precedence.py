@@ -89,6 +89,27 @@ OTHER = [
     "a IS DISTINCT FROM b = c AND d",
     "a = b IS DISTINCT FROM c OR d",
     "- a::INT",
+    # A prefix NOT over EXISTS takes the operators above its level, as any
+    # other NOT does.
+    "NOT EXISTS (SELECT 1) IS NULL",
+    "NOT EXISTS (SELECT 1) = b",
+    "NOT EXISTS (SELECT 1) AND b",
+    "NOT EXISTS (SELECT 1) OR b",
+    "NOT EXISTS (SELECT 1) LIKE b",
+    "NOT EXISTS (SELECT 1) IN (b)",
+    "NOT EXISTS (SELECT 1) BETWEEN b AND c",
+    "NOT EXISTS (SELECT 1) IS DISTINCT FROM b",
+    "NOT EXISTS (SELECT 1) || b",
+    "NOT EXISTS (SELECT 1) + b",
+    "NOT EXISTS (SELECT 1)::INT",
+    "NOT NOT EXISTS (SELECT 1)",
+    "a AND NOT EXISTS (SELECT 1)",
+    "a = NOT EXISTS (SELECT 1)",
+    "a || NOT EXISTS (SELECT 1)",
+    "a BETWEEN NOT EXISTS (SELECT 1) AND c",
+    "EXISTS (SELECT 1) IS NULL",
+    "EXISTS (SELECT 1) = b",
+    "- EXISTS (SELECT 1)",
 ]
 
 

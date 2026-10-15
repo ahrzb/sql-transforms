@@ -540,8 +540,25 @@ The first five are ruled, in this order; the rest follow.
   verdicts gated (a first run found 11 output names without DISTINCT); the
   4,428 cases of 32,100,000..33,099,999 that read DISTINCT values gave 2,527
   AGREE, 94 AGREE_TRAP, 0 gated, and no unexplained metamorphic finding.
-  Next: EXISTS and NOT EXISTS over a static table, which read the match
-  flag of the hidden join, then `x IN (SELECT s.v FROM s ...)`.
+  EXISTS and NOT EXISTS serve over the same FROM and WHERE: DuckDB gives
+  `EXISTS (SELECT 1 FROM s WHERE w)` the value and the traps of
+  `(SELECT count(*) FROM s WHERE w) > 0` (measured 2026-10-15), so the bind
+  checks the SELECT items, replaces them with `count(*)` and compares the
+  count with 0 (`exists_subquery` in `subquery.rs`). DuckDB evaluates the
+  items over the matched rows, so each item must be `*`, a constant or a
+  column of the table; an item that can trap, an aggregate item (EXISTS over
+  it is always TRUE), LIMIT, ORDER BY, DISTINCT and GROUP BY refuse by name.
+  DuckDB's NOT takes the operators above its level, so `NOT EXISTS (q) IS
+  NULL` parses as `NOT (EXISTS (q) IS NULL)` (`precedence.rs`; 19 new forms
+  in `operator-precedence.json`). The generator draws `[NOT] EXISTS` in place
+  of about one subquery in five that is an item or the operand of IS NULL,
+  after every other draw. On 30,050,000..30,099,999, against the verdicts of
+  #472, the 227 cases whose SQL changed gave 130 AGREE, 87 REFUSED and 10
+  AGREE_TRAP (8 were REFUSED before, for the item that EXISTS replaced), no
+  other verdict moved, and 0 verdicts gated; the 4,527 cases of
+  33,100,000..34,099,999 that read EXISTS gave 2,759 AGREE, 108 AGREE_TRAP,
+  0 gated, and no unexplained metamorphic finding.
+  Next: `x IN (SELECT s.v FROM s ...)`.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
@@ -555,9 +572,9 @@ The first five are ruled, in this order; the rest follow.
   and the DOUBLE `sum`/`avg` domains of the float-reduction bound,
   [decisions/open/double-sum-bound.md](decisions/open/double-sum-bound.md).
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
-  set operations.** Refused today, except the scalar subquery above; only
-  batch-dependent forms are out of scope. Row-local derived tables and CTEs
-  are in Next.
+  set operations.** Refused today, except the scalar subquery and EXISTS
+  above; only batch-dependent forms are out of scope. Row-local derived
+  tables and CTEs are in Next.
 - **float32** (needs f32 arithmetic, not widening), **temporal types**
   (columns, casts, literals, functions; opaque temporal join keys could use a
   key-only lane), **BLOB**.

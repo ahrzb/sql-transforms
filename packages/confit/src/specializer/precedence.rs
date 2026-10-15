@@ -5,7 +5,8 @@
 //! without parentheses could parse to another tree and serve another answer:
 //! `a IS DISTINCT FROM b AND c` parsed as `a IS DISTINCT FROM (b AND c)`,
 //! `s || 'b' ^@ 'a'` as `s || ('b' ^@ 'a')`, `x = s LIKE p` as
-//! `(x = s) LIKE p`. This dialect ranks them as DuckDB does, lowest first:
+//! `(x = s) LIKE p`, `NOT EXISTS (q) IS NULL` as `(NOT EXISTS (q)) IS NULL`.
+//! This dialect ranks them as DuckDB does, lowest first:
 //!
 //! 1. `OR`, then `AND`, then a prefix `NOT`;
 //! 2. `IS` (`IS NULL`, `IS TRUE`, `IS [NOT] DISTINCT FROM`);
@@ -193,6 +194,16 @@ impl Dialect for DuckDbPrecedence {
     }
 
     fn parse_prefix(&self, parser: &mut Parser) -> Option<Result<Expr, ParserError>> {
+        // sqlparser parses `NOT EXISTS (...)` as one operand, so
+        // `NOT EXISTS (...) IS NULL` would be `(NOT EXISTS (...)) IS NULL`;
+        // DuckDB's NOT takes `EXISTS (...) IS NULL`, as any other NOT does.
+        if keyword(parser, 0, Keyword::NOT) && keyword(parser, 1, Keyword::EXISTS) {
+            parser.advance_token();
+            return Some(parser.parse_subexpr(NOT).map(|e| Expr::UnaryOp {
+                op: UnaryOperator::Not,
+                expr: Box::new(e),
+            }));
+        }
         // sqlparser takes the operand of a sign up to `*` and ranks `^@` with
         // `::`, so `-a ^@ b` would be `-(a ^@ b)`; DuckDB binds the sign
         // tighter.
@@ -499,6 +510,11 @@ mod tests {
                 data_type: DataType::Int(None),
                 ..
             } => format!("CAST({} AS INTEGER)", tree(expr)),
+            // The parser writes `NOT EXISTS` as NOT over EXISTS.
+            Expr::Exists {
+                subquery,
+                negated: false,
+            } => format!("EXISTS({subquery})"),
             other => format!("<unprinted: {other}>"),
         }
     }

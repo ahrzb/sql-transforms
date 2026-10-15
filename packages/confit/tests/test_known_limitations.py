@@ -495,9 +495,9 @@ def test_every_refusal_family_carries_a_documented_prefix():
             "SELECT a FROM __THIS__ FULL JOIN __THIS__ AS b ON true",
             "join type FULL OUTER JOIN",
         ),
-        ("SELECT (SELECT 1) FROM __THIS__", "a scalar subquery with no FROM"),
+        ("SELECT (SELECT 1) FROM __THIS__", "a subquery with no FROM"),
         ("SELECT a IN (SELECT 1) FROM __THIS__", "IN \\(SELECT"),
-        ("SELECT EXISTS (SELECT 1) FROM __THIS__", "EXISTS \\(SELECT"),
+        ("SELECT EXISTS (SELECT 1) FROM __THIS__", "a subquery with no FROM"),
         ("SELECT DATE '2020-01-01' FROM __THIS__", "a typed literal"),
     ],
 )

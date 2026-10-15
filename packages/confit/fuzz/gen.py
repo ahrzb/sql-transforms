@@ -472,8 +472,10 @@ class ScalarSub(Node):
     table, each written before the key at its position. Its SELECT item may
     be an expression over the aggregate and `more` aggregates, `post`,
     which reads the i-th call as `AggRead(i)`. The calls whose index is in
-    `distinct` read DISTINCT values. Its kids are the outer sides of the
-    keys, then those terms."""
+    `distinct` read DISTINCT values. With `exists` set it is
+    `[NOT] EXISTS (SELECT item FROM ...)` over the same WHERE instead, and
+    reads no aggregate. Its kids are the outer sides of the keys, then those
+    terms."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -484,6 +486,8 @@ class ScalarSub(Node):
     post: Node | None = None
     more: list[tuple[str, str | None]] = field(default_factory=list)  # (func, arg)
     distinct: set[int] = field(default_factory=set)  # 0 is func(arg), i more[i - 1]
+    # (NOT, the SELECT item: "*", "1" or a column of `table`)
+    exists: tuple[bool, str] | None = None
 
     def kids(self):
         return [o for _, _, o in self.keys] + [p for _, p in self.preds]
@@ -1020,6 +1024,11 @@ def rexpr(e: Node) -> str:
         for at, p in sorted(e.preds, key=lambda x: -x[0]):
             terms.insert(min(at, len(terms)), rexpr(p))
         where = f" WHERE {' AND '.join(terms)}" if terms else ""
+        if e.exists is not None:
+            neg, it = e.exists
+            it = it if it in ("*", "1") else f"{scope}.{_ident(it)}"
+            not_ = "NOT " if neg else ""
+            return f"{not_}EXISTS (SELECT {it} FROM {frm}{where})"  # noqa: S608
         return f"(SELECT {item} FROM {frm}{where})"  # noqa: S608
     raise TypeError(e)
 
@@ -1604,7 +1613,9 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     matches several rows. About one subquery in ten selects an expression
     over the aggregate, and about four in ten of those draw a second
     aggregate of the same table for it. About one aggregate over a column in
-    five reads DISTINCT values. A few subqueries take a form that confit
+    five reads DISTINCT values. About one subquery in five that is an item,
+    or the operand of IS NULL, is `[NOT] EXISTS (SELECT * | 1 | column ...)`
+    over the same WHERE instead. A few subqueries take a form that confit
     refuses by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under
     shape='many', an outer side that can trap after another key or under
     shape='many', a term over the table that can trap, an expression over
@@ -1659,6 +1670,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         made.append(ScalarSub(func, arg, name, terms, scope))
         return made[-1]
 
+    alone: list[ScalarSub] = []  # an item, or the operand of IS NULL
     for _ in range(qrng.choice([1, 1, 2])):
         s = sub()
         r = qrng.random()
@@ -1668,6 +1680,8 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
             item = Bin("IS NOT DISTINCT FROM", s, copy.deepcopy(s))
         else:
             item = s
+        if not isinstance(item, Bin):
+            alone.append(s)
         b.items.append((item, f"sq{len(b.items)}"))
     if qrng.random() < 0.2:
         term = Bin(">", sub("count"), Lit(0, "int"))
@@ -1707,6 +1721,14 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         for i, (_, a) in enumerate([(s.func, s.arg), *s.more]):
             if a is not None and qrng.random() < 0.2:
                 s.distinct.add(i)
+    # EXISTS in place of about one subquery in five that stands alone, drawn
+    # last too. NOT EXISTS has no parentheses of its own, so under IS NULL
+    # it checks that NOT takes `EXISTS (...) IS NULL`, as DuckDB's does.
+    for s in alone:
+        if qrng.random() < 0.2:
+            r = qrng.random()
+            it = "*" if r < 0.4 else "1" if r < 0.7 else qrng.choice(list(sch))
+            s.exists = (qrng.random() < 0.4, it)
     tags.append("scalar-subquery")
     return True
 
