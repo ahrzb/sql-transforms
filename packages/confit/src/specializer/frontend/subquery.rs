@@ -173,11 +173,27 @@ fn outer_form_refusal(e: &SqlExpr) -> PrepareError {
 /// function bodies it reads.
 pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareError> {
     use super::resolve::Walk;
+    let at = |x: &SqlExpr| match x {
+        SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => Walk::Stop,
+        _ => Walk::Into,
+    };
     let none = b.walk_expr(e, &mut |x| {
-        Ok(match x {
-            SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => Walk::Stop,
-            _ => Walk::Into,
-        })
+        let Some((id, _)) = calls::marker_call(x) else {
+            return Ok(at(x));
+        };
+        // Every field read of a call holds the same marker, arguments
+        // included: walking it at each read made a struct of K fields,
+        // read field by field, walk K² nodes (#456).
+        let known = b.call_subquery.borrow().get(&id).copied();
+        let has = match known {
+            Some(has) => has,
+            None => {
+                let has = !b.walk_expr(x, &mut |y| Ok(at(y)))?;
+                b.call_subquery.borrow_mut().insert(id, has);
+                has
+            }
+        };
+        Ok(if has { Walk::Stop } else { Walk::Over })
     })?;
     Ok(!none)
 }

@@ -399,6 +399,7 @@ pub(super) fn bind_from<'a>(
         call_null: std::cell::RefCell::new(std::collections::HashMap::new()),
         call_words: std::cell::RefCell::new(std::collections::HashMap::new()),
         call_aliases: std::cell::RefCell::new(std::collections::HashMap::new()),
+        call_subquery: std::cell::RefCell::new(std::collections::HashMap::new()),
         lets: std::cell::RefCell::new(Vec::new()),
         let_vals: std::cell::RefCell::new(std::collections::HashMap::new()),
         let_reads: std::cell::Cell::new(false),
