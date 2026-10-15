@@ -509,9 +509,14 @@ The first five are ruled, in this order; the rest follow.
 - **float32** (needs f32 arithmetic, not widening), **temporal types**
   (columns, casts, literals, functions; opaque temporal join keys could use a
   key-only lane), **BLOB**.
-- **Parse-divergence guards.** `^`, prefix `~`, `#`, `NOT GLOB` wait on the
-  dialect frontend's parser replacing sqlparser; the regex reject list on an
-  RE2-compatible engine.
+- **Parse-divergence guards.** Binary operators parse with DuckDB's
+  precedence (`src/specializer/precedence.rs`, held to
+  `docs/specs/pins-wave5/operator-precedence.json`), so `^` can now serve as
+  `pow` (parity tests for `2*x^y`, `-x^2`, `x^y^z` and its name `(x ^ y)`).
+  Prefix `~` (DuckDB: looser than `+`, tighter than `<<`, so `~1+1` is
+  `~(1+1)`) and `NOT GLOB` could each be one more hook there; `#` does not
+  parse in DuckDB either. The regex reject list waits on an RE2-compatible
+  engine.
 
 ## Refusals
 

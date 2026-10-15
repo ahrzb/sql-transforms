@@ -202,8 +202,7 @@ pub(super) fn flat_bitop(op: &BinaryOperator) -> ArithOp {
 }
 
 /// In-order collect of a maximal run of flat-tier bit operators: yields the
-/// operands and operators in SOURCE order regardless of how sqlparser
-/// grouped them.
+/// operands and operators in SOURCE order.
 pub(super) fn flatten_bitops<'e>(
     e: &'e SqlExpr,
     ops: &mut Vec<&'e BinaryOperator>,

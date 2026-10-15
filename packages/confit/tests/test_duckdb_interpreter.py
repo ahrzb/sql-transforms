@@ -1160,10 +1160,8 @@ TRIG_EDGE_FLOATS = [
 
 def test_pow_double_specials():
     # pow and power are one function; pin the IEEE specials per row. The ^
-    # operator is deliberately NOT mapped: sqlparser parses it below *
-    # while DuckDB binds it above (measured 2*x^y = 2*(x^y) vs sqlparser's
-    # (2*x)^y) — mapping would silently compute the wrong tree. ** does
-    # not parse at all. Both stay clean errors.
+    # operator is not mapped to pow yet (it parses as DuckDB's, 2*x^y =
+    # 2*(x^y)). ** does not parse at all. Both stay clean errors.
     duck_check(
         "SELECT pow(x, y) AS p, power(x, y) AS q FROM __THIS__",
         {"x": "float?", "y": "float?"},
@@ -1172,7 +1170,7 @@ def test_pow_double_specials():
 
 
 def test_pow_operator_rejects_cleanly():
-    with pytest.raises(ValueError, match="operator .*precedence differs"):
+    with pytest.raises(ValueError, match="operator \\^ \\(not mapped to pow"):
         DuckDBInferFn(
             "SELECT x ^ 2 AS r FROM __THIS__",
             row_tables={"__THIS__": _row_schema({"x": "float"})},

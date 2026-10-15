@@ -289,6 +289,7 @@ fn bin_op(op: &B) -> Option<&'static str> {
         B::BitwiseOr => "|",
         B::PGBitwiseShiftLeft => "<<",
         B::PGBitwiseShiftRight => ">>",
+        B::PGStartsWith => "^@",
         _ => return None,
     })
 }
@@ -434,6 +435,17 @@ fn print(e: &SqlExpr) -> Option<String> {
                 parts.into_iter().map(print).collect::<Option<Vec<_>>>()?.join(word)
             )
         }
+        // DuckDB's parser reads `~` and `!~` as regexp_full_match.
+        SqlExpr::BinaryOp {
+            left,
+            op: B::PGRegexMatch,
+            right,
+        } => format!("regexp_full_match({}, {})", print(left)?, print(right)?),
+        SqlExpr::BinaryOp {
+            left,
+            op: B::PGRegexNotMatch,
+            right,
+        } => format!("(NOT regexp_full_match({}, {}))", print(left)?, print(right)?),
         SqlExpr::BinaryOp { left, op, right } => {
             format!("({} {} {})", print(left)?, bin_op(op)?, print(right)?)
         }
@@ -493,11 +505,18 @@ fn print(e: &SqlExpr) -> Option<String> {
             format!("({} {op} {})", print(expr)?, print(pattern)?)
         }
         SqlExpr::SimilarTo {
-            negated: false,
+            negated,
             expr,
             pattern,
             escape_char: None,
-        } => format!("regexp_full_match({}, {})", print(expr)?, print(pattern)?),
+        } => {
+            let m = format!("regexp_full_match({}, {})", print(expr)?, print(pattern)?);
+            if *negated {
+                format!("(NOT {m})")
+            } else {
+                m
+            }
+        }
         SqlExpr::Cast {
             kind,
             expr,

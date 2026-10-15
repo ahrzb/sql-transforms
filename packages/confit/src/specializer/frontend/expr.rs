@@ -467,12 +467,11 @@ impl Binder<'_> {
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Subquery(q) => self.scalar_subquery(q),
             SqlExpr::Value(v) => literal(&v.value),
-            // DuckDB puts << >> & | in ONE flat left-associative tier;
-            // sqlparser tiers them (& above << >> above |), so 4|1&1 would
-            // silently parse as 4|(1&1)=5 where DuckDB computes (4|1)&1=1.
-            // Re-associate: in-order traversal of the parsed run recovers
-            // source order, then left-fold. User parens are Nested nodes,
-            // which the flatten treats as leaves.
+            // DuckDB puts << >> & | in ONE flat left-associative tier, and
+            // the parser ranks them so (precedence.rs): 4|1&1 is (4|1)&1=1.
+            // The run binds flat: in-order traversal recovers source order,
+            // then left-fold. User parens are Nested nodes, which the
+            // flatten treats as leaves.
             // ~ / !~ are FULL regex match in DuckDB (measured: the binder
             // error names regexp_full_match — NOT the Postgres search).
             SqlExpr::BinaryOp {
@@ -540,31 +539,8 @@ impl Binder<'_> {
                 // A DOUBLE negates with Fneg, a sign-bit flip; no
                 // subtraction reproduces it (`NumOp1` in ir/mod.rs).
                 // Integers keep 0 - x and its i64::MIN trap, which is
-                // DuckDB's own overflow behaviour.
-                // sqlparser parses `-a % b` as `-(a % b)`; DuckDB binds
-                // `(-a) % b` (its unary minus is tighter than mul/div/mod).
-                // The minus distributes over these ops so VALUES agree, but
-                // INT32_MIN's literal type doesn't — mirror DuckDB's tree.
-                // Explicit parens arrive as Nested and are untouched.
-                if let SqlExpr::BinaryOp { left, op, right } = &**expr {
-                    if matches!(
-                        op,
-                        BinaryOperator::Multiply
-                            | BinaryOperator::Divide
-                            | BinaryOperator::Modulo
-                            | BinaryOperator::DuckIntegerDivide
-                    ) {
-                        let rewritten = SqlExpr::BinaryOp {
-                            left: Box::new(SqlExpr::UnaryOp {
-                                op: UnaryOperator::Minus,
-                                expr: left.clone(),
-                            }),
-                            op: op.clone(),
-                            right: right.clone(),
-                        };
-                        return self.expr(&rewritten);
-                    }
-                }
+                // DuckDB's own overflow behaviour. The sign binds tighter
+                // than * / % (precedence.rs), so `-a % b` is `(-a) % b`.
                 // Measured: unary +/- on a BARE NULL is BIGINT on DuckDB
                 // (the SQLNULL INTEGER default does not survive negation);
                 // a typed NULL — CAST(NULL AS INTEGER) — keeps its width.
@@ -1214,14 +1190,10 @@ impl Binder<'_> {
                     nullable,
                 })
             }
-            // DuckDB's ^ IS pow — but sqlparser parses ^ BELOW * while
-            // DuckDB binds it above (measured: duck 2*x^y = 2*(x^y),
-            // sqlparser tree = (2*x)^y). Mapping it would silently compute
-            // the wrong tree, so the operator stays cleanly unsupported;
-            // pow()/power() cover the semantics.
-            BinaryOperator::BitwiseXor => Err(unsup(
-                "operator ^ (sqlparser precedence differs from DuckDB pow)",
-            )),
+            // DuckDB's ^ IS pow, and the parser ranks it as DuckDB does
+            // (precedence.rs: 2*x^y is 2*(x^y)). It is not mapped to pow
+            // yet; pow()/power() cover the semantics.
+            BinaryOperator::BitwiseXor => Err(unsup("operator ^ (not mapped to pow yet: use pow())")),
             other => Err(unsup(format!("operator {other}"))),
         }
     }

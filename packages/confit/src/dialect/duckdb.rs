@@ -33,7 +33,6 @@ use sqlparser::ast::{
     BinaryOperator, CastKind, Expr as SqlExpr, GroupByExpr, JoinConstraint, JoinOperator, Select,
     SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, UnaryOperator, Value as SqlValue,
 };
-use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
@@ -42,13 +41,14 @@ use super::printer;
 use super::ty::DTy;
 use super::verify::verify;
 use super::{unsup, DialectError};
+use crate::specializer::precedence::DuckDbPrecedence;
 use crate::specializer::rewrite;
 
 // --- frontend ----------------------------------------------------------------
 
 /// Parse one DuckDB-dialect SELECT into a verified plan.
 pub fn parse_sql(sql: &str, cat: &Catalog) -> Result<Rel, DialectError> {
-    let dialect = GenericDialect {};
+    let dialect = DuckDbPrecedence;
     let located = Tokenizer::new(&dialect, sql)
         .tokenize_with_location()
         .map_err(|e| DialectError::Unsupported(format!("tokenize: {e}")))?;

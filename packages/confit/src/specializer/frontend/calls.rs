@@ -65,7 +65,7 @@ fn split_case_arms(calls: &mut Vec<(String, SqlExpr)>) {
                 continue;
             }
             let sub = next + split.len();
-            let Ok(marker) = Parser::new(&GenericDialect {})
+            let Ok(marker) = Parser::new(&super::super::precedence::DuckDbPrecedence)
                 .try_with_sql(&format!("{}({sub})", macros::CALL_MARKER))
                 .and_then(|mut p| p.parse_expr())
             else {
