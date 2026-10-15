@@ -538,6 +538,12 @@ pub struct JoinSpec {
     /// (wave-4 pins: DuckDB scan-pushes those, different error timing).
     /// May reference this join's own columns via StaticCol.
     pub residual: Option<SExpr>,
+    /// Set for the hidden join of a scalar subquery that the WHERE of its
+    /// level does not read: the stage forces its probe after the WHERE, as
+    /// DuckDB evaluates a subquery of the SELECT list over the rows that
+    /// the WHERE passes (`frontend/subquery.rs`). Every other join probes
+    /// before the WHERE.
+    pub after_where: bool,
 }
 
 /// A bound, typed scalar expression. `nullable` is the frontend's

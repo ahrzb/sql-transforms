@@ -471,8 +471,9 @@ The first five are ruled, in this order; the rest follow.
   subquery with one `count`, `min`, `max`, integer, BOOLEAN or DECIMAL `sum`,
   or integer or DECIMAL `avg` over one static table, keyed by `=` or IS NOT
   DISTINCT FROM between a bare column of the table and an outer expression
-  that cannot trap, and filtered by WHERE terms that read only the table and
-  cannot trap. It binds as a hidden LEFT join to a table that the build
+  that cannot trap (the first key's may trap, see below), and filtered by
+  WHERE terms that read only the table and cannot trap. It binds as a hidden
+  LEFT join to a table that the build
   filters and groups (`src/specializer/frontend/subquery.rs`, `AggTable` and
   `AggFilter` in `plan.rs`; claim `scalar-subquery-as-join`;
   `tests/test_scalar_subquery.py`; generator gate 33 mod 43, tag
@@ -491,22 +492,38 @@ The first five are ruled, in this order; the rest follow.
   an expression over the aggregate, several aggregates, a WHERE term that is
   neither a key nor reads only the table, a static term that can trap (DuckDB
   runs it over unmatched rows), holds a subquery or calls a SQL function, an
-  outer side that can trap or reads a joined table, a VARCHAR key against
-  another type, a subquery in FROM, in JOIN ON or inside the subquery, the
-  request table, and a scalar subquery under `shape='many'` in a two-level
-  query. Of the 59 static terms that campaign refused as trapping, 42 held
-  LIKE and 12 a string function; `can_trap` now names those that cannot trap
-  (see "Comma-join term order over-refuses"), which served 46 more subquery
-  cases on 30,050,000..30,099,999. Next, in this order: outer sides that can
-  trap (they trap only when the static table has rows, which the build
-  knows); an expression over the aggregate.
+  outer side that reads a joined table, an outer side that can trap on a
+  later key (DuckDB runs it only over the static rows that the earlier keys
+  match), in a WHERE subquery beside a comma join keyed on a WHERE term
+  (DuckDB runs that subquery over every pair of the cross product) or under
+  `shape='many'` (the loops run every join before the WHERE), a VARCHAR key
+  against another type, a subquery in FROM, in JOIN ON or inside the
+  subquery, the request table, and a scalar subquery under `shape='many'` in
+  a two-level query. Of the 59 static terms that campaign refused as
+  trapping, 42 held LIKE and 12 a string function; `can_trap` now names
+  those that cannot trap (see "Comma-join term order over-refuses"), which
+  served 46 more subquery cases on 30,050,000..30,099,999. The first key's
+  outer side may trap: DuckDB runs it only if a static row passes the terms
+  written before it (the lower half of a BETWEEN; its upper half moves to
+  the end), so the build counts those rows into a keyless guard table read
+  through one more hidden join, and the key becomes `CASE WHEN count > 0
+  THEN key END` (`guarded_key` in `subquery.rs`). A hidden join that the
+  WHERE does not read now probes after the WHERE (`JoinSpec::after_where`),
+  where DuckDB runs a SELECT-list subquery. On 30,050,000..30,099,999,
+  against the verdicts of #469, 15 cases moved from a refusal (10 AGREE, 4
+  AGREE_TRAP, 1 DIVERGE_OPT of the known trap-elision class in the outer
+  WHERE), no other verdict moved, and the campaign gave 0 gated verdicts;
+  7 refusals of a later key that can trap and 2 under `shape='many'` remain.
+  Next: an expression over the aggregate.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
   aggregate argument runs on matched rows only; an empty static table or an
   empty batch evaluates nothing; the subquery runs for every row that reaches
   its operator, under a CASE guard too (after WHERE in the SELECT list, before
-  WHERE inside it); an uncorrelated one traps even on an empty batch. Waiting
+  WHERE inside it); an uncorrelated one traps even on an empty batch.
+  Measured 2026-10-15: a WHERE subquery under a comma join runs over every
+  pair of the cross product, before the WHERE matches the comma key. Waiting
   on the owner: [decisions/open/join-group-by-per-request.md](decisions/open/join-group-by-per-request.md)
   and the DOUBLE `sum`/`avg` domains of the float-reduction bound,
   [decisions/open/double-sum-bound.md](decisions/open/double-sum-bound.md).

@@ -151,10 +151,11 @@ x86_64 Linux, confit serves `avg` only for SMALLINT and for a DECIMAL with a
 precision of 4 or less (see below). A term of the WHERE compares a column of
 `s` with an expression of the outer query, by `=` or `IS NOT DISTINCT FROM`.
 Or the term reads only `s`, such as `s.v > 5`. The WHERE can also be absent.
-Confit refuses the subquery if an outer expression or a term that reads only
-`s` can trap. It also refuses an outer expression that reads a table that the
-outer query joins, and a term that reads only `s` but holds a subquery or
-calls a SQL function.
+The outer expression of the first key can trap (see below). Confit refuses
+the subquery if the outer expression of a later key can trap, or if a term
+that reads only `s` can trap. It also refuses an outer expression that reads a
+table that the outer query joins, and a term that reads only `s` but holds a
+subquery or calls a SQL function.
 
 At build, confit keeps the rows of `s` on which each term that reads only `s`
 is TRUE. It puts these rows into groups with equal keys and computes the
@@ -168,11 +169,28 @@ The oracle evaluates the WHERE of the subquery in written order, for each
 pair of a distinct outer value and a row of `s`. It evaluates the argument of
 the aggregate for the matched rows only. The pins at the end of
 `tests/test_scalar_subquery.py` record these facts. The order of evaluation
-matters only where an evaluation can trap. In a served subquery, no WHERE term
-can trap, and the argument of the aggregate, if it has one, is a column or a
-constant. Only the running total of a `sum` or an `avg` can overflow. Confit
-computes it at build, where the first case below refuses the build. So the
-order of evaluation cannot change the answer.
+matters only where an evaluation can trap. In a served subquery, only the
+outer expression of the first key can trap. The argument of the aggregate, if
+it has one, is a column or a constant. Only the running total of a `sum` or an
+`avg` can overflow. Confit computes it at build, where the first case below
+refuses the build.
+
+The oracle evaluates the outer expression of the first key only if a row of
+`s` passes the terms written before that key. Its planner moves the upper
+bound of `x BETWEEN lo AND hi` to the end of the WHERE, so only the lower
+bound of such a term counts. At build, confit counts the rows of `s` that pass
+these terms, and it evaluates the outer expression only if the count is above
+0. The oracle also runs a subquery in the SELECT list for each row that the
+outer WHERE passes, and a subquery in the WHERE for each row that reaches the
+WHERE. Inside a CASE, it runs the subquery for each of these rows, whatever
+the condition. Confit evaluates the outer expression for the same rows. It
+refuses this key in two cases:
+
+- The subquery is in the WHERE, and a comma join of the outer query takes a
+  WHERE term as its key. The oracle runs the subquery for every pair of the
+  comma join, and confit only for the pairs that the key matches.
+- The query runs under `shape='many'`. There confit evaluates every join
+  before the WHERE.
 
 The answer of `avg` is a DOUBLE. The oracle adds the values that are not NULL
 without rounding, and it counts them. If a group has no such value, the answer

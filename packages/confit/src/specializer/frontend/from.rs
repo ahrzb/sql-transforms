@@ -186,6 +186,7 @@ pub(super) fn batch_spec(n_plain: usize, kind: JoinKind, residual: Option<SExpr>
         key_cols: Vec::new(),
         val_cols: (0..n_plain as u32).collect(),
         residual,
+        after_where: false,
     }
 }
 
@@ -414,6 +415,7 @@ pub(super) fn bind_from<'a>(
         request_table: this_name.to_string(),
         subqueries: std::cell::Cell::new(false),
         agg_joins: std::cell::RefCell::new(Vec::new()),
+        trap_keys: std::cell::RefCell::new(Vec::new()),
         agg_reads: std::cell::RefCell::new(Vec::new()),
         agg_tables: std::cell::RefCell::new(ctx.aggs),
     };
@@ -612,6 +614,7 @@ pub(super) fn bind_from<'a>(
             key_cols,
             val_cols,
             residual,
+            after_where: false,
         });
     }
 
@@ -729,6 +732,7 @@ pub(super) fn bind_from<'a>(
             key_cols,
             val_cols,
             residual: None,
+            after_where: false,
         });
     }
 

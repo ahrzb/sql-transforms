@@ -8,7 +8,8 @@ before the build groups them. A request that matches no group reads the
 aggregate of no rows: 0 for count, NULL for the others. The oracle evaluates
 the subquery's WHERE in written order over (distinct outer values) x (static
 rows), and the aggregate's argument over the matched rows only (the pins at
-the end). Nothing served here can trap, so the values are what compares.
+the end). Only the outer side of a first key can trap, and confit evaluates it
+for the same rows as the oracle; elsewhere the values are what compares.
 
 Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 """
@@ -468,7 +469,10 @@ def test_static_term_that_calls_a_sql_function_refuses():
         (_sub("count(NULL)"), "must be a column of its table"),
         (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
         (_sub("count(*)", "s.k + 1 = t.k"), "the WHERE term s.k + 1 = t.k"),
-        (_sub("sum(v)", "s.k = t.k + 1"), "can trap"),
+        (
+            _sub("sum(v)", "s.j = t.j AND s.k = t.k + 1"),
+            "can trap and follows another key",
+        ),
         (
             _sub("count(*)", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
             "reads only its table and can trap",
@@ -621,10 +625,177 @@ def test_plan_facts_name_the_aggregate_join():
     )
 
 
+# A first key whose outer side can trap. DuckDB evaluates that side over the
+# static rows that the WHERE terms before it pass (the pins below), so it
+# traps only if one such row exists. Confit counts those rows at build and
+# evaluates the side only when the count is above 0. A subquery in the SELECT
+# list runs over the rows that the outer WHERE passes, and one in the WHERE
+# over the rows that reach that WHERE. The cast traps for rows 2 and 3 of
+# KT, and row 1 matches the key 0 of KS.
+
+KT = table(
+    {"pid": "int", "x": "int?", "y": "int"},
+    [
+        {"pid": 1, "x": 0, "y": 0},
+        {"pid": 2, "x": 1, "y": 1},
+        {"pid": 3, "x": 5, "y": 1},
+        {"pid": 4, "x": None, "y": 0},
+    ],
+)
+KS = table(
+    {"k": "int?", "v": "int?", "f": "int?"},
+    [
+        {"k": 10, "v": 1, "f": 0},
+        {"k": 0, "v": 2, "f": 1},
+        {"k": 2, "v": 3, "f": 1},
+        {"k": None, "v": None, "f": None},
+    ],
+)
+TRAP = "CAST(1000 * x AS TINYINT)"
+# Optimizer-on DuckDB can order these terms another way, so where the
+# optimizer-off oracle and confit agree, the verdict can read DIVERGE_OPT.
+ROWS_OR_OPT = ("AGREE", "DIVERGE_OPT")
+TRAP_OR_OPT = ("AGREE_TRAP", "DIVERGE_OPT")
+
+
+def _ksub(where: str, agg: str = "count(*)", tail: str = "") -> str:
+    return f"SELECT pid, (SELECT {agg} FROM s WHERE {where}) AS c FROM __THIS__{tail}"
+
+
+@pytest.mark.parametrize(
+    "sql, expect",
+    [
+        # The outer WHERE passes no row that traps, and the others match.
+        (_ksub(f"s.k = {TRAP}", tail=" WHERE x = 0 OR x IS NULL"), "AGREE"),
+        (_ksub(f"s.k = {TRAP}", "sum(v)", " WHERE x = 0 OR x IS NULL"), "AGREE"),
+        (_ksub(f"s.k = {TRAP}", "max(v)", " WHERE x = 0 OR x IS NULL"), "AGREE"),
+        (_ksub(f"s.f = 1 AND s.k = {TRAP}", tail=" WHERE x = 0"), "AGREE"),
+        (_ksub(f"s.k = {TRAP}"), "AGREE_TRAP"),
+        (_ksub(f"{TRAP} = s.k"), "AGREE_TRAP"),
+        (_ksub(f"s.k IS NOT DISTINCT FROM {TRAP}"), "AGREE_TRAP"),
+        (_ksub(f"s.k = {TRAP} AND s.v = y"), "AGREE_TRAP"),
+        # A term before the key that passes no row: the side never runs.
+        (_ksub(f"s.f = 7 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"s.f = NULL AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"s.v NOT BETWEEN 0 AND 10 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"(s.v BETWEEN 0 AND -1 OR s.f = 9) AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"s.v >= 0 AND s.v <= -1 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"s.v BETWEEN 100 AND 200 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        # A term before the key that passes a row, and terms after the key.
+        (_ksub(f"s.f = 0 AND s.k = {TRAP}"), "AGREE_TRAP"),
+        (_ksub(f"s.k = {TRAP} AND s.f = 7"), "AGREE_TRAP"),
+        # The upper bound of BETWEEN moves after the key.
+        (_ksub(f"s.v BETWEEN 0 AND -1 AND s.k = {TRAP}"), TRAP_OR_OPT),
+        (_ksub(f"(s.v BETWEEN 0 AND -1 AND s.f = 1) AND s.k = {TRAP}"), TRAP_OR_OPT),
+        # In the SELECT list the subquery runs for every row that the WHERE
+        # passes, under a CASE too.
+        (
+            f"SELECT pid, CASE WHEN x = 0 THEN (SELECT count(*) FROM s "
+            f"WHERE s.k = {TRAP}) END AS c FROM __THIS__",
+            "AGREE_TRAP",
+        ),
+        (
+            "SELECT pid, (SELECT count(*) FROM s "
+            f"WHERE s.f = 7 AND s.k = {TRAP}) AS a, "
+            f"(SELECT max(v) FROM s WHERE s.k = {TRAP}) AS b FROM __THIS__",
+            "AGREE_TRAP",
+        ),
+        (
+            f"SELECT pid, (SELECT count(*) FROM s WHERE s.k = {TRAP}) AS c "
+            "FROM (SELECT * FROM __THIS__ WHERE x = 0) AS d",
+            "AGREE",
+        ),
+        # In the WHERE it runs before the WHERE: for the rows that the terms
+        # before it drop too, and again when the WHERE reads its alias.
+        (
+            f"SELECT pid FROM __THIS__ WHERE x = 0 AND (SELECT count(*) FROM s "
+            f"WHERE s.k = {TRAP}) >= 0",
+            TRAP_OR_OPT,
+        ),
+        (_ksub(f"s.k = {TRAP}", tail=" WHERE x = 0 AND c >= 0"), TRAP_OR_OPT),
+        (
+            _ksub(
+                f"s.k = {TRAP}",
+                tail=" WHERE x = 0 AND (SELECT count(*) FROM s "
+                f"WHERE s.k = {TRAP}) >= 0",
+            ),
+            TRAP_OR_OPT,
+        ),
+        (
+            f"SELECT pid FROM __THIS__ WHERE x = 0 OR (SELECT count(*) FROM s "
+            f"WHERE s.k = {TRAP}) >= 0",
+            TRAP_OR_OPT,
+        ),
+    ],
+)
+def test_a_first_key_whose_outer_side_can_trap(sql, expect):
+    assert_parity(sql, KT, statics={"s": KS}, expect=expect)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        _ksub(f"s.k = {TRAP}"),
+        _ksub(f"s.k = {TRAP}", "sum(v)"),
+        "SELECT pid FROM __THIS__ "
+        f"WHERE (SELECT count(*) FROM s WHERE s.k = {TRAP}) >= 0",
+    ],
+)
+def test_a_first_key_whose_outer_side_can_trap_over_an_empty_table(sql):
+    empty = KS.slice(0, 0)
+    assert_parity(sql, KT, statics={"s": empty}, expect="AGREE")
+
+
+S2 = table({"id": "int", "w": "str"}, [{"id": 1, "w": "a"}])
+
+
+@pytest.mark.parametrize(
+    "sql, expect",
+    [
+        # After the WHERE, a comma join has matched its keys.
+        (_ksub(f"s.k = {TRAP}", tail=", s2 WHERE pid = s2.id"), "AGREE"),
+        (
+            f"SELECT pid FROM __THIS__ JOIN s2 ON pid = s2.id "
+            f"WHERE (SELECT count(*) FROM s WHERE s.k = {TRAP}) >= 0",
+            "AGREE",
+        ),
+        (_ksub(f"s.k = {TRAP}", tail=" LEFT JOIN s2 ON pid = s2.id"), "AGREE_TRAP"),
+    ],
+)
+def test_a_first_key_whose_outer_side_can_trap_beside_a_join(sql, expect):
+    assert_parity(sql, KT, statics={"s": KS, "s2": S2}, expect=expect)
+
+
+@pytest.mark.parametrize(
+    "sql, shape, why",
+    [
+        (
+            _ksub(f"s.v = y + 100 AND s.k = {TRAP}"),
+            None,
+            "can trap and follows another key",
+        ),
+        # DuckDB runs a subquery in the WHERE over every pair of a comma
+        # join, before the WHERE matches the comma table's key.
+        (
+            f"SELECT pid FROM __THIS__, s2 WHERE pid = s2.id "
+            f"AND (SELECT count(*) FROM s WHERE s.k = {TRAP}) >= 0",
+            None,
+            "beside a comma join",
+        ),
+        (_ksub(f"s.k = {TRAP}"), "many", "under shape='many'"),
+    ],
+)
+def test_a_key_whose_outer_side_can_trap_refuses_by_name(sql, shape, why):
+    v = assert_parity(
+        sql, KT, statics={"s": KS, "s2": S2}, shape=shape, expect="REFUSED"
+    )
+    assert why in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
-# cannot trap, so these facts never change a served answer. They are why a
-# WHERE term that reads only the table and can trap, and an outer side that
-# can trap, refuse today.
+# cannot trap but in the outer side of a first key, so these facts never
+# change a served answer. They are why a WHERE term that reads only the
+# table and can trap refuses today.
 
 BIG = 2**63 - 1
 PIN_S = pa.table(
@@ -668,3 +839,75 @@ def test_pin_an_empty_batch_runs_only_an_uncorrelated_subquery():
     got = _pin(f"SELECT k, (SELECT max(s.z + {BIG}) FROM s) FROM t", [])
     assert isinstance(got, Trap), got
     assert "Overflow in addition of INT64" in got.message
+
+
+# The outer side of a key, measured 2026-10-15 over KT (as t) and KS: rows 2
+# and 3 overflow the cast.
+KT_ROWS = [(1, 0, 0), (2, 1, 1), (3, 5, 1), (4, None, 0)]
+KTRAP = TRAP.replace("x", "t.x")
+
+
+@pytest.mark.parametrize(
+    "where, traps",
+    [
+        # It runs over the static rows that the terms before it pass.
+        (f"s.k = {KTRAP}", True),
+        (f"s.f = 7 AND s.k = {KTRAP}", False),
+        (f"s.f = 0 AND s.k = {KTRAP}", True),
+        (f"s.k = {KTRAP} AND s.f = 7", True),
+        # DuckDB's planner moves the upper bound of BETWEEN after it.
+        (f"s.v BETWEEN 0 AND -1 AND s.k = {KTRAP}", True),
+        (f"s.v >= 0 AND s.v <= -1 AND s.k = {KTRAP}", False),
+        # A second key's runs over the static rows that the first one matches.
+        (f"s.v = t.y + 100 AND s.k = {KTRAP}", False),
+        (f"s.v = t.y + 1 AND s.k = {KTRAP}", True),
+    ],
+)
+def test_pin_the_outer_side_of_a_key_runs_over_the_rows_the_terms_before_it_pass(
+    where, traps
+):
+    with Oracle() as o:
+        o.table("t", "pid BIGINT, x BIGINT, y BIGINT", KT_ROWS)
+        o.load("s", KS)
+        got = o.try_answer(f"SELECT pid, (SELECT count(*) FROM s WHERE {where}) FROM t")
+    assert isinstance(got, Trap) == traps, got
+
+
+@pytest.mark.parametrize(
+    "sql, traps",
+    [
+        # An empty static table: no pair to evaluate.
+        (f"SELECT pid, (SELECT count(*) FROM e WHERE e.k = {KTRAP}) FROM t", False),
+        # In the SELECT list after the WHERE, in the WHERE before it.
+        (
+            f"SELECT pid, (SELECT count(*) FROM s WHERE s.k = {KTRAP}) FROM t "
+            "WHERE t.x = 0",
+            False,
+        ),
+        (
+            "SELECT pid FROM t WHERE t.x = 0 "
+            f"AND (SELECT count(*) FROM s WHERE s.k = {KTRAP}) >= 0",
+            True,
+        ),
+        # Under a comma join, in the WHERE over every pair before the WHERE
+        # matches the key; in the SELECT list over the matched pairs.
+        (
+            "SELECT pid FROM t, s2 WHERE t.pid = s2.id "
+            f"AND (SELECT count(*) FROM s WHERE s.k = {KTRAP}) >= 0",
+            True,
+        ),
+        (
+            f"SELECT pid, (SELECT count(*) FROM s WHERE s.k = {KTRAP}) FROM t, s2 "
+            "WHERE t.pid = s2.id",
+            False,
+        ),
+    ],
+)
+def test_pin_the_subquery_runs_where_duckdb_plans_it(sql, traps):
+    with Oracle() as o:
+        o.table("t", "pid BIGINT, x BIGINT, y BIGINT", KT_ROWS)
+        o.load("s", KS)
+        o.load("e", KS.slice(0, 0))
+        o.load("s2", S2)
+        got = o.try_answer(sql)
+    assert isinstance(got, Trap) == traps, got

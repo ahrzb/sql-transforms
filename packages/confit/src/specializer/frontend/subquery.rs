@@ -10,12 +10,17 @@
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14) evaluates the
 //! subquery's WHERE over (distinct correlated values) x (static rows), in
 //! written order, and the aggregate's argument over the matched rows only.
-//! Nothing served here can trap: each key's outer side cannot
-//! (`can_trap`), its inner side is a bare column, no key casts a VARCHAR, no
-//! filter term can trap, and the aggregates run at build, where a sum that
-//! could overflow refuses. So the timing of that evaluation cannot show:
-//! the filter passes the same rows in any order, and the hidden join runs
-//! after the FROM joins of its level.
+//! It plans the subquery below the operator that holds it: in the SELECT
+//! list it runs over the rows that the WHERE passes, in the WHERE over the
+//! rows that reach the WHERE, under a CASE too. Only one thing served here
+//! can trap: the outer side of the first key ([`Binder::guarded_key`]),
+//! which runs where DuckDB runs it. The inner side of each key is a bare
+//! column, no key casts a VARCHAR, the outer side of a later key cannot trap
+//! (`can_trap`), no filter term can trap, and the aggregates run at build,
+//! where a sum that could overflow refuses. So the filter passes the same
+//! rows in any order, and the hidden join runs after the FROM joins of its
+//! level, before the WHERE when the WHERE reads it and after it otherwise
+//! ([`plan::JoinSpec::after_where`]).
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
@@ -205,7 +210,8 @@ fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "a scalar subquery with {what} -- served: (SELECT count(*) | count(c) | min(c) | \
          max(c) | sum(c) | avg(c) FROM s WHERE ...) over one static table, each WHERE term \
-         s.k = <outer expression> or a term that reads only s, and none that can trap"
+         s.k = <outer expression> or a term that reads only s, and none that can trap but \
+         the outer expression of the first key"
     ))
 }
 
@@ -285,7 +291,8 @@ impl Binder<'_> {
 
         // WHERE: each term reads only the table (a filter the build applies
         // to its rows), or is an equality between a column of the table and
-        // an expression of the outer scope (a key). No term can trap.
+        // an expression of the outer scope (a key). Only the outer side of
+        // the first key can trap ([`Binder::guarded_key`]).
         let mut terms = Vec::new();
         if let Some(w) = &select.selection {
             collect_conjuncts(w, &mut terms);
@@ -294,6 +301,9 @@ impl Binder<'_> {
         let mut key_cols = Vec::new();
         let mut key_lanes = Vec::new();
         let mut filters = Vec::new();
+        // When the outer side of the first key can trap: how many filter
+        // terms are written before that key.
+        let mut trap_key = None;
         for t in terms {
             let mut t = t;
             while let SqlExpr::Nested(x) = t {
@@ -345,9 +355,14 @@ impl Binder<'_> {
             }
             let key = promote_key(key, st, col)?;
             if can_trap(&key) {
-                return Err(form_refusal(&format!(
-                    "the WHERE term {t}, whose outer side can trap"
-                )));
+                if !keys.is_empty() {
+                    return Err(form_refusal(&format!(
+                        "the WHERE term {t}, whose outer side can trap and follows another key \
+                         (DuckDB evaluates it only over the static rows that the keys before \
+                         it match)"
+                    )));
+                }
+                trap_key = Some(filters.len());
             }
             key_cols.push(JoinKey {
                 src: KeySrc::Lane(key_lanes.len() as u32),
@@ -494,6 +509,10 @@ impl Binder<'_> {
             [] => None,
             _ => Some(self.static_filter(query, select, source, &filters)?),
         };
+        if let Some(n) = trap_key {
+            let key = keys.remove(0);
+            keys.insert(0, self.guarded_key(query, select, source, &filters[..n], key)?);
+        }
         let mut tables = self.agg_tables.borrow_mut();
         let table = self.statics.len() + tables.len();
         tables.push(AggTable {
@@ -514,8 +533,12 @@ impl Binder<'_> {
             key_cols,
             val_cols: vec![n_keys],
             residual: None,
+            after_where: false,
         });
         drop(joins);
+        if trap_key.is_some() {
+            self.trap_keys.borrow_mut().push(join);
+        }
         let read = SExpr {
             kind: SKind::StaticCol { join, col: 0 },
             ty,
@@ -682,6 +705,111 @@ impl Binder<'_> {
             regexes: bound.ctx.regexes,
         })
     }
+
+    /// The first key of a subquery whose outer side can trap, guarded.
+    /// DuckDB evaluates that side over the static rows that the WHERE terms
+    /// before it (`pre`, all filters) pass, so it traps only if one such row
+    /// exists (measured 2026-10-15). The build counts those rows into a
+    /// keyless table of its own, read through one more hidden join, and the
+    /// key becomes `CASE WHEN count > 0 THEN key END`. When the count is 0
+    /// the grouped table is empty, so the NULL key misses as the key would.
+    /// DuckDB's planner moves the upper half of `x BETWEEN lo AND hi` to the
+    /// end of the WHERE, after every key (see `where_conjuncts`), so only
+    /// the lower half of such a term counts here.
+    fn guarded_key(
+        &self,
+        query: &sqlparser::ast::Query,
+        select: &sqlparser::ast::Select,
+        source: usize,
+        pre: &[&SqlExpr],
+        key: SExpr,
+    ) -> Result<SExpr, PrepareError> {
+        let filter = match pre {
+            [] => None,
+            _ => {
+                let mut f = self.static_filter(query, select, source, pre)?;
+                for (i, t) in pre.iter().enumerate() {
+                    if !is_between(t) {
+                        continue;
+                    }
+                    let lower = match &f.project[i].1.kind {
+                        SKind::And { a, .. } => (**a).clone(),
+                        _ => {
+                            return Err(form_refusal(&format!(
+                                "the WHERE term {t} before a key whose outer side can trap \
+                                 (its lower bound does not bind as a term of its own)"
+                            )))
+                        }
+                    };
+                    f.out_cols[i].ty.nullable = lower.nullable;
+                    f.project[i].1 = lower;
+                }
+                Some(f)
+            }
+        };
+        let count = Col {
+            name: "count_star()".into(),
+            ty: super::super::ir::ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        };
+        let mut tables = self.agg_tables.borrow_mut();
+        let table = self.statics.len() + tables.len();
+        tables.push(AggTable {
+            table: StaticTable::all_scalar(self.statics[source].name.clone(), vec![count]),
+            source,
+            keys: Vec::new(),
+            aggs: vec![Agg {
+                func: AggFunc::CountStar,
+                arg: None,
+            }],
+            filter,
+        });
+        drop(tables);
+        let mut joins = self.agg_joins.borrow_mut();
+        let join = (self.joins.len() + joins.len()) as u32;
+        joins.push(JoinSpec {
+            table,
+            batch: false,
+            kind: JoinKind::Left,
+            keys: Vec::new(),
+            key_cols: Vec::new(),
+            val_cols: vec![0],
+            residual: None,
+            after_where: false,
+        });
+        drop(joins);
+        let read = SExpr {
+            kind: SKind::StaticCol { join, col: 0 },
+            ty: Ty::I64,
+            nullable: true,
+        };
+        let any = SExpr {
+            kind: SKind::Cmp {
+                pred: CmpPred::Gt,
+                a: Box::new(read),
+                b: Box::new(lit_i64(0)),
+            },
+            ty: Ty::I1,
+            nullable: true,
+        };
+        let ty = key.ty;
+        Ok(SExpr {
+            kind: SKind::Case {
+                arms: vec![(any, key)],
+                default: None,
+            },
+            ty,
+            nullable: true,
+        })
+    }
+}
+
+/// Whether `e` reads join `j`: a value column or its match flag.
+pub(super) fn reads_join(e: &mut SExpr, j: u32) -> bool {
+    matches!(e.kind, SKind::StaticCol { join, .. } | SKind::JoinHit(join) if join == j)
+        || e.children_mut().into_iter().any(|c| reads_join(c, j))
 }
 
 /// Whether `e` reads a joined table (a value column or a match flag), or a
