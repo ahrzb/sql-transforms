@@ -24,19 +24,25 @@ Easiest first; each is one PR.
    Measure the width curves of these families again; if the projections'
    builds changed, fit `project._build_estimate` again, which now keeps
    about 80 components over 256 features Python. Then remove that need.
-3. **The build estimates after confit #456** (reading 6, finding 76).
+3. **The build estimates on confit #461** (reading 6, finding 76).
    Since #456, a struct read field by field builds in about the square of
    its fields, past the estimates of `trees.py`, `spline.py` and
    `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,
    250 of depth 5 (6.5 s) in 42-44 s, 10 quantiles over 800 features in
    60-63 s (`to_native`; release build, master 98033e8, uv's CPython).
-   Sent to the confit loop on 2026-10-14 ("Needs from confit"). It traced
-   the cost to its check for a subquery at each SELECT item
-   (`subquery::has_subquery`), which walks the whole call again at every
-   field read; a memo for each call builds 4,000 fields in 1.00-1.12 s on
-   its container, and the fix goes through its gate and campaign next
-   (2026-10-15). When that fix merges, measure the builds again; if
-   confit keeps #456's build time, fit the three estimates again.
+   The confit loop traced the cost to its check for a subquery at each
+   SELECT item (`subquery::has_subquery`), which walked the whole call
+   again at every field read. #461 (merged 2026-10-15, master 620112e)
+   keeps the answer for each call: on the confit loop's container 4,000
+   fields build in 1.00-1.12 s (23.6-27.8 s before) and the catalog's
+   250 trees of depth 5 (5,982 fields) in 5.8-6.2 s (158 s); above 4,000
+   fields the build still grows faster than linearly (8,000 fields:
+   3.2 s). Measure the builds of these three families again with reading
+   6's scripts (`/mnt/project-files/transforms-loop/reading-6/`:
+   `widths_r6.py`, `struct_list.py`, `steps_at.py`); if a step still
+   builds past its estimate, fit that estimate again. Then remove the
+   need "A struct read field by field that builds about as fast as before
+   #456" below.
 
 ## Ruled 2026-10-06, to build
 
@@ -85,9 +91,9 @@ that request, `to_native(step, allow_bound=True)`. In order:
   the widest bench forest in 0.60-0.64 s, T36's on 4bb88f5 in 0.25-0.33 s
   (release build, uv's CPython, 2026-10-14). A confit-only reproduction
   is in `/mnt/project-files/transforms-loop/confit-field-reads-456.py`,
-  sent to the confit loop on 2026-10-14; it takes this next, after #459,
-  with that script as its test (2026-10-15). Until it lands the build
-  estimates under-predict wide steps ("Next", item 2).
+  sent to the confit loop on 2026-10-14. Delivered by confit #461
+  (merged 2026-10-15, master 620112e). Measure ("Next", item 3), then
+  remove this item.
 - **A value read many times, at about the cost of one read.** The catalog
   reads each numeric feature as `coalesce(x, NaN)`, one `confit.sql`
   object that every output field reads. Read once, it costs about 15 ns a
