@@ -155,6 +155,9 @@ pub struct PostSpec {
     pub map: plan::MapVal,
     /// The item as written, for the refusal of one that traps.
     pub item: String,
+    /// Whether the item reads the columns of one row ([`plan::AggPost::row`]):
+    /// the last aggregate then counts the group's rows.
+    pub row: bool,
 }
 
 /// The WHERE terms of a scalar subquery that read only its static table
@@ -556,16 +559,26 @@ fn agg_spec(
             None
         }
         // The aggregates as the item's program reads them, then the item
-        // in the table's one value lane.
+        // in the table's one value lane. An item over one row has one more
+        // aggregate, the count of the group's rows, which it does not read.
         Some(p) => {
-            for (&agg, c) in a.aggs.iter().zip(&p.in_cols) {
-                push(
-                    agg,
-                    plan::MapVal {
+            if a.aggs.len() != p.in_cols.len() + usize::from(p.row) {
+                return Err(PrepareError::Internal(
+                    "the item of a grouped table reads other aggregates than the table has".into(),
+                ));
+            }
+            for (i, &agg) in a.aggs.iter().enumerate() {
+                let map = match p.in_cols.get(i) {
+                    Some(c) => plan::MapVal {
                         ty: c.ty.ty.lane(),
                         nullable: c.ty.nullable,
                     },
-                );
+                    None => plan::MapVal {
+                        ty: ir::Ty::I64,
+                        nullable: false,
+                    },
+                };
+                push(agg, map);
             }
             let [map] = plan::map_vals(&grouped.cols, &j.val_cols)[..] else {
                 return Err(PrepareError::Internal(
@@ -619,6 +632,7 @@ fn post_spec(p: &plan::AggPost, map: plan::MapVal, value: &ir::Col) -> Result<Po
         ty: value.ty.ty,
         map,
         item: value.name.clone(),
+        row: p.row,
     })
 }
 

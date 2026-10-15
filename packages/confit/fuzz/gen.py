@@ -476,8 +476,10 @@ class ScalarSub(Node):
     `[NOT] EXISTS (SELECT item FROM ...)` over the same WHERE instead, and
     reads no aggregate; with `in_` set it is `x [NOT] IN (SELECT column FROM
     ...)`, and with `quant` set too `[NOT] x op ANY (SELECT column FROM ...)`,
-    SOME or ALL in place of ANY. Its kids are the outer sides of the keys,
-    then those terms, then x."""
+    SOME or ALL in place of ANY. With `row` set its SELECT item is `row`, an
+    expression over the columns of the table with no aggregate, which reads
+    the row that a request matches. Its kids are the outer sides of the
+    keys, then those terms, then x."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -494,6 +496,8 @@ class ScalarSub(Node):
     in_: tuple[bool, Node, str] | None = None
     # (the comparison, ANY | SOME | ALL), over `in_`
     quant: tuple[str, str] | None = None
+    # The SELECT item over one row, in place of the aggregate
+    row: Node | None = None
 
     def kids(self):
         x = [] if self.in_ is None else [self.in_[1]]
@@ -1030,6 +1034,8 @@ def rexpr(e: Node) -> str:
             item = calls[0] if e.post is None else rexpr(e.post)
         finally:
             _AGG_CALLS.pop()
+        if e.row is not None:
+            item = rexpr(e.row)
         terms = [f"{scope}.{_ident(c)} {op} {rexpr(o)}" for c, op, o in e.keys]
         for at, p in sorted(e.preds, key=lambda x: -x[0]):
             terms.insert(min(at, len(terms)), rexpr(p))
@@ -1769,8 +1775,46 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         if s.in_ is not None and qrng.random() < 0.5:
             op = qrng.choice(["=", "<>", "<", "<=", ">", ">="])
             s.quant = (op, qrng.choice(["ANY", "SOME", "ALL"]))
+    # An item over one row in place of the aggregate of about one other
+    # subquery in five that stands alone, drawn last too: a column of the
+    # table, or about one time in three an expression over its columns. Two
+    # times in three the table then keeps only the first row of each key of
+    # that subquery (only its first row if it has no key), so that a
+    # request matches one row at most; else a key of more rows refuses by
+    # name, where DuckDB traps if a request matches it.
+    for s in alone:
+        if s.exists is None and s.in_ is None and qrng.random() < 0.2:
+            if tenv.cols and qrng.random() < 0.35:
+                s.row = expr(qrng, tenv, qrng.choice(tenv.cols)[2], 2)
+            else:
+                c = qrng.choice(list(sch))
+                s.row = Col(
+                    c, scope or name, SEMANTIC.get(sch[c].rstrip("?"), "decimal")
+                )
+            if qrng.random() < 0.67:
+                _one_row_per_key(srows, [kc for kc, _, _ in s.keys])
     tags.append("scalar-subquery")
     return True
+
+
+def _one_row_per_key(rows: list[dict], cols: list[str]) -> None:
+    """Drop each row of `rows` whose values in `cols` equal those of an
+    earlier row: by DuckDB's equality, where -0.0 is 0.0 and NaN is NaN,
+    and with NULL equal to NULL, as IS NOT DISTINCT FROM compares."""
+
+    def cls(v):
+        if isinstance(v, float):
+            return "nan" if v != v else v + 0.0
+        return v
+
+    seen = set()
+    keep = []
+    for r in rows:
+        key = tuple(cls(r[c]) for c in cols)
+        if key not in seen:
+            seen.add(key)
+            keep.append(r)
+    rows[:] = keep
 
 
 def _sql_functions(frng, query, statics, env, udfs, tags) -> None:

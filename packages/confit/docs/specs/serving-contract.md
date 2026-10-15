@@ -109,7 +109,7 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery over one static table that selects an aggregate or an expression over aggregates, keyed by equalities with the outer query and filtered by terms that read only the static table ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build |
+| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build |
 | A scalar subquery of another form, for example with a DOUBLE `sum` or `avg`, or with an item that calls a UDF. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
@@ -160,6 +160,23 @@ The SELECT item can also be an expression over such aggregates, for example
 the columns of `s` only inside its aggregates. If it reads a column outside
 them, the oracle stops with a binder error. Confit refuses an expression that
 holds a subquery or calls a SQL function, a UDF or a tree model.
+
+The SELECT item can also be an expression over the columns of `s` with no
+aggregate, for example `(SELECT s.v FROM s WHERE s.k = t.k)` or
+`(SELECT s.v * 2 + s.j FROM s WHERE s.k = t.k)`. For a request, the oracle
+evaluates this item over the row of `s` that passes the WHERE. If no row passes
+the WHERE, the value is NULL, and the oracle does not evaluate the item. If more
+than one row passes it, the oracle stops with the error
+`More than one row returned by a subquery used as an expression`. Confit
+evaluates the item at build, over the one row of each group (see below).
+Confit also refuses these items:
+
+- an item that reads a column of the outer query, such as `s.v + t.j`;
+- an item that reads the whole row of `s`, such as `(SELECT s FROM s WHERE
+  s.k = t.k)`, or a field or an element of a column of `s`;
+- the item `NULL`, to which the oracle gives the type NULL, which confit does
+  not have;
+- an item that holds a subquery or calls a SQL function, a UDF or a tree model.
 
 Confit also serves `EXISTS` and `NOT EXISTS` over such a subquery, for example
 `EXISTS (SELECT * FROM s WHERE s.k = t.k)`. Each SELECT item of this subquery
@@ -310,12 +327,15 @@ aggregate of each group. An aggregate over DISTINCT values reads each distinct
 value of the group once. The keys are the columns of `s` that the WHERE
 compares with the outer query. If no term compares a column of `s` with the
 outer query, all the rows that confit keeps make one group. If the item is an
-expression, confit computes it over the aggregates of each group.
+expression, confit computes it over the aggregates of each group. If the item
+has no aggregate, confit computes it over the one row of each group.
 
 A request reads the value of the group that it matches, through a LEFT join. If
 a request matches no group, it reads 0 for `count` and NULL for the other
 aggregates. If the item is an expression, the request reads the expression over
-these values. Confit computes the value of this expression once, at build.
+these values. Confit computes the value of this expression once, at build. If
+the item has no aggregate, a request reads NULL when it matches no group. It
+also reads NULL when the subquery has no key and no row of `s` passes the WHERE.
 
 The oracle evaluates the WHERE of the subquery in written order, for each
 pair of a distinct outer value and a row of `s`. It evaluates the argument of
@@ -407,7 +427,7 @@ If an `avg` reads a BOOLEAN or VARCHAR column, the oracle stops with the error
 `No function matches the given name and argument types 'avg(BOOLEAN)'` (or
 `'avg(VARCHAR)'`). Confit stops the build with the same error message.
 
-Confit also refuses the build, with an error that names the reason, in three
+Confit also refuses the build, with an error that names the reason, in four
 cases that depend on the rows of `s`:
 
 - The sum of the absolute values of a group is past the range of the type in
@@ -420,7 +440,13 @@ cases that depend on the rows of `s`:
   different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
   of the oracle depends on the order of the rows. This refusal does not apply
   to the least and the greatest item of ANY and ALL.
-- An expression item raises an error over the aggregates of a group.
+- At build, an expression item raises an error over the aggregates of a
+  group, or an item with no aggregate raises an error over the row of a group.
+- A group of an item with no aggregate has more than one row. Confit refuses
+  the build even if no request matches this group. The oracle stops with an
+  error only for a request that matches the group. If the subquery has no key,
+  the oracle stops with this error each time it runs the query, even for a
+  batch with no requests.
 
 A SELECT item can read the alias of an earlier item. The oracle rejects such
 a read if the earlier item holds a subquery. Its error starts with
@@ -441,7 +467,15 @@ About one in five of the other subqueries that are an item or the operand of
 IS NULL is `x IN (...)` or `x NOT IN (...)` instead. About one IN in two is
 `x op ANY (...)`, `x op SOME (...)` or `x op ALL (...)` instead, where `op` is
 one of the six comparisons. About two of these in five have NOT before them,
-as in `NOT x op ANY (...)`. The generator makes up to two key columns in `s`. It fills about half of the rows of a key column with
+as in `NOT x op ANY (...)`. About one in five of the other subqueries that are
+an item or the operand of IS NULL has a SELECT item with no aggregate in place
+of its aggregate. These are the subqueries that are not EXISTS, IN, ANY, SOME
+or ALL. In about two cases in three, this item is a column of `s`. In the other
+cases, it is an expression over the columns of `s`. In about two cases in
+three, the generator also removes from `s` each row that has the same values
+in the key columns of this subquery as an earlier row, so that a request
+matches one row at most.
+The generator makes up to two key columns in `s`. It fills about half of the rows of a key column with
 values of one column of the request table, so that requests match these rows.
 The item is a key column, and `x` is its column of the request table, or, in
 about one case in ten, this column + 1.

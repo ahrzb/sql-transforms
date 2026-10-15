@@ -136,7 +136,8 @@ pub struct AggTable {
     /// build groups only the rows on which every one is TRUE.
     pub filter: Option<AggFilter>,
     /// Set when the subquery's SELECT item is an expression over its
-    /// aggregates (`max(v) + 1`): the table then has one value lane, the
+    /// aggregates (`max(v) + 1`), or over the columns of one row
+    /// ([`AggPost::row`]): the table then has one value lane, the
     /// expression over each group's aggregates, which the build computes.
     pub post: Option<AggPost>,
 }
@@ -154,6 +155,15 @@ pub struct AggPost {
     pub project: Vec<(String, SExpr)>,
     pub out_cols: Vec<Col>,
     pub regexes: Vec<super::ir::ReSpec>,
+    /// Set when the item reads the columns of a row, not aggregates
+    /// (`(SELECT s.v FROM s WHERE s.k = t.k)`): each input is `min` of a
+    /// column, which over a group of one row is the row's value, and the
+    /// [`AggTable`] has one more aggregate after them, `count(*)`. DuckDB
+    /// traps when a request matches a group of more than one row, so the
+    /// build refuses such a group by name. A group of no rows, which only a
+    /// table without keys has, answers NULL, as a request that matches no
+    /// group does: the item is not evaluated.
+    pub row: bool,
 }
 
 /// The WHERE terms of a scalar subquery that read only its static table,
