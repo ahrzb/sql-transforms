@@ -79,7 +79,7 @@ divergences, but are indexed where readers expect them.
 | **divergence: subquery-limit-ceiling** | optimizer-on contract gap / 3 | kept | unruled |
 | **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
-| **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../../../../loops/confit/decisions/closed/empty-static-join-trap-timing.md) |
+| **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../../../../loops/confit/decisions/closed/empty-static-join-trap-timing.md), extended by [all-NULL-key static](../../../../loops/confit/decisions/closed/all-null-key-static.md) and [error category](../../../../loops/confit/decisions/closed/empty-static-witness-trap-order.md) |
 | **divergence: wrapped-query-refusals** | metamorphic rewrite tolerance / n/a | kept | **ruled** by [the row-local subqueries design](../specs/2026-09-26-row-local-subqueries-design.md) |
 | **divergence: decimal-literal-typing** | closed | shipped: literals are DECIMAL | n/a |
 | **divergence: decimal-cast-rounding** | closed | shipped: DECIMAL casts round half away from zero | n/a |
@@ -132,11 +132,16 @@ Slugs are stable when multiple entries describe one mechanism.
   `::test_a_column_qualified_through_a_schema_qualified_relation_refuses`, and
   `::test_a_schema_like_struct_path_takes_the_longer_parse_and_refuses`.
 - **divergence: empty-static-trap-timing.** An INNER or CROSS join on an empty static
-  answers no rows on both engines, but whether DuckDB evaluates the row side first (and
-  traps there) depends on its pipeline shape; confit always does. Excused only when
-  DuckDB, with one plain row added to the static, traps as confit did. Evidence:
-  `loops/confit/decisions/closed/empty-static-join-trap-timing.md`; nightly seeds 1994509,
-  2286807, 4001288, 4100483.
+  table gives no rows. So does an INNER join on `=` keys where each static row has a
+  NULL in at least one key, because the oracle leaves such a row out of its hash table.
+  For these joins, the oracle can finish the join without evaluating the request side,
+  so it does not raise an error that is there. The plan of the oracle decides this.
+  Confit always evaluates the request side, and traps. The rule excuses the case only
+  if the oracle raises an error too, of any kind, after the witness adds one row of
+  plain values that are not NULL (such as 0, an empty string or FALSE) to the static
+  table. Evidence: `empty-static-join-trap-timing.md`, `all-null-key-static.md` and
+  `empty-static-witness-trap-order.md` in `loops/confit/decisions/closed/`; nightly
+  seeds 1994509, 2286807, 4001288, 4100483, 4313391, 4889739, 7242549, 7829571.
 - **divergence: wrapped-query-refusals.** Wrapping a query in a derived table or CTE
   reaches two named refusals the unwrapped query does not (a struct slot in a derived
   table; a subquery under a `shape='many'` join). Evidence: the rewrite tolerances in
@@ -187,7 +192,7 @@ below is the registry's own output (`python -m fuzz.exclusions --ledger`).
 | id | kind | ledger entry | status | ruling | measured on | canaries |
 |---|---|---|---|---|---|---|
 | `resource-ceiling` | verdict | exclusion: resource-ceilings | ruled | `specs/serving-contract.md` | DuckDB 1.5.5 | 1 |
-| `empty-static-trap-timing` | verdict | divergence: empty-static-trap-timing | ruled | `loops/confit/decisions/closed/empty-static-join-trap-timing.md` | DuckDB 1.5.5 | 4 |
+| `empty-static-trap-timing` | verdict | divergence: empty-static-trap-timing | ruled | `loops/confit/decisions/closed/empty-static-join-trap-timing.md`, extended by `loops/confit/decisions/closed/all-null-key-static.md` and `loops/confit/decisions/closed/empty-static-witness-trap-order.md` | DuckDB 1.5.5 | 8 |
 | `wrap-derived: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
 | `wrap-cte: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
 | `wrap-derived: many join` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |

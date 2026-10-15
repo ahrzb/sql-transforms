@@ -236,8 +236,9 @@ titled "Nightly campaign findings", and creates that issue if none is open.
 
 **Exclusion**:
 A rule in `fuzz/exclusions.py` that removes a generated case from the
-comparison. Each rule has a witness: a case that shows why the rule is
-necessary.
+comparison. Each rule has a witness: a second measurement of the case. The
+rule removes the case only if the witness shows that the mechanism of the rule
+causes the difference.
 _Avoid_: skip list, allowlist
 
 **Metamorphic test**:

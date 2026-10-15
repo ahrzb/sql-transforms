@@ -2732,8 +2732,9 @@ pub struct DuckDBInferFn {
     row_table: String,
     shape: Shape,
     /// The plan's joins with their static's RAW row count (before NULL-key
-    /// rows drop out of the build), for `plan_facts`.
-    join_facts: Vec<(crate::specializer::JoinFact, Option<usize>)>,
+    /// rows drop out of the build) and the rows that its build keeps, for
+    /// `plan_facts`.
+    join_facts: Vec<(crate::specializer::JoinFact, Option<usize>, Option<usize>)>,
 }
 
 #[pymethods]
@@ -2956,20 +2957,26 @@ impl DuckDBInferFn {
             }
         }
 
+        let data = materialize_statics(py, &prepared, &static_tables, &tree_decls)?;
+        // The static data is indexed by join id, as the facts are.
         let join_facts = prepared
             .join_facts
             .iter()
-            .map(|f| {
+            .enumerate()
+            .map(|(i, f)| {
                 let rows = f.static_name.as_ref().and_then(|n| {
                     static_tables
                         .get(n)
                         .and_then(|t| t.bind(py).getattr("num_rows").ok())
                         .and_then(|r| r.extract::<usize>().ok())
                 });
-                (f.clone(), rows)
+                let built = match (&f.static_name, data.get(i)) {
+                    (Some(_), Some(StaticData::Map(entries))) => Some(entries.len()),
+                    _ => None,
+                };
+                (f.clone(), rows, built)
             })
             .collect();
-        let data = materialize_statics(py, &prepared, &static_tables, &tree_decls)?;
 
         let fun = match (force_interp, data) {
             (true, data) => Backend::Interp(
@@ -3038,21 +3045,24 @@ impl DuckDBInferFn {
 
     /// Facts of the bound plan, for the exclusion rules
     /// (`fuzz/exclusions.py`): `{"joins": [{"kind", "static", "keys",
-    /// "residual", "rows"}, ...]}`. `kind` is "inner", "left" (a CROSS
-    /// JOIN is inner with zero keys) or "aggregate" (the hidden join of a
-    /// scalar subquery, whose `static` is the table the subquery reads);
-    /// `static` is None for a self-join; `rows` is the static table's raw
-    /// row count.
+    /// "residual", "rows", "built"}, ...]}`. `kind` is "inner", "left" (a
+    /// CROSS JOIN is inner with zero keys) or "aggregate" (the hidden join
+    /// of a scalar subquery, whose `static` is the table the subquery
+    /// reads); `static` is None for a self-join; `rows` is the static
+    /// table's raw row count, and `built` the entries of its build: the rows
+    /// that a request can match (a NULL `=` key drops a row, as DuckDB's
+    /// hash join drops it), or the groups of a scalar subquery's table.
     #[getter]
     fn plan_facts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let joins = PyList::empty(py);
-        for (f, rows) in &self.join_facts {
+        for (f, rows, built) in &self.join_facts {
             let d = PyDict::new(py);
             d.set_item("kind", f.kind)?;
             d.set_item("static", f.static_name.clone())?;
             d.set_item("keys", f.keys)?;
             d.set_item("residual", f.residual)?;
             d.set_item("rows", *rows)?;
+            d.set_item("built", *built)?;
             joins.append(d)?;
         }
         let out = PyDict::new(py);

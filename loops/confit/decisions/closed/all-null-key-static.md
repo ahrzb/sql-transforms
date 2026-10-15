@@ -46,3 +46,24 @@ OPT_EMULATED:
 
 **Recommendation.** Choose option 1. A static table whose keys are all NULL leaves DuckDB no row to match,
 as a static table with no rows does. So the trap difference has the cause that the ruling already excuses.
+
+**Ruling (owner, 2026-10-15).** Option 1, "Extend ruling". The owner chose this option in the project chat.
+
+The rule `empty-static-trap-timing` in `fuzz/exclusions.py` now also covers an INNER join on a key whose static
+table has no row that a request can match. Such a table is not empty, but the join treats it as empty. A static
+row can match no request if one of its `=` keys is NULL. For each join, the build of confit now counts the static
+rows that a request can match. The build reports this count as `built`. It is one of the facts about the plan
+that the rules of `fuzz/exclusions.py` read (`DuckDBInferFn.plan_facts`, where `DuckDBInferFn` is the function
+that confit builds).
+
+The witness of the rule stays. It adds one row of plain values that are not NULL, such as 0, an empty string or
+FALSE, to the static table, after the other rows. The oracle must then raise an error. The
+[ruling on the error category](empty-static-witness-trap-order.md) of the same day accepts an error of any kind.
+
+The seeds 4889739, 7242549 and 7829571 are now canaries of the rule: cases that the rule must still excuse.
+`tests/test_exclusions.py` checks four cases inside the new scope. It also checks four cases outside it:
+
+- a CROSS join over a static table whose one row has a NULL key;
+- a key with `IS NOT DISTINCT FROM`, which matches a NULL key;
+- a LEFT join;
+- a static table with two rows, one with a NULL key and one with the key 5.

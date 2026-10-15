@@ -44,3 +44,18 @@ evaluates `i0` over the whole chunk before it evaluates `i1`. Confit evaluates r
 
 **Recommendation.** Choose option 1. The witness exists to show that DuckDB runs the row side and traps once
 it does. It does so here.
+
+**Ruling (owner, 2026-10-15).** Option 1, "Any trap". The owner chose this option in the project chat.
+
+The rule `empty-static-trap-timing` in `fuzz/exclusions.py` no longer compares the error category of the oracle
+with the category of confit. The witness still adds one row to the static table, and the oracle must then raise an
+error of any kind. Seed 4313391 is now a canary of the rule: a case that the rule must still excuse.
+
+Three tests in `tests/test_exclusions.py` make the function that confit builds raise an error that the test
+chooses:
+
+- confit traps with a Conversion Error, and the oracle raises an Out of Range Error. The rule now excuses this
+  case.
+- confit traps, and the oracle returns rows after the witness adds the row. The case stays a finding.
+- The Cranelift backend of confit traps, and the interpreter of confit returns rows. The two backends must agree,
+  so the case stays a finding.

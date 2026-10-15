@@ -12,9 +12,10 @@ for one named mechanism, and each record states:
   so a different bug inside the scope is still a finding.
 - `claim`: the soundness argument, meaning what remains observable inside
   the scope and why the witness pins it;
-- `ruling` (the decision that admits it; `status="kept"` marks one in force
-  before any ruling, as the ledger lists it) and `oracle` (the DuckDB
-  version it was measured on). A record measured on another version is inactive and
+- `ruling` (the decision that admits it, and `extended_by`, the later
+  rulings that widen it; `status="kept"` marks one in force before any
+  ruling, as the ledger lists it) and `oracle` (the DuckDB version it was
+  measured on). A record measured on another version is inactive and
   fails the suite until it is remeasured;
 - `canaries`: cases it must still excuse, so a dead record is noticed, and
   `planted` faults it must not excuse (`tests/test_exclusions.py`).
@@ -61,14 +62,24 @@ class Evidence:
 # ------------------------------------------------------------------ scopes
 
 
-def joins_static_where(*, rows: int | None = None, kinds=("INNER", "CROSS")):
+def joins_static_where(
+    *, rows: int | None = None, built: int | None = None, kinds=("INNER", "CROSS")
+):
     """Scope: the plan joins a static table matching every given fact.
 
     `kinds` uses DuckDB's words: INNER is any inner join, CROSS an inner join
-    with no equality key, LEFT a left join. A self-join builds from the batch
-    and never qualifies. Returns the static names that match.
+    with no equality key, KEYED an inner join with one, LEFT a left join. A
+    self-join builds from the batch and never qualifies. `rows` is the
+    static's row count, and `built` the rows its build keeps: a row whose `=`
+    key is NULL can match no request, and drops out. Returns the static
+    names that match.
     """
-    want = {"INNER": ("inner", None), "CROSS": ("inner", False), "LEFT": ("left", None)}
+    want = {
+        "INNER": ("inner", None),
+        "CROSS": ("inner", False),
+        "KEYED": ("inner", True),
+        "LEFT": ("left", None),
+    }
 
     def scope(facts: dict) -> list[str]:
         hits = []
@@ -76,6 +87,8 @@ def joins_static_where(*, rows: int | None = None, kinds=("INNER", "CROSS")):
             if j["static"] is None:
                 continue
             if rows is not None and j["rows"] != rows:
+                continue
+            if built is not None and j.get("built") != built:
                 continue
             ok = False
             for k in kinds:
@@ -87,27 +100,6 @@ def joins_static_where(*, rows: int | None = None, kinds=("INNER", "CROSS")):
         return hits
 
     return scope
-
-
-def _category(msg: str | None) -> str | None:
-    """DuckDB's error category inside a trap text, e.g. "out of range error"
-    from "OutOfRangeException: Out of Range Error: Overflow ...": the field
-    after the exception name, when it is one."""
-    if not msg:
-        return None
-    parts = [p.strip() for p in msg.split(":")]
-    if len(parts) >= 2 and parts[1].lower().endswith("error"):
-        return parts[1].lower()
-    return None
-
-
-def same_trap(confit: str | None, duck: str | None) -> bool:
-    """The ordinary trap comparison (both trap), tightened: when both texts
-    name a DuckDB error category, the categories must be equal."""
-    if confit is None or duck is None:
-        return False
-    a, b = _category(confit), _category(duck)
-    return a is None or b is None or a == b
 
 
 # ------------------------------------------------------------------ records
@@ -130,6 +122,7 @@ class Rule:
     oracle: str = ORACLE
     status: str = "ruled"  # or "kept": in force before a ruling, as the ledger says
     kind: str = "verdict"
+    extended_by: tuple[str, ...] = ()  # later rulings that widen `ruling`
 
 
 @dataclass(frozen=True)
@@ -185,6 +178,10 @@ def _ceiling(ev: Evidence) -> str | None:
 
 
 _EMPTY_INNER = joins_static_where(rows=0, kinds=("INNER", "CROSS"))
+# An INNER join on a key whose static has no row that a request can match:
+# DuckDB leaves a row whose key is NULL out of its hash table, which is then
+# empty too (loops/confit/decisions/closed/all-null-key-static.md).
+_NULL_KEYED = joins_static_where(built=0, kinds=("KEYED",))
 
 
 def _empty_static(ev: Evidence, raw) -> str | None:
@@ -197,18 +194,21 @@ def _empty_static(ev: Evidence, raw) -> str | None:
     out, _, _ = ev.duck_off
     if out is None or out.num_rows != 0:
         return None
-    empty = _EMPTY_INNER(ev.facts)
+    empty = list(dict.fromkeys([*_EMPTY_INNER(ev.facts), *_NULL_KEYED(ev.facts)]))
     if not empty:
         return None
-    # The witness: the same query with one row in every empty static. A row
-    # of plain non-NULL values (NULL keys would be filtered out of DuckDB's
-    # hash table, which stays empty) makes DuckDB run the row side, and its
-    # trap must match confit's. Whether the row matches does not matter: the
-    # row side runs either way.
+    # The witness: the same query with one more row in each such static. A
+    # row of plain non-NULL values (a NULL key would drop out of DuckDB's
+    # hash table, which would stay empty) makes DuckDB run the row side, and
+    # DuckDB must then trap. Any trap counts, as for AGREE_TRAP: DuckDB
+    # evaluates one column over the batch at a time and confit one row at a
+    # time, so with traps in two rows each engine can meet another one first
+    # (loops/confit/decisions/closed/empty-static-witness-trap-order.md).
+    # Whether the row matches does not matter: the row side runs either way.
     err = _duck_with_padding(ev, empty)
-    if err is None or not same_trap(ev.trap_cl, err):
+    if err is None:
         return None
-    return f"padded DuckDB traps like confit: {err[:200]}"
+    return f"padded DuckDB traps too: {err[:200]}"
 
 
 def _plain_value(t):
@@ -246,8 +246,8 @@ def _plain_value(t):
 
 def _duck_with_padding(ev: Evidence, statics: list[str]) -> str | None:
     """DuckDB's run-time error for `ev.sql` once each named static holds one
-    row of plain values; None when it returns rows, refuses at build, or the
-    row cannot be built."""
+    more row, of plain values; None when it returns rows, refuses at build,
+    or the row cannot be built."""
     import dataclasses  # noqa: PLC0415
 
     from fuzz import oracle as O  # noqa: PLC0415 -- oracle imports this module
@@ -255,12 +255,12 @@ def _duck_with_padding(ev: Evidence, statics: list[str]) -> str | None:
     case = ev.case
     padded = dict(case.statics)
     for name in statics:
-        sch, _ = case.statics[name]
+        sch, rows = case.statics[name]
         arrow = O._arrow_schema(sch)
         row = {f.name: _plain_value(f.type) for f in arrow}
         if any(v is None for v in row.values()):
             return None
-        padded[name] = (sch, [row])
+        padded[name] = (sch, [*rows, row])
     case = dataclasses.replace(case, statics=padded)
     con = O._take()
     try:
@@ -294,17 +294,32 @@ RULES: tuple[Rule, ...] = (
         id="empty-static-trap-timing",
         ledger="divergence: empty-static-trap-timing",
         ruling="loops/confit/decisions/closed/empty-static-join-trap-timing.md",
-        claim=(
-            "An INNER or CROSS join on an empty static outputs no rows on "
-            "either engine, so the only observable is whether the row side "
-            "traps. DuckDB skips it in some pipeline shapes. The witness pads "
-            "the static with one row of plain non-NULL values, which makes "
-            "DuckDB run the row side, and requires its trap to match "
-            "confit's; a different trap, rows, or a backend split stays a "
-            "finding."
+        extended_by=(
+            "loops/confit/decisions/closed/all-null-key-static.md",
+            "loops/confit/decisions/closed/empty-static-witness-trap-order.md",
         ),
-        canaries=(1994509, 2286807, 4001288, 4100483),
-        expected_per_100k=1,
+        claim=(
+            "An INNER or CROSS join on an empty static, or an INNER join on "
+            "`=` keys where each static row has a NULL in at least one key, "
+            "outputs no rows on either engine, so the only observable is "
+            "whether the row side "
+            "traps. DuckDB's hash table is empty, and DuckDB skips the row "
+            "side in some pipeline shapes. The witness adds one row of plain "
+            "non-NULL values to the static, which makes DuckDB run the row "
+            "side, and requires DuckDB to trap too: any trap, as AGREE_TRAP "
+            "compares traps. Rows, or a backend split, stay a finding."
+        ),
+        canaries=(
+            1994509,
+            2286807,
+            4001288,
+            4100483,
+            4313391,
+            4889739,
+            7242549,
+            7829571,
+        ),
+        expected_per_100k=2,
         post=_empty_static,
     ),
 )
@@ -430,6 +445,9 @@ def ledger_table() -> str:
     for rec in every():
         canaries = len(getattr(rec, "canaries", ())) or "-"
         ruling = f"`{rec.ruling}`" if rec.ruling else "-"
+        later = getattr(rec, "extended_by", ())
+        if later:
+            ruling += ", extended by " + " and ".join(f"`{r}`" for r in later)
         rows.append(
             f"| `{rec.id}` | {rec.kind} | {rec.ledger} | {rec.status} | {ruling} | "
             f"DuckDB {rec.oracle} | {canaries} |"
