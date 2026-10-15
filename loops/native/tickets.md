@@ -29,7 +29,7 @@ before. T39 (#463) fits the projections' build estimate again on confit
 1.5 s (5.2 to 5.9 s before) and serves 64 rows in 3.7 to 4.3 ms, 8 times
 as fast as its twin (77 to 83 ms before, twice the twin's time). The cap
 now takes about 280 components over 256 features, against 80. T40
-(#T40_PR) fits the build estimates of the forests, `IsotonicRegression`,
+(#466) fits the build estimates of the forests, `IsotonicRegression`,
 `QuantileTransformer` and the splines again on confit #461: the caps now
 take about 10,300 output fields of a forest over 8 features (5,990
 before), 19,700 isotonic thresholds (11,700), 13,400 quantile leaves
