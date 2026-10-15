@@ -471,8 +471,9 @@ class ScalarSub(Node):
     ...)`. Its WHERE terms are the keys, and the terms that read only the
     table, each written before the key at its position. Its SELECT item may
     be an expression over the aggregate and `more` aggregates, `post`,
-    which reads the i-th call as `AggRead(i)`. Its kids are the outer sides
-    of the keys, then those terms."""
+    which reads the i-th call as `AggRead(i)`. The calls whose index is in
+    `distinct` read DISTINCT values. Its kids are the outer sides of the
+    keys, then those terms."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -482,6 +483,7 @@ class ScalarSub(Node):
     preds: list[tuple[int, Node]] = field(default_factory=list)  # (position, term)
     post: Node | None = None
     more: list[tuple[str, str | None]] = field(default_factory=list)  # (func, arg)
+    distinct: set[int] = field(default_factory=set)  # 0 is func(arg), i more[i - 1]
 
     def kids(self):
         return [o for _, _, o in self.keys] + [p for _, p in self.preds]
@@ -1005,8 +1007,9 @@ def rexpr(e: Node) -> str:
         scope = _ident(e.alias or e.table)
         frm = _ident(e.table) + (f" AS {_ident(e.alias)}" if e.alias else "")
         calls = [
-            f"{f}({'*' if a is None else f'{scope}.{_ident(a)}'})"
-            for f, a in [(e.func, e.arg), *e.more]
+            f"{f}({'DISTINCT ' if i in e.distinct else ''}"
+            f"{'*' if a is None else f'{scope}.{_ident(a)}'})"
+            for i, (f, a) in enumerate([(e.func, e.arg), *e.more])
         ]
         _AGG_CALLS.append(calls)
         try:
@@ -1600,8 +1603,9 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     table's keys come from that column, repeats included, so a request
     matches several rows. About one subquery in ten selects an expression
     over the aggregate, and about four in ten of those draw a second
-    aggregate of the same table for it. A few subqueries take a form that
-    confit refuses by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under
+    aggregate of the same table for it. About one aggregate over a column in
+    five reads DISTINCT values. A few subqueries take a form that confit
+    refuses by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under
     shape='many', an outer side that can trap after another key or under
     shape='many', a term over the table that can trap, an expression over
     the aggregates that traps at build or over the aggregates of no rows.
@@ -1698,6 +1702,11 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         e = _agg_reads(expr(qrng, Env(cols, [], None), cols[0][2], 2), len(calls))
         if any(isinstance(n, AggRead) for n in _all_nodes(e)):
             s.post, s.more = e, calls[1:]
+    # DISTINCT in about one call over a column in five, drawn last too.
+    for s in made:
+        for i, (_, a) in enumerate([(s.func, s.arg), *s.more]):
+            if a is not None and qrng.random() < 0.2:
+                s.distinct.add(i)
     tags.append("scalar-subquery")
     return True
 

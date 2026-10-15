@@ -469,7 +469,8 @@ The first five are ruled, in this order; the rest follow.
 - **Per-row aggregation over matched static rows** (correlated scalar
   subquery; `JOIN` + `GROUP BY` under `shape='many'`). Served: a scalar
   subquery with one `count`, `min`, `max`, integer, BOOLEAN or DECIMAL `sum`,
-  or integer or DECIMAL `avg` over one static table, keyed by `=` or IS NOT
+  or integer or DECIMAL `avg`, over all the values of a column or its
+  DISTINCT ones, over one static table, keyed by `=` or IS NOT
   DISTINCT FROM between a bare column of the table and an outer expression
   that cannot trap (the first key's may trap, see below), and filtered by
   WHERE terms that read only the table and cannot trap. It binds as a hidden
@@ -488,8 +489,9 @@ The first five are ruled, in this order; the rest follow.
   AGREE, 31 AGREE_TRAP). The generator draws the static terms after every
   other draw; on 30,000,000..30,049,999, 672 subquery cases gained terms (309
   AGREE, 10 AGREE_TRAP), and the campaign gave 0 gated verdicts.
-  Still refused by name: DOUBLE `sum`/`avg` (decision below), DISTINCT,
-  an item that traps over the aggregates of a group or of no rows, holds a
+  Still refused by name: DOUBLE `sum`/`avg` (decision below), an
+  aggregate call with ORDER BY, `count(DISTINCT *)` (DuckDB's binder error)
+  and DISTINCT over a constant, an item that traps over the aggregates of a group or of no rows, holds a
   subquery or calls a SQL function, a UDF or a model, a WHERE term that is
   neither a key nor reads only the table, a static term that can trap (DuckDB
   runs it over unmatched rows), holds a subquery or calls a SQL function, an
@@ -528,7 +530,18 @@ The first five are ruled, in this order; the rest follow.
   expression gave 3,887 AGREE, 141 AGREE_TRAP, 0 gated. A trap over no rows
   could run per request instead (where DuckDB runs it, like the guarded
   key); 19 of those cases refused it, 7 where DuckDB served.
-  Next: an aggregate over DISTINCT values, `count(DISTINCT s.v)`.
+  An aggregate may read DISTINCT values (`count(DISTINCT v)`): the build
+  reads one value of each class of DuckDB's equality (-0.0 = 0.0, one NaN;
+  measured 2026-10-15; `AggIn::class` in `duckdb/mod.rs`), `min` and `max`
+  ignore it, and an output name prints DISTINCT and drops ALL
+  (`naming.rs`). On 30,050,000..30,099,999, against the verdicts of #471,
+  the 214 cases whose SQL changed kept their verdicts (112 AGREE, 99
+  REFUSED, 2 AGREE_TRAP, 1 DIVERGE_OPT), no other verdict moved, and 0
+  verdicts gated (a first run found 11 output names without DISTINCT); the
+  4,428 cases of 32,100,000..33,099,999 that read DISTINCT values gave 2,527
+  AGREE, 94 AGREE_TRAP, 0 gated, and no unexplained metamorphic finding.
+  Next: EXISTS and NOT EXISTS over a static table, which read the match
+  flag of the hidden join, then `x IN (SELECT s.v FROM s ...)`.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the

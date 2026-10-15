@@ -1467,6 +1467,27 @@ impl AggIn {
     fn other_bits(&self, other: &AggIn) -> bool {
         matches!((self, other), (AggIn::F64(a), AggIn::F64(b)) if a.to_bits() != b.to_bits())
     }
+
+    /// The class of the value under DuckDB's equality, which an aggregate
+    /// over DISTINCT values reads once: -0.0 and 0.0 are one DOUBLE class,
+    /// as are all NaNs (measured 2026-10-15).
+    fn class(&self) -> AggClass {
+        match self {
+            AggIn::Int(x) => AggClass::Int(*x),
+            AggIn::F64(x) => AggClass::F64(exec::canon_f64_bits(*x)),
+            AggIn::Str(x) => AggClass::Str(x.clone()),
+            AggIn::Bool(x) => AggClass::Bool(*x),
+        }
+    }
+}
+
+/// One class of equal values ([`AggIn::class`]).
+#[derive(PartialEq, Eq, Hash)]
+enum AggClass {
+    Int(i128),
+    F64(u64),
+    Str(String),
+    Bool(bool),
 }
 
 /// The state of one aggregate over one group.
@@ -1597,6 +1618,8 @@ fn rows_batch(
 /// entry per group, valued by the group's aggregates. A row `build_keys`
 /// drops can match no request, so no group holds it. With no keys there is
 /// one group, empty or not: an uncorrelated aggregate always has its row.
+/// An aggregate over DISTINCT values reads the first value of each class
+/// and skips the others.
 ///
 /// The aggregates run here, at build, so no request can trap in them. A
 /// result that could depend on the order of the rows refuses the build by
@@ -1619,8 +1642,15 @@ fn materialize_aggs(
         Some(f) => Some(filter_rows(f, &rows, &spec.table)?),
         None => None,
     };
-    let fresh = || aggs.iter().map(|a| Acc::new(a.func)).collect::<Vec<_>>();
-    let mut groups: std::collections::BTreeMap<Vec<KeyBits>, Vec<Acc>> = Default::default();
+    // Per aggregate: its state, and the classes it has read if it reads
+    // DISTINCT values.
+    type Slot = (Acc, Option<std::collections::HashSet<AggClass>>);
+    let fresh = || {
+        aggs.iter()
+            .map(|a| (Acc::new(a.func), a.distinct.then(Default::default)))
+            .collect::<Vec<Slot>>()
+    };
+    let mut groups: std::collections::BTreeMap<Vec<KeyBits>, Vec<Slot>> = Default::default();
     if spec.keys.is_empty() {
         groups.insert(Vec::new(), fresh());
     }
@@ -1635,7 +1665,8 @@ fn materialize_aggs(
             AggFunc::Sum => "sum",
             AggFunc::Avg => "avg",
         };
-        format!("{f}({arg})")
+        let distinct = if agg.distinct { "DISTINCT " } else { "" };
+        format!("{f}({distinct}{arg})")
     };
     for (r, row) in rows.iter().enumerate() {
         if keep.as_ref().is_some_and(|k| !k[r]) {
@@ -1658,8 +1689,8 @@ fn materialize_aggs(
                 *bits = exec::canon_f64_bits(f64::from_bits(*bits));
             }
         }
-        let accs = groups.entry(keys).or_insert_with(fresh);
-        for (i, (acc, agg)) in accs.iter_mut().zip(aggs).enumerate() {
+        let slots = groups.entry(keys).or_insert_with(fresh);
+        for (i, ((acc, seen), agg)) in slots.iter_mut().zip(aggs).enumerate() {
             if agg.func == AggFunc::CountStar {
                 if let Acc::Count(n) = acc {
                     *n += 1;
@@ -1670,6 +1701,9 @@ fn materialize_aggs(
             let Some(v) = agg_in(&get(&spec.vals[i].path)?, agg, &what)? else {
                 continue;
             };
+            if seen.as_mut().is_some_and(|s| !s.insert(v.class())) {
+                continue;
+            }
             match acc {
                 Acc::Count(n) => *n += 1,
                 Acc::Extreme(cur, tie) => {
@@ -1722,9 +1756,9 @@ fn materialize_aggs(
         }
     }
     let mut found = Vec::with_capacity(groups.len());
-    for (keys, accs) in groups {
+    for (keys, slots) in groups {
         let mut vals = Vec::with_capacity(spec.vals.len());
-        for (i, (acc, vc)) in accs.into_iter().zip(&spec.vals).enumerate() {
+        for (i, ((acc, _), vc)) in slots.into_iter().zip(&spec.vals).enumerate() {
             let ty = vc.map.ty;
             let val = match acc {
                 Acc::Count(n) => Some(ScalarVal::I64(n)),

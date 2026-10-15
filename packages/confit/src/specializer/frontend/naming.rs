@@ -13,7 +13,8 @@
 
 use super::*;
 use sqlparser::ast::{
-    BinaryOperator as B, CastKind, DataType, FunctionArg, FunctionArgExpr, FunctionArguments,
+    BinaryOperator as B, CastKind, DataType, DuplicateTreatment, FunctionArg, FunctionArgExpr,
+    FunctionArguments,
 };
 
 /// DuckDB's keywords (`duckdb_keywords()`, every category): an identifier
@@ -324,9 +325,15 @@ fn args_of(f: &sqlparser::ast::Function) -> Option<String> {
             _ => None,
         };
     };
-    if l.duplicate_treatment.is_some() || !l.clauses.is_empty() {
+    if !l.clauses.is_empty() {
         return None;
     }
+    // DuckDB prints `sum(DISTINCT v)`, and `sum(ALL v)` as `sum(v)`
+    // (measured 2026-10-15).
+    let distinct = match l.duplicate_treatment {
+        Some(DuplicateTreatment::Distinct) => "DISTINCT ",
+        Some(DuplicateTreatment::All) | None => "",
+    };
     let mut out = Vec::with_capacity(l.args.len());
     for a in &l.args {
         out.push(match a {
@@ -344,7 +351,7 @@ fn args_of(f: &sqlparser::ast::Function) -> Option<String> {
             _ => return None,
         });
     }
-    Some(out.join(", "))
+    Some(format!("{distinct}{}", out.join(", ")))
 }
 
 fn function(f: &sqlparser::ast::Function) -> Option<String> {
