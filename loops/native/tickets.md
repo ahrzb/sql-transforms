@@ -24,8 +24,8 @@ the widest `Pipeline` never served more slowly than its twin. The loop
 runs from the "Transforms Loop" project thread.
 
 Next: PLANS "Next" (the projections' signed zeros; the builds again once
-the confit loop answers finding 76), then PLANS "Ruled 2026-10-06, to
-build": the rest of the linear projections, then the other families on
+the confit loop's fix of finding 76 merges), then PLANS "Ruled 2026-10-06,
+to build": the rest of the linear projections, then the other families on
 the parity bound.
 `decisions/open/bounded-steps-in-compositions.md` waits on the owner;
 `compose.py` keeps refusing bounded steps meanwhile.

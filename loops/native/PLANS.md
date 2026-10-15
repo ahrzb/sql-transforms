@@ -21,9 +21,10 @@ Easiest first; each is one PR.
    `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,
    250 of depth 5 (6.5 s) in 42-44 s, 10 quantiles over 800 features in
    60-63 s (`to_native`; release build, master 98033e8, uv's CPython).
-   Sent to the confit loop on 2026-10-14 ("Needs from confit"). When it
-   answers, measure the builds again; if confit keeps #456's build time,
-   fit the three estimates again.
+   Sent to the confit loop on 2026-10-14 ("Needs from confit"); it takes
+   it next, after #459 (its answer of 2026-10-15). When that fix merges,
+   measure the builds again; if confit keeps #456's build time, fit the
+   three estimates again.
 
 ## Ruled 2026-10-06, to build
 
@@ -72,7 +73,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
   the widest bench forest in 0.60-0.64 s, T36's on 4bb88f5 in 0.25-0.33 s
   (release build, uv's CPython, 2026-10-14). A confit-only reproduction
   is in `/mnt/project-files/transforms-loop/confit-field-reads-456.py`,
-  sent to the confit loop on 2026-10-14. Until it lands the build
+  sent to the confit loop on 2026-10-14; it takes this next, after #459,
+  with that script as its test (2026-10-15). Until it lands the build
   estimates under-predict wide steps ("Next", item 2).
 - **A value read many times, at about the cost of one read.** The catalog
   reads each numeric feature as `coalesce(x, NaN)`, one `confit.sql`
@@ -84,8 +86,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`, sent
   to the confit loop. It sets the speed of the linear projections (T37):
   `PCA` over 256 features of 64 components serves 64 rows in 78 ms,
-  against the twin's 39 ms. When it lands, measure the projections,
-  `PolynomialFeatures` and the splines again.
+  against the twin's 39 ms. The confit loop's #459 (open, 2026-10-15)
+  lowers a CASE that cannot trap to selects when it is small or a field
+  read's NULL guard; on its container that `PCA` serves 64 rows in 4.9 to
+  5.2 ms, against 59 ms on master. When it lands, measure the
+  projections, `PolynomialFeatures` and the splines again.
 - **A struct output read field by field, built once for the call.**
   Where a query reads each field of a struct output one by one
   (`to_native`'s trial build does, and so does a serving query that names
@@ -143,7 +148,7 @@ that request, `to_native(step, allow_bound=True)`. In order:
   reproduction, `/mnt/project-files/transforms-loop/confit-function-body-pass.py`
   (a tree of 8,000 leaves: 0.68 s in `SqlFunction` beside 4.34 s for the
   build and one call, master 98033e8), was sent to the confit loop on
-  2026-10-14.
+  2026-10-14; it recorded it at low priority.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
