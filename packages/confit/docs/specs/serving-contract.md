@@ -109,8 +109,8 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery with one aggregate over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate over the static rows that one request matches, read through a join to a table that confit computes at build |
-| A scalar subquery of another form, for example with a DOUBLE `sum` or `avg`, or with an expression over the aggregate. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
+| A scalar subquery over one static table that selects an aggregate or an expression over aggregates, keyed by equalities with the outer query and filtered by terms that read only the static table ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build |
+| A scalar subquery of another form, for example with a DOUBLE `sum` or `avg`, or with an item that calls a UDF. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name; a DOUBLE `sum` or `avg` waits on a [decision record](../../../../loops/confit/decisions/open/double-sum-bound.md) about its parity bound |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
 | Under `shape='many'`: (1) a self-join after another join; (2) a join or a scalar subquery over a static table, in a query that also has a derived table or a CTE | 2 inside, refused | refused by name; without a derived table or a CTE, any number of joins serves, with a self-join only as the first join |
@@ -137,8 +137,8 @@ measurement, whatever its message prefix.
 
 ### Scalar subqueries over a static table
 
-**claim: scalar-subquery-as-join.** Confit serves a scalar subquery with one
-aggregate over one static table `s`:
+**claim: scalar-subquery-as-join.** Confit serves a scalar subquery over one
+static table `s` that selects an aggregate:
 
 ```sql
 SELECT t.id, (SELECT sum(s.v) FROM s WHERE s.k = t.k) AS total FROM __THIS__ AS t
@@ -148,47 +148,76 @@ The aggregate is `count(*)`, `count` of a column or of a constant that is not
 NULL, `min` or `max` of a column, `sum` of an integer, BOOLEAN or DECIMAL
 column, or `avg` of an integer or DECIMAL column. On a platform other than
 x86_64 Linux, confit serves `avg` only for SMALLINT and for a DECIMAL with a
-precision of 4 or less (see below). A term of the WHERE compares a column of
-`s` with an expression of the outer query, by `=` or `IS NOT DISTINCT FROM`.
-Or the term reads only `s`, such as `s.v > 5`. The WHERE can also be absent.
-The outer expression of the first key can trap (see below). Confit refuses
-the subquery if the outer expression of a later key can trap, or if a term
-that reads only `s` can trap. It also refuses an outer expression that reads a
-table that the outer query joins, and a term that reads only `s` but holds a
-subquery or calls a SQL function.
+precision of 4 or less (see below). The SELECT item can also be an expression
+over such aggregates, for example `max(s.v) + 1` or
+`coalesce(sum(s.v), 0) + count(*)`. Then the expression reads the columns of
+`s` only inside its aggregates. If it reads a column outside them, the oracle
+stops with a binder error. Confit refuses an expression that holds a subquery
+or calls a SQL function, a UDF or a tree model.
+
+Each term of the WHERE has one of two forms. A key compares a column of `s`
+with an expression of the outer query, its outer expression, by `=` or
+`IS NOT DISTINCT FROM`. Each other term reads only `s`, such as `s.v > 5`.
+The WHERE can also be absent. The outer expression of the first key in the
+written order can trap (see below). Confit refuses the subquery if the outer
+expression of a key after the first can trap, or if a term that reads only
+`s` can trap. It also refuses an outer expression that reads a table that the
+outer query joins, and a term that reads only `s` but holds a subquery or
+calls a SQL function.
 
 At build, confit keeps the rows of `s` on which each term that reads only `s`
 is TRUE. It puts these rows into groups with equal keys and computes the
 aggregate of each group. The keys are the columns of `s` that the WHERE
 compares with the outer query. If no term compares one, all the rows that
-confit keeps make one group. A request reads the aggregate of the group that
-it matches, through a LEFT join. If a request matches no group, it reads 0 for
-`count` and NULL for the other aggregates.
+confit keeps make one group. If the item is an expression, confit computes it
+over the aggregates of each group. A request reads the value of the group
+that it matches, through a LEFT join. If a request matches no group, it reads
+0 for `count` and NULL for the other aggregates. If the item is an
+expression, the request reads the expression over these values. Confit
+computes the value of this expression once, at build.
 
 The oracle evaluates the WHERE of the subquery in written order, for each
 pair of a distinct outer value and a row of `s`. It evaluates the argument of
-the aggregate for the matched rows only. The pins at the end of
-`tests/test_scalar_subquery.py` record these facts. The order of evaluation
-matters only where an evaluation can trap. In a served subquery, only the
-outer expression of the first key can trap. The argument of the aggregate, if
-it has one, is a column or a constant. Only the running total of a `sum` or an
-`avg` can overflow. Confit computes it at build, where the first case below
-refuses the build.
+the aggregate for the matched rows only. It evaluates the item once for each
+distinct outer value, over the aggregates of the matched rows. If no row
+matches, it evaluates the item over the aggregates of no rows. The pins at the
+end of `tests/test_scalar_subquery.py` record these facts. The order of
+evaluation matters only where an evaluation can trap. In a served subquery,
+only the outer expression of the first key can trap. The argument of the
+aggregate, if it has one, is a column or a constant. Only the running total of
+a `sum` or an `avg` can overflow. Confit computes it at build, and it refuses
+the build if the total can overflow (the build refusals at the end of this
+section list this case). An expression item can also raise an error, for
+example `max(s.v) + 1` if `s.v` is a TINYINT column with the value 127.
+Confit evaluates the expression at build, so a served subquery does not trap
+in it. Confit refuses the build if the expression raises an error:
+
+- If the expression raises an error over the aggregates of no rows, for
+  example `ln(count(*))`, confit refuses the build, whatever the rows of `s`
+  are. The oracle evaluates the expression for each request that matches no
+  group.
+- If the expression raises an error over the aggregates of a group, confit
+  refuses the build. The build refusals at the end of this section list this
+  case too. The oracle traps for each request that matches this group. If the
+  subquery has no key, the oracle traps each time it runs the query, even for
+  a batch with no requests.
 
 The oracle evaluates the outer expression of the first key only if a row of
-`s` passes the terms written before that key. Its planner moves the upper
-bound of `x BETWEEN lo AND hi` to the end of the WHERE, so only the lower
-bound of such a term counts. At build, confit counts the rows of `s` that pass
-these terms, and it evaluates the outer expression only if the count is above
-0. The oracle also runs a subquery in the SELECT list for each row that the
-outer WHERE passes, and a subquery in the WHERE for each row that reaches the
-WHERE. Inside a CASE, it runs the subquery for each of these rows, whatever
-the condition. Confit evaluates the outer expression for the same rows. It
-refuses this key in two cases:
+`s` passes the terms written before that key. The planner of the oracle
+moves the upper bound of `x BETWEEN lo AND hi` to the end of the WHERE, also
+with the optimizer off. So if such a term comes before the key, only its
+lower bound decides if the oracle evaluates the outer expression. At build,
+confit counts the rows of `s` that pass these terms. For each request, it
+evaluates the outer expression only if this count is above 0. The oracle also
+runs a subquery in the SELECT list for each row that the outer WHERE passes,
+and a subquery in the WHERE for each row that reaches the WHERE. The oracle
+does this also for a subquery inside a CASE, whatever the condition of the
+CASE is. Confit evaluates the outer expression of the first key for the same
+rows. It refuses the subquery in two cases:
 
-- The subquery is in the WHERE, and a comma join of the outer query takes a
-  WHERE term as its key. The oracle runs the subquery for every pair of the
-  comma join, and confit only for the pairs that the key matches.
+- The subquery is in the WHERE, and the outer query has a comma join whose
+  key is a term of the WHERE. The oracle runs the subquery for every pair of
+  the comma join, and confit only for the pairs that the key matches.
 - The query runs under `shape='many'`. There confit evaluates every join
   before the WHERE.
 
@@ -235,16 +264,18 @@ If an `avg` reads a BOOLEAN or VARCHAR column, the oracle stops with the error
 `No function matches the given name and argument types 'avg(BOOLEAN)'` (or
 `'avg(VARCHAR)'`). Confit stops the build with the same error message.
 
-Confit also refuses the build, with an error that names the reason, in two
+Confit also refuses the build, with an error that names the reason, in three
 cases that depend on the rows of `s`:
 
-- The absolute values of a group add up past the range of the sum that the
-  oracle keeps. For `sum`, this is the range of its result (HUGEINT, a 128-bit
-  integer, or a DECIMAL with 38 digits). For `avg`, this is the range of
-  HUGEINT. Then a partial sum can overflow in some order of the additions.
+- The sum of the absolute values of a group is past the range of the type in
+  which the oracle keeps the sum. For `sum`, this is the range of its result
+  (HUGEINT, a 128-bit integer, or a DECIMAL with 38 digits). For `avg`, this
+  is the range of HUGEINT. Then a partial sum can overflow in some order of
+  the additions.
 - A DOUBLE `min` or `max` finds two values that compare as equal but have
   different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
   of the oracle depends on the order of the rows.
+- An expression item raises an error over the aggregates of a group.
 
 A SELECT item can read the alias of an earlier item. The oracle rejects such
 a read if the earlier item holds a subquery. Its error starts with
@@ -252,9 +283,13 @@ a read if the earlier item holds a subquery. Its error starts with
 and confit gives the same error. A WHERE can read such an alias in the oracle
 and in confit.
 
-Evidence: `tests/test_scalar_subquery.py`, and campaign cases. The generator of
-random SQL that the campaign uses (`fuzz/gen.py`) adds this form to the case of
-each seed with remainder 33 modulo 43, and tags that case `scalar-subquery`.
+Evidence: `tests/test_scalar_subquery.py`, and campaign cases. The campaign
+uses a generator of random SQL (`fuzz/gen.py`). For each seed whose remainder
+after division by 43 is 33, the generator tries to add this form to the case.
+If it adds the form, it tags the case `scalar-subquery`. About one subquery in
+ten that it adds selects an expression over aggregates. It adds up to three
+subqueries to a case, so about one case in six of those tagged
+`scalar-subquery` has such an expression.
 
 ## UDF and model boundary
 

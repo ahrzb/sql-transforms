@@ -418,6 +418,7 @@ pub(super) fn bind_from<'a>(
         trap_keys: std::cell::RefCell::new(Vec::new()),
         agg_reads: std::cell::RefCell::new(Vec::new()),
         agg_tables: std::cell::RefCell::new(ctx.aggs),
+        agg_inputs: Vec::new(),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 

@@ -164,6 +164,16 @@ impl Binder<'_> {
     }
 
     fn expr_or_null_here(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        // An aggregate call of a scalar subquery's SELECT item: its value,
+        // an input of the item's own query (`subquery.rs`, `agg_post`).
+        if let Some(&(_, i)) = self.agg_inputs.iter().find(|(a, _)| a == e) {
+            let c = &self.in_cols[i as usize];
+            return Ok(Some(SExpr {
+                kind: SKind::Col(i),
+                ty: c.ty.ty,
+                nullable: c.ty.nullable,
+            }));
+        }
         // A let read stands where its text would: it is not a level.
         if let Some((id, lets)) = lets::marker_let(e) {
             return self.let_read(id, &lets[id]);

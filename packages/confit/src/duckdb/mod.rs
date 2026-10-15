@@ -27,7 +27,7 @@ use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
 use crate::specializer::frontend::macros::SqlMacro;
-use crate::specializer::{prepare_full, FilterSpec, StaticSpec, WideOut, WideShape};
+use crate::specializer::{prepare_full, FilterSpec, PostSpec, StaticSpec, WideOut, WideShape};
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
 /// Arrow is what the caller wrote.
@@ -1721,9 +1721,9 @@ fn materialize_aggs(
             }
         }
     }
-    let mut entries = Vec::with_capacity(groups.len());
+    let mut found = Vec::with_capacity(groups.len());
     for (keys, accs) in groups {
-        let mut vals = Vec::with_capacity(spec.vals.len() * 2);
+        let mut vals = Vec::with_capacity(spec.vals.len());
         for (i, (acc, vc)) in accs.into_iter().zip(&spec.vals).enumerate() {
             let ty = vc.map.ty;
             let val = match acc {
@@ -1784,8 +1784,27 @@ fn materialize_aggs(
                     Some(ScalarVal::F64(avg::finalize(src, sum, n)))
                 }
             };
-            match (vc.map.nullable, val) {
-                (true, None) => vals.extend(exec::null_val_slots(ty)),
+            vals.push(val);
+        }
+        found.push((keys, vals));
+    }
+    // The entry's values: each aggregate, or the SELECT item over them.
+    let maps: Vec<plan::MapVal> = match &spec.post {
+        None => spec.vals.iter().map(|vc| vc.map).collect(),
+        Some(p) => {
+            let items = post_values(p, &found, &spec.table, spec.keys.is_empty())?;
+            for ((_, vals), item) in found.iter_mut().zip(items) {
+                *vals = vec![item];
+            }
+            vec![p.map]
+        }
+    };
+    let mut entries = Vec::with_capacity(found.len());
+    for (keys, found) in found {
+        let mut vals = Vec::with_capacity(maps.len() * 2);
+        for (val, map) in found.into_iter().zip(&maps) {
+            match (map.nullable, val) {
+                (true, None) => vals.extend(exec::null_val_slots(map.ty)),
                 (true, Some(v)) => {
                     vals.push(ScalarVal::I1(true));
                     vals.push(v);
@@ -1831,6 +1850,130 @@ fn filter_rows(f: &FilterSpec, rows: &[Bound<'_, PyAny>], table: &str) -> PyResu
         }
     }
     Ok(keep)
+}
+
+/// The SELECT item of a scalar subquery over the aggregates of each group
+/// ([`PostSpec`]), run once over all the groups on the interpreter. DuckDB
+/// evaluates the item only for the groups that some request matches, so an
+/// item that traps on a group traps there only when a request matches it:
+/// confit refuses the build by name, as it cannot know the requests here.
+/// With no keys there is one group, which every request reads, and DuckDB
+/// traps on every call.
+fn post_values(
+    p: &PostSpec,
+    groups: &[(Vec<KeyBits>, Vec<Option<ScalarVal>>)],
+    table: &str,
+    keyless: bool,
+) -> PyResult<Vec<Option<ScalarVal>>> {
+    // Not a ValueError: each failure here but a trap is an engine bug.
+    let internal =
+        |e: String| pyo3::exceptions::PyRuntimeError::new_err(format!("internal error: {e}"));
+    let fun = compile_ext(&p.program, Vec::new(), Vec::new()).map_err(|e| internal(e.to_string()))?;
+    let mut cols: Vec<ColData> = p.in_tys.iter().map(|&t| ColData::new(t)).collect();
+    for (_, vals) in groups {
+        for (col, v) in cols.iter_mut().zip(vals) {
+            push_scalar(col, v.as_ref()).map_err(internal)?;
+        }
+    }
+    let batch = Batch {
+        rows: groups.len(),
+        cols,
+    };
+    let mut st = fun.new_state();
+    fun.run(&batch, &mut st).map_err(|t| {
+        build_err(format!(
+            "unsupported: static table '{table}': the SELECT item {} of a scalar subquery \
+             traps {} ({}), {}",
+            p.item,
+            if keyless { "over the table" } else { "over the rows of one key" },
+            t.0,
+            if keyless {
+                "and DuckDB traps on every request"
+            } else {
+                "where DuckDB traps only if a request matches that key"
+            }
+        ))
+    })?;
+    let [out] = &st.out[..] else {
+        return Err(internal("the SELECT item of a scalar subquery answered no one value".into()));
+    };
+    let n = groups.len();
+    Ok(match out {
+        OutCol::I1(v) if v.len() == n => v.iter().map(|&(ok, x)| ok.then_some(ScalarVal::I1(x))).collect(),
+        OutCol::I64(v) if v.len() == n => v.iter().map(|&(ok, x)| ok.then_some(ScalarVal::I64(x))).collect(),
+        OutCol::F64(v) if v.len() == n => v.iter().map(|&(ok, x)| ok.then_some(ScalarVal::F64(x))).collect(),
+        OutCol::Str(v) if v.len() == n => v
+            .iter()
+            .map(|&(ok, r)| ok.then(|| ScalarVal::Str(st.arena.get(r).to_string())))
+            .collect(),
+        OutCol::Dec(v) if v.len() == n => v
+            .iter()
+            .map(|&(ok, x)| {
+                ok.then_some(match p.ty {
+                    Ty::Dec(dp, ds) => ScalarVal::Dec(x, dp, ds),
+                    _ => ScalarVal::I128(x),
+                })
+            })
+            .collect(),
+        _ => {
+            return Err(internal(
+                "the SELECT item of a scalar subquery answered no value per group".into(),
+            ))
+        }
+    })
+}
+
+/// Append one value, or NULL, to an input column of its type.
+fn push_scalar(col: &mut ColData, v: Option<&ScalarVal>) -> Result<(), String> {
+    let mismatch = || format!("a {v:?} for an input column of another lane");
+    match col {
+        ColData::I1 { valid, data } => {
+            data.push(match v {
+                None => false,
+                Some(ScalarVal::I1(x)) => *x,
+                Some(_) => return Err(mismatch()),
+            });
+            valid.push(v.is_some());
+        }
+        ColData::I64 { valid, data } => {
+            data.push(match v {
+                None => 0,
+                Some(ScalarVal::I64(x)) => *x,
+                Some(_) => return Err(mismatch()),
+            });
+            valid.push(v.is_some());
+        }
+        ColData::F64 { valid, data } => {
+            data.push(match v {
+                None => 0.0,
+                Some(ScalarVal::F64(x)) => *x,
+                Some(_) => return Err(mismatch()),
+            });
+            valid.push(v.is_some());
+        }
+        ColData::Dec { valid, data, .. } => {
+            data.push(match v {
+                None => 0,
+                Some(ScalarVal::Dec(x, ..)) => *x,
+                Some(_) => return Err(mismatch()),
+            });
+            valid.push(v.is_some());
+        }
+        ColData::I128 { valid, data } => {
+            data.push(match v {
+                None => 0,
+                Some(ScalarVal::I128(x)) => *x,
+                Some(_) => return Err(mismatch()),
+            });
+            valid.push(v.is_some());
+        }
+        ColData::Str { .. } => match v {
+            None => col.push_str_cell(false, ""),
+            Some(ScalarVal::Str(x)) => col.push_str_cell(true, x),
+            Some(_) => return Err(mismatch()),
+        },
+    }
+    Ok(())
 }
 
 /// The refusal of an `avg` whose absolute values add up past the range of

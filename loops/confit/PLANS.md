@@ -489,7 +489,8 @@ The first five are ruled, in this order; the rest follow.
   other draw; on 30,000,000..30,049,999, 672 subquery cases gained terms (309
   AGREE, 10 AGREE_TRAP), and the campaign gave 0 gated verdicts.
   Still refused by name: DOUBLE `sum`/`avg` (decision below), DISTINCT,
-  an expression over the aggregate, several aggregates, a WHERE term that is
+  an item that traps over the aggregates of a group or of no rows, holds a
+  subquery or calls a SQL function, a UDF or a model, a WHERE term that is
   neither a key nor reads only the table, a static term that can trap (DuckDB
   runs it over unmatched rows), holds a subquery or calls a SQL function, an
   outer side that reads a joined table, an outer side that can trap on a
@@ -514,7 +515,20 @@ The first five are ruled, in this order; the rest follow.
   AGREE_TRAP, 1 DIVERGE_OPT of the known trap-elision class in the outer
   WHERE), no other verdict moved, and the campaign gave 0 gated verdicts;
   7 refusals of a later key that can trap and 2 under `shape='many'` remain.
-  Next: an expression over the aggregate.
+  The item may be an expression over aggregates (`max(v) + 1`,
+  `coalesce(sum(v), 0) + count(*)`): DuckDB evaluates it once per distinct
+  outer value, over the aggregates of the matched rows or of no rows
+  (measured 2026-10-15), so the build runs it over each group
+  (`plan::AggPost`, `post_values` in `duckdb/mod.rs`) and the bind runs it
+  over no rows, read as `CASE WHEN JoinHit THEN value ELSE miss END`; a trap
+  in either refuses by name. On 30,050,000..30,099,999, against the verdicts
+  of #470, the 157 cases whose SQL changed gave 97 AGREE, 58 REFUSED (8 were
+  AGREE before), 1 AGREE_TRAP and 1 DIVERGE_OPT, no other verdict moved, and
+  0 verdicts gated; the 6,780 cases of 30,100,000..32,099,999 that select an
+  expression gave 3,887 AGREE, 141 AGREE_TRAP, 0 gated. A trap over no rows
+  could run per request instead (where DuckDB runs it, like the guarded
+  key); 19 of those cases refused it, 7 where DuckDB served.
+  Next: an aggregate over DISTINCT values, `count(DISTINCT s.v)`.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
@@ -566,6 +580,10 @@ The first five are ruled, in this order; the rest follow.
   `b`); parse it with the integer kernels at the family's type instead.
   Beside UBIGINT/HUGEINT such members refuse by name for this reason.
 - `COLUMNS(...)` inside expressions and lambda/list forms refuse.
+- A negated integer literal is a BIGINT to confit, so `lpad(x, -2147483648,
+  'p')` refuses as `lpad(VARCHAR, BIGINT, VARCHAR)`. DuckDB types it BIGINT
+  too (`typeof`), but casts it to INTEGER as it casts a plain literal
+  (measured 2026-10-15; 2 cases of the class 5 part 5 dense campaign).
 - A JOIN ON residual that reads the static side only refuses when
   `may_trap` says it can trap, and `may_trap` counts all arithmetic, DOUBLE
   included, though DuckDB answers a DOUBLE division by zero with ±inf

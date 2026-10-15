@@ -294,6 +294,15 @@ class Col(Node):
 
 
 @dataclass
+class AggRead(Node):
+    """The i-th aggregate call of the scalar subquery whose SELECT item is
+    the expression that holds this node: its `post`. It renders as that
+    call, so a rewrite of identifiers rewrites it as it rewrites the call."""
+
+    i: int
+
+
+@dataclass
 class Bin(Node):
     op: str
     lhs: Node
@@ -460,8 +469,10 @@ class ScalarSub(Node):
     """A scalar subquery with one aggregate over one static table:
     `(SELECT func(arg) FROM table [AS alias] WHERE alias.col = outer AND
     ...)`. Its WHERE terms are the keys, and the terms that read only the
-    table, each written before the key at its position. Its kids are the
-    outer sides of the keys, then those terms."""
+    table, each written before the key at its position. Its SELECT item may
+    be an expression over the aggregate and `more` aggregates, `post`,
+    which reads the i-th call as `AggRead(i)`. Its kids are the outer sides
+    of the keys, then those terms."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -469,6 +480,8 @@ class ScalarSub(Node):
     keys: list[tuple[str, str, Node]]  # (column of `table`, operator, outer side)
     alias: str | None = None
     preds: list[tuple[int, Node]] = field(default_factory=list)  # (position, term)
+    post: Node | None = None
+    more: list[tuple[str, str | None]] = field(default_factory=list)  # (func, arg)
 
     def kids(self):
         return [o for _, _, o in self.keys] + [p for _, p in self.preds]
@@ -918,9 +931,16 @@ def _rlit(v, ty, bare=False) -> str:
     return "'" + str(v).replace("'", "''") + "'"
 
 
+# The aggregate calls of the scalar subqueries being rendered, innermost
+# last: an `AggRead` renders as one of the innermost.
+_AGG_CALLS: list[list[str]] = []
+
+
 def rexpr(e: Node) -> str:
     if isinstance(e, Lit):
         return _rlit(e.val, e.ty, e.bare_decimal)
+    if isinstance(e, AggRead):
+        return _AGG_CALLS[-1][e.i]
     if isinstance(e, Col):
         # A lane name is a dotted path (`w.mean`); each segment quotes on its
         # own, or the whole path becomes one identifier that exists nowhere.
@@ -984,12 +1004,20 @@ def rexpr(e: Node) -> str:
     if isinstance(e, ScalarSub):
         scope = _ident(e.alias or e.table)
         frm = _ident(e.table) + (f" AS {_ident(e.alias)}" if e.alias else "")
-        arg = "*" if e.arg is None else f"{scope}.{_ident(e.arg)}"
+        calls = [
+            f"{f}({'*' if a is None else f'{scope}.{_ident(a)}'})"
+            for f, a in [(e.func, e.arg), *e.more]
+        ]
+        _AGG_CALLS.append(calls)
+        try:
+            item = calls[0] if e.post is None else rexpr(e.post)
+        finally:
+            _AGG_CALLS.pop()
         terms = [f"{scope}.{_ident(c)} {op} {rexpr(o)}" for c, op, o in e.keys]
         for at, p in sorted(e.preds, key=lambda x: -x[0]):
             terms.insert(min(at, len(terms)), rexpr(p))
         where = f" WHERE {' AND '.join(terms)}" if terms else ""
-        return f"(SELECT {e.func}({arg}) FROM {frm}{where})"  # noqa: S608
+        return f"(SELECT {item} FROM {frm}{where})"  # noqa: S608
     raise TypeError(e)
 
 
@@ -1495,6 +1523,39 @@ _SUB_KEY = {
 }
 
 
+def _agg_read(i: int) -> str:
+    """The column that an expression over the aggregates reads for the i-th
+    call while it is drawn; `_agg_reads` makes each such read an `AggRead`."""
+    return f"agg_{i}_read"
+
+
+def _agg_reads(e: Node, n: int) -> Node:
+    """`e` with each read of `_agg_read(i)`, i < n, made `AggRead(i)`."""
+    names = {_agg_read(i): i for i in range(n)}
+    if isinstance(e, Col) and e.table is None and e.name in names:
+        return AggRead(names[e.name])
+    for i, k in enumerate(e.kids()):
+        new = _agg_reads(k, n)
+        if new is not k:
+            e.swap(i, new)
+    return e
+
+
+def _agg_class(func: str, arg: str | None, sch: dict) -> str | None:
+    """The semantic type of `func(arg)` over a table of schema `sch`, or
+    None where the expression grammar does not reach it: a DECIMAL
+    aggregate (the grammar binds no decimal), a sum or avg of a DOUBLE
+    (confit refuses it by name), or one DuckDB refuses to bind."""
+    if func == "count":
+        return "int"
+    t = SEMANTIC.get(sch[arg].rstrip("?"))
+    if func in ("min", "max") or t is None:
+        return t
+    if t != "int":
+        return None
+    return "int" if func == "sum" else "float"
+
+
 def _as_storage(v, storage: str):
     """`v` as a value of `storage`, or None where it has none."""
     if storage == "double":
@@ -1537,11 +1598,14 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     A WHERE term of a subquery compares a key column of the table with a
     column of the request table, or reads only the table. About half of the
     table's keys come from that column, repeats included, so a request
-    matches several rows. A few subqueries take a form that confit refuses
-    by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under shape='many', an
-    outer side that can trap after another key or under shape='many', a term
-    over the table that can trap. An avg over a BOOLEAN or VARCHAR column is
-    DuckDB's binder error."""
+    matches several rows. About one subquery in ten selects an expression
+    over the aggregate, and about four in ten of those draw a second
+    aggregate of the same table for it. A few subqueries take a form that
+    confit refuses by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under
+    shape='many', an outer side that can trap after another key or under
+    shape='many', a term over the table that can trap, an expression over
+    the aggregates that traps at build or over the aggregates of no rows.
+    An avg over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1568,7 +1632,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     scope = f"{name}x" if qrng.random() < 0.25 else None
     made: list[ScalarSub] = []
 
-    def sub(func=None) -> ScalarSub:
+    def agg(func=None) -> tuple[str, str | None]:
         arg = None if qrng.random() < 0.3 else qrng.choice(list(sch))
         if func is None:
             r = qrng.random()
@@ -1577,6 +1641,10 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
                 func = "sum" if r < 0.9 else "avg"
         if func != "count" and arg is None:
             arg = qrng.choice(list(sch))
+        return func, arg
+
+    def sub(func=None) -> ScalarSub:
+        func, arg = agg(func)
         terms = []
         for kc, _, oc, ot in qrng.sample(keys, qrng.randrange(0, len(keys) + 1)):
             o: Node = Col(oc, "__THIS__" if b.joins else None, ot)
@@ -1613,6 +1681,23 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
             deep = qrng.random() < 0.25 or not tenv.cols
             p = expr(qrng, tenv, "bool", 2) if deep else _table_test(qrng, tenv)
             s.preds.append((qrng.randrange(len(s.keys) + 1), p))
+    # An expression over the aggregate, and maybe over a second one, drawn
+    # last for the same reason. It has the aggregate's type, so the item
+    # reads as it did. One that reads no aggregate is dropped.
+    for s in made:
+        if qrng.random() < 0.7:
+            continue
+        calls = [(s.func, s.arg)] + ([agg()] if qrng.random() < 0.4 else [])
+        cols = [
+            (None, _agg_read(i), c)
+            for i, (f, a) in enumerate(calls)
+            if (c := _agg_class(f, a, sch)) is not None
+        ]
+        if not cols or cols[0][1] != _agg_read(0):
+            continue
+        e = _agg_reads(expr(qrng, Env(cols, [], None), cols[0][2], 2), len(calls))
+        if any(isinstance(n, AggRead) for n in _all_nodes(e)):
+            s.post, s.more = e, calls[1:]
     tags.append("scalar-subquery")
     return True
 

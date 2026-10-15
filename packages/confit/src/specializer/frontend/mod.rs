@@ -254,6 +254,7 @@ pub fn frontend(
         udfs,
         models,
         bind_eval,
+        agg_inputs: &[],
     };
     let q = bind_query(query, as_written, &env, &[]).map_err(lets::spell_out_error)?;
     Ok((
@@ -280,6 +281,10 @@ struct Env<'a> {
     udfs: &'a [super::ir::ExternSpec],
     models: &'a [super::plan::ModelTable],
     bind_eval: &'a [ExternImpl],
+    /// The aggregate calls that bind as input columns, by position: set
+    /// only for the SELECT item of a scalar subquery that is an expression
+    /// over its aggregates (`subquery.rs`, `agg_post`).
+    agg_inputs: &'a [(SqlExpr, u32)],
 }
 
 /// One bound SELECT: its joins (indices into the query-wide list are its
@@ -685,6 +690,8 @@ fn bind_select(
         ctx,
     )?;
     let mut joins = joins;
+    let mut binder = binder;
+    binder.agg_inputs = env.agg_inputs.to_vec();
     binder.subqueries.set(true);
 
     let mut out_cols = Vec::new();
@@ -1195,6 +1202,9 @@ struct Binder<'a> {
     /// The grouped static tables of the whole query, handed between levels
     /// like `minted_lanes`: append-only, so a join's table index never moves.
     agg_tables: std::cell::RefCell<Vec<super::plan::AggTable>>,
+    /// [`Env::agg_inputs`]: each aggregate call here binds as the input
+    /// column at its position.
+    agg_inputs: Vec<(SqlExpr, u32)>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.
