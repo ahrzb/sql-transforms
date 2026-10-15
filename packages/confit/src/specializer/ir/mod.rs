@@ -793,7 +793,8 @@ impl StrOp3 {
     }
 }
 
-/// (Str × I64 -> Str) ops, TOTAL, NULL-strict via lanes.
+/// (Str × I64 -> Str) ops, NULL-strict via lanes. Both can trap: repeat
+/// past the string-builder budget, a subscript outside ±2^32.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StrOp2i {
     /// repeat(s, n): n <= 0 -> '' silently (wave-3 pins).
