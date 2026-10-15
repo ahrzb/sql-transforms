@@ -1,6 +1,7 @@
 //! Frontend: SQL text -> bound, typed relational IR. Parsing is sqlparser's
 //! GenericDialect (a measured superset of DuckDbDialect for the forms we
-//! serve — pins-wave5/sqlparser-spike.json); binding and type derivation
+//! serve — pins-wave5/sqlparser-spike.json) with DuckDB's operator
+//! precedence (precedence.rs); binding and type derivation
 //! follow DuckDB semantics as measured (see plan.rs notes and the pins in
 //! exec/interp.rs).
 //!
@@ -27,7 +28,6 @@ use sqlparser::ast::{
     SelectItem, SetExpr, Statement, Subscript, TableAlias, TableFactor, UnaryOperator,
     Value as SqlValue,
 };
-use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use super::exec::{ExternImpl, ScalarVal};
@@ -147,7 +147,8 @@ pub fn frontend(
 > {
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
     // the forms we serve (adds ^@, * ILIKE, * RENAME) and matches the oracle
-    // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json.
+    // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json. It
+    // parses with DuckDB's operator precedence (precedence.rs).
     // DuckDB-only surface forms sqlparser can't represent are token-rewritten
     // first (rewrite.rs).
     if sql.to_ascii_lowercase().contains("__glob_pat") {
@@ -170,7 +171,7 @@ pub fn frontend(
         // Reserved for the star-filter rewrite marker.
         return Err(unsup("control character U+0001 in SQL"));
     }
-    let dialect = GenericDialect {};
+    let dialect = super::precedence::DuckDbPrecedence;
     let tokens = sqlparser::tokenizer::Tokenizer::new(&dialect, sql)
         .tokenize()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;

@@ -78,9 +78,11 @@ Per row on i64; NULL propagates FIRST (NULL masks would-be errors):
   than shifts.
 - Precedence: `<< >> & |` are ONE flat left-associative tier below
   arithmetic, above comparisons (4|1&1 = 1).
-- confit serves `<< >> & |` and `xor()`; it refuses `~` (prefix bitnot),
-  `#`, and `^` because sqlparser's precedence for them differs from
-  DuckDB's.
+- confit serves `<< >> & |` and `xor()`; it refuses `~` (prefix bitnot)
+  and `#` because sqlparser's precedence for them differs from DuckDB's,
+  and `^` because it does not map it to pow yet. The binary operators
+  parse with DuckDB's precedence (`src/specializer/precedence.rs`, pinned
+  in `pins-wave5/operator-precedence.json`).
 - Narrow widths: DuckDB checks overflow at the narrower width when BOTH
   operands are sub-BIGINT (127::TINYINT<<1 errors; i64 gives 254). confit
   computes in i64, which equals DuckDB whenever either operand is BIGINT.

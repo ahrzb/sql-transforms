@@ -191,8 +191,8 @@ def test_list_valued_regexp_forms_reject():
 @pytest.mark.parametrize(
     ("sql", "needle"),
     [
-        # ^ IS pow, but sqlparser's precedence would compute the wrong tree.
-        ("SELECT a ^ 2 FROM __THIS__", "precedence"),
+        # ^ IS pow, but confit does not map it to pow yet.
+        ("SELECT a ^ 2 FROM __THIS__", "not mapped to pow"),
         # Regex reject list: measured RE2 <-> rust-regex divergences.
         ("SELECT regexp_matches(s, 'a\\B') FROM __THIS__", "B in a regex"),
         ("SELECT regexp_matches(s, '\\Qab\\E') FROM __THIS__", "literal quoting"),

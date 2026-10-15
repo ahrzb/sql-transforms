@@ -18,7 +18,7 @@ complete unsupported-syntax inventory; that is `packages/confit/docs/known-limit
 
 | quirk | reference behavior | disposition | evidence |
 |---|---|---|---|
-| `^` | power, not bit-xor | refuse: `sqlparser` assigns different precedence, so mapping it would change the tree; use `pow()` | `known-limitations.md` §4 |
+| `^` | power, not bit-xor | refuse: not mapped to pow yet, though the parser ranks `^` as DuckDB does; use `pow()` | `known-limitations.md` §4 |
 | `~` | full match, not search | reproduce | `specs/2026-07-27-waveB-regexp-pins.md` |
 | `SIMILAR TO` | no wildcard translation | reproduce | `specs/2026-07-27-waveB-regexp-pins.md` |
 | `SIMILAR TO ... ESCAPE` | unimplemented in DuckDB | refuse | `known-limitations.md` §4 |

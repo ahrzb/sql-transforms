@@ -67,10 +67,11 @@ New campaign evidence is dated and provenance-bearing (claim: dated-provenance i
 
 **claim: re-record-diff-report.** Capture new answers with one command and emit a
 reviewable diff; do not silently replace the corpus. `scripts/pin_ast_shapes.py`
-does this for the AST-shape manifest, and `scripts/pin_corpus.py drift` does it for the
-pin corpus: every pin query that replays mechanically is re-run on a fresh `Oracle` and
-its answer written to `docs/specs/pins-drift.json`, which carries the DuckDB version and
-platform but no date, so an unchanged reference re-runs to an identical file and a
+does this for the AST-shape manifest, `scripts/pin_precedence.py` for DuckDB's operator
+precedence, and `scripts/pin_corpus.py drift` does it for the pin corpus: every pin
+query that replays mechanically is re-run on a fresh `Oracle` and its answer written
+to `docs/specs/pins-drift.json`, which carries the DuckDB version and platform but no
+date, so an unchanged reference re-runs to an identical file and a
 changed one shows up as the file's `git diff`. A query answering differently on two runs
 is recorded `<unstable>` (for example `uuid()`). Only files whose header engine is
 DuckDB are replayed, including the converted setups (claim: pin-conversion). The tool
