@@ -572,7 +572,7 @@ The first five are ruled, in this order; the rest follow.
   `values < rows`, so only if `values > 0`. #474 guarded `x` by `count(*)`
   and tested it in the same arm as `values < rows`, so confit trapped where
   DuckDB answers NULL, when every item that passes the WHERE is NULL; the
-  fix after #474 adds two parity cases that fail on #474 (IN and NOT IN with
+  fix in #475 adds two parity cases that fail on #474 (IN and NOT IN with
   the WHERE `s.f IS NULL`). Over a WHERE with a
   key, DuckDB evaluates `x` for every request of the batch once one request
   matches a static row, with a NULL item too, so an `x` that can trap
@@ -591,8 +591,56 @@ The first five are ruled, in this order; the rest follow.
   5,513 cases of 34,100,000..36,099,999 that read IN gave 3,158 AGREE, 146
   AGREE_TRAP, 0 gated, and no unexplained metamorphic finding. 149 of their
   2,175 refusals name an `x` that can trap over a WHERE with a key.
-  Next: the quantified comparisons `x op ANY (SELECT s.c ...)` and
-  `x op ALL (...)` over the same subquery.
+  `x op ANY (SELECT s.c FROM s WHERE ...)`, SOME alike, and `x op ALL (...)`
+  serve over the same FROM and WHERE (`quantified_subquery` in
+  `subquery.rs`). DuckDB answers ALL as NOT over ANY with the opposite
+  comparison, and `= ANY` as IN (so `<> ALL` as NOT IN), which bind through
+  `in_subquery`. For another comparison DuckDB runs a nested loop join: TRUE
+  if `x op c` holds for the item of a row that passes the WHERE, else FALSE
+  over no rows, else NULL if `x` or such an item is NULL, else FALSE
+  (measured 2026-10-15 and pinned against a formula over min, max and the
+  counts, BIGINT and DOUBLE with NaN and -0.0). It casts both sides to their
+  max type (`dec_common`: DECIMAL(9,4) against DECIMAL(38,0) is
+  DECIMAL(38,0), EXPLAIN shows `CAST(x AS DECIMAL(38,0))`), not to the
+  comparison operator's DECIMAL(38, max scale), so `quantified_residual`
+  casts to `dec_common` before `cmp`. Confit keeps `rows` and `values` from
+  IN and replaces `hit` by one more hidden join whose table holds
+  `count(*)` and the extremes the comparison reads (max under < and <=, min
+  under > and >=, both under <>), read through the residual
+  `CASE WHEN count > 0 THEN x op extreme END` (hit-guarded, NULL is no
+  match). DuckDB evaluates `x` once a row passes the whole WHERE, NULL items
+  too (unlike IN), and over a WHERE with a key for the whole batch once one
+  request matches: so the CASE evaluates `x` only if `count > 0`, an `x`
+  that can trap refuses over a WHERE with a key, and the join counts as a
+  trapping key under shape='many' and beside a comma join (`trap_keys`). The
+  no-key table holds a row over no input, so the guard matters there.
+  `Agg::ties` lets min and max answer a tie of -0.0 and 0.0 or of two NaNs,
+  which only a comparison reads. An item whose cast to the compare type can
+  trap refuses (DuckDB casts every item: `CAST(t.j AS DECIMAL(38,20)) < ANY
+  (SELECT s.v ...)` traps on a BIGINT item past 10^18). `can_trap` now counts
+  DECIMAL to DOUBLE and a DECIMAL cast that holds every value of its source
+  (`dec_cast_is_total`) as unable to trap; without it every DECIMAL item
+  refused. The parser ends `a op ANY (SELECT ...)` at the closing
+  parenthesis (`quantified` in `precedence.rs`; 42 new forms in
+  `operator-precedence.json`: 39 trees, 3 syntax errors), and unaliased
+  items get DuckDB's names (`naming.rs`). The generator draws ANY, SOME or
+  ALL in place of about one IN in two, after every other draw; with these
+  draws cleared it renders 30,050,000..30,099,999 as master does. On
+  30,050,000..30,099,999, against the verdicts of #475 (same build, same
+  range), no verdict moved (4 refusal messages changed wording), the 72 ANY
+  cases gave 35 AGREE, 2 AGREE_TRAP and 35 REFUSED, and 0 verdicts gated;
+  the 5,655 cases of 36,100,000..40,099,999 that read ANY, SOME or ALL gave
+  3,235 AGREE, 136 AGREE_TRAP, 2,255 REFUSED (152 name an `x` that can trap
+  over a WHERE with a key), 23 DIVERGE_OPT, 0 gated, and no unexplained
+  metamorphic finding. ABLATIONS.
+  Found on master while measuring the compare type: `cmp` compares two
+  DECIMALs at a capped width at `dec_common` (DECIMAL(38,0) for
+  DECIMAL(9,4) against DECIMAL(38,0), which rounds x), where DuckDB's
+  comparison keeps the scale (DECIMAL(38,4)) and traps when the integer part
+  does not fit: DIVERGE_VALUE for `CAST(1 AS DECIMAL(9,4)) + 0.5 <
+  CAST(2 AS DECIMAL(38,0))`, DIVERGE_TRAP for an operand 10^35 (scalar
+  subquery, comma join, literal). Next: fix it, keeping `dec_common` under
+  ANY and IN.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
