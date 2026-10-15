@@ -30,10 +30,13 @@ Easiest first; each is one PR.
    `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,
    250 of depth 5 (6.5 s) in 42-44 s, 10 quantiles over 800 features in
    60-63 s (`to_native`; release build, master 98033e8, uv's CPython).
-   Sent to the confit loop on 2026-10-14 ("Needs from confit"); it takes
-   it next, after #459 (its answer of 2026-10-15). When that fix merges,
-   measure the builds again; if confit keeps #456's build time, fit the
-   three estimates again.
+   Sent to the confit loop on 2026-10-14 ("Needs from confit"). It traced
+   the cost to its check for a subquery at each SELECT item
+   (`subquery::has_subquery`), which walks the whole call again at every
+   field read; a memo for each call builds 4,000 fields in 1.00-1.12 s on
+   its container, and the fix goes through its gate and campaign next
+   (2026-10-15). When that fix merges, measure the builds again; if
+   confit keeps #456's build time, fit the three estimates again.
 
 ## Ruled 2026-10-06, to build
 
