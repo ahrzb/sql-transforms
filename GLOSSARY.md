@@ -311,7 +311,9 @@ milestone report or a short reading.
 _Avoid_: update, status
 
 **Reading**:
-A report that measures each success measure on one commit of master.
+A report that measures the success measures on one commit of master. A short
+reading measures only some of them, and its KPI block gives `null` for the
+others.
 _Avoid_: snapshot, yardstick reading
 
 **KPI block**:
