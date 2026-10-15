@@ -783,6 +783,10 @@ def test_a_double_sum_over_a_value_that_is_not_finite_refuses_the_build(agg, bad
         # (n - 1) times the sum of the absolute values is past the range, but
         # this sum with the bound added is not.
         ([DMAX * 0.375, -DMAX * 0.375, 1.0], True),
+        # The sum of the absolute values is DMAX, so B is finite. In table
+        # order the last addition rounds to inf, and DuckDB answers inf. In
+        # the reverse order each addition is exact, and the sum is DMAX.
+        ([2.0**1023 - 2.0**970, 2.0**1022, 2.0**1022 - 2.0**970], False),
     ],
 )
 def test_a_double_sum_past_the_range_refuses_the_build(vals, served):
