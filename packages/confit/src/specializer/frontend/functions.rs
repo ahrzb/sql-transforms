@@ -46,6 +46,15 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "trunc", "ucase", "unicode", "upper", "xor",
 ];
 
+/// The aggregates that `function()` refuses by name before its dispatch
+/// ([`row_aggregate_refusal`]); outside the SELECT item of a scalar
+/// subquery, each reads the request rows. They are builtins too, so a UDF
+/// may not take one.
+pub const NAMED_AGGREGATES: &[&str] = &[
+    "sum", "count", "avg", "min", "max", "geomean", "product", "string_agg", "first", "last",
+    "any_value",
+];
+
 /// Whether a call-site name is claimed by the builtin catalogue. Matching is
 /// ASCII-case-insensitive, like `function()`'s own lowercasing of the name.
 pub fn is_builtin(name: &str) -> bool {
@@ -202,6 +211,11 @@ impl Binder<'_> {
             )));
         }
         let name = f.name.to_string().to_lowercase();
+        // An aggregate refuses by name before its argument list, so that
+        // `count(*)` and `count(DISTINCT c)` state why too.
+        if NAMED_AGGREGATES.contains(&name.as_str()) {
+            return Err(row_aggregate_refusal(&format!("aggregate function {name}")));
+        }
         let FunctionArguments::List(list) = &f.args else {
             return Err(unsup(format!(
                 "function {} without an argument list",
@@ -1305,11 +1319,6 @@ impl Binder<'_> {
                 };
                 self.arith(op, bx, by, (ast_int_literal(x), ast_int_literal(y)))
             }
-            // Named rejects: each states WHY, not just what.
-            "sum" | "count" | "avg" | "min" | "max" | "geomean" | "product" | "string_agg"
-            | "first" | "last" | "any_value" => Err(unsup(format!(
-                "aggregate function {name} (aggregation is not served)"
-            ))),
             // Regexp family (pins: 2026-07-27-waveB-regexp-pins.md).
             "regexp_matches" | "regexp_full_match" => {
                 let (s, p, opts) = match args[..] {

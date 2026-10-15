@@ -1707,8 +1707,9 @@ fn prep_udfs(
 /// `BUILTIN_NAMES` is hand-written beside a 90-name `match`, which is exactly
 /// the shape that rots. So derive the truth from the match itself: every
 /// string literal in an arm HEAD of `Binder::function`'s dispatch must be in
-/// the list. Add a builtin without listing it and this fails, rather than
-/// quietly re-opening the shadowing hole the list exists to close.
+/// the list, and so must `NAMED_AGGREGATES`, which refuse before it. Add a
+/// builtin without listing it and this fails, rather than quietly
+/// re-opening the shadowing hole the list exists to close.
 #[test]
 fn builtin_names_match_the_catalogue() {
     let src = include_str!("frontend/functions.rs");
@@ -1760,6 +1761,11 @@ fn builtin_names_match_the_catalogue() {
          so it is no longer guarding anything",
         derived.len()
     );
+    for a in super::frontend::NAMED_AGGREGATES {
+        if !derived.iter().any(|d| d == a) {
+            derived.push(a.to_string());
+        }
+    }
     let missing: Vec<&String> = derived
         .iter()
         .filter(|d| !super::frontend::BUILTIN_NAMES.contains(&d.as_str()))

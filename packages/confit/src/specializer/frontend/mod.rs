@@ -73,7 +73,7 @@ use self::decimal::*;
 use self::lists::*;
 use self::outputs::*;
 
-pub use self::functions::{is_builtin, BUILTIN_NAMES};
+pub use self::functions::{is_builtin, BUILTIN_NAMES, NAMED_AGGREGATES};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {
@@ -668,7 +668,7 @@ fn level_select(query: &sqlparser::ast::Query) -> Result<&sqlparser::ast::Select
         sqlparser::ast::GroupByExpr::All(_) => true,
     };
     if grouped || select.having.is_some() {
-        return Err(unsup("GROUP BY / HAVING / aggregation"));
+        return Err(row_aggregate_refusal("GROUP BY / HAVING / aggregation"));
     }
 
     Ok(select)

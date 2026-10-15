@@ -483,8 +483,11 @@ The first five are ruled, in this order; the rest follow.
   (served so far: a list literal read by a constant index or projected whole,
   with elements of one type, `tests/test_list_literals.py`). `decimal256`
   statics are blocked upstream (DuckDB refuses them at Arrow registration).
-- **More than one join under `shape='many'`.** The joins lower as loops,
-  one for each join, nested in FROM order (`lower_many_loops` in
+- **More than one join under `shape='many'`.** No new work: the owner's
+  amendment of 2026-10-15 to the ruled order leaves the shapes `filter` and
+  `many` as they serve today
+  ([decisions/closed/next-query-classes.md](decisions/closed/next-query-classes.md)).
+  The joins lower as loops, one for each join, nested in FROM order (`lower_many_loops` in
   `src/specializer/lower.rs`; `tests/test_duckdb_stageb_many.py`; generator
   gate 29 mod 31, tag `many-joins`). Still refused by name: a self-join after
   another join (DuckDB evaluates its build side for the whole batch, a loop
@@ -493,7 +496,9 @@ The first five are ruled, in this order; the rest follow.
   the fan-out loop); struct keys whose field-name sets differ refuse where
   DuckDB serves a constant-empty join.
 - **Per-row aggregation over matched static rows** (correlated scalar
-  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Served: a scalar
+  subquery; a `JOIN` with `GROUP BY` stays refused under each shape, and its
+  refusal names the scalar subquery:
+  [decisions/closed/join-group-by-per-request.md](decisions/closed/join-group-by-per-request.md)). Served: a scalar
   subquery with one `count`, `min`, `max`, integer, BOOLEAN, DECIMAL or
   DOUBLE `sum`, or integer, DECIMAL or DOUBLE `avg`, over all the values of a column or its
   DISTINCT ones, over one static table, keyed by `=` or IS NOT
@@ -766,8 +771,7 @@ The first five are ruled, in this order; the rest follow.
   its operator, under a CASE guard too (after WHERE in the SELECT list, before
   WHERE inside it); an uncorrelated one traps even on an empty batch.
   Measured 2026-10-15: a WHERE subquery under a comma join runs over every
-  pair of the cross product, before the WHERE matches the comma key. Waiting
-  on the owner: [decisions/open/join-group-by-per-request.md](decisions/open/join-group-by-per-request.md).
+  pair of the cross product, before the WHERE matches the comma key.
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
   set operations.** Refused today, except the scalar subquery, EXISTS and
   IN above; only batch-dependent forms are out of scope. Row-local derived

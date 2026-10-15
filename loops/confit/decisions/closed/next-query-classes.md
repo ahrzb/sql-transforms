@@ -51,3 +51,12 @@ pick one, easiest first, and stick to it. The order:
 Native transform families leave this list: the owner proposed modelling most
 transformers as SQL-defined transforms instead (a design under discussion,
 2026-10-05), with Rust kernels for the rest.
+
+**Amendment (owner, 2026-10-15).** In the ruling on
+[JOIN with GROUP BY](join-group-by-per-request.md), the owner wrote about the shapes other than `map`:
+
+> Honestly the non 1-1 modes we can ignore for now and not even support. Or partially support
+
+So the loop plans no new work for the shapes `filter` and `many`. What confit serves under these two shapes
+today stays. Confit already serves item 4 of the order above, more than one join under
+`shape='many'` (pull request #449). The loop does not widen it further.
