@@ -1539,8 +1539,9 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     table's keys come from that column, repeats included, so a request
     matches several rows. A few subqueries take a form that confit refuses
     by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under shape='many', an
-    outer side that can trap, a term over the table that can trap. An avg
-    over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
+    outer side that can trap after another key or under shape='many', a term
+    over the table that can trap. An avg over a BOOLEAN or VARCHAR column is
+    DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1580,7 +1581,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         for kc, _, oc, ot in qrng.sample(keys, qrng.randrange(0, len(keys) + 1)):
             o: Node = Col(oc, "__THIS__" if b.joins else None, ot)
             if ot == "int" and qrng.random() < 0.1:
-                o = Bin("+", o, Lit(1, "int"))  # can trap: confit refuses
+                o = Bin("+", o, Lit(1, "int"))  # can trap
             op = "IS NOT DISTINCT FROM" if qrng.random() < 0.15 else "="
             terms.append((kc, op, o))
         made.append(ScalarSub(func, arg, name, terms, scope))

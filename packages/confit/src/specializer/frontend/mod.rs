@@ -942,6 +942,7 @@ fn bind_select(
     }
     check_comma_order(&binder, &comma_terms)?;
     // The scalar subqueries' hidden joins, after the FROM joins they may read.
+    let first_hidden = joins.len();
     joins.extend(binder.agg_joins.take());
 
     let mut sqlnull = vec![false; exprs.len()];
@@ -959,6 +960,34 @@ fn bind_select(
     let lets = binder.lets.take();
     if let Some(pred) = filter.as_mut() {
         lets::inline(pred, &lets, &mut binder.let_inlined.borrow_mut(), lets::Cost::Reads)?;
+    }
+    // DuckDB plans a scalar subquery below the operator that holds it: in
+    // the WHERE it runs over the rows that reach the WHERE, in the SELECT
+    // list over the rows that the WHERE passes (measured 2026-10-14). So a
+    // hidden join that the WHERE does not read probes after it.
+    let trap_keys = binder.trap_keys.take();
+    for (j, spec) in joins.iter_mut().enumerate().skip(first_hidden) {
+        let in_where = filter
+            .as_mut()
+            .is_some_and(|p| subquery::reads_join(p, j as u32));
+        spec.after_where = !in_where;
+        if !trap_keys.contains(&(j as u32)) {
+            continue;
+        }
+        if env.many {
+            return Err(unsup(
+                "a scalar subquery whose first key has an outer side that can trap, under \
+                 shape='many' -- each join runs before the WHERE there, and DuckDB runs the \
+                 subquery of a SELECT item after it",
+            ));
+        }
+        if in_where && !comma_terms.is_empty() {
+            return Err(unsup(
+                "a scalar subquery in the WHERE whose first key has an outer side that can \
+                 trap, beside a comma join -- DuckDB evaluates that side for every row pair \
+                 of the comma join, confit for the pairs that its keys match; use JOIN ... ON",
+            ));
+        }
     }
     Ok(BoundSelect {
         joins,
@@ -1156,6 +1185,10 @@ struct Binder<'a> {
     /// order they first bound; they run after the FROM joins
     /// (`subquery.rs`).
     agg_joins: std::cell::RefCell<Vec<JoinSpec>>,
+    /// The hidden joins (numbered at this level) whose first key has an
+    /// outer side that can trap, which `bind_select` checks against the
+    /// level's shape and comma tables once the WHERE has bound.
+    trap_keys: std::cell::RefCell<Vec<u32>>,
     /// Each scalar subquery bound at this level and what it reads, so that
     /// binding the same text again reads the same join.
     agg_reads: std::cell::RefCell<Vec<(sqlparser::ast::Query, SExpr)>>,

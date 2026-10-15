@@ -2102,10 +2102,14 @@ impl<'a> FB<'a> {
     /// evaluated (and can trap) for every row that reaches it, exactly as
     /// the join would — even if no value column is ever referenced. Later
     /// references re-probe per block (pure, cached), same ponytail trade as
-    /// column re-loads. `live` holds the previous stage's slots and is left
-    /// as it was found.
+    /// column re-loads. A subquery's hidden join that the WHERE does not
+    /// read is forced after the WHERE instead ([`plan::JoinSpec::after_where`]).
+    /// `live` holds the previous stage's slots and is left as it was found.
     fn lower_stage_head(&mut self, stage: &plan::Stage, live: &mut Live) -> Result<(), PrepareError> {
         for &j in &stage.joins {
+            if self.joins[j as usize].after_where {
+                continue;
+            }
             let (valid_hit, _) = self.emit_probe(j, live)?;
             if self.joins[j as usize].kind == JoinKind::Inner {
                 let tys = Self::live_types(live);
@@ -2147,6 +2151,11 @@ impl<'a> FB<'a> {
             self.term(Term::Skip);
             self.switch(keep);
             self.enter_block(live, &keep_params);
+        }
+        for &j in &stage.joins {
+            if self.joins[j as usize].after_where {
+                self.emit_probe(j, live)?;
+            }
         }
         Ok(())
     }
