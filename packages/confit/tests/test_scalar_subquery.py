@@ -20,8 +20,9 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, SqlFunction
 from confit.oracle import Oracle, Trap
+from confit.sql import lit
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -281,6 +282,56 @@ def test_select_list_alias_of_a_subquery_is_duckdbs_binder_error(sql):
     assert (
         'Alias "c" referenced in a SELECT clause - but the expression has a subquery'
         in v.detail
+    )
+
+
+# A SQL function whose field `q` does not read its argument: a read of `q`
+# binds no subquery, and still holds the one in the argument.
+G = SqlFunction(
+    "g",
+    pa.schema([("v", pa.int64())]),
+    pa.struct([("p", pa.int64()), ("q", pa.float64())]),
+    lambda v: {"p": v * lit(2), "q": lit(1.5)},
+)
+SUB = "(SELECT count(*) FROM s WHERE s.k = t.k)"
+
+
+@pytest.mark.parametrize(
+    "sql, alias",
+    [
+        (f"SELECT g({SUB}).q AS a, a + 1 AS c FROM __THIS__ AS t", "a"),
+        # Every read of one call holds the same marker, and the check for a
+        # subquery answers each marker once: the later reads reuse it.
+        (
+            f"SELECT g({SUB}).q AS a, g({SUB}).q AS b, g({SUB}).q AS c, c + 1 AS d "
+            "FROM __THIS__ AS t",
+            "c",
+        ),
+        (
+            f"SELECT g(g({SUB}).p).q AS a, g(g({SUB}).p).q AS b, b + 1 AS c "
+            "FROM __THIS__ AS t",
+            "b",
+        ),
+    ],
+)
+def test_select_list_alias_of_a_call_over_a_subquery_is_duckdbs_binder_error(
+    sql, alias
+):
+    v = assert_parity(sql, T, statics={"s": S}, udfs=[G], expect="REFUSED")
+    assert v.oracle == "rejects"
+    assert (
+        f'Alias "{alias}" referenced in a SELECT clause - but the expression has a '
+        "subquery" in v.detail
+    )
+
+
+def test_select_list_alias_of_a_call_beside_one_over_a_subquery_serves():
+    assert_parity(
+        f"SELECT g({SUB}).q AS a, g(k).q AS b, g(k).p AS c, b + c AS d "
+        "FROM __THIS__ AS t",
+        T,
+        statics={"s": S},
+        udfs=[G],
     )
 
 
