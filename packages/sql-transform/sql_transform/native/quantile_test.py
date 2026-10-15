@@ -216,10 +216,9 @@ def _estimate(X: np.ndarray, **params) -> float:
 
 
 def test_the_entry_takes_a_fit_by_its_estimated_build():
-    # 8,000 quantiles over one feature build in 6.9-7.4 s, and 500 over 32
-    # integer features in 5.5 s: their runs of equal quantiles leave about
-    # 155 leaves a feature. The count of 8,000 quantiles before refused the
-    # second (quantile.py, `_build_estimate`).
+    # 8,000 quantiles over one feature build in 3.7 s, and 500 over 32
+    # integer features in 3.0 s: their runs of equal quantiles leave about
+    # 155 leaves a feature (quantile.py, `_build_estimate`).
     rng = np.random.default_rng(4)
     X = rng.normal(size=(16000, 1))
     assert _estimate(X, n_quantiles=8000) <= MAX_BUILD_S
@@ -229,12 +228,12 @@ def test_the_entry_takes_a_fit_by_its_estimated_build():
 
 @pytest.mark.parametrize(
     ("shape", "quantiles", "seconds"),
-    [((2500, 9), 1000, 8), ((2000, 800), 10, 11)],
-    ids=["1000x9", "10x800"],
+    [((16000, 8), 2000, 9), ((2000, 800), 20, 12)],
+    ids=["2000x8", "20x800"],
 )
 def test_past_the_estimated_build_stays_python(shape, quantiles, seconds):
-    # 1,000 quantiles over 9 features: 8,991 leaves. 10 quantiles over 800
-    # features built in 11.4 s, within the count of 8,000 quantiles before.
+    # 2,000 quantiles over 8 features: 15,992 leaves, built in 8.7 s. 20
+    # quantiles over 800 features: 15,200 leaves; 10 built in 7.9 s.
     step = _step(np.random.default_rng(4).normal(size=shape), n_quantiles=quantiles)
     with pytest.raises(NotNative, match=rf"an estimated {seconds} s build, past 7 s"):
         to_native(step, strict=True)

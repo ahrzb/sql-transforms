@@ -2074,9 +2074,9 @@ def test_spline_refuses(params, reason):
 
 
 def test_spline_refuses_a_build_past_the_cap():
-    # 128 features of degree 5, 8 knots, "continue": estimated at 12 s, and
-    # built in 12.5 s (spline.py, `_build_estimate`). The estimate refuses
-    # it before confit is asked.
+    # 128 features of degree 5, 8 knots, "continue": estimated at 10 s, and
+    # built in 9.4 s (spline.py, `_build_estimate`). The estimate refuses it
+    # before confit is asked.
     X = np.random.default_rng(0).normal(size=(50, 128)) * 10
     est = SplineTransformer(degree=5, n_knots=8, extrapolation="continue").fit(X)
     takes = pa.schema([(f"x{j}", pa.float64()) for j in range(128)])
@@ -2237,13 +2237,13 @@ def test_isotonic_refuses_two_features():
 def test_isotonic_takes_a_fit_by_its_estimated_build():
     from sql_transform.native.isotonic import MAX_BUILD_S, _build_estimate
 
-    # 10,555 thresholds built in 5.8 s and 12,314 in 7.4 s (isotonic.py,
+    # 17,588 thresholds built in 6.5 s and 21,029 in 7.5 s (isotonic.py,
     # `_build_estimate`), where a count of 8,000 thresholds was the cap.
-    assert _build_estimate(10_554) <= MAX_BUILD_S
-    assert _build_estimate(12_313) > MAX_BUILD_S
-    X = np.arange(13_000.0)
+    assert _build_estimate(17_587) <= MAX_BUILD_S
+    assert _build_estimate(21_028) > MAX_BUILD_S
+    X = np.arange(24_000.0)
     step = _isotonic_step(IsotonicRegression().fit(X, X))
-    with pytest.raises(NotNative, match=r"an estimated 8 s build, past 7 s"):
+    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
         to_native(step, strict=True)
 
 
@@ -2478,19 +2478,19 @@ def _forest(
 def test_trees_take_a_forest_by_the_estimated_build():
     from sql_transform.native.trees import MAX_BUILD_S, _build_estimate
 
-    # Since confit #430 the entry's build is estimated within 7 s for the
-    # default forest, the default forest over 32 features, 250 trees of
-    # depth 5 (5,758 output fields) and one unbounded tree over 4,000 rows
-    # (trees.py has the builds).
+    # Since confit #459 and #461 the entry's build is estimated within 7 s
+    # for the default forest, the default forest over 32 features, 400
+    # trees of depth 5 (9,210 output fields, built in 5.5 s) and one
+    # unbounded tree over 8,000 rows (4.2 s; master 318575b, trees.py).
     assert _build_estimate(_forest(100, 5, 2000)) <= MAX_BUILD_S
     assert _build_estimate(_forest(100, 5, 2000, features=32)) <= MAX_BUILD_S
-    assert _build_estimate(_forest(250, 5, 2000)) <= MAX_BUILD_S
-    assert _build_estimate(_forest(1, None, 4000)) <= MAX_BUILD_S
+    assert _build_estimate(_forest(400, 5, 2000)) <= MAX_BUILD_S
+    assert _build_estimate(_forest(1, None, 8000)) <= MAX_BUILD_S
 
 
 def test_trees_refuse_a_build_past_the_cap():
-    # 300 trees of depth 5: 6,961 output fields, estimated at 9 s (9.8 s
+    # 300 trees of depth 6: 11,402 output fields, estimated at 8 s (7.7 s
     # measured).
-    est = _forest(300, 5, 2000)
-    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
+    est = _forest(300, 6, 2000)
+    with pytest.raises(NotNative, match=r"an estimated 8 s build, past 7 s"):
         to_native(_tree_step(est, 8), strict=True)
