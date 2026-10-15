@@ -95,10 +95,21 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    `materialize_statics` failed for every grouped table whose item is an
    expression over its aggregates (#471): 137 PANIC verdicts in shard 0.
    The metamorphic suite then met such a panic, which `outcome` did not
-   catch and the pool could not send back. Still open from it: the night's
-   other gated classes, which only the shard logs show (shard 0: a
-   DIVERGE_BUILD over an ambiguous reference, 8244787, and an oracle
-   TIMEOUT, 8249704).
+   catch and the pool could not send back (#478). The night's other gated
+   cases, read from the four shard logs and replayed on master 905ee80 with
+   the night's generator (df653be): a computed key of a comma join that
+   reads a bare name the static table has too now refuses as ambiguous, as
+   on DuckDB (8244787; the key bound before the table was in scope); the
+   empty-static witness pads a timestamp column with the epoch, so 8522528
+   is excused by its ruling. Not confit defects: in 8249704 confit traps on
+   `- c2` over -2147483648 while the oracle first builds an `lpad` of
+   2^31 - 1 characters in another column (the open oracle-TIMEOUT record's
+   mechanism, added to its evidence; 55 s alone, AGREE_TRAP); in 8517819
+   both engines serve the same `repeat(lpad('0', c1, 'a'), c1)` over
+   c1 = 32767, a string of 1,073,676,289 characters just under the 1 GiB
+   ceiling of a string builder, and the case takes more than the 20 s
+   limit (one confit run 5 to 12 s on each of its two backends, DuckDB
+   3.6 s, the rows as Python values about 10 s).
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet

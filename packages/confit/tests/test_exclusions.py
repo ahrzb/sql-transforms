@@ -212,6 +212,24 @@ def test_the_same_trap_on_a_left_join_is_compared():
     assert v.kind == "AGREE_TRAP"
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        TRAPS,
+        # nightly seed 8522528: a CROSS JOIN whose WHERE key traps
+        "SELECT 1 AS o FROM __THIS__ CROSS JOIN s "
+        "WHERE (c0 + 9223372036854775807) = s.k",
+    ],
+)
+@pytest.mark.parametrize("spec", ["timestamp", "timestamp?"])
+def test_an_empty_static_with_a_timestamp_column_is_padded(sql, spec):
+    # The witness needs a plain value for each column of the static. It had
+    # none for a timestamp, so such a case stayed a finding.
+    empty = table({"k": "int", "t": spec}, [])
+    v = verdict(sql, ROW, statics={"s": empty})
+    assert (v.kind, v.klass) == ("EXCLUDED", "empty-static-trap-timing")
+
+
 class _Inject:
     """A confit build whose every run raises `message`: a planted fault."""
 
