@@ -78,6 +78,20 @@ def test_a_projection_parts_from_its_twin_within_its_error_scale(make):
     assert check(step, native, rows) == rows.num_rows
 
 
+@pytest.mark.parametrize("make", MAKES[3:], ids=lambda m: type(m()).__name__)
+def test_a_sum_of_negative_zeros_answers_0(make):
+    # Rows of zeros signed against each component, so that every product of
+    # its output field is -0.0: the twin answers 0.0 there, and so must the
+    # entry, bit for bit (finding 77).
+    x, _ = _data(7, 12)
+    est = make().fit(x)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    zeros = [np.copysign(0.0, -c) for c in est.components_]
+    rows = _rows(np.array([*zeros, np.zeros(12), -np.zeros(12)]))
+    assert check(step, native, rows, ulps=0) == rows.num_rows
+
+
 def test_a_projection_serves_only_on_request():
     x, _ = _data(0, 4)
     step = _step(PCA(n_components=2).fit(x))

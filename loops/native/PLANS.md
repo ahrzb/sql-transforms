@@ -8,14 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-1. **The projections' signed zeros** (reading 6, finding 77). Where every
-   product of an output field rounds to 0, the entries of `TruncatedSVD`
-   and `GaussianRandomProjection` answer -0.0 where the twin answers 0.0:
-   403 output fields over seeds 0 to 199 of the parity run (392 with
-   S = 0), within the bound. Add 0.0 to each output field of `project.py`
-   (`x + 0.0`, as `compose.py` does for a sparse stack since T36), and
-   check that no field of the parity run then differs in its sign alone.
-2. **The projections, `PolynomialFeatures` and the splines on confit
+1. **The projections, `PolynomialFeatures` and the splines on confit
    #459.** #459 (merged 2026-10-15, master 8fbdd11) lowers a CASE that
    cannot trap to selects when it is small or a field read's NULL guard,
    the need "A value read many times" below. On the confit loop's
@@ -24,7 +17,7 @@ Easiest first; each is one PR.
    Measure the width curves of these families again; if the projections'
    builds changed, fit `project._build_estimate` again, which now keeps
    about 80 components over 256 features Python. Then remove that need.
-3. **The build estimates on confit #461** (reading 6, finding 76).
+2. **The build estimates on confit #461** (reading 6, finding 76).
    Since #456, a struct read field by field builds in about the square of
    its fields, past the estimates of `trees.py`, `spline.py` and
    `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,

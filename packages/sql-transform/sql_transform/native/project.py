@@ -30,6 +30,17 @@ The bound assumes that no partial sum overflows: one order can overflow
 where another does not only past |x_i·c_ki| of about DBL_MAX/n. A step
 within the bound serves only with `to_native(step, allow_bound=True)`.
 
+The bound allows either sign of a zero, but the entry gives the twin's
+sign where it can (finding 77). Where every product of an output field is an
+exact zero, numpy's `X @ C.T` answered 0.0 in each of 855 shapes (1 to
+1,024 features, 1 to 64 components, 1 to 64 rows), and the balanced tree
+answers -0.0 where every product is -0.0. So the entry adds 0.0 to its
+sum, which makes a -0.0 0.0 and leaves every other value as it is. Where
+every product underflows to -0.0, the sign of the twin's zero depends on
+the BLAS kernel: -0.0 in 213 of the same shapes, 0.0 in the others. Over
+seeds 0 to 199 of the parity run, the entry answered -0.0 for the twin's
+0.0 in 403 output fields without the addition, and in none with it.
+
 The translation computes the projected mean with numpy, in the twin's own
 spelling, so that on one host both sides share it. A `PCA` or
 `IncrementalPCA` fitted in float32 projects its mean in float32, which the
@@ -170,7 +181,8 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
     mc = None if m is None else (np.reshape(m, (1, -1)) @ c.T)[0]
     out = []
     for j, cj in enumerate(c):
-        e = _tree([xi * f64(ci) for xi, ci in zip(x, cj, strict=True)])
+        # `+ 0.0`: where every product is a zero, the twin answers 0.0.
+        e = _tree([xi * f64(ci) for xi, ci in zip(x, cj, strict=True)]) + f64(0.0)
         if mc is not None:
             e = e - f64(mc[j])
         if whiten:
