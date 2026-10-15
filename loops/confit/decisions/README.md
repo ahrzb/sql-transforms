@@ -3,8 +3,7 @@
 This folder holds one record for each question. Each record states the question, the ruling or the options,
 and the ground.
 
-- [open/](open) holds records that wait for a ruling:
-  - [JOIN with GROUP BY as an aggregate for each request](open/join-group-by-per-request.md)
+- [open/](open) holds records that wait for a ruling. It is empty now.
 - [closed/](closed) holds rulings in force:
   - [Oracle policy](closed/oracle-policy.md)
   - [static-only queries](closed/static-only-queries.md)
@@ -16,6 +15,7 @@ and the ground.
   - [Empty-static witness: trap order](closed/empty-static-witness-trap-order.md)
   - [the oracle times out where confit traps first](closed/oracle-timeout-before-a-trap.md)
   - [the open parts of the float-reduction bound](closed/double-sum-bound.md)
+  - [JOIN with GROUP BY as an aggregate for each request](closed/join-group-by-per-request.md)
 - [postponed/](postponed) holds questions decided "not now". Each record names the condition that reopens it:
   - [Public refusal codes](postponed/public-reason-codes.md)
   - [pin governance metadata](postponed/pin-governance-metadata.md)

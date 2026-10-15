@@ -96,7 +96,7 @@ def test_dynamic_self_join_rejects():
 @pytest.mark.parametrize(
     ("sql", "needle"),
     [
-        ("SELECT sum(a) FROM __THIS__", "aggregation is not served"),
+        ("SELECT sum(a) FROM __THIS__", "aggregate function sum -- .* not row-local"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT a FROM __THIS__ LIMIT 5", "LIMIT"),
@@ -112,6 +112,58 @@ def test_dynamic_self_join_rejects():
 )
 def test_whole_relation_constructs_reject(sql, needle):
     rejects(sql, needle)
+
+
+@pytest.mark.parametrize("shape", ["map", "filter", "many"])
+def test_an_aggregate_over_request_rows_refuses_and_names_the_scalar_subquery(shape):
+    # The owner's ruling (loops/confit/decisions/closed/join-group-by-per-request.md):
+    # a group over the request rows is not row-local, so the refusal holds
+    # under each shape, and it names the spelling that serves.
+    s = static(
+        {"k": "int", "v": "int"},
+        [{"k": 1, "v": 10}, {"k": 1, "v": 20}, {"k": 2, "v": 5}],
+    )
+    for sql in [
+        "SELECT t.a, sum(s.v) AS v FROM __THIS__ AS t LEFT JOIN s ON s.k = t.a"
+        " GROUP BY t.a",
+        "SELECT sum(s.v) AS v FROM __THIS__ AS t LEFT JOIN s ON s.k = t.a",
+        "SELECT count(*) AS n FROM __THIS__",
+        "SELECT count(DISTINCT a) AS n FROM __THIS__",
+    ]:
+        with pytest.raises(ValueError) as e:
+            DuckDBInferFn(
+                sql, row_tables={"__THIS__": T}, static_tables={"s": s}, shape=shape
+            )
+        assert "not row-local" in str(e.value), sql
+        assert "(SELECT sum(s.v) FROM s WHERE s.k = t.k)" in str(e.value), sql
+    # The named spelling serves: each request sums its own matches.
+    fn = DuckDBInferFn(
+        "SELECT t.a, (SELECT sum(s.v) FROM s WHERE s.k = t.a) AS v FROM __THIS__ AS t",
+        row_tables={"__THIS__": T},
+        static_tables={"s": s},
+        shape=shape,
+    )
+    got = fn.infer_rows([{"a": a, "s": None} for a in (1, 1, 2, 3)])
+    assert got == [
+        {"a": 1, "v": 30},
+        {"a": 1, "v": 30},
+        {"a": 2, "v": 5},
+        {"a": 3, "v": None},
+    ]
+
+
+def test_an_unserved_aggregate_over_static_rows_names_the_served_ones():
+    # Inside a scalar subquery, the aggregate reads the static rows that one
+    # request matches: the refusal lists the aggregates that serve there.
+    s = static({"k": "int", "v": "int"}, [{"k": 1, "v": 10}])
+    with pytest.raises(ValueError) as e:
+        build(
+            "SELECT (SELECT first(s.v) FROM s WHERE s.k = a) AS v FROM __THIS__",
+            {"s": s},
+        )
+    assert "calls the aggregate function first" in str(e.value)
+    assert "f one of count, min, max, sum and avg" in str(e.value)
+    assert "not row-local" not in str(e.value)
 
 
 # ---- 3. Type-system boundaries ---------------------------------------------

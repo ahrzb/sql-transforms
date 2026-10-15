@@ -6,6 +6,19 @@ pub(super) fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
+/// The refusal of a GROUP BY, a HAVING or an aggregate over the rows of the
+/// query (`what`). It states why, and names the spelling that serves: the
+/// owner ruled to keep this refusal under each shape
+/// (loops/confit/decisions/closed/join-group-by-per-request.md).
+pub(super) fn row_aggregate_refusal(what: &str) -> PrepareError {
+    unsup(format!(
+        "{what} -- a group or an aggregate over the request rows is not row-local, because \
+         its answer for one request would depend on the other requests of the batch; served: \
+         an aggregate over the static rows that one request matches, as a scalar subquery \
+         such as (SELECT sum(s.v) FROM s WHERE s.k = t.k)"
+    ))
+}
+
 /// The ONE refusal for what this build does not serve over a DECIMAL:
 /// the builtins with DECIMAL overloads of their own (abs, round, ...),
 /// which return a DECIMAL on DuckDB and would be silently wrong served

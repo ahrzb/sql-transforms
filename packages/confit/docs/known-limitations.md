@@ -106,7 +106,14 @@ twice, and subqueries of the forms that it does not serve. The
 says whether each form is inside the model.
 
 - Aggregation: `GROUP BY`, `HAVING`, `sum`/`count`/`avg`/... →
-  `aggregate function ... (aggregation is not served)`. This engine serves a
+  `GROUP BY / HAVING / aggregation -- ...` or `aggregate function ... -- ...`.
+  The refusal gives the reason. A group over the request rows is not
+  row-local, because its answer for one request would depend on the other
+  requests of the batch. The refusal holds under each shape, also for a join
+  to a static table with `GROUP BY`
+  ([decision](../../../loops/confit/decisions/closed/join-group-by-per-request.md)).
+  It names the spelling that serves: a scalar subquery over a static table,
+  such as `(SELECT sum(s.v) FROM s WHERE s.k = t.k)`. This engine serves a
   scalar subquery over a static table that selects an aggregate, an expression
   over aggregates, or an expression over the columns of the one row that a
   request matches or that the subquery's ORDER BY and LIMIT keep

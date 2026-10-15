@@ -1451,7 +1451,18 @@ impl Binder<'_> {
                         inputs.push((x.clone(), i as u32));
                         Walk::Over
                     }
-                    None => Walk::Into,
+                    // Over the static rows, an aggregate that confit does not
+                    // serve names the served ones, not the refusal of an
+                    // aggregate over the request rows.
+                    None => {
+                        let name = f.name.to_string().to_lowercase();
+                        if NAMED_AGGREGATES.contains(&name.as_str()) {
+                            return Err(form_refusal(&format!(
+                                "the SELECT item {e}, which calls the aggregate function {name}"
+                            )));
+                        }
+                        Walk::Into
+                    }
                 },
                 SqlExpr::CompoundFieldAccess { root, .. }
                     if matches!(**root, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)) =>

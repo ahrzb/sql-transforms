@@ -54,3 +54,42 @@ oracle's answer when the batch holds only one request, in four runs, one for eac
 **Recommendation.** Choose option 1. The campaign then compares confit with the oracle as it does today,
 and the scalar subquery gives the same aggregate for each request. If the transforms that people write for
 confit use a join with GROUP BY, option 3 can come later.
+
+**Ruling (owner, 2026-10-15).** The owner answered in the project chat. At 20:22 UTC, the owner asked
+what a join with GROUP BY does that confit should refuse. The agent that asked the question gave the
+example of the table above. The two requests with k = 1 make one row, and its sum adds the matches of
+both requests. At 20:30 UTC, the owner asked whether this is not row-local, and the agent agreed. At
+20:31 UTC, the owner wrote:
+
+> Yeah ofc, not row local should mean rejection. At least in one to one mode.
+
+This is option 1. Confit keeps the refusal of a join with GROUP BY, and the refusal names the scalar
+subquery as the spelling that confit serves. One to one is the shape `map`, which gives one row for each
+request. The words "at least in one to one mode" left the other shapes open. At 20:32 UTC, the owner
+wrote about them:
+
+> Honestly the non 1-1 modes we can ignore for now and not even support. Or partially support
+
+Confit refuses a join with GROUP BY under each shape today. The loop plans no new work for the shapes
+`filter` and `many`, so the refusal holds under each shape. What confit serves under these two shapes
+today stays, as a partial support. The ruling on the [next query classes](next-query-classes.md) has the
+same note.
+
+**How the loop applies the ruling.** Confit refuses a GROUP BY, a HAVING and an aggregate over the rows of
+the query, as before. Now the refusal gives the reason. A group over the request rows is not row-local.
+Its answer for one request would depend on the other requests of the batch. The refusal also names the
+spelling that confit serves: a scalar subquery over a static table, such as
+`(SELECT sum(s.v) FROM s WHERE s.k = t.k)`.
+
+Two other refusals change with it:
+
+- Before, confit refused `count(*)` over the request rows with a text about the form of its argument. Now
+  `count(*)` and `count(DISTINCT c)` give the same refusal as the other aggregates.
+- In the SELECT item of a scalar subquery, an aggregate that confit does not serve, such as `first`, gets
+  the refusal of the subquery forms. That refusal lists the aggregates that serve there: count, min, max,
+  sum and avg. Before, the refusal said that confit does not serve aggregation.
+
+**Evidence.** A test in `packages/confit/tests/test_known_limitations.py` builds the join with GROUP BY of
+this record under each shape. It checks that each build refuses, and that the refusal names the scalar
+subquery. The same test builds the scalar subquery of the table above. It checks that the four requests
+get the sums 30, 30, 5 and NULL.
