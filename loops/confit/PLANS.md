@@ -643,8 +643,24 @@ The first five are ruled, in this order; the rest follow.
   comparison keeps the scale (DECIMAL(38,4)) and traps when the integer part
   does not fit: DIVERGE_VALUE for `CAST(1 AS DECIMAL(9,4)) + 0.5 <
   CAST(2 AS DECIMAL(38,0))`, DIVERGE_TRAP for an operand 10^35 (scalar
-  subquery, comma join, literal). Next: fix it, keeping `dec_common` under
-  ANY and IN.
+  subquery, comma join, literal). Fixed next: `cmp` compares at
+  `cmp_common` (`frontend/decimal.rs`), DuckDB's `BindComparison`:
+  `dec_common`, except that two DECIMALs past 38 digits compare at
+  DECIMAL(38, max scale), where the cast of the side with more than
+  38 - scale integer digits traps per row. EXPLAIN (2026-10-15) shows these
+  casts under `=`, IS DISTINCT FROM, BETWEEN, an IN list, a simple CASE and
+  nullif, which all bind through `cmp` or refuse past 38 digits
+  (`unify_family`, `promote_key`); greatest, CASE results and ANY keep
+  `dec_common`. Two probes of 1,162 cases (comparisons, guards, filters,
+  subqueries, joins; scratch n1019/dec/probe.py, probe2.py) gave 522
+  DIVERGE_VALUE and 62 DIVERGE_TRAP on master d8b8dab, 0 gated with the
+  fix. 13 cases moved to REFUSED, as the comparison can now trap: a static
+  WHERE term of a subquery (`s.sb > 1.5`), a JOIN ON comparison between the
+  two sides, and a comma-join WHERE term before the key. #476's
+  `dec_cast_is_total` had made master serve them (wrongly). 1 case moved to
+  DIVERGE_OPT. 31 new tests in `test_decimal_expressions.py`, 29 fail on
+  master; on 30,050,000..30,099,999 no verdict moved (the generator never
+  compares two DECIMALs past 38 digits).
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the

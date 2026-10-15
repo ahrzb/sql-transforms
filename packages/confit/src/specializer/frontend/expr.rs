@@ -2247,19 +2247,17 @@ impl Binder<'_> {
             }
             (x, Ty::F64) if x.is_integer() => (promote_f64(a), b),
             (Ty::F64, y) if y.is_integer() => (a, promote_f64(b)),
-            // DECIMAL vs INTEGER: DuckDB casts the INTEGER up, exactly, so
-            // the comparison stays in the decimal's scale. The one shape it
-            // refuses is the CAPPED width, where the integer's per-row cast
-            // can fail — reproducing that needs a row-time trap.
             // DECIMAL vs DECIMAL, DOUBLE or an integer: both sides at the
-            // common type (docs/specs/decimal-expressions.md §7). Against a
-            // DOUBLE only decimal->double is a legal implicit cast
-            // (cast_rules.cpp:196-204), so the DECIMAL side casts DOWN and
-            // the comparison is lossy — DuckDB's loss, reproduced. Against
-            // an integer at a capped width the integer's cast can fail per
-            // row, as it does on DuckDB.
-            (x, y) if dec_common(x, y).is_some() => {
-                let t = dec_common(x, y).expect("checked");
+            // type of the comparison (docs/specs/decimal-expressions.md §7).
+            // An integer casts up exactly, so the comparison stays in the
+            // decimal's scale. Against a DOUBLE only decimal->double is a
+            // legal implicit cast (cast_rules.cpp:196-204), so the DECIMAL
+            // side casts DOWN and the comparison is lossy — DuckDB's loss,
+            // reproduced. Past 38 digits the width is capped and the scale
+            // kept, so the cast of the side with the most integer digits
+            // can fail per row, as it does on DuckDB.
+            (x, y) if cmp_common(x, y).is_some() => {
+                let t = cmp_common(x, y).expect("checked");
                 (to_common(a, t), to_common(b, t))
             }
             // BOOLEAN vs an integer: DuckDB casts the BOOLEAN to INTEGER
