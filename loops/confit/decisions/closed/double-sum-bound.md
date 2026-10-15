@@ -81,125 +81,129 @@ The checker is the comparison function that the loop adds to the campaign and th
 finite, and its bound accepts the sums that change between runs of the oracle. Option 2 refuses most
 groups of values with fractions, such as prices with cents.
 
-**Ruling (owner, 2026-10-15).** In the project chat at 18:18 UTC, the owner chose option 1, "Approve
-definitions". The question in the chat added two notes to the definitions above:
+**Ruling (owner, 2026-10-15).** The owner answered in the project chat, in the thread "Answering open
+decisions". At 18:18 UTC, the owner chose option 1, "Approve definitions". The question in the thread
+added two notes to the definitions above:
 
-- The reason that B holds in each order of the additions is the error bound of N. J. Higham for a sum
-  in any order.
+- The error bound of N. J. Higham for a sum in any order shows that B holds in each order of the
+  additions (item 2 of "Numerical analysis" below).
 - One amendment: confit refuses the build if B is not finite, and not only if the sum of the absolute
-  values is not finite, because a partial sum can round past the sum of the absolute values.
+  values is not finite, because a partial sum can round past the sum of the absolute values. The section
+  "Where the loop refuses more than the text of the ruling" below explains how the loop applies it.
 
-The question also reported a check on DuckDB 1.5.5 by the agent that asked it. Over 30 random tables of
+The question also reported a check by the agent of that thread, on DuckDB 1.5.5. Over 30 random tables of
 up to 200,000 rows, whose sums cancel a lot, the largest distance was 1.4e-6 of B. The question does not
-say which two answers it compared, and the repository does not keep this check. The section
-"Measurement" below gives the check of the loop.
+say which two answers the check compared, or whether the optimizer was off. The repository does not keep
+this check. The section "Measurement" below gives the check of the loop.
 
 At 18:26 UTC, the owner wrote that a ruling is an opinion. The loop can object to a ruling at any time,
 also after the loop applies it. The loop asks the owner before it acts against a ruling. The owner named
 this bound as an example of a question that needs numerical analysis. The section "Numerical analysis"
 below gives this analysis. It changes no definition, and it shows why each definition holds.
 
-**Where the loop refuses more than the text of the ruling.** Two steps below add refusals that the text
-of the ruling does not name. The loop reads both steps as a part of the ruling, for these reasons:
-
-- **The overflow rule** (step 2). The build refuses a group if Σ|v_i| + B is past the range of a DOUBLE.
-  The amendment names B alone. But B = (n − 1)·2^-51·Σ|v_i|, so B is smaller than Σ|v_i| for each n
-  below 2^51. Thus the text of the amendment refuses no group that the definitions serve, and a partial
-  sum can still round past the range. For example, the three values 2^1023 − 2^970, 2^1022 and
-  2^1022 − 2^970 have a Σ|v_i| equal to the largest DOUBLE, and their B is finite. In table order, the
-  oracle answers an infinity (measured on DuckDB 1.5.5). In the reverse order, each addition is exact,
-  and the sum is the largest DOUBLE. Item 4 of "Numerical analysis" proves that the rule of step 2
-  prevents such a sum. The rule refuses a group that the definitions serve only if Σ|v_i| is within
-  about B of the largest DOUBLE.
-- **The whole output column** (step 3). B bounds the distance of the value itself. After an expression
-  or a comparison reads the value, a distance in B can become any distance. For example, `v > 0` can be
-  true in confit and false in the oracle. So the checker can compare only the value itself, and confit
-  refuses each other read of the value.
-
 **How the loop applies the ruling.**
 
 1. The build adds the values of a group that are not NULL in table order, from +0.0. The accumulator of
    a DOUBLE sum does this (`Acc::Float` in `packages/confit/src/duckdb/mod.rs`). For `avg`, the build
    divides the sum by n once.
-2. The build refuses a group by name if a value is a NaN or an infinity, or if Σ|v_i| + B is past the
-   range of a DOUBLE. It computes Σ|v_i| exactly and rounds it once, with the algorithm of Python's
-   `math.fsum` (the type `ExactSum` in the same file). A test compares `ExactSum` with `math.fsum` on
-   300 random groups, and the two are bit-exact. The function `float_bound` in the same file computes B
-   from the rounded Σ|v_i|.
+2. The build refuses a group by name if a value is a NaN or an infinity. It computes Σ|v_i| exactly, with
+   the algorithm of Python's `math.fsum` (the type `ExactSum` in the same file), and rounds it once to Â.
+   A test compares `ExactSum` with `math.fsum` on 300 random groups, and the two are bit-exact. Then the
+   build computes B̂, the value of B from Â, with one rounding. It refuses the group by name if Â + B̂
+   rounds to an infinity.
 3. Confit serves the aggregate only as the whole SELECT item of a subquery, and only if this subquery is
    a whole output column. A derived table or a CTE can pass the column on with no change. Confit refuses
-   each other read of the value by name: an expression, a WHERE, a join condition, a struct or a list
-   output, and a value that a SQL function reads more than once. The function `float_bounds` in
-   `packages/confit/src/specializer/mod.rs` finds these reads.
-4. `DuckDBInferFn` is the Python class that builds a confit function. Its `plan_facts["bounds"]` names
-   each column of step 3. For such a query, the campaign builds the query a second time, with the
-   argument `float_bounds=True` (`fuzz.oracle.run_case`). This second build is the bound build. In the
-   bound build, each such column answers the bound of the group in place of the value. This bound is
-   NULL for n = 0, and 0.0 for n = 1 and n = 2. For n of 3 or more, it is B̂ for `sum` and B̂/n for
-   `avg`. B̂ is the value of B that confit computes (item 3 of "Numerical analysis").
+   by name each other use of the value: in an expression, a WHERE, a join condition, a struct or a list
+   output, and as a value that a SQL function reads more than once. The function `float_bounds` in
+   `packages/confit/src/specializer/mod.rs` finds these uses.
+4. `DuckDBInferFn` is the Python class that builds a confit function. Its property `plan_facts` describes
+   the plan of the function, and its entry `"bounds"` names each column of step 3. For such a query, the
+   function of the campaign that runs one case (`fuzz.oracle.run_case`) builds the query a second time,
+   with the argument `float_bounds=True`. This second build is the bound build. In the bound build, each
+   such column answers the bound of the group in place of the value. This bound is NULL for n = 0, and
+   0.0 for n = 1 and n = 2. For n of 3 or more, it is B̂ for `sum`, and B̂/n with one rounding for `avg`.
 5. The function `within_float_bound` in `confit.compare` compares the answers of confit and the oracle.
-   It compares the rows in any order, as the comparison of other answers in the campaign does
-   (`multiset` in `confit.compare`). It computes each distance exactly, with Python's `Fraction`. A
-   value with the bound 0.0 must be bit-exact. For another value of a `sum`, the distance can be at most
-   the bound. For `avg`, it can be at most the bound + 2^-52·max(|confit|, |oracle|) + 2^-1074, as the
-   definitions say.
+   It pairs each row of confit with a row of the oracle that has the same values in all other columns.
+   If several rows have the same such values, it pairs them in the order of their bounded values. It
+   computes each distance exactly, with Python's `Fraction`. A value with the bound 0.0 must be
+   bit-exact. For another value of a `sum`, the distance can be at most the bound. For `avg`, it can be
+   at most the bound + 2^-52·max(|confit|, |oracle|) + 2^-1074, as the definitions say.
 6. If the two answers are bit-exact, the verdict is `AGREE`, as before. If they are not bit-exact, but
-   each distance is in the bound, the verdict is `AGREE` with the reason `float-reduction-bound` in its
-   field `klass`. The campaign report counts these verdicts, with their seeds. If a distance is past the
-   bound, the verdict is `DIVERGE_VALUE`, as for any other value that differs.
+   each distance is in the bound, the verdict is `AGREE` with the reason `float-reduction-bound`. The
+   campaign report counts these verdicts, with their seeds. If a distance is past the bound, the verdict
+   is `DIVERGE_VALUE`, as for any other value that differs.
+
+**Where the loop refuses more than the text of the ruling.** Steps 2 and 3 above add refusals that the
+text of the ruling does not name. A refusal never gives a wrong answer, so these steps cannot make confit
+disagree with the oracle. The reasons for the two steps:
+
+- **The overflow rule** (step 2). The amendment names B alone. But B = (n − 1)·2^-51·Σ|v_i|, so B is
+  smaller than Σ|v_i| for each n below 2^51. Thus the text of the amendment refuses no group that the
+  definitions serve, and a partial sum can still round past the range. For example, the three values
+  2^1023 − 2^970, 2^1022 and 2^1022 − 2^970 have a Σ|v_i| equal to the largest DOUBLE, and their B is
+  finite. In table order, the oracle's sum of the three is an infinity (measured 2026-10-15). In the
+  reverse order, each addition is exact, and the sum is the largest DOUBLE. The rule of step 2 refuses
+  this group, and item 4 of "Numerical analysis" proves that the rule prevents each such sum. The rule
+  refuses a group that the definitions serve only if Σ|v_i| is within about B of the largest DOUBLE.
+- **The whole output column** (step 3). B bounds the distance of the value itself, but not of an
+  expression of the value. For example, one order of the values 1e16, 1 and −1e16 gives the sum 0, and
+  another order gives 1 ("What the oracle does"). Both sums are in the bound, but `v > 0.5` is false for
+  one sum and true for the other. So the checker can compare only the value itself.
 
 **Numerical analysis.** The notation is u = 2^-53 (the unit roundoff of a DOUBLE), eps = 2u = 2^-52,
-A = Σ|v_i| (the exact sum of the absolute values), and γ_k = ku/(1 − ku). Â and B̂ are the values that
-confit computes for A and B. δ = 2^-1074 is the smallest positive DOUBLE, and each DOUBLE is a multiple
-of δ. The analysis is for n below 2^51.
+A = Σ|v_i| (the exact sum of the absolute values), and γ_k = ku/(1 − ku). fl(x) is x rounded to the
+nearest DOUBLE. δ = 2^-1074 is the smallest positive DOUBLE, and each DOUBLE is a multiple of δ. Â and B̂
+are the values of step 2. The analysis is for n below 2^51, so (n − 1)·u is at most 1/4.
 
-An order of the additions is a binary tree over the n values. Each inner node adds the sums of its two
-children, with one rounding. Table order is the tree that adds each value to the sum of the values
-before it. The oracle can divide the rows of a group into parts, and threads add the parts at the same
-time. Each part starts its sum at +0.0, and an addition to +0.0 is exact. So each order of the oracle
-is such a tree, with at most n − 1 additions that round.
+An order of the additions is a binary tree with the n values as its leaves. Each inner node adds the sums
+of its two children, with one rounding, so the tree has n − 1 inner nodes. Table order is the tree that
+adds each value to the sum of the values before it. The oracle can divide the rows of a group into parts,
+and threads add the parts at the same time. So each order of the oracle is such a tree. Both engines also
+start each sum, and the sum of each part, at +0.0. The first addition to +0.0 is exact, so the tree
+leaves it out.
 
-1. **n of 1 or 2.** For n = 1, each tree gives the one value (item 7 gives the case of −0.0). For n = 2,
-   each tree adds the two values with one rounding. An IEEE addition gives the same result in both
+1. **n of 1 or 2.** For n = 1, each engine gives +0.0 + v_1. This is v_1, or +0.0 if v_1 is −0.0. For
+   n = 2, each tree adds the two values with one rounding. An IEEE addition gives the same result in both
    orders of its operands. So for n of 1 or 2, the comparison is exact.
 2. **The bound in each order.** For each tree, the computed sum differs from the exact sum by at most
    γ_{n−1}·A (N. J. Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd edition, 2002, section
-   4.2). For table order, S. M. Rump proves the smaller bound (n − 1)·u·A ("Error estimation of
-   floating-point summation and dot product", BIT 52, 2012). So the sums of two orders differ by at
-   most 2γ_{n−1}·A. For a small n, this is about (n − 1)·eps·A, which is B/2. For each n below 2^51,
-   (n − 1)·u is at most 1/4, so 2γ_{n−1}·A is at most 2B/3.
-3. **The rounding of B.** The checker uses B̂, and B̂ can be smaller than B. Confit rounds A once to Â.
-   Then `float_bound` multiplies Â by (n − 1)·2^-51, and the product rounds once. In the normal range,
-   B̂ ≥ (1 − u)²·B, which is more than 2B/3. Below the normal range, B̂ ≥ (1 − u)²·B − δ/2. A distance
-   d that is not 0 is at least δ, and d is at most 2B/3 by item 2. So B ≥ 1.5δ, and then B̂ − d > −δ.
-   B̂ and d are multiples of δ, so B̂ ≥ d. Thus the factor 2 in B covers the rounding of B.
-4. **Overflow.** Let T = 2^1024 − 2^970. A rounding to nearest gives an infinity only from a magnitude
-   of T or more. Confit computes Â + B̂ with one rounding. If this rounding is finite, the exact Â + B̂
-   is below T, and the rule of step 2 serves the group. Then no addition of any tree gives an infinity.
-   The proof is an induction over the tree, from the leaves. For a node, let k be the number of
-   additions that compute its sum, and A_k the sum of the absolute values of its leaves. The claim is
-   that the computed sum s of the node has |s| ≤ (1 + γ_k)·A_k. The claim holds for a leaf, with k = 0.
-   At an inner node, the claim for the two children gives a magnitude of at most (1 + γ_{k−1})·A_k for
-   their exact sum. This is at most (1 + γ_{n−1})·A. Also A ≤ (1 + u)·Â, and
-   B̂ ≥ (1 − u)·4(n − 1)·u·Â. For n of 2 or more, these give (1 + γ_{n−1})·A ≤ Â + B̂ < T. So the
-   addition does not give an infinity, and it rounds with a relative error of at most u. Thus
+   4.2). So the sums of two trees differ by at most 2γ_{n−1}·A. For a small n, this is about
+   (n − 1)·eps·A, which is B/2. Because (n − 1)·u is at most 1/4, 2γ_{n−1}·A is at most 2B/3.
+3. **The rounding of B.** The checker uses B̂, and B̂ can be smaller than B. Let d be the distance of two
+   sums. In the normal range, B̂ ≥ (1 − u)²·B, which is more than 2B/3, so B̂ ≥ d by item 2. Below the
+   normal range, B̂ ≥ (1 − u)²·B − δ/2. With d ≤ 2B/3, this gives B̂ − d ≥ ((1 − u)² − 2/3)·B − δ/2. If d
+   is not 0, then d ≥ δ, so B ≥ 1.5δ, and B̂ − d ≥ −3u·δ. B̂ and d are multiples of δ, so B̂ ≥ d. Thus the
+   factor 2 in B covers the rounding of B.
+4. **Overflow.** Let T = 2^1024 − 2^970. A rounding to nearest gives an infinity only from a magnitude of
+   T or more. If the rule of step 2 serves a group, fl(Â + B̂) is finite, so the exact Â + B̂ is below T.
+   Then no addition of any tree gives an infinity. The proof is an induction over the tree, from the
+   leaves. For a node, let k be the number of inner nodes in its subtree, and let A_k be the sum of the
+   absolute values of its leaves. The claim is that the computed sum s of the node has
+   |s| ≤ (1 + γ_k)·A_k. The claim holds for a leaf, with k = 0. At an inner node, the claim for the two
+   children bounds the magnitude of their exact sum by (1 + γ_{k−1})·A_k. This is at most
+   (1 + γ_{n−1})·A, which is below T:
+   - If A < T/2, then (1 + γ_{n−1})·A ≤ 4A/3 < T, because γ_{n−1} is at most 1/3.
+   - If A ≥ T/2, then B̂ is in the normal range, so B̂ ≥ (1 − u)·4(n − 1)·u·Â. With A ≤ (1 + u)·Â, this
+     gives (1 + γ_{n−1})·A ≤ Â + B̂ < T for n of 2 or more.
+
+   So the addition does not give an infinity, and it rounds with a relative error of at most u. Thus
    |s| ≤ (1 + u)(1 + γ_{k−1})·A_k ≤ (1 + γ_k)·A_k, and the claim holds for the node.
-5. **The division of `avg`.** Each engine divides its sum by n with one rounding. If a quotient q
-   rounds to a value in the normal range, the rounding moves it by at most u·|fl(q)|. So the two
-   divisions add at most u·(|confit| + |oracle|) to the distance. This is at most
-   eps·max(|confit|, |oracle|). Below the normal range, each division moves its quotient by at most
-   δ/2, and the term δ = 2^-1074 covers the two divisions. Before the divisions, the two sums differ by
-   at most 2B/3 (item 2). So the exact quotients differ by at most 2B/(3n). The bound build rounds B̂/n
-   once more. As in item 3, the margin from 2B/3 to B and the term δ cover this rounding.
+5. **The division of `avg`.** Each engine divides its sum by n with one rounding. If a quotient q rounds
+   to a value in the normal range, |fl(q) − q| ≤ u·|fl(q)|. So the two divisions add at most
+   u·(|confit| + |oracle|) to the distance. This is at most eps·max(|confit|, |oracle|). Below the normal
+   range, each division moves its quotient by at most δ/2, and the term δ = 2^-1074 covers the two
+   divisions. Before the divisions, the two sums differ by at most 2B/3 (item 2). So the exact quotients
+   differ by at most 2B/(3n). The bound build rounds B̂/n once more. As in item 3, the margin from 2B/3
+   to B and the term δ cover this rounding.
 6. **Underflow.** The exact sum of two DOUBLEs is a multiple of δ. If its magnitude is below 2^-1022, a
    DOUBLE holds it exactly, so the addition does not round. Thus the bound of a sum needs no extra term
    for underflow.
 7. **The sign of zero.** Both engines start each sum at +0.0. With a rounding to nearest, x + (−x) is
    +0.0, and +0.0 + (−0.0) is +0.0. So no partial sum is −0.0, and a value −0.0 does not change a sum,
-   as 0.0 does not. For `sum(DISTINCT v)`, −0.0 and 0.0 are one value, and the order of the rows
-   decides which of the two the sum adds. This choice does not change the sum.
+   as 0.0 does not. For `sum(DISTINCT v)`, −0.0 and 0.0 are one value, and the order of the rows decides
+   which of the two the sum adds. This choice does not change the sum.
 
-**Measurement** (2026-10-15, master 17316e0 with this change).
+**Measurement** (2026-10-15, on master 17316e0 with the change that this record describes).
 
 - **Large tables.** The loop measured three static tables on the oracle of the campaign
   (`confit.oracle.Oracle`), which copies each table into DuckDB. Each value has a random sign and a
@@ -215,12 +219,17 @@ is such a tree, with at most n − 1 additions that round.
 
   The loop also gave the three tables to DuckDB in a second way. It registered each table as an Apache
   Arrow table of one chunk, which DuckDB reads in place, with no copy. In this way, the two answers were
-  bit-exact for each group in each run. The campaign copies its tables, so the table above uses the
-  copy.
+  bit-exact for each group in each run. So the order of the oracle's additions depends on how the caller
+  gives a table to DuckDB. The campaign copies its tables, so the table above uses the copy.
 - **Campaign.** On the 50,000 seeds 31,000,000 to 31,049,999, confit refused 14 cases with a DOUBLE
-  `sum` or `avg` before this change. Now 7 of them agree, and in each of the 7, the two answers are
-  bit-exact. 5 refuse by name because an expression reads the value. 2 refuse for another reason first:
-  they have a WHERE clause that can remove the row of a request, and `shape="map"` answers one row for
-  each request. No other verdict changed, and no verdict is gated. No case needed the bound. The static
-  tables of the generator have 8 rows or fewer, and the oracle adds the rows of such a small table in
-  table order (see "What the oracle does").
+  `sum` or `avg` before this change:
+  - 7 cases now agree, and in each of them, the two answers are bit-exact. Their seeds are 31,004,452,
+    31,006,086, 31,009,225, 31,016,922, 31,047,366, 31,047,452 and 31,047,624.
+  - 5 cases refuse by name because an expression reads the value. Their seeds are 31,007,978,
+    31,022,598, 31,034,251, 31,037,949 and 31,045,173.
+  - 2 cases refuse for another reason first. Their seeds are 31,020,276 and 31,041,561. Each has a WHERE
+    clause that can remove the row of a request, and `shape="map"` answers one row for each request.
+
+  No other verdict changed, and no verdict is gated. No case needed the bound. The static tables of the
+  generator have 8 rows or fewer. In "What the oracle does", the oracle's sum over tables of 3 rows and of
+  5,000 rows was the table-order sum.
