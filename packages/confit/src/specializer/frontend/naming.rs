@@ -639,6 +639,19 @@ fn print(e: &SqlExpr) -> Option<String> {
             subquery,
             negated: false,
         } => format!("EXISTS({})", select_text(subquery)?),
+        // DuckDB binds IN over a subquery as `= ANY`.
+        SqlExpr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
+            let any = format!("({} = ANY({}))", print(expr)?, select_text(subquery)?);
+            if *negated {
+                format!("(NOT {any})")
+            } else {
+                any
+            }
+        }
         _ => return None,
     })
 }

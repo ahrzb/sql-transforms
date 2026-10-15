@@ -1010,7 +1010,31 @@
     ["a = NOT EXISTS (SELECT 1)", "(a = (NOT EXISTS(SELECT 1)))"],
     ["EXISTS (SELECT 1) IS NULL", "(EXISTS(SELECT 1) IS NULL)"],
     ["EXISTS (SELECT 1) = b", "(EXISTS(SELECT 1) = b)"],
-    ["- EXISTS (SELECT 1)", "-(EXISTS(SELECT 1))"]
+    ["- EXISTS (SELECT 1)", "-(EXISTS(SELECT 1))"],
+    ["a IN (SELECT 1) IS NULL", "((a = ANY(SELECT 1)) IS NULL)"],
+    ["a NOT IN (SELECT 1) IS NULL", "((NOT (a = ANY(SELECT 1))) IS NULL)"],
+    ["a IN (SELECT 1) IS TRUE", "(CAST((a = ANY(SELECT 1)) AS BOOLEAN) IS NOT DISTINCT FROM true)"],
+    ["NOT a IN (SELECT 1)", "(NOT (a = ANY(SELECT 1)))"],
+    ["NOT a NOT IN (SELECT 1)", "(NOT (NOT (a = ANY(SELECT 1))))"],
+    ["NOT a IN (SELECT 1) IS NULL", "(NOT ((a = ANY(SELECT 1)) IS NULL))"],
+    ["a = b IN (SELECT 1)", "(a = (b = ANY(SELECT 1)))"],
+    ["a IN (SELECT 1) = b", "((a = ANY(SELECT 1)) = b)"],
+    ["a || b IN (SELECT 1)", "((a || b) = ANY(SELECT 1))"],
+    ["a IN (SELECT 1) || b", "((a = ANY(SELECT 1)) || b)"],
+    ["a + b IN (SELECT 1)", "((a + b) = ANY(SELECT 1))"],
+    ["a OR b IN (SELECT 1)", "(a OR (b = ANY(SELECT 1)))"],
+    ["a IN (SELECT 1) AND b", "((a = ANY(SELECT 1)) AND b)"],
+    ["a IN (SELECT 1) IN (SELECT 1)", "((a = ANY(SELECT 1)) = ANY(SELECT 1))"],
+    ["a IN (SELECT 1) IN (b)", "((a = ANY(SELECT 1)) IN (b))"],
+    ["a IN (b) IN (SELECT 1)", "((a IN (b)) = ANY(SELECT 1))"],
+    ["a IN (SELECT 1) BETWEEN b AND c", "((a = ANY(SELECT 1)) BETWEEN b AND c)"],
+    ["a IN (SELECT 1) LIKE b", "((a = ANY(SELECT 1)) ~~ b)"],
+    ["a IS NULL IN (SELECT 1)", "((a IS NULL) = ANY(SELECT 1))"],
+    ["a IS DISTINCT FROM b IN (SELECT 1)", "(a IS DISTINCT FROM (b = ANY(SELECT 1)))"],
+    ["a IN (SELECT 1) IS DISTINCT FROM b", "((a = ANY(SELECT 1)) IS DISTINCT FROM b)"],
+    ["a IN (SELECT 1)::INT", "CAST((a = ANY(SELECT 1)) AS INTEGER)"],
+    ["- a IN (SELECT 1)", "(-(a) = ANY(SELECT 1))"],
+    ["a = NOT b IN (SELECT 1)", "(a = (NOT (b = ANY(SELECT 1))))"]
   ],
   "rejected": [
     ["a = b = c", "parser: syntax error at or near \"=\""],
@@ -1079,6 +1103,9 @@
     ["a BETWEEN b AND c BETWEEN d AND e", "parser: syntax error at or near \"BETWEEN\""],
     ["a BETWEEN b AND c IN (d)", "parser: syntax error at or near \"IN\""],
     ["a || NOT EXISTS (SELECT 1)", "parser: syntax error at or near \"EXISTS\""],
-    ["a BETWEEN NOT EXISTS (SELECT 1) AND c", "parser: syntax error at or near \"NOT\""]
+    ["a BETWEEN NOT EXISTS (SELECT 1) AND c", "parser: syntax error at or near \"NOT\""],
+    ["a BETWEEN b AND c IN (SELECT 1)", "parser: syntax error at or near \"IN\""],
+    ["a LIKE b IN (SELECT 1)", "parser: syntax error at or near \"IN\""],
+    ["a || NOT b IN (SELECT 1)", "parser: syntax error at or near \"b\""]
   ]
 }

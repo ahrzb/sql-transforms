@@ -558,7 +558,33 @@ The first five are ruled, in this order; the rest follow.
   other verdict moved, and 0 verdicts gated; the 4,527 cases of
   33,100,000..34,099,999 that read EXISTS gave 2,759 AGREE, 108 AGREE_TRAP,
   0 gated, and no unexplained metamorphic finding.
-  Next: `x IN (SELECT s.v FROM s ...)`.
+  `x [NOT] IN (SELECT s.c FROM s WHERE ...)` serves over the same FROM and
+  WHERE, from three counts (`in_subquery` in `subquery.rs`): `hit`, with the
+  IN test `s.c = x` as one more key after the WHERE terms; `rows`,
+  `count(*)`; and `values`, `count(s.c)`. IN is TRUE if `hit > 0`, else FALSE
+  if `rows = 0`, else NULL if `x` is NULL or `values < rows`, else FALSE, and
+  NOT IN swaps TRUE and FALSE (measured 2026-10-15 and pinned). DuckDB
+  evaluates `x` once the subquery has a row: after the whole WHERE, both
+  bounds of BETWEEN included, so over a WHERE without a key `x` is a guarded
+  key over every term (`guarded_key` with `halves` false); over a WHERE with
+  a key, for every request of the batch once one request matches a static
+  row, so an `x` that can trap refuses there (batch-dependent). The item must
+  be a column of the table, since DuckDB evaluates it over the matched rows;
+  a VARCHAR against another type is DuckDB's binder error and refuses, as do
+  an `x` that reads a joined table or holds a subquery. The 27 IN forms now
+  in `operator-precedence.json` (24 trees, 3 refusals) agree with the parser
+  as it was. The generator draws `x [NOT] IN` in place of about one other
+  stand-alone subquery in five, after every other draw, with `x` a key's
+  outer column or, one time in ten, that column + 1. On
+  30,050,000..30,099,999, against the verdicts of #473, the 149 cases whose
+  SQL changed gave 83 AGREE, 63 REFUSED, 2 AGREE_TRAP and 1 DIVERGE_OPT (8
+  moved from AGREE or AGREE_TRAP to the refusal of an `x` that can trap, 2
+  from REFUSED to AGREE), no other verdict moved, and 0 verdicts gated; the
+  5,513 cases of 34,100,000..36,099,999 that read IN gave 3,158 AGREE, 146
+  AGREE_TRAP, 0 gated, and no unexplained metamorphic finding. 149 of their
+  2,175 refusals name an `x` that can trap over a WHERE with a key.
+  Next: the quantified comparisons `x op ANY (SELECT s.c ...)` and
+  `x op ALL (...)` over the same subquery.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the
@@ -572,8 +598,8 @@ The first five are ruled, in this order; the rest follow.
   and the DOUBLE `sum`/`avg` domains of the float-reduction bound,
   [decisions/open/double-sum-bound.md](decisions/open/double-sum-bound.md).
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
-  set operations.** Refused today, except the scalar subquery and EXISTS
-  above; only batch-dependent forms are out of scope. Row-local derived
+  set operations.** Refused today, except the scalar subquery, EXISTS and
+  IN above; only batch-dependent forms are out of scope. Row-local derived
   tables and CTEs are in Next.
 - **float32** (needs f32 arithmetic, not widening), **temporal types**
   (columns, casts, literals, functions; opaque temporal join keys could use a
