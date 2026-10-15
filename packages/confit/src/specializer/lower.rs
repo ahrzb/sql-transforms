@@ -19,8 +19,12 @@
 //!
 //! CASE lowers to a condition chain with a join block; branch results are
 //! evaluated only on their taken path (a guarded `1/0`-style branch must not
-//! trap eagerly — SQL semantics, verified by test). CAST failure is a
-//! conditional trap block; TRY_CAST folds the failure into the null lane.
+//! trap eagerly — SQL semantics, verified by test). A CASE whose parts
+//! cannot trap lowers to selects instead when it is small or a NULL guard
+//! (`select_case`): computing every part on every row is invisible there,
+//! and costs less than blocks that carry the live stack and load their
+//! columns again. CAST failure is a conditional trap block; TRY_CAST folds
+//! the failure into the null lane.
 //!
 //! ponytail: blocks re-load columns instead of receiving them as branch args
 //! — pure loads, identical semantics, simpler lowering. Thread them when the
@@ -2785,6 +2789,9 @@ impl<'a> FB<'a> {
         if let Some((table, prefix)) = dispatch_table(arms) {
             return self.case_dispatch(e, arms, prefix, default, &table, live);
         }
+        if select_case(e) {
+            return self.case_select(e, arms, default, live);
+        }
         let res_ty = e.ty.lane();
         let res_nullable = e.nullable;
 
@@ -2867,6 +2874,69 @@ impl<'a> FB<'a> {
                 val: tail[0],
             }
         })
+    }
+
+    /// A CASE that [`select_case`] admits, without branches: every
+    /// condition, every result and the default on every row, then one
+    /// select per arm, the last arm first, picks the result that the chain
+    /// of arms would take.
+    fn case_select(
+        &mut self,
+        e: &SExpr,
+        arms: &[(SExpr, SExpr)],
+        default: Option<&SExpr>,
+        live: &mut Live,
+    ) -> Result<Lane, PrepareError> {
+        // Each part rides the live stack while the next one is emitted,
+        // since a part may still split blocks (a CASE of its own).
+        let base = live.len();
+        for (cond, result) in arms {
+            let lc = self.emit(cond, live)?;
+            let keep = self.truthy(lc);
+            live.push((
+                Lane {
+                    flag: None,
+                    val: keep,
+                },
+                Ty::I1,
+            ));
+            let lr = self.emit(result, live)?;
+            live.push((lr, result.ty));
+        }
+        let mut acc = match default {
+            Some(d) => self.emit(d, live)?,
+            None => {
+                let flag = self.const_i1(false);
+                let val = self.default_of(e.ty.lane());
+                Lane {
+                    flag: Some(flag),
+                    val,
+                }
+            }
+        };
+        let parts: Vec<Lane> = live.drain(base..).map(|(l, _)| l).collect();
+        for pair in parts.chunks(2).rev() {
+            let (keep, lr) = (pair[0].val, pair[1]);
+            let val = self.select_of(keep, lr.val, acc.val);
+            let flag = if e.nullable {
+                let taken = match lr.flag {
+                    Some(f) => f,
+                    None => self.const_i1(true),
+                };
+                let passed = match acc.flag {
+                    Some(f) => f,
+                    None => self.const_i1(true),
+                };
+                Some(self.select_of(keep, taken, passed))
+            } else {
+                None
+            };
+            acc = Lane { flag, val };
+        }
+        if !e.nullable {
+            acc.flag = None;
+        }
+        Ok(acc)
     }
 
     /// A CASE whose first `prefix` conditions are `x = <integer constant>`
@@ -3750,4 +3820,84 @@ fn dispatch_table(arms: &[(SExpr, SExpr)]) -> Option<(Vec<(i64, usize)>, usize)>
     }
     table.sort_unstable();
     Some((table, prefix))
+}
+
+/// The most operations a CASE lowered to selects holds ([`select_case`]),
+/// itself included. Reading a column, a constant or a computed value is not
+/// an operation.
+const SELECT_CASE_OPS: usize = 8;
+
+/// Whether a CASE lowers to selects ([`FB::case_select`]) instead of a
+/// chain of blocks: no condition, result or default can trap
+/// ([`plan::can_trap`], which also keeps out integer arithmetic and
+/// everything impure), and either it holds at most [`SELECT_CASE_OPS`]
+/// operations, each a comparison, AND, OR, NOT, IS NULL, arithmetic, abs,
+/// an integer read as DOUBLE or a CASE, or it is a NULL guard
+/// ([`null_guard`]). Each part is then computed on every row, which no row
+/// can see. A chain splits three blocks for one arm, and each carries the
+/// whole live stack: with a `coalesce(x, 'NaN')` at each of 4,096 reads of
+/// 256 features, as the native catalog reads them, 64 rows served in 15 ms,
+/// against 2 ms for plain reads (2026-10-14).
+fn select_case(e: &SExpr) -> bool {
+    let SKind::Case { arms, default } = &e.kind else {
+        return false;
+    };
+    let mut budget = SELECT_CASE_OPS;
+    (few_ops(e, &mut budget) || null_guard(arms, default.as_deref()))
+        && arms
+            .iter()
+            .all(|(c, r)| !plan::can_trap(c) && !plan::can_trap(r))
+        && default.as_deref().is_none_or(|d| !plan::can_trap(d))
+}
+
+/// Whether a CASE is `CASE WHEN c THEN NULL ELSE v END` with a `c` of at
+/// most [`SELECT_CASE_OPS`] operations: each field read of a SQL function
+/// with a `null_when` has this shape. As selects, `v` is computed on every
+/// row whatever its size, which costs only the rows where `c` holds. As a
+/// chain, each field read is a branch, and each block it starts loads again
+/// every column that it reads: 64 field reads of 256 features served 64
+/// rows in 28 ms, against 4 ms without `null_when` (2026-10-14).
+fn null_guard(arms: &[(SExpr, SExpr)], default: Option<&SExpr>) -> bool {
+    let [(c, r)] = arms else {
+        return false;
+    };
+    let mut budget = SELECT_CASE_OPS;
+    matches!(r.kind, SKind::NullOf) && default.is_some() && few_ops(c, &mut budget)
+}
+
+/// Whether `e` holds at most `budget` operations, each of a kind that
+/// [`select_case`] admits, counting them off `budget`.
+fn few_ops(e: &SExpr, budget: &mut usize) -> bool {
+    let leaf = matches!(
+        e.kind,
+        SKind::Col(_)
+            | SKind::Slot(_)
+            | SKind::StaticCol { .. }
+            | SKind::JoinHit(_)
+            | SKind::Shared(_)
+            | SKind::Lit(_)
+            | SKind::NullOf
+    );
+    if leaf {
+        return true;
+    }
+    let Some(left) = budget.checked_sub(1) else {
+        return false;
+    };
+    *budget = left;
+    match &e.kind {
+        SKind::Cmp { a, b, .. }
+        | SKind::And { a, b }
+        | SKind::Or { a, b }
+        | SKind::Arith { a, b, .. } => few_ops(a, budget) && few_ops(b, budget),
+        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) | SKind::Abs(a) => {
+            few_ops(a, budget)
+        }
+        SKind::Case { arms, default } => {
+            arms.iter()
+                .all(|(c, r)| few_ops(c, budget) && few_ops(r, budget))
+                && default.as_deref().is_none_or(|d| few_ops(d, budget))
+        }
+        _ => false,
+    }
 }
