@@ -193,8 +193,9 @@ impl Dialect for DuckDbPrecedence {
     }
 
     fn parse_prefix(&self, parser: &mut Parser) -> Option<Result<Expr, ParserError>> {
-        // sqlparser takes the operand of a sign up to `*`, so `-a ^ b` would
-        // be `-(a ^ b)`; DuckDB binds the sign tighter.
+        // sqlparser takes the operand of a sign up to `*` and ranks `^@` with
+        // `::`, so `-a ^@ b` would be `-(a ^@ b)`; DuckDB binds the sign
+        // tighter.
         let op = match parser.peek_token_ref().token {
             Token::Minus => UnaryOperator::Minus,
             Token::Plus => UnaryOperator::Plus,
