@@ -8,7 +8,8 @@ before the build groups them. A request that matches no group reads the
 aggregate of no rows: 0 for count, NULL for the others. If the item is an
 expression over aggregates, `max(s.v) + 1`, the row holds the expression
 over the group's aggregates, and a request that matches no group reads the
-expression over the aggregates of no rows. The oracle evaluates the
+expression over the aggregates of no rows. `EXISTS (SELECT * FROM s WHERE
+...)` is the count of the same rows above 0. The oracle evaluates the
 subquery's WHERE in written order over (distinct outer values) x (static
 rows), the aggregate's argument over the matched rows only, and the item once
 for each distinct outer value (the pins at the end). Only the outer side of a
@@ -395,6 +396,8 @@ def test_empty_static_table_and_empty_batch(agg, shape):
         "FROM __THIS__ AS t",
         "SELECT id, (SELECT count(*) FROM s WHERE s.k = t.k) AS c, "
         "(SELECT count(*) FROM s WHERE s.k = c) AS e FROM __THIS__ AS t",
+        "SELECT id, EXISTS (SELECT 1 FROM s WHERE s.k = t.k) AS c, c AND TRUE AS d "
+        "FROM __THIS__ AS t",
     ],
 )
 def test_select_list_alias_of_a_subquery_is_duckdbs_binder_error(sql):
@@ -1116,6 +1119,201 @@ def test_a_sum_over_distinct_values_adds_each_value_once():
     assert "sum(DISTINCT w) over the rows of one key" in v.detail, v.detail
 
 
+# EXISTS and NOT EXISTS: the count of the rows that the WHERE matches, above
+# 0. Each item is `*`, a constant or a column of the table, none of which can
+# trap where the oracle evaluates the items, over the matched rows.
+
+
+def _exists(item="1", where="s.k = t.k", neg=False):
+    w = "" if where is None else f" WHERE {where}"
+    return f"{'NOT ' if neg else ''}EXISTS (SELECT {item} FROM s{w})"
+
+
+EXISTS_WHERES = [
+    "s.k = t.k",
+    "s.k = t.k AND s.v > 5",
+    "s.v > 5 AND s.k = t.k",
+    "s.f = t.x",  # -0.0 matches 0.0, NaN matches NaN
+    "s.s = t.name",
+    "s.u = t.u",
+    "s.j = t.k",
+    "s.k = t.k AND s.j = t.j",
+    "s.k = t.k AND s.v IS NULL",
+    "s.k = t.k AND FALSE",
+    "s.v > 5",  # uncorrelated
+    "s.v > 100",  # uncorrelated, and no row passes
+    None,
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("neg", [False, True])
+@pytest.mark.parametrize("where", EXISTS_WHERES)
+def test_exists(where, neg, shape):
+    sql = f"SELECT id, {_exists('1', where, neg)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+@pytest.mark.parametrize(
+    "item",
+    ["*", "1", "NULL", "'x'", "-1", "TRUE", "s.v", "v", "(s.f)", "s.v, 2", "1 AS one"],
+)
+def test_exists_items(item):
+    sql = f"SELECT id, {_exists(item)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": S})
+
+
+EXISTS_FORMS = [
+    # In the WHERE, alone, negated and beside other terms.
+    f"SELECT id FROM __THIS__ AS t WHERE {_exists()}",
+    f"SELECT id FROM __THIS__ AS t WHERE {_exists('*', neg=True)}",
+    "SELECT id FROM __THIS__ AS t WHERE t.j = 1 "
+    f"AND {_exists('1', 's.k = t.k AND s.v > 5')}",
+    f"SELECT id FROM __THIS__ AS t WHERE t.j = 2 OR {_exists(neg=True)}",
+    # Under CASE, inside expressions, and beside the count that it tests.
+    f"SELECT id, CASE WHEN {_exists()} THEN 'y' ELSE 'n' END AS c FROM __THIS__ AS t",
+    f"SELECT id, coalesce({_exists()}, FALSE) AS c FROM __THIS__ AS t",
+    f"SELECT id, {_exists()} = ((SELECT count(*) FROM s WHERE s.k = t.k) > 0) AS c "
+    "FROM __THIS__ AS t",
+    f"SELECT id, {_exists()} AND {_exists('1', 's.k = t.k AND s.v > 5', True)} AS c "
+    "FROM __THIS__ AS t",
+    # NOT takes `EXISTS (...) IS NULL`, as the oracle's NOT does.
+    f"SELECT id, {_exists(neg=True)} IS NULL AS c FROM __THIS__ AS t",
+    f"SELECT id, ({_exists(neg=True)}) IS NULL AS c FROM __THIS__ AS t",
+    f"SELECT id, {_exists(neg=True)} IS NOT DISTINCT FROM t.j > 1 AS c "
+    "FROM __THIS__ AS t",
+    # The table aliased, its columns renamed, and qualified by schema.
+    "SELECT id, EXISTS (SELECT * FROM s AS x(kk, jj) WHERE x.kk = t.k AND x.jj = 2) "
+    "AS c FROM __THIS__ AS t",
+    "SELECT id, EXISTS (SELECT x.v FROM s AS x WHERE x.k = t.k) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, EXISTS (SELECT 1 FROM main.s WHERE main.s.k = t.k) AS c "
+    "FROM __THIS__ AS t",
+    # A lateral alias as the outer side, and WHERE reading an item's alias.
+    "SELECT id, k AS kk, EXISTS (SELECT 1 FROM s WHERE s.k = kk) AS c "
+    "FROM __THIS__ AS t",
+    f"SELECT id, {_exists()} AS c FROM __THIS__ AS t WHERE c",
+    # DuckDB's names of unaliased items.
+    f"SELECT {_exists()}, NOT EXISTS (SELECT * FROM s AS x WHERE x.k = t.k AND "
+    "x.j = t.j), EXISTS (SELECT s.v, 'a', TRUE AS b, -1 FROM s) FROM __THIS__ AS t",
+    f"SELECT {_exists(neg=True)} IS NULL, ({_exists('NULL', neg=True)}) IS NULL "
+    "FROM __THIS__ AS t",
+    # Beside a FROM join (under the default shape its duplicate keys refuse).
+    f"SELECT t.id, {_exists()} AS c FROM __THIS__ AS t JOIN s AS s2 ON s2.k = t.k",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("sql", EXISTS_FORMS)
+def test_exists_forms(sql, shape):
+    if shape is None and "JOIN s AS s2" in sql:
+        assert_parity(sql, T, statics={"s": S}, expect="REFUSED")
+        return
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["s.k IS NOT DISTINCT FROM t.k", "s.f IS NOT DISTINCT FROM t.x"],
+)
+def test_exists_with_a_key_that_matches_null(where):
+    for neg in (False, True):
+        sql = f"SELECT id, {_exists('1', where, neg)} AS c FROM __THIS__ AS t"
+        assert_parity(sql, T, statics={"s": S})
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", "s.v > 5", None])
+def test_exists_over_an_empty_table_and_an_empty_batch(where, shape):
+    for neg in (False, True):
+        sql = f"SELECT id, {_exists('*', where, neg)} AS c FROM __THIS__ AS t"
+        assert_parity(sql, T, statics={"s": S.slice(0, 0)}, shape=shape)
+        assert_parity(sql, T.slice(0, 0), statics={"s": S}, shape=shape)
+
+
+def _kexists(where: str, neg: bool = False, tail: str = "") -> str:
+    not_ = "NOT " if neg else ""
+    return (
+        f"SELECT pid, {not_}EXISTS (SELECT 1 FROM s WHERE {where}) AS c "
+        f"FROM __THIS__{tail}"
+    )
+
+
+@pytest.mark.parametrize(
+    "sql, expect",
+    [
+        (_kexists(f"s.k = {TRAP}"), "AGREE_TRAP"),
+        (_kexists(f"s.k = {TRAP}", True, " WHERE x = 0 OR x IS NULL"), "AGREE"),
+        (_kexists(f"s.f = 7 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_kexists(f"s.f = 0 AND s.k = {TRAP}", True), "AGREE_TRAP"),
+        (_kexists(f"s.k IS NOT DISTINCT FROM {TRAP}"), "AGREE_TRAP"),
+        (
+            f"SELECT pid FROM __THIS__ WHERE x = 0 AND EXISTS (SELECT 1 FROM s "
+            f"WHERE s.k = {TRAP})",
+            TRAP_OR_OPT,
+        ),
+        (
+            f"SELECT pid FROM __THIS__ WHERE x = 0 AND NOT EXISTS (SELECT * FROM s "
+            f"WHERE s.k = {TRAP})",
+            TRAP_OR_OPT,
+        ),
+    ],
+)
+def test_exists_whose_first_key_can_trap(sql, expect):
+    assert_parity(sql, KT, statics={"s": KS}, expect=expect)
+
+
+@pytest.mark.parametrize(
+    "sql, why",
+    [
+        (
+            f"SELECT id, {_exists(item)} AS c FROM __THIS__ AS t",
+            f"the SELECT item {item} under EXISTS",
+        )
+        # The first traps where the oracle evaluates it, over the rows k = 1.
+        for item in [
+            "s.v + 9223372036854775807",
+            "count(*)",
+            "t.k",
+            "s.*",
+            "* EXCLUDE (k)",
+        ]
+    ]
+    + [
+        (
+            f"SELECT id, {_exists('1', 's.k = t.k LIMIT 1')} AS c FROM __THIS__ AS t",
+            "ORDER BY or LIMIT",
+        ),
+        (
+            f"SELECT id, {_exists('DISTINCT s.v')} AS c FROM __THIS__ AS t",
+            "a subquery with DISTINCT",
+        ),
+        (
+            f"SELECT id, {_exists('1', 's.k = t.k GROUP BY s.k')} AS c "
+            "FROM __THIS__ AS t",
+            "GROUP BY or HAVING",
+        ),
+        (
+            f"SELECT id, {_exists('1', 's.k = t.k AND s.v + 9223372036854775807 > 0')} "
+            "AS c FROM __THIS__ AS t",
+            "reads only its table and can trap",
+        ),
+        (
+            "SELECT id, EXISTS (SELECT 1 FROM __THIS__ AS r WHERE r.k = t.k) AS c "
+            "FROM __THIS__ AS t",
+            "over the request table",
+        ),
+        (
+            f"SELECT t.id FROM __THIS__ AS t JOIN s AS s2 ON {_exists()}",
+            "in FROM or in a JOIN condition",
+        ),
+    ],
+)
+def test_exists_refuses_by_name(sql, why):
+    v = assert_parity(sql, T, statics={"s": S}, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap but in the outer side of a first key, so these facts never
 # change a served answer. They are why a WHERE term that reads only the
@@ -1187,13 +1385,16 @@ KTRAP = TRAP.replace("x", "t.x")
         (f"s.v = t.y + 1 AND s.k = {KTRAP}", True),
     ],
 )
+@pytest.mark.parametrize(
+    "form", ["(SELECT count(*) FROM s WHERE {})", "EXISTS (SELECT 1 FROM s WHERE {})"]
+)
 def test_pin_the_outer_side_of_a_key_runs_over_the_rows_the_terms_before_it_pass(
-    where, traps
+    where, traps, form
 ):
     with Oracle() as o:
         o.table("t", "pid BIGINT, x BIGINT, y BIGINT", KT_ROWS)
         o.load("s", KS)
-        got = o.try_answer(f"SELECT pid, (SELECT count(*) FROM s WHERE {where}) FROM t")
+        got = o.try_answer(f"SELECT pid, {form.format(where)} FROM t")
     assert isinstance(got, Trap) == traps, got
 
 
@@ -1224,6 +1425,22 @@ def test_pin_the_outer_side_of_a_key_runs_over_the_rows_the_terms_before_it_pass
             f"SELECT pid, (SELECT count(*) FROM s WHERE s.k = {KTRAP}) FROM t, s2 "
             "WHERE t.pid = s2.id",
             False,
+        ),
+        # EXISTS runs where the count does.
+        (
+            "SELECT pid FROM t WHERE t.x = 0 "
+            f"AND EXISTS (SELECT 1 FROM s WHERE s.k = {KTRAP})",
+            True,
+        ),
+        (
+            f"SELECT pid, EXISTS (SELECT 1 FROM s WHERE s.k = {KTRAP}) FROM t "
+            "WHERE t.x = 0",
+            False,
+        ),
+        (
+            f"SELECT pid, CASE WHEN t.x = 0 THEN EXISTS (SELECT 1 FROM s "
+            f"WHERE s.k = {KTRAP}) END FROM t",
+            True,
         ),
     ],
 )
@@ -1286,3 +1503,42 @@ def test_pin_distinct_reads_one_value_for_each_class_of_equal_values():
         o.load("d", d)
         got = o.try_answer("SELECT (SELECT count(DISTINCT d.f) FROM d) FROM t")
     assert [tuple(r.values()) for r in got.to_pylist()] == [(3,)]
+
+
+# EXISTS, measured 2026-10-15 over PIN_S: the group k = 1 has z = 0 twice,
+# the group k = 3 has z = 1. Its value and its traps are those of the count
+# of its rows above 0, and its items run over the matched rows, so an item
+# that can trap refuses.
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "s.k = t.k",
+        f"s.z + {BIG} > 0 AND s.k = t.k",
+        f"s.k = t.k AND s.z + {BIG} > 0",
+        "s.z > 5",
+    ],
+)
+def test_pin_exists_answers_and_traps_as_the_count_of_its_rows_above_0(where):
+    exists = _pin(f"SELECT k, EXISTS (SELECT 1 FROM s WHERE {where}) FROM t", [1, 2])
+    count = _pin(f"SELECT k, (SELECT count(*) FROM s WHERE {where}) > 0 FROM t", [1, 2])
+    if isinstance(count, Trap):
+        assert isinstance(exists, Trap), exists
+        assert exists.message == count.message
+    else:
+        assert exists == count
+
+
+def test_pin_the_items_under_exists_run_over_the_matched_rows():
+    sql = f"SELECT k, EXISTS (SELECT s.z + {BIG} FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [1, 2]) == [(1, True), (2, False)]
+    got = _pin(sql, [1, 3])
+    assert isinstance(got, Trap), got
+    assert "Overflow in addition of INT64" in got.message
+
+
+def test_pin_exists_over_an_aggregate_is_true():
+    # An aggregate without GROUP BY gives one row, over no rows too.
+    sql = "SELECT k, EXISTS (SELECT count(*) FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [1, 2]) == [(1, True), (2, True)]

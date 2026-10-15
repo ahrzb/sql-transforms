@@ -11,6 +11,8 @@
 //! row holds the expression over the group's aggregates instead
 //! ([`plan::AggPost`]), and a request that matches no group reads the
 //! expression over the aggregates of no rows, which the bind evaluates.
+//! `EXISTS (SELECT * FROM s WHERE ...)` binds as the count of the same rows
+//! above 0 ([`Binder::exists_subquery`]).
 //!
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15)
 //! evaluates the subquery's WHERE over (distinct correlated values) x
@@ -32,7 +34,9 @@
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
-use sqlparser::ast::{DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArguments};
+use sqlparser::ast::{
+    DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArguments, WildcardAdditionalOptions,
+};
 
 /// The subquery's one static table, as its WHERE and its aggregate see it.
 struct Inner<'s> {
@@ -105,7 +109,7 @@ impl Inner<'_> {
                 if self.reads(e)? {
                     return Err(unsup(
                         "a struct field, or a column named through another schema, of a \
-                         scalar subquery's table",
+                         subquery's table",
                     ));
                 }
                 Ok(None)
@@ -179,7 +183,7 @@ impl Inner<'_> {
 
 fn outer_form_refusal(e: &SqlExpr) -> PrepareError {
     unsup(format!(
-        "expression {e} as the outer side of a scalar subquery's key -- the keys \
+        "expression {e} as the outer side of a subquery's key -- the keys \
          served are column references, operators, CASE and plain function calls"
     ))
 }
@@ -216,12 +220,48 @@ pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareE
 /// The refusal of a subquery form outside what this module serves.
 fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
-        "a scalar subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) \
-         FROM s WHERE ...) with f one of count, min, max, sum and avg, or an expression over \
-         such aggregates, over one static table, each WHERE term s.k = <outer expression> or \
-         a term that reads only s, and none that can trap but the outer expression of the \
-         first key"
+        "a subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) FROM s \
+         WHERE ...) with f one of count, min, max, sum and avg, or an expression over such \
+         aggregates, and [NOT] EXISTS (SELECT * | constants | columns of s FROM s WHERE ...), \
+         over one static table, each WHERE term s.k = <outer expression> or a term that reads \
+         only s, and none that can trap but the outer expression of the first key"
     ))
+}
+
+/// Whether `e` is a literal, which DuckDB reads without evaluating
+/// anything: a number, maybe signed, a string, a boolean or NULL.
+fn is_constant(e: &SqlExpr) -> bool {
+    match e {
+        SqlExpr::Nested(x) => is_constant(x),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus | UnaryOperator::Plus,
+            expr,
+        } => matches!(expr.as_ref(), SqlExpr::Value(v) if matches!(v.value, SqlValue::Number(..))),
+        SqlExpr::Value(v) => matches!(
+            v.value,
+            SqlValue::Number(..) | SqlValue::SingleQuotedString(_) | SqlValue::Boolean(_) | SqlValue::Null
+        ),
+        _ => false,
+    }
+}
+
+/// Whether a `*` item has no EXCLUDE, REPLACE or other option.
+pub(super) fn plain_star(o: &WildcardAdditionalOptions) -> bool {
+    let WildcardAdditionalOptions {
+        wildcard_token: _,
+        opt_ilike,
+        opt_exclude,
+        opt_except,
+        opt_replace,
+        opt_rename,
+        opt_alias,
+    } = o;
+    opt_ilike.is_none()
+        && opt_exclude.is_none()
+        && opt_except.is_none()
+        && opt_replace.is_none()
+        && opt_rename.is_none()
+        && opt_alias.is_none()
 }
 
 /// The refusal of a WHERE term that is neither a key nor a filter.
@@ -238,7 +278,7 @@ impl Binder<'_> {
     /// joins. The same text bound again at this level reads the same join.
     pub(super) fn scalar_subquery(&self, query: &sqlparser::ast::Query) -> Result<SExpr, PrepareError> {
         if !self.subqueries.get() {
-            return Err(unsup("a scalar subquery in FROM or in a JOIN condition"));
+            return Err(unsup("a subquery in FROM or in a JOIN condition"));
         }
         self.bound_subquery.set(true);
         if let Some((_, e)) = self.agg_reads.borrow().iter().find(|(q, _)| q == query) {
@@ -285,7 +325,7 @@ impl Binder<'_> {
         };
         if name.bare().eq_ignore_ascii_case(&self.request_table) {
             return Err(unsup(
-                "a scalar subquery over the request table -- an aggregate across the \
+                "a subquery over the request table -- a subquery that reads the other \
                  requests of a batch is outside the serving model",
             ));
         }
@@ -530,6 +570,78 @@ impl Binder<'_> {
         };
         self.agg_reads.borrow_mut().push((query.clone(), value.clone()));
         Ok(value)
+    }
+
+    /// Bind `EXISTS (SELECT ... FROM s WHERE ...)` as the test
+    /// `(SELECT count(*) FROM s WHERE ...) > 0`, which reads the same hidden
+    /// join: DuckDB answers the same value for both, and traps at the same
+    /// requests (measured 2026-10-15). DuckDB evaluates the SELECT items
+    /// over the matched rows, so each must be one that cannot trap there:
+    /// `*`, a constant or a column of the table. The parser writes
+    /// `NOT EXISTS` as NOT over EXISTS (`precedence.rs`).
+    pub(super) fn exists_subquery(
+        &self,
+        query: &sqlparser::ast::Query,
+        negated: bool,
+    ) -> Result<SExpr, PrepareError> {
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            return Err(form_refusal("a body that is not one SELECT"));
+        };
+        if select.projection.is_empty() {
+            return Err(form_refusal("no SELECT item"));
+        }
+        // The items read the count's table; a FROM that the count refuses
+        // is left to it, so the two refuse it alike.
+        let table = match select.from.as_slice() {
+            [twj] if twj.joins.is_empty() => plain_table(&twj.relation)?
+                .filter(|(name, _)| !name.bare().eq_ignore_ascii_case(&self.request_table))
+                .and_then(|(name, alias)| {
+                    Some((resolve_static(self.statics, &name).ok()?, name, alias))
+                }),
+            _ => None,
+        };
+        if let Some((source, name, alias)) = table {
+            let renamed = apply_column_alias(&self.statics[source], alias)?;
+            let inner = Inner {
+                st: renamed.as_ref().unwrap_or(&self.statics[source]),
+                name: alias.map_or_else(|| name.bare().to_string(), |a| a.name.value.clone()),
+                schema: if alias.is_some() { String::new() } else { name.schema() },
+            };
+            for item in &select.projection {
+                let served = match item {
+                    SelectItem::Wildcard(o) => plain_star(o),
+                    SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
+                        is_constant(e) || inner.col(e)?.is_some()
+                    }
+                    _ => false,
+                };
+                if !served {
+                    return Err(form_refusal(&format!(
+                        "the SELECT item {item} under EXISTS (each item must be *, a constant \
+                         or a column of its table: DuckDB evaluates the items over the matched \
+                         rows, where they can trap)"
+                    )));
+                }
+            }
+        }
+        let count = Parser::new(&super::super::precedence::DuckDbPrecedence)
+            .try_with_sql("count(*)")
+            .and_then(|mut p| p.parse_expr())
+            .map_err(|e| PrepareError::Internal(format!("count(*) does not parse: {e}")))?;
+        let mut counted = query.clone();
+        if let SetExpr::Select(s) = counted.body.as_mut() {
+            s.projection = vec![SelectItem::UnnamedExpr(count)];
+        }
+        let count = self.scalar_subquery(&counted)?;
+        Ok(SExpr {
+            kind: SKind::Cmp {
+                pred: if negated { CmpPred::Eq } else { CmpPred::Gt },
+                a: Box::new(count),
+                b: Box::new(lit_i64(0)),
+            },
+            ty: Ty::I1,
+            nullable: false,
+        })
     }
 
     /// One served aggregate call, `count(*)`, `count`, `min`, `max`, `sum`

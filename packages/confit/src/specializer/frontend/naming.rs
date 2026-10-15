@@ -633,12 +633,18 @@ fn print(e: &SqlExpr) -> Option<String> {
             format!("main.\"position\"({}, {})", print(r#in)?, print(expr)?)
         }
         SqlExpr::Subquery(q) => format!("({})", select_text(q)?),
+        // The parser writes `NOT EXISTS` as NOT over EXISTS, which the arm
+        // of NOT prints `(NOT EXISTS(...))`.
+        SqlExpr::Exists {
+            subquery,
+            negated: false,
+        } => format!("EXISTS({})", select_text(subquery)?),
         _ => return None,
     })
 }
 
-/// DuckDB's text of a subquery of the form that `subquery.rs` serves: one
-/// SELECT item over one table, maybe a WHERE (`SelectNode::ToString`).
+/// DuckDB's text of a subquery of the form that `subquery.rs` serves: its
+/// SELECT items over one table, maybe a WHERE (`SelectNode::ToString`).
 fn select_text(q: &sqlparser::ast::Query) -> Option<String> {
     if q.with.is_some() || q.order_by.is_some() || q.limit_clause.is_some() {
         return None;
@@ -653,13 +659,22 @@ fn select_text(q: &sqlparser::ast::Query) -> Option<String> {
     if s.distinct.is_some() || grouped || s.having.is_some() {
         return None;
     }
-    let item = match s.projection.as_slice() {
-        [SelectItem::UnnamedExpr(e)] => print(e)?,
-        [SelectItem::ExprWithAlias { expr, alias }] => {
-            format!("{} AS {}", print(expr)?, ident(&alias.value))
-        }
-        _ => return None,
-    };
+    let items = s
+        .projection
+        .iter()
+        .map(|i| match i {
+            SelectItem::UnnamedExpr(e) => print(e),
+            SelectItem::ExprWithAlias { expr, alias } => {
+                Some(format!("{} AS {}", print(expr)?, ident(&alias.value)))
+            }
+            SelectItem::Wildcard(o) if subquery::plain_star(o) => Some("*".into()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if items.is_empty() {
+        return None;
+    }
+    let item = items.join(", ");
     let [twj] = s.from.as_slice() else {
         return None;
     };

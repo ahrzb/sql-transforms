@@ -476,6 +476,7 @@ impl Binder<'_> {
             }
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Subquery(q) => self.scalar_subquery(q),
+            SqlExpr::Exists { subquery, negated } => self.exists_subquery(subquery, *negated),
             SqlExpr::Value(v) => literal(&v.value),
             // DuckDB puts << >> & | in ONE flat left-associative tier, and
             // the parser ranks them so (precedence.rs): 4|1&1 is (4|1)&1=1.

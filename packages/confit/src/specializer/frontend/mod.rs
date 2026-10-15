@@ -983,14 +983,14 @@ fn bind_select(
         }
         if env.many {
             return Err(unsup(
-                "a scalar subquery whose first key has an outer side that can trap, under \
+                "a subquery whose first key has an outer side that can trap, under \
                  shape='many' -- each join runs before the WHERE there, and DuckDB runs the \
                  subquery of a SELECT item after it",
             ));
         }
         if in_where && !comma_terms.is_empty() {
             return Err(unsup(
-                "a scalar subquery in the WHERE whose first key has an outer side that can \
+                "a subquery in the WHERE whose first key has an outer side that can \
                  trap, beside a comma join -- DuckDB evaluates that side for every row pair \
                  of the comma join, confit for the pairs that its keys match; use JOIN ... ON",
             ));
