@@ -9,9 +9,11 @@ evidence. After the owner rules, the record states the ruling.
   - [a step with a parity bound in a
     composition](open/bounded-steps-in-compositions.md): may such a step sit
     in a Pipeline, a ColumnTransformer or a FeatureUnion?
-  - [the worker environment](open/worker-environment.md): a setup script
-    that installs a current uv and Python 3.14.8
-- [closed/](closed) holds the owner's rulings of 2026-10-06:
+- [closed/](closed) holds the owner's rulings. Each ruling below is of
+  2026-10-06, unless the list gives a different date:
+  - [the worker environment](closed/worker-environment.md) (2026-10-15):
+    the Nix dev shell of #428 gives uv and CPython, and no setup script for
+    uv is necessary
   - [the parity bound of the matvec families](closed/matvec-parity-bound.md):
     the general form of the parity bound. Bit-exact is the default, and a
     bound above 0 serves only when the caller asks for it.

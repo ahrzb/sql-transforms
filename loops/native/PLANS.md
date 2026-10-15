@@ -323,6 +323,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
 
 ## Later
 
+- The CPython of the Nix dev shell (#428) has no profile-guided
+  optimization. On it, a 64-row call of a twin took a median of 1.23 times
+  as long (reading 5, section 3). Measure the timings of a reading on the
+  same CPython each time, or pin a CPython with this optimization in
+  `flake.nix`. The ruling is
+  [the worker environment](decisions/closed/worker-environment.md).
+- In the dev shell, `maturin develop --release` stops, because Nix marks
+  its CPython as externally managed. Use `--skip-install`, and write this
+  in the build steps of the worker brief.
+
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
   `RadiusNeighborsTransformer`, `IterativeImputer`, `BernoulliRBM`,
