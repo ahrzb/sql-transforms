@@ -682,9 +682,12 @@ fn print(e: &SqlExpr) -> Option<String> {
 }
 
 /// DuckDB's text of a subquery of the form that `subquery.rs` serves: its
-/// SELECT items over one table, maybe a WHERE (`SelectNode::ToString`).
+/// SELECT items over one table, maybe a WHERE, an ORDER BY, a LIMIT and an
+/// OFFSET (`SelectNode::ToString`). DuckDB prints ASC, DESC and NULLS
+/// FIRST or LAST only where the query writes them, and LIMIT before OFFSET
+/// (measured 2026-10-15).
 fn select_text(q: &sqlparser::ast::Query) -> Option<String> {
-    if q.with.is_some() || q.order_by.is_some() || q.limit_clause.is_some() {
+    if q.with.is_some() {
         return None;
     }
     let SetExpr::Select(s) = q.body.as_ref() else {
@@ -731,6 +734,48 @@ fn select_text(q: &sqlparser::ast::Query) -> Option<String> {
     let mut out = format!("SELECT {item} FROM {table}");
     if let Some(w) = &s.selection {
         out += &format!(" WHERE {}", print(w)?);
+    }
+    if let Some(ob) = &q.order_by {
+        let sqlparser::ast::OrderByKind::Expressions(terms) = &ob.kind else {
+            return None;
+        };
+        if ob.interpolate.is_some() || terms.iter().any(|t| t.with_fill.is_some()) {
+            return None;
+        }
+        let terms = terms
+            .iter()
+            .map(|t| {
+                let mut term = print(&t.expr)?;
+                match t.options.asc {
+                    Some(true) => term += " ASC",
+                    Some(false) => term += " DESC",
+                    None => {}
+                }
+                match t.options.nulls_first {
+                    Some(true) => term += " NULLS FIRST",
+                    Some(false) => term += " NULLS LAST",
+                    None => {}
+                }
+                Some(term)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        out += &format!(" ORDER BY {}", terms.join(", "));
+    }
+    match &q.limit_clause {
+        None => {}
+        Some(sqlparser::ast::LimitClause::LimitOffset {
+            limit,
+            offset,
+            limit_by,
+        }) if limit_by.is_empty() => {
+            if let Some(l) = limit {
+                out += &format!(" LIMIT {}", print(l)?);
+            }
+            if let Some(o) = offset {
+                out += &format!(" OFFSET {}", print(&o.value)?);
+            }
+        }
+        Some(_) => return None,
     }
     Some(out)
 }

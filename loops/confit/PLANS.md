@@ -711,6 +711,41 @@ The first five are ruled, in this order; the rest follow.
   72,066 metamorphic pairs gave no finding. All 5,798 confit tests pass on an
   unoptimized debug build, under `ulimit -s 262144`: with 8 MB of stack the
   two 6,000-term AND/OR chains of `test_expression_depth.py` overflow it there.
+  ORDER BY, LIMIT and OFFSET serve after the WHERE of such an item
+  (`(SELECT s.v FROM s WHERE s.k = t.k ORDER BY s.o DESC NULLS FIRST LIMIT 1
+  OFFSET 1)`). Each ORDER BY term is a column of the table or the item (its
+  position 1, or its alias, which DuckDB binds before a column of that
+  name); LIMIT and OFFSET take a whole number or NULL, and `LIMIT ALL` turns
+  into `LIMIT NULL` in a token rewrite (`rewrite_limit_all`), which also gives
+  an unaliased subquery DuckDB's output name; a top-level `LIMIT ALL` or
+  `LIMIT NULL` now serves as no LIMIT. The bind keeps them in
+  `AggPost::order` (`RowOrder` in `plan.rs`); the build (`materialize_rows`
+  in `duckdb/mod.rs`, now #480's path too) runs the item over every row of
+  every group first, as DuckDB does before LIMIT (it traps over a row that
+  LIMIT drops), sorts each group in DuckDB's order (NULLS LAST by default
+  under ASC and DESC, NaN greatest, -0.0 = 0.0, VARCHAR by bytes, FALSE <
+  TRUE), and refuses by name a group that keeps more than one row (DuckDB
+  traps for a request that matches it) and a tie of the kept row with a row
+  whose item has other bits (DuckDB leaves the order of ties unspecified).
+  Under a key, DuckDB keeps the rows numbered offset < r <= offset + limit
+  with a BIGINT sum that wraps, so `LIMIT NULL OFFSET 1` keeps no row:
+  reproduced, and listed in `docs/oracle/02-inherited-quirks.md`. Refused by
+  name: ORDER BY or LIMIT over an aggregate item and in EXISTS, IN and ANY,
+  ORDER BY ALL, a term that is an expression or reads the outer query, a
+  position other than 1, `LIMIT m, n`, and a LIMIT or OFFSET that is not a
+  whole number or NULL. With the optimizer on, DuckDB plans one ORDER BY
+  term without NULLS FIRST and no OFFSET as arg_min/arg_max with n = the
+  LIMIT, which raises for n >= 1,000,000 (LIMIT NULL and ALL included); the
+  oracle serves, so these cases are DIVERGE_OPT (ledger:
+  subquery-limit-ceiling). The generator adds the clauses to about one item
+  over one row in two (the table then keeps all its rows). On
+  8,600,000..8,624,999 no other seed moved against #480's campaign; the 52
+  cases that draw the clauses gave 25 AGREE, 25 REFUSED and 2 AGREE_TRAP, and
+  132,906 metamorphic pairs gave no finding. The 6,453 cases of
+  40,100,000..44,099,999 that draw them gave 3,371 AGREE, 117 AGREE_TRAP,
+  2,928 REFUSED, 26 DIVERGE_OPT (4 of them the arg_min class above), 11
+  EXCLUDED and 0 gated; of the refusals, 402 keep more than one row of a key
+  (DuckDB traps in 369) and 200 name a tie.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the

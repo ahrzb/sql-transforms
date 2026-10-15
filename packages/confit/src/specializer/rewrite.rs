@@ -177,6 +177,24 @@ pub fn rewrite_star_filters(tokens: Vec<Token>) -> Vec<Token> {
     out
 }
 
+/// Rewrite `LIMIT ALL` into `LIMIT NULL`, which DuckDB reads the same way,
+/// no limit, and prints the same way: an unaliased subquery with `LIMIT
+/// ALL` is named after its text with `LIMIT NULL` (measured 2026-10-15).
+/// sqlparser 0.62 drops `LIMIT ALL` from the tree, and with it from that
+/// name.
+pub fn rewrite_limit_all(tokens: Vec<Token>) -> Vec<Token> {
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    for tok in tokens {
+        let all = matches!(&tok, Token::Word(w) if w.quote_style.is_none() && w.keyword == Keyword::ALL);
+        let after_limit = matches!(
+            out.iter().rev().find(|t| !matches!(t, Token::Whitespace(_))),
+            Some(Token::Word(w)) if w.quote_style.is_none() && w.keyword == Keyword::LIMIT
+        );
+        out.push(if all && after_limit { Token::make_keyword("NULL") } else { tok });
+    }
+    out
+}
+
 /// Rewrite infix `expr GLOB pat` into `expr LIKE __glob_pat(pat)` — sqlparser
 /// cannot parse GLOB (it eats it as an implicit alias), and GLOB is NOT
 /// expressible as a LIKE pattern (wave-5 pins), so the marker routes the

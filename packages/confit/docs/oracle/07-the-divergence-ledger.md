@@ -76,6 +76,7 @@ where readers expect it.
 | **divergence: approximate-error-text** | comparison scope / n/a | kept | unruled |
 | **divergence: ilike-nul** | source exclusion / n/a | kept | unruled |
 | **divergence: trap-elision** | optimizer-on contract gap / 1 | kept | unruled |
+| **divergence: subquery-limit-ceiling** | optimizer-on contract gap / 3 | kept | unruled |
 | **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
 | **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../../../../loops/confit/decisions/closed/empty-static-join-trap-timing.md) |
@@ -107,6 +108,14 @@ Slugs are stable when multiple entries describe one mechanism.
   optimizer-off DuckDB and confit evaluate it. Confit agrees with the oracle, while the
   user-visible optimizer-on surface is reported as `DIVERGE_OPT`. Evidence:
   `known-limitations.md` §5; `known_divergences/test_trap_elision.py`.
+- **divergence: subquery-limit-ceiling.** Optimizer-on DuckDB plans a correlated
+  `(SELECT ... ORDER BY o LIMIT n)` with one ORDER BY term without NULLS FIRST and no
+  OFFSET as `arg_min` or `arg_max` with n. That function raises an error if n is
+  1,000,000 or more, `LIMIT NULL` and `LIMIT ALL` included. Optimizer-off DuckDB and
+  confit serve the query, and the campaign reports it as `DIVERGE_OPT`. Evidence:
+  `known-limitations.md` §5;
+  `test_scalar_subquery.py::test_a_limit_of_a_million_or_more_serves_where_duckdbs_optimizer_raises`;
+  campaign seeds 40336742, 40383913, 40835198 and 42686262.
 - **divergence: nan-sign-per-platform.** `%`-by-zero NaN sign follows platform libm.
   Under claim: reference-platform the contract is agreement with the Linux bits; other
   platforms' signs are not replicated. Evidence:
