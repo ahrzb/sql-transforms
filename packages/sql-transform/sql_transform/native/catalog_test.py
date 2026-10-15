@@ -2481,7 +2481,7 @@ def test_trees_take_a_forest_by_the_estimated_build():
     # Since confit #459 and #461 the entry's build is estimated within 7 s
     # for the default forest, the default forest over 32 features, 400
     # trees of depth 5 (9,210 output fields, built in 5.5 s) and one
-    # unbounded tree over 8,000 rows (4.2 s; trees.py has the builds).
+    # unbounded tree over 8,000 rows (4.2 s; master 318575b, trees.py).
     assert _build_estimate(_forest(100, 5, 2000)) <= MAX_BUILD_S
     assert _build_estimate(_forest(100, 5, 2000, features=32)) <= MAX_BUILD_S
     assert _build_estimate(_forest(400, 5, 2000)) <= MAX_BUILD_S

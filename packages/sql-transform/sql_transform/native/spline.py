@@ -88,21 +88,20 @@ the five extrapolations, `include_bias`, both knot strategies, both
 
 Widths. The recurrence reads each round's values twice, so an output field's
 text doubles per degree (about 3 KB of SQL per output field at degree 3, 8
-knots, 33 KB at degree 5); `continue` keeps three times that (its outer
-sums), and `periodic` repeats its mapped `x` at every read. confit binds once
-a value that a SQL function body reads more than once (#412), so the build
-follows the distinct nodes, not the text. Release build, master 318575b with
-confit #459 and #461, one instance, a struct return, 10,000-row batches, 32
-features at degree 3 and 8 knots (320 output fields; `periodic` 224):
-`constant`, `linear` and `error` build in 0.7 s and serve 94-99 us per row
-(the input guard of `error` tests the knots); `continue` 0.85 s and 71 us;
-`periodic` 0.6 s and 33 us; the twin serves the `continue` step in 894 us per
-row. 64 features of `continue`: 1.8 s and 154 us; 128 features: 4.5 s and 335
-us; 16 features of degree 5, 7 knots, `continue`: 0.6 s and 37 us; 64
-features of degree 5, 8 knots, `continue`: 4.0 s and 229 us; 128 features:
-9.2 s and 508 us, with the cap lifted (the entry refuses it). One feature at
-degree 3, 5 knots: 0.01 s and 0.3 us, against the twin's 135 us
-(2026-10-15). The entry refuses a step
+knots, 33 KB at degree 5); `continue` keeps three times that (its outer sums),
+and `periodic` repeats its mapped `x` at every read. confit binds once a value
+that a SQL function body reads more than once (#412), so the build follows the
+distinct nodes, not the text. Release build, master 318575b with confit #459
+and #461, one instance, a struct return, 10,000-row batches, 32 features at
+degree 3 and 8 knots (320 output fields; `periodic` 224): `constant`, `linear`
+and `error` build in 0.7 s and serve 94-99 us per row (the input guard of
+`error` tests the knots); `continue` 0.85 s and 71 us; `periodic` 0.6 s and 33
+us; the twin serves the `continue` step in 894 us per row. 64 features of
+`continue`: 1.8 s and 154 us; 128 features: 4.5 s and 335 us; 16 features of
+degree 5, 7 knots, `continue`: 0.6 s and 37 us; 64 features of degree 5, 8
+knots, `continue`: 4.0 s and 229 us; 128 features: 9.2 s and 508 us, with the
+cap lifted (the entry refuses it). One feature at degree 3, 5 knots: 0.01 s
+and 0.3 us, against the twin's 135 us (2026-10-15). The entry refuses a step
 whose estimated build passes MAX_BUILD_S (`_build_estimate`), as quantile.py
 and isotonic.py cap theirs. Up to 64 features it takes on every configuration
 measured (degrees 1, 3 and 5, 5 and 8 knots, the five extrapolations). Of 128
