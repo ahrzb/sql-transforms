@@ -219,17 +219,21 @@ def _build_estimate(leaves: int, arms: int, features: int) -> float:
     """The seconds confit takes to build the entry (warm, release build),
     from `n`, the leaves of its trees plus 0.4 times their exact arms, and
     the features. The build is about linear in `n`, however the features
-    split it (8,000 leaves as 1, 2, 8 or 16 trees: 6.5 to 7.8 s), with a
-    term in `n` squared past that, and a term in the features squared from
-    the struct return (800 features of one leaf: 5.7 s as a struct, 1.1 s
-    as a list). Fitted on the slower of the two returns over 59 builds of
-    0.3 to 17 s (1 to 800 features, 10 to 8,000 quantiles, fits of
+    split it (16,000 leaves as 2, 4, 8, 16 or 32 trees: 8.2 to 9.0 s), with
+    a term in `n` squared past that, and a term in the features squared from
+    the struct return (800 features of one leaf: 4.6 s as a struct, 0.5 s
+    as a list). Fitted on the slower of the two returns over 56 builds of
+    0.3 to 10.3 s (1 to 800 features, 10 to 8,000 quantiles, fits of
     continuous values and of integers, whose runs of equal quantiles leave
-    fewer leaves with more arms; master 94d7bb1, 2026-10-14): each within
-    0.85 to 1.23 times the estimate. The cap took on none slower than 7.8 s
-    and refused none faster than 8.3 s."""
+    fewer leaves with more arms; master 318575b with confit #459 and #461,
+    2026-10-15): each within 0.84 to 1.31 times the estimate. The cap took
+    on none slower than 6.1 s and refused none faster than 7.9 s, and it
+    reaches 7 s at about 13,400 leaves over 1 to 64 features, or 7,000 over
+    800. Past the estimate confit refused two fits at 4,000,000 tokens (50
+    quantiles over 512 and 800 features). Fitted before #456 (master
+    94d7bb1), the estimate reached 7 s at about 8,200 leaves."""
     n = leaves + 0.4 * arms
-    return 6.51e-4 * n + 2.44e-8 * n**2 + 8.17e-6 * features**2
+    return 3.52e-4 * n + 1.25e-8 * n**2 + 6.14e-6 * features**2
 
 
 def _feature(x: S.Expr, q: np.ndarray, leaves: list[_Leaf]) -> S.Expr:

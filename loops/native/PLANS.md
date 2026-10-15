@@ -8,25 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-1. **The build estimates on confit #461** (reading 6, finding 76).
-   Since #456, a struct read field by field builds in about the square of
-   its fields, past the estimates of `trees.py`, `spline.py` and
-   `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,
-   250 of depth 5 (6.5 s) in 42-44 s, 10 quantiles over 800 features in
-   60-63 s (`to_native`; release build, master 98033e8, uv's CPython).
-   The confit loop traced the cost to its check for a subquery at each
-   SELECT item (`subquery::has_subquery`), which walked the whole call
-   again at every field read. #461 (merged 2026-10-15, master 620112e)
-   keeps the answer for each call: on the confit loop's container 4,000
-   fields build in 1.00-1.12 s (23.6-27.8 s before) and the catalog's
-   250 trees of depth 5 (5,982 fields) in 5.8-6.2 s (158 s); above 4,000
-   fields the build still grows faster than linearly (8,000 fields:
-   3.2 s). Measure the builds of these three families again with reading
-   6's scripts (`/mnt/project-files/transforms-loop/reading-6/`:
-   `widths_r6.py`, `struct_list.py`, `steps_at.py`); if a step still
-   builds past its estimate, fit that estimate again. Then remove the
-   need "A struct read field by field that builds about as fast as before
-   #456" below.
+None queued: the next work is "Ruled 2026-10-06, to build", item 1.
 
 ## Ruled 2026-10-06, to build
 
@@ -64,20 +46,6 @@ that request, `to_native(step, allow_bound=True)`. In order:
 
 ## Needs from confit
 
-- **A struct read field by field that builds about as fast as before
-  #456.** Since confit #456 (0def508), a query that reads a struct output
-  field by field, one SELECT item a field, as `query(step)` does, builds
-  in a time that grows about as the square of the fields read. 4,000
-  fields over 8 parameters build in 0.92-1.01 s at 4bb88f5 and in
-  5.84-6.13 s on master; read whole, 0.60-0.67 s on both. In the catalog,
-  250 trees of depth 5 build in 42-44 s as a struct (5.9-6.5 s at reading
-  5) and 2.0-2.2 s as a list. T35's catalog code on confit 0def508 builds
-  the widest bench forest in 0.60-0.64 s, T36's on 4bb88f5 in 0.25-0.33 s
-  (release build, uv's CPython, 2026-10-14). A confit-only reproduction
-  is in `/mnt/project-files/transforms-loop/confit-field-reads-456.py`,
-  sent to the confit loop on 2026-10-14. Delivered by confit #461
-  (merged 2026-10-15, master 620112e). Measure ("Next", item 1), then
-  remove this item.
 - **A struct output read field by field, built once for the call.**
   Where a query reads each field of a struct output one by one
   (`to_native`'s trial build does, and so does a serving query that names
@@ -89,10 +57,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `StandardScaler` at 256 features builds in 0.46 s (1.4 s before) and
   `PolynomialFeatures` of degree 2 over 64 features in 2.0 s (4.6 s).
   The rest is open, low priority for confit: a struct read field by
-  field still builds 1.2 to 3.7 times as slowly as a list
-  (`RandomTreesEmbedding` of 100 trees of depth 5: 1.6 s against 0.7 s),
-  and this sets the forest, spline and quantile caps (`QuantileTransformer`
-  over 800 features of one leaf: 5.7 s against 1.1 s, master 94d7bb1). A
+  field still builds 1.1 to 9 times as slowly as a list, more as the
+  fields grow, and this sets the forest, spline and quantile caps:
+  `RandomTreesEmbedding` of 100 trees of depth 5 (2,286 fields) in 0.77 s
+  against 0.39 s, of 800 trees (18,360 fields) in 21.5 s against 4.4 s,
+  and `QuantileTransformer` over 800 features of one leaf in 4.6 s against
+  0.5 s (T40, release build, master 318575b with confit #461). A
   confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
   1.4 s read field by field and 0.09 s read whole (loops/confit/PLANS.md).
   When it lands, measure the builds again and refit the estimates.
@@ -193,6 +163,14 @@ features read by 16 sums of products served 64 rows in 17.2-18.5 ms, and
 now in 1.5 ms. `PCA` over 256 features of 64 components serves 64 rows in
 3.7-4.3 ms, against 77-83 ms and the twin's 30-34 ms, and builds in
 1.1-1.5 s, against 5.2-5.9 s (T39; release build, master bea1372,
+2026-10-15). A struct read field by field that builds about as fast as
+before #456 (#461, which answers confit's check for a subquery once per
+call, where #456 walked the whole call again at each field read): 4,000
+fields over 8 parameters build in 0.54-0.63 s read field by field, against
+5.84-6.13 s on #456 and 0.92-1.01 s before it; 250 trees of depth 5 in
+2.4-2.6 s, against 42-44 s at reading 6 and 5.9-6.5 s at reading 5; 10
+quantiles over 800 features in 7.9 s, against 11.4 s before #456 (the
+trial build; T39 and T40, release build, masters bea1372 and 318575b,
 2026-10-15).
 
 ## Left Python
@@ -224,8 +202,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. A fit whose build is estimated past 7 s
   (`quantile._build_estimate`, from the leaves and the features): 10
-  quantiles over 800 features build in 11.4 s. 8,000 quantiles over one
-  feature build in 6.9 to 7.4 s and are served (master 94d7bb1, T34).
+  quantiles over 800 features build in 7.9 s (11.4 s before #456), and
+  2,000 over 8 features in 8.7 s. 8,000 quantiles over one feature build
+  in 3.7 s and are served (master 318575b, T40).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
@@ -320,7 +299,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `Pipeline` (its object output, as for the `Pipeline` rule above).
 - `IsotonicRegression` with float32 thresholds (the twin casts its input
   to float32), past an estimated 7 s build (`isotonic._build_estimate`,
-  at about 11,700 thresholds: 12,314 build in 7.4 s on master 94d7bb1),
+  at about 19,700 thresholds: 21,029 build in 7.5 s on master 318575b),
   with thresholds further apart than a double spans, or on a platform
   whose `np.interp` fuses its multiply-add (`quantile.interp_is_numpys`).
 - `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
@@ -329,11 +308,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   nor the last tied operand, so `greatest`/`least` (the first) part from
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
-- `RandomTreesEmbedding`: a forest whose build is estimated past 7 s (`trees._build_estimate`): over 8 features, past
-  about 5,990 output fields, such as 300 trees of depth 5 (6,961 fields,
-  9.8 s) and 3 unbounded trees over 2,000 rows (8.4 s). Since T28, 160
-  trees of depth 5, 100 trees of depth 6 and one unbounded tree over
-  4,000 rows are served.
+- `RandomTreesEmbedding`: a forest whose build is estimated past 7 s
+  (`trees._build_estimate`): over 8 features, past about 10,300 output
+  fields, such as 300 trees of depth 6 (11,402 fields, 7.7 s), and over 64
+  features past about 8,400, such as 400 trees of depth 5 (9,100 fields,
+  8.3 s). Since T40, 300 trees of depth 5, 400 over 8 features (9,210
+  fields, 5.5 s) and 3 unbounded trees over 2,000 rows (3.2 s) are
+  served.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

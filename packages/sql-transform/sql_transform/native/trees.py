@@ -40,22 +40,24 @@ One CASE per tree serves a row about twice as fast as the conjunctions of
 the branch tests on each leaf's path (100 trees of depth 5: 222 us against
 459), and since confit #430 it builds about as fast, so it is the entry's
 one spelling. The entry takes a forest whose build is estimated within
-MAX_BUILD_S (`_build_estimate`), about 5,990 output fields at 8 features,
-and refuses it past that. The estimate is fitted on warm builds of 43
-forests, each the slower of a struct and a list return (release build, 8
-features and, for five forests, 16 to 64; fits of 500 to 5,000 rows; master
-b4b8d03 with confit #430, 2026-10-14). The struct return is the slower, by
-1.2 to 3.7 times: confit builds each field read of a struct on its own
-(loops/native/PLANS.md, "Needs from confit"). Since #430 it no longer builds
-the input guard's tests again at each, but the estimate keeps a term in the
-output fields times the features: 100 trees of depth 5 build in 1.6 s over 8
-features and 2.3 s over 64. Each build over 0.3 s is within 0.76 to 1.13
-times the estimate, except forests of 4 to 10 unbounded trees, which build
-1.2 to 1.5 times it. The table below was measured an hour after the fit, and
-its builds took 0.9 to 1.2 times the estimate (1.65 times at 5 unbounded
-trees). A struct return, one instance, 8 features and fits of 2,000 rows
-unless the row says, 10,000-row batches; a refused forest shows its build
-with the cap lifted:
+MAX_BUILD_S (`_build_estimate`), about 10,300 output fields at 8 features,
+9,400 at 32, 8,400 at 64 and 6,800 at 128, and refuses it past that. The
+estimate is fitted on warm builds of 29 forests, each the slower of a
+struct and a list return (release build, 8 features and, for five forests,
+32 to 128; fits of 1,000 to 8,000 rows; master 318575b with confit #459 and
+#461, 2026-10-15). The struct return is the slower, by 1.5 to 4.8 times,
+more as the output fields grow: confit builds each field read of a struct
+on its own (loops/native/PLANS.md, "Needs from confit"). The estimate keeps
+a term in the output fields times the features: 100 trees of depth 5 build
+in 0.77 s over 8 features and 1.9 s over 128. Each of the 26 builds over
+0.3 s (0.57 to 21.5 s) is within 0.87 to 1.28 times the estimate, and
+forests of 2 to 10 unbounded trees build 1.10 to 1.28 times it. The cap
+took on none slower than 8.3 s (2 unbounded trees over 5,000 rows) and
+refused none faster than 6.6 s (800 trees of depth 4). Fitted on master
+b4b8d03 with confit #430, the estimate reached 7 s at about 5,990 output
+fields at 8 features. TABLE_RATIO A struct return, one instance, 8 features
+and fits of 2,000 rows unless the row says, 10,000-row batches; a refused
+forest shows its build with the cap lifted:
 
     forest                           output fields   build   serve a row
     30 trees, depth 5                          693   0.4 s         51 us
@@ -98,7 +100,7 @@ def _build_estimate(est: Any) -> float:
     from its output fields and features (module docstring)."""
     fields = sum(len(c) for c in est.one_hot_encoder_.categories_)
     features = int(est.n_features_in_)
-    return 3.69e-4 * fields + 1.27e-7 * fields**2 + 4.86e-6 * fields * features
+    return 1.87e-4 * fields + 4.43e-8 * fields**2 + 4.29e-6 * fields * features
 
 
 def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:
