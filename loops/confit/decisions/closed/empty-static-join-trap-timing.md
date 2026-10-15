@@ -40,3 +40,9 @@ static, traps with confit's error category. Any other difference in such a case 
 different trap, rows, a backend split) stays a finding. Its canaries are the four seeds
 above; `tests/test_exclusions.py` also plants faults inside the scope and checks that
 they are not excused.
+
+**Later rulings (owner, 2026-10-15).** Two rulings extend this rule. The rule also
+covers an INNER join on `=` keys where each static row has a NULL in at least one
+key ([all-NULL-key static](all-null-key-static.md)). The witness accepts an error of any
+kind from the oracle, not only an error with the category of the trap of confit
+([error category](empty-static-witness-trap-order.md)).

@@ -27,10 +27,12 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    trapping `x` refuses by name (seeds 992226, 3058298, 3722953); a trapping
    join condition between the two sides refuses by name (4291817); the
    empty-static witness pads DECIMAL columns, so 1159605 is excused by its
-   ruling. Two questions do need the owner, each with a record in
-   [decisions/open/](decisions/): the empty-static witness against a
-   multi-trap row side (seed 4313391), and the oracle TIMEOUT where confit
-   traps first (seeds 4226438, 946454).
+   ruling. Two questions needed the owner. The empty-static witness now
+   accepts any trap, so the multi-trap row side of seed 4313391 is excused
+   ([decisions/closed/empty-static-witness-trap-order.md](decisions/closed/empty-static-witness-trap-order.md)).
+   The oracle TIMEOUT where confit traps first (seeds 4226438, 946454) has a
+   ruling to apply next
+   ([decisions/open/oracle-timeout-before-a-trap.md](decisions/open/oracle-timeout-before-a-trap.md)).
 
    The 2026-10-06 night (seeds 4600000..4999999, replayed on master
    f72214b with the generator that declares SQL functions) is triaged, its
@@ -51,8 +53,8 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    open oracle-TIMEOUT record's mechanism, added to it as evidence with a
    witness that covers a trap inside the long string's own expression; its
    OPT_EMULATED case (4889739), an INNER join whose static keys are all NULL,
-   asks the owner to extend the empty-static ruling
-   ([decisions/open/all-null-key-static.md](decisions/open/all-null-key-static.md)).
+   is excused: the owner extended the empty-static ruling to such a join
+   ([decisions/closed/all-null-key-static.md](decisions/closed/all-null-key-static.md)).
    Still open from it:
    - DuckDB's hash join also skips the ON clause of a LEFT JOIN whose static
      keys are all NULL, while confit still evaluates it (not yet seen in a
@@ -87,7 +89,8 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    keep their optimizer-off verdict;
    24 of the 26 DuckDB TIMEOUTs with seeds are the open oracle-TIMEOUT
    record's mechanism, and the two OPT_EMULATED cases (7242549, 7829571)
-   are the all-NULL-key record's. Their seeds are in those two records.
+   are the all-NULL-key record's, now canaries of the empty-static rule.
+   Their seeds are in those two records.
 
    The 2026-10-15 night (seeds 8200000..8599999, master df653be) filed no
    findings: each shard died after its campaign and left no summary. Under

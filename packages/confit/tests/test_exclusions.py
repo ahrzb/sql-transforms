@@ -44,9 +44,11 @@ def test_a_record_cites_its_ledger_entry_and_ruling(rec):
     assert f"**{rec.ledger}**" in text, f"no ledger entry '{rec.ledger}'"
     assert rec.status in ("ruled", "kept")
     if rec.status == "ruled":
-        # A ruling is a package doc, or a loop's decision record (loops/).
-        base = REPO if rec.ruling.startswith("loops/") else DOCS
-        assert (base / rec.ruling).is_file(), f"no ruling at {rec.ruling}"
+        # A ruling is a package doc, or a loop's decision record (loops/),
+        # and so is each later ruling that widens it.
+        for ruling in (rec.ruling, *getattr(rec, "extended_by", ())):
+            base = REPO if ruling.startswith("loops/") else DOCS
+            assert (base / ruling).is_file(), f"no ruling at {ruling}"
     else:
         row = next(line for line in text.splitlines() if f"**{rec.ledger}**" in line)
         assert "kept" in row, f"{rec.id} is kept but the ledger says otherwise"
@@ -150,6 +152,10 @@ def test_a_source_exclusion_names_a_source_in_the_corpus(rec):
 ROW = table({"c0": "int8"}, [{"c0": 100}])
 EMPTY = table({"k": "int"}, [])
 FULL = table({"k": "int"}, [{"k": 5}])
+# Rows whose `=` key is NULL can match no request, so DuckDB's hash table
+# stays empty (loops/confit/decisions/closed/all-null-key-static.md).
+NULLS = table({"k": "int?"}, [{"k": None}, {"k": None}])
+NULL1 = table({"k": "int?"}, [{"k": None}])
 
 
 def _facts(sql, statics, shape=None):
@@ -185,6 +191,55 @@ def test_near_misses_are_out_of_scope(sql, statics):
     assert scope(_facts(sql, statics)) == []
 
 
+@pytest.mark.parametrize(
+    "sql, statics",
+    [
+        ("SELECT 1 AS o FROM __THIS__ JOIN s ON c0 = s.k", {"s": NULLS}),
+        ("SELECT 1 AS o FROM __THIS__ JOIN s ON c0 = s.k", {"s": NULL1}),
+        (
+            "SELECT 1 AS o FROM (SELECT c0 + 1 AS x FROM __THIS__) AS d "
+            "JOIN s ON x = s.k",
+            {"s": NULLS},
+        ),
+        # Each row has a NULL in one of its two keys.
+        (
+            "SELECT 1 AS o FROM __THIS__ JOIN s ON c0 = s.k AND c0 = s.j",
+            {
+                "s": table(
+                    {"k": "int?", "j": "int?"},
+                    [{"k": None, "j": 1}, {"k": 1, "j": None}],
+                )
+            },
+        ),
+    ],
+)
+def test_an_inner_join_on_a_key_that_is_null_in_every_static_row_is_in_scope(
+    sql, statics
+):
+    assert X._NULL_KEYED(_facts(sql, statics)) == ["s"]
+
+
+@pytest.mark.parametrize(
+    "sql, statics",
+    [
+        # A CROSS join pairs each request with every static row, NULL or not.
+        ("SELECT 1 AS o FROM __THIS__ CROSS JOIN s", {"s": NULL1}),
+        # IS NOT DISTINCT FROM matches a NULL key with a NULL.
+        (
+            "SELECT 1 AS o FROM __THIS__ JOIN s ON c0 IS NOT DISTINCT FROM s.k",
+            {"s": NULL1},
+        ),
+        ("SELECT 1 AS o FROM __THIS__ LEFT JOIN s ON c0 = s.k", {"s": NULLS}),
+        (
+            "SELECT 1 AS o FROM __THIS__ JOIN s ON c0 = s.k",
+            {"s": table({"k": "int?"}, [{"k": None}, {"k": 5}])},
+        ),
+    ],
+)
+def test_near_misses_of_the_null_key_scope_are_out_of_it(sql, statics):
+    assert X._NULL_KEYED(_facts(sql, statics)) == []
+
+
 # ------------------------------------------------------------------ narrow
 
 # Without the rule, these cases are a trap mismatch: DIVERGE_TRAP, or
@@ -199,8 +254,11 @@ TRAPS = (
 )
 
 
-def test_a_hand_written_empty_static_trap_is_excused():
-    v = verdict(TRAPS, ROW, statics={"s": EMPTY})
+@pytest.mark.parametrize(
+    "static", [EMPTY, NULLS, NULL1], ids=["empty", "nulls", "null"]
+)
+def test_a_hand_written_empty_static_trap_is_excused(static):
+    v = verdict(TRAPS, ROW, statics={"s": static})
     assert (v.kind, v.klass) == ("EXCLUDED", "empty-static-trap-timing")
     # Optimizer-on DuckDB traps here too, so the raw verdict is OPT_EMULATED.
     assert v.raw.split()[0] in MISMATCH
@@ -256,21 +314,41 @@ def plant(monkeypatch):
     return install
 
 
-def test_a_planted_trap_of_another_category_is_not_excused(plant):
+@pytest.mark.parametrize("static", [EMPTY, NULLS], ids=["empty", "nulls"])
+def test_a_planted_trap_of_another_category_is_excused(plant, static):
     # DuckDB's padded run traps with an Out of Range Error; confit's planted
-    # trap is a Conversion Error.
+    # trap is a Conversion Error. The witness accepts any trap, as AGREE_TRAP
+    # does (loops/confit/decisions/closed/empty-static-witness-trap-order.md).
     plant("Conversion Error: planted")
-    v = verdict(TRAPS, ROW, statics={"s": EMPTY})
-    assert v.kind in MISMATCH, f"{v.kind} {v.klass}"
+    v = verdict(TRAPS, ROW, statics={"s": static})
+    assert (v.kind, v.klass) == ("EXCLUDED", "empty-static-trap-timing")
 
 
-def test_a_planted_trap_where_duckdb_returns_rows_is_not_excused(plant):
+@pytest.mark.parametrize("static", [EMPTY, NULLS], ids=["empty", "nulls"])
+def test_a_planted_trap_where_duckdb_returns_rows_is_not_excused(plant, static):
     # Nothing on the row side traps, so DuckDB's padded run answers rows: the
     # planted trap is not the mechanism.
     plant("Out of Range Error: planted")
     sql = "SELECT 1 AS o FROM __THIS__ JOIN s ON c0 = s.k"
-    v = verdict(sql, ROW, statics={"s": EMPTY})
+    v = verdict(sql, ROW, statics={"s": static})
     assert v.kind in MISMATCH, f"{v.kind} {v.klass}"
+
+
+@pytest.mark.parametrize("static", [EMPTY, NULLS], ids=["empty", "nulls"])
+def test_a_planted_trap_on_one_backend_is_not_excused(monkeypatch, static):
+    # Nothing on the row side traps. The Cranelift build traps and the
+    # interpreter answers no rows: a backend split, which the rule never
+    # excuses.
+    real = oracle._build
+
+    def build(sql, schema, statics, udf_objs, shape, force_interp):
+        fn = real(sql, schema, statics, udf_objs, shape, force_interp)
+        return fn if force_interp else _Inject(fn, "Out of Range Error: planted")
+
+    monkeypatch.setattr(oracle, "_build", build)
+    sql = "SELECT 1 AS o FROM __THIS__ JOIN s ON c0 = s.k"
+    v = verdict(sql, ROW, statics={"s": static})
+    assert (v.kind, v.klass) == ("DIVERGE_VALUE", "backend-trap-split")
 
 
 def test_a_ceiling_on_one_backend_is_not_excused():
@@ -288,9 +366,11 @@ def test_a_record_off_its_oracle_version_excuses_nothing(monkeypatch):
     assert v.kind in MISMATCH
 
 
-def test_the_padding_case_keeps_the_original_inputs():
+@pytest.mark.parametrize("static", [EMPTY, NULLS], ids=["empty", "nulls"])
+def test_the_padding_case_keeps_the_original_inputs(static):
     # The witness re-runs DuckDB on a copy; the case the verdict reports on
     # is unchanged.
-    c = case(TRAPS, ROW, statics={"s": EMPTY})
+    c = case(TRAPS, ROW, statics={"s": static})
+    before = list(c.statics["s"][1])
     oracle.run_case(c)
-    assert c.statics["s"][1] == []
+    assert c.statics["s"][1] == before
