@@ -4,7 +4,7 @@ date: 2026-10-15
 master: 9d9fe20
 previous: loops/confit/reports/2026-10-14-milestone.md
 kind: short
-trigger: stop
+trigger: cross-loop delivery
 kpis:
   training_round_trip: null
   engine_parity: "pass: 0 gated classes in 50,000 campaign seeds (30000000-30049999) on 9d9fe20"
@@ -28,12 +28,12 @@ needs_owner:
 needs_from_other_loop: []
 ---
 
-# Confit: short reading at the stop, 2026-10-15
+# Confit: short reading, 2026-10-15
 
 This reading names master 9d9fe20 and follows the [milestone report of
-2026-10-14](2026-10-14-milestone.md). On 2026-10-15, the owner asked the
-loops to finish their open work and to take no new task. So the loop merged
-its open PR (#464), its 14th PR since that report, and stopped.
+2026-10-14](2026-10-14-milestone.md). Since that report, 14 PRs of the loop
+merged. Two of them serve needs of the native loop, and this event starts the
+reading. The loop measured again only the campaign and those needs.
 
 ## What moved
 
@@ -73,7 +73,7 @@ to 6.2 s after it. The PRs measured these numbers on release builds.
 
 ## Next
 
-[PLANS](../PLANS.md) keeps the open work. A draft of its next item, the
-WHERE terms of a scalar subquery that read only the static table, is in the
-project files (`confit-loop/class5-slice3/`). The nightly campaign still
-files its findings in issue #435, but no loop examines them now.
+The loop continues with the fifth kind of query, in the order of
+[PLANS](../PLANS.md). First, it serves the WHERE terms of a scalar subquery
+that read only the static table and cannot trap. It also examines each
+finding that the nightly campaign files in issue #435.
