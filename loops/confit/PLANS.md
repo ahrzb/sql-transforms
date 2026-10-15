@@ -683,6 +683,34 @@ The first five are ruled, in this order; the rest follow.
   DIVERGE_OPT. 31 new tests in `test_decimal_expressions.py`, 29 fail on
   master; on 30,050,000..30,099,999 no verdict moved (the generator never
   compares two DECIMALs past 38 digits).
+  The item may read the columns of the one row that a request matches, with
+  no aggregate (`(SELECT s.v * 2 FROM s WHERE s.k = t.k)`). DuckDB
+  decorrelates it into a SINGLE join: a request that matches more than one
+  row traps (under a CASE that is not taken too), one that matches none reads
+  NULL without evaluating the item, and with no key more than one passing row
+  traps on every call, an empty batch included (measured 2026-10-15, three
+  pins). The bind reads each column the item names through `min(col)` and the
+  table counts each group's rows last (`AggPost::row`); the build refuses a
+  group of more than one row by name, before the ties check (`more_rows` in
+  `duckdb/mod.rs`), and runs the item over the groups of one row only, so the
+  keyless group of no rows and a miss read NULL. Refused by name: a column of
+  the outer query (a name of no table answers the binder's error), the whole
+  row of the table (`SELECT s FROM s`, unless `s` has a column `s`), a field
+  or an element of one of its columns, a bare NULL item (DuckDB's SQLNULL),
+  and the types that `min` does not serve. The generator draws such an item in
+  place of the aggregate of about one other subquery in five that stands
+  alone, a column two times in three, and two times in three keeps only the
+  first row of each key in the table. On 8,600,000..8,624,999, against the
+  verdicts of master 661aedb, no other seed moved; the 85 cases that draw the
+  item gave 45 AGREE, 38 REFUSED and 2 AGREE_TRAP (48, 35 and 2 with their
+  aggregates), and 132,906 metamorphic pairs gave no finding. The 12,747
+  cases of 40,100,000..44,099,999 that draw it gave 6,843 AGREE, 245
+  AGREE_TRAP, 5,595 REFUSED (952 name a key of more than one row: DuckDB
+  traps in 839, serves in 112, where no request matches the key), 45
+  DIVERGE_OPT of the known trap-elision class, 19 EXCLUDED, 0 gated, and
+  72,066 metamorphic pairs gave no finding. All 5,798 confit tests pass on an
+  unoptimized debug build, under `ulimit -s 262144`: with 8 MB of stack the
+  two 6,000-term AND/OR chains of `test_expression_depth.py` overflow it there.
   Measured 2026-10-14 (optimizer off): DuckDB evaluates the subquery's WHERE in
   written order over (distinct correlated values) x (static rows), so a static
   predicate that can trap before the key traps on unmatched rows; the

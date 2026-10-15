@@ -107,7 +107,9 @@ says whether each form is inside the model.
 
 - Aggregation: `GROUP BY`, `HAVING`, `sum`/`count`/`avg`/... →
   `aggregate function ... (aggregation is not served)`. This engine serves a
-  scalar subquery with one aggregate over a static table
+  scalar subquery over a static table that selects an aggregate, an expression
+  over aggregates, or an expression over the columns of the one row that a
+  request matches
   ([serving contract](specs/serving-contract.md#scalar-subqueries-over-a-static-table)).
 - `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT` — row-independent transforms
   don't reorder or deduplicate.

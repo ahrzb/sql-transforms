@@ -1756,6 +1756,22 @@ fn materialize_aggs(
             }
         }
     }
+    // An item over one row: DuckDB traps if a request matches a group of
+    // more than one row (measured 2026-10-15), so such a group refuses,
+    // before any other check reads its rows.
+    let row = spec.post.as_ref().is_some_and(|p| p.row);
+    if row {
+        for slots in groups.values() {
+            match slots.last() {
+                Some((Acc::Count(n), _)) if *n <= 1 => {}
+                Some((Acc::Count(n), _)) => {
+                    let item = spec.post.as_ref().map_or("", |p| p.item.as_str());
+                    return Err(more_rows(&spec.table, item, *n, spec.keys.is_empty()));
+                }
+                _ => return Err(build_err("internal: an item over one row without a count")),
+            }
+        }
+    }
     let mut found = Vec::with_capacity(groups.len());
     for (keys, slots) in groups {
         let mut vals = Vec::with_capacity(spec.vals.len());
@@ -1827,9 +1843,24 @@ fn materialize_aggs(
     let maps: Vec<plan::MapVal> = match &spec.post {
         None => spec.vals.iter().map(|vc| vc.map).collect(),
         Some(p) => {
-            let items = post_values(p, &found, &spec.table, spec.keys.is_empty())?;
-            for ((_, vals), item) in found.iter_mut().zip(items) {
-                *vals = vec![item];
+            // An item over one row reads the row of each group that has
+            // one, and a group of no rows answers NULL: the item does not
+            // run over it.
+            let mut live = vec![true; found.len()];
+            if row {
+                for ((_, vals), live) in found.iter_mut().zip(&mut live) {
+                    *live = vals.pop() == Some(Some(ScalarVal::I64(1)));
+                }
+            }
+            let values: Vec<&[Option<ScalarVal>]> = found
+                .iter()
+                .zip(&live)
+                .filter(|(_, &l)| l)
+                .map(|((_, vals), _)| vals.as_slice())
+                .collect();
+            let mut items = post_values(p, &values, &spec.table, spec.keys.is_empty())?.into_iter();
+            for ((_, vals), l) in found.iter_mut().zip(live) {
+                *vals = vec![if l { items.next().flatten() } else { None }];
             }
             vec![p.map]
         }
@@ -1896,7 +1927,7 @@ fn filter_rows(f: &FilterSpec, rows: &[Bound<'_, PyAny>], table: &str) -> PyResu
 /// traps on every call.
 fn post_values(
     p: &PostSpec,
-    groups: &[(Vec<KeyBits>, Vec<Option<ScalarVal>>)],
+    groups: &[&[Option<ScalarVal>]],
     table: &str,
     keyless: bool,
 ) -> PyResult<Vec<Option<ScalarVal>>> {
@@ -1905,8 +1936,11 @@ fn post_values(
         |e: String| pyo3::exceptions::PyRuntimeError::new_err(format!("internal error: {e}"));
     let fun = compile_ext(&p.program, Vec::new(), Vec::new()).map_err(|e| internal(e.to_string()))?;
     let mut cols: Vec<ColData> = p.in_tys.iter().map(|&t| ColData::new(t)).collect();
-    for (_, vals) in groups {
-        for (col, v) in cols.iter_mut().zip(vals) {
+    for vals in groups {
+        if vals.len() != cols.len() {
+            return Err(internal("a group's aggregates do not match the item's inputs".into()));
+        }
+        for (col, v) in cols.iter_mut().zip(vals.iter()) {
             push_scalar(col, v.as_ref()).map_err(internal)?;
         }
     }
@@ -1920,7 +1954,12 @@ fn post_values(
             "unsupported: static table '{table}': the SELECT item {} of a scalar subquery \
              traps {} ({}), {}",
             p.item,
-            if keyless { "over the table" } else { "over the rows of one key" },
+            match (keyless, p.row) {
+                (true, false) => "over the table",
+                (true, true) => "over the one row of the table",
+                (false, false) => "over the rows of one key",
+                (false, true) => "over the row of one key",
+            },
             t.0,
             if keyless {
                 "and DuckDB traps on every request"
@@ -2009,6 +2048,23 @@ fn push_scalar(col: &mut ColData, v: Option<&ScalarVal>) -> Result<(), String> {
         },
     }
     Ok(())
+}
+
+/// The refusal of a scalar subquery whose SELECT item reads one row
+/// ([`PostSpec::row`]) over a group of `n` rows: DuckDB traps if a request
+/// matches the group, and without keys on every request, even over no
+/// requests (measured 2026-10-15).
+fn more_rows(table: &str, item: &str, n: i64, keyless: bool) -> PyErr {
+    build_err(format!(
+        "unsupported: static table '{table}': the scalar subquery with the SELECT item {item} \
+         reads {n} rows {} ('More than one row returned by a subquery used as an \
+         expression')",
+        if keyless {
+            "of the table, where DuckDB traps on every call"
+        } else {
+            "of one key, where DuckDB traps if a request matches that key"
+        }
+    ))
 }
 
 /// The refusal of an `avg` whose absolute values add up past the range of

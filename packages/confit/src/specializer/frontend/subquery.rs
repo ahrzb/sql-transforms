@@ -17,7 +17,11 @@
 //! ([`Binder::in_subquery`]). `x < ANY (SELECT s.c FROM s WHERE ...)`, and
 //! ANY or ALL with another comparison, binds as IN with a test of `x`
 //! against the extremes of `s.c` in place of the first count, the residual
-//! of one more hidden join ([`Binder::quantified_subquery`]).
+//! of one more hidden join ([`Binder::quantified_subquery`]). A SELECT item
+//! with no aggregate reads the row that a request matches,
+//! `(SELECT s.v FROM s WHERE s.k = t.k)`: the build reads the one row of
+//! each group and refuses a group of more than one row, where DuckDB traps
+//! ([`plan::AggPost::row`]).
 //!
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15)
 //! evaluates the subquery's WHERE over (distinct correlated values) x
@@ -232,7 +236,9 @@ fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "a subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) FROM s \
          WHERE ...) with f one of count, min, max, sum and avg, or an expression over such \
-         aggregates, [NOT] EXISTS (SELECT * | constants | columns of s FROM s WHERE ...), \
+         aggregates, (SELECT an expression over the columns of s FROM s WHERE ...) over \
+         a table where a request matches at most one row, [NOT] EXISTS (SELECT * | constants \
+         | columns of s FROM s WHERE ...), \
          x [NOT] IN (SELECT a column of s FROM s WHERE ...), and x op ANY | SOME | ALL (SELECT \
          a column of s FROM s WHERE ...) with op a comparison, over one static table, each \
          WHERE term s.k = <outer expression> or a term that reads only s, and none that can \
@@ -655,7 +661,7 @@ impl Binder<'_> {
                 // evaluates here. DuckDB evaluates it for each such request
                 // (measured 2026-10-15), so one that traps refuses.
                 let miss = match &post {
-                    Some(p) if n_keys > 0 => {
+                    Some(p) if n_keys > 0 && !p.row => {
                         let miss = over_no_rows(p.project[0].1.clone(), &aggs);
                         Some(match eval_closed(&miss, p.regexes.clone()) {
                             Some(Some(v)) => scalar_lit(v, miss.ty),
@@ -1275,6 +1281,17 @@ impl Binder<'_> {
     /// values are the same. A column of the table, or of the outer query,
     /// outside an aggregate call refuses, as does a call of a SQL function
     /// and a subquery.
+    ///
+    /// An item with no aggregate call reads the columns of the matched row,
+    /// `(SELECT s.v * 2 FROM s WHERE s.k = t.k)` ([`plan::AggPost::row`]):
+    /// each column becomes the input `min(col)`, which over a group of one
+    /// row is its value, and the table counts the rows of each group last.
+    /// DuckDB evaluates the item over each matched row, traps when a
+    /// request matches more than one row, and answers NULL for a request
+    /// that matches none (measured 2026-10-15). A column of the outer query
+    /// refuses, since the build cannot evaluate it, as do the table's whole
+    /// row, a field or an element of one of its columns, and an item that
+    /// is a bare NULL, which DuckDB types as NULL.
     fn agg_post(
         &self,
         query: &sqlparser::ast::Query,
@@ -1287,7 +1304,13 @@ impl Binder<'_> {
         let mut aggs: Vec<Agg> = Vec::new();
         let mut in_cols: Vec<Col> = Vec::new();
         let mut inputs: Vec<(SqlExpr, u32)> = Vec::new();
-        let mut outside = None;
+        // The names the item reads outside an aggregate call.
+        let mut names: Vec<SqlExpr> = Vec::new();
+        // The table's own name alone reads its whole row, as a struct
+        // (measured: even when the outer query has a column of that name).
+        let is_row = |x: &SqlExpr| {
+            matches!(x, SqlExpr::Identifier(id) if id.value.eq_ignore_ascii_case(&inner.name))
+        };
         self.walk_expr(e, &mut |x| {
             if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() {
                 return Err(form_refusal(&format!(
@@ -1324,23 +1347,77 @@ impl Binder<'_> {
                     }
                     None => Walk::Into,
                 },
+                SqlExpr::CompoundFieldAccess { root, .. }
+                    if matches!(**root, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)) =>
+                {
+                    if is_row(root) || inner.reads(root)? {
+                        return Err(form_refusal(&format!(
+                            "the SELECT item {e}, which reads a field or an element of a column \
+                             of {}",
+                            inner.name
+                        )));
+                    }
+                    names.push(x.clone());
+                    Walk::Over
+                }
                 SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => {
-                    outside.get_or_insert_with(|| x.to_string());
+                    names.push(x.clone());
                     Walk::Over
                 }
                 _ => Walk::Into,
             })
         })?;
-        if aggs.is_empty() {
-            return Err(match e {
-                SqlExpr::Function(f) => form_refusal(&format!("the aggregate {}", f.name)),
-                _ => form_refusal(&format!("the SELECT item {e} (one aggregate call)")),
-            });
+        let row = aggs.is_empty();
+        if !row {
+            if let Some(x) = names.first() {
+                return Err(form_refusal(&format!(
+                    "the SELECT item {e}, which reads {x} outside an aggregate call"
+                )));
+            }
         }
-        if let Some(x) = outside {
-            return Err(form_refusal(&format!(
-                "the SELECT item {e}, which reads {x} outside an aggregate call"
-            )));
+        // An item over one row: each column it reads is `min` of that
+        // column over a group of one row.
+        for x in names.iter().filter(|_| row) {
+            let Some(lane) = inner.col(x)? else {
+                if is_row(x) {
+                    return Err(form_refusal(&format!(
+                        "the SELECT item {e}, which reads the whole row of {}",
+                        inner.name
+                    )));
+                }
+                // A name that the outer query does not bind either answers
+                // the binder's error.
+                self.key_side(x)?;
+                return Err(form_refusal(&format!(
+                    "the SELECT item {e}, which reads {x} of the outer query"
+                )));
+            };
+            let col = &inner.st.cols[lane as usize];
+            let ty = col.ty.ty;
+            if !(ty.is_integer() || matches!(ty, Ty::I1 | Ty::F64 | Ty::Str | Ty::Dec(..))) {
+                return Err(form_refusal(&format!(
+                    "the SELECT item {e}, which reads {x} of type {}",
+                    duck_ty_name(ty)
+                )));
+            }
+            let agg = Agg {
+                func: AggFunc::Min,
+                arg: Some(lane),
+                distinct: false,
+                ties: false,
+            };
+            let i = match aggs.iter().position(|a| *a == agg) {
+                Some(i) => i,
+                None => {
+                    aggs.push(agg);
+                    in_cols.push(Col {
+                        name: col.name.clone(),
+                        ty: super::super::ir::ColTy { ty, nullable: true },
+                    });
+                    aggs.len() - 1
+                }
+            };
+            inputs.push((x.clone(), i as u32));
         }
         // The subquery's own FROM, without its alias: every name the item
         // reads is inside an aggregate call, which binds as its input.
@@ -1384,6 +1461,19 @@ impl Binder<'_> {
                 "the SELECT item {e}, which calls a UDF or a model"
             )));
         }
+        if row && bound.null_cols.first() == Some(&true) {
+            return Err(form_refusal(&format!(
+                "the SELECT item {e}, which DuckDB types as NULL"
+            )));
+        }
+        if row {
+            aggs.push(Agg {
+                func: AggFunc::CountStar,
+                arg: None,
+                distinct: false,
+                ties: false,
+            });
+        }
         Ok((
             aggs,
             plan::AggPost {
@@ -1391,6 +1481,7 @@ impl Binder<'_> {
                 project: stage.project,
                 out_cols: bound.out_cols,
                 regexes: bound.ctx.regexes,
+                row,
             },
         ))
     }

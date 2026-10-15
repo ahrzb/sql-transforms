@@ -478,10 +478,9 @@ def test_static_term_that_calls_a_sql_function_refuses():
 @pytest.mark.parametrize(
     "sql, why",
     [
-        (_sub("median(v)"), "the aggregate median"),
+        (_sub("median(v)"), "function median"),
         (_sub("sum(f)"), "sum over a DOUBLE column"),
         (_sub("avg(f)"), "avg over a DOUBLE column"),
-        (_sub("v"), "one aggregate call"),
         (_sub("count(NULL)"), "must be a column of its table"),
         (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
         (_sub("count(*)", "s.k + 1 = t.k"), "the WHERE term s.k + 1 = t.k"),
@@ -685,13 +684,16 @@ def _ksub(where: str, agg: str = "count(*)", tail: str = "") -> str:
         (_ksub(f"s.k = {TRAP}", tail=" WHERE x = 0 OR x IS NULL"), "AGREE"),
         (_ksub(f"s.k = {TRAP}", "sum(v)", " WHERE x = 0 OR x IS NULL"), "AGREE"),
         (_ksub(f"s.k = {TRAP}", "max(v)", " WHERE x = 0 OR x IS NULL"), "AGREE"),
+        (_ksub(f"s.k = {TRAP}", "s.v", " WHERE x = 0 OR x IS NULL"), "AGREE"),
         (_ksub(f"s.f = 1 AND s.k = {TRAP}", tail=" WHERE x = 0"), "AGREE"),
         (_ksub(f"s.k = {TRAP}"), "AGREE_TRAP"),
+        (_ksub(f"s.k = {TRAP}", "s.v * 2"), "AGREE_TRAP"),
         (_ksub(f"{TRAP} = s.k"), "AGREE_TRAP"),
         (_ksub(f"s.k IS NOT DISTINCT FROM {TRAP}"), "AGREE_TRAP"),
         (_ksub(f"s.k = {TRAP} AND s.v = y"), "AGREE_TRAP"),
         # A term before the key that passes no row: the side never runs.
         (_ksub(f"s.f = 7 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"s.f = 7 AND s.k = {TRAP}", "s.v"), ROWS_OR_OPT),
         (_ksub(f"s.f = NULL AND s.k = {TRAP}"), ROWS_OR_OPT),
         (_ksub(f"s.v NOT BETWEEN 0 AND 10 AND s.k = {TRAP}"), ROWS_OR_OPT),
         (_ksub(f"(s.v BETWEEN 0 AND -1 OR s.f = 9) AND s.k = {TRAP}"), ROWS_OR_OPT),
@@ -1863,6 +1865,246 @@ def test_any_beside_a_comma_join_refuses_an_x_that_can_trap():
     assert "beside a comma join" in v.detail, v.detail
 
 
+# An item with no aggregate reads the row that a request matches,
+# `(SELECT s.v FROM s WHERE s.k = t.k)`. The build reads the one row of each
+# group, and a request that matches no group reads NULL: the item does not
+# run there (the pins at the end). A group of more than one row refuses the
+# build, since the oracle traps when a request matches it. LS has one row for
+# each key k, one for the NULL key, and DOUBLE keys f that differ under the
+# oracle's equality (-0.0 matches 0.0, NaN matches NaN).
+
+LS = table(
+    {
+        "k": "int64?",
+        "j": "int32",
+        "v": "int64?",
+        "d": "decimal(9,4)?",
+        "f": "double?",
+        "s": "string?",
+        "b": "bool?",
+        "u": "uint64",
+        "i8": "int8?",
+    },
+    [
+        {
+            "k": 1,
+            "j": 1,
+            "v": 10,
+            "d": Decimal("1.5"),
+            "f": 1.5,
+            "s": "b",
+            "b": True,
+            "u": U64,
+            "i8": -128,
+        },
+        {
+            "k": 2,
+            "j": 1,
+            "v": None,
+            "d": Decimal("-2.25"),
+            "f": -0.0,
+            "s": "a",
+            "b": False,
+            "u": 3,
+            "i8": 127,
+        },
+        {
+            "k": 3,
+            "j": 2,
+            "v": -3,
+            "d": None,
+            "f": NAN,
+            "s": None,
+            "b": None,
+            "u": 1,
+            "i8": 1,
+        },
+        {
+            "k": None,
+            "j": 2,
+            "v": 7,
+            "d": Decimal("0.1"),
+            "f": None,
+            "s": "z",
+            "b": True,
+            "u": 0,
+            "i8": None,
+        },
+        {
+            "k": 5,
+            "j": 1,
+            "v": 20,
+            "d": Decimal("3"),
+            "f": 2.0,
+            "s": "",
+            "b": False,
+            "u": 2,
+            "i8": 5,
+        },
+    ],
+)
+
+ROW_ITEMS = [
+    "v",
+    "s.v",
+    "s.k",
+    "j",
+    "d",
+    "f",
+    "s.s",
+    "s",  # the column s, not the whole row of s
+    "b",
+    "u",
+    "i8",
+    "s.v * 2 + s.j",
+    "coalesce(s.v, 7)",
+    "upper(s.s) || 'x'",
+    "s.f IS NULL",
+    "CASE WHEN s.b THEN s.v ELSE -s.j END",
+    "s.d + 1",
+    "s.v + j",  # j binds in the subquery's table first
+    "1",
+    "'x'",
+]
+
+ROW_WHERES = [
+    "s.k = t.k",
+    "t.k = s.k",
+    "s.k IS NOT DISTINCT FROM t.k",
+    "s.k = t.k AND s.j = t.j",
+    "s.j = t.j AND s.k = t.k",
+    "s.k = t.k AND s.v > 0",  # the row k = 2 has v NULL: no match
+    "s.f = t.x",
+    "s.u = t.u",
+    "s.s = t.name",
+    "s.k = 1",  # no key: one row
+    "s.k > 100",  # no key: no row
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("item", ROW_ITEMS)
+def test_an_item_over_one_row(item, shape):
+    assert_parity(_sub(item), T, statics={"s": LS}, shape=shape)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("item", ["s.v", "coalesce(s.s, 'none')"])
+@pytest.mark.parametrize("where", ROW_WHERES)
+def test_an_item_over_one_row_keys(where, item, shape):
+    if shape == "many" and "IS NOT DISTINCT FROM" in where:
+        v = assert_parity(
+            _sub(item, where), T, statics={"s": LS}, shape=shape, expect="REFUSED"
+        )
+        assert "IS NOT DISTINCT FROM" in v.detail, v.detail
+        return
+    assert_parity(_sub(item, where), T, statics={"s": LS}, shape=shape)
+
+
+ROW_FORMS = [
+    # DuckDB's names of unaliased items, over aliased, bare and qualified
+    # names.
+    "SELECT (SELECT s.v FROM s WHERE s.k = t.k), (SELECT x.s FROM s AS x "
+    "WHERE x.k = t.k), (SELECT v * 2 FROM s WHERE k = t.k AND j = t.j), "
+    "(SELECT 1 FROM s WHERE s.k = t.k), (SELECT main.s.d FROM main.s "
+    "WHERE main.s.k = t.k) FROM __THIS__ AS t",
+    # Inside expressions, twice, beside an aggregate of the same table, and
+    # in WHERE.
+    "SELECT id, coalesce((SELECT s.v FROM s WHERE s.k = t.k), -1) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k) "
+    "+ (SELECT s.v FROM s WHERE s.k = t.k) "
+    "+ (SELECT count(*) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t",
+    "SELECT id, CASE WHEN t.k > 1 THEN (SELECT s.s FROM s WHERE s.k = t.k) END AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k) IS NULL AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.s FROM s WHERE s.k = t.k) = t.name AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.d FROM s WHERE s.k = t.k) * 2 AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT s.f FROM s WHERE s.k = t.k) "
+    "IS NOT DISTINCT FROM (SELECT s.f FROM s WHERE s.f = t.x) AS c FROM __THIS__ AS t",
+    "SELECT id FROM __THIS__ AS t WHERE (SELECT s.v FROM s WHERE s.k = t.k) > 0",
+    "SELECT id, (SELECT s.v FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t "
+    "WHERE c > 0",
+    # A lateral alias as the outer side.
+    "SELECT id, k AS kk, (SELECT s.s FROM s WHERE s.k = kk) AS c FROM __THIS__ AS t",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("sql", ROW_FORMS)
+def test_an_item_over_one_row_forms(sql, shape):
+    assert_parity(sql, T, statics={"s": LS}, shape=shape)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", "s.v > 5", None])
+def test_an_item_over_one_row_over_an_empty_table_and_an_empty_batch(where, shape):
+    w = "" if where is None else f" WHERE {where}"
+    sql = f"SELECT id, (SELECT s.v FROM s{w}) AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": LS.slice(0, 0)}, shape=shape)
+    if where == "s.k = t.k":
+        assert_parity(sql, T.slice(0, 0), statics={"s": LS}, shape=shape)
+        return
+    # Without a key, three or five rows: the oracle traps on every call, an
+    # empty batch too, and the build refuses.
+    v = assert_parity(
+        sql, T.slice(0, 0), statics={"s": LS}, shape=shape, expect="REFUSED"
+    )
+    assert v.oracle == "traps", v.oracle
+
+
+DUP_F = table({"f": "double", "v": "int64"}, [{"f": 0.0, "v": 1}, {"f": -0.0, "v": 2}])
+ST = pa.table(
+    {
+        "k": pa.array([1, 2, 3], pa.int64()),
+        "st": pa.array([{"a": 1}, {"a": 2}, None], pa.struct([("a", pa.int64())])),
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "sql, statics, udfs, why",
+    [
+        # The rows k = 1 of S: the request k = 1 matches three rows.
+        (_sub("v"), S, [], "reads 3 rows of one key, where DuckDB traps if a request"),
+        # -0.0 and 0.0 are one key.
+        (_sub("s.v", "s.f = t.x"), DUP_F, [], "reads 2 rows of one key"),
+        (
+            _sub("s.v", "s.v > 5"),
+            LS,
+            [],
+            "reads 3 rows of the table, where DuckDB traps on every call",
+        ),
+        # The item traps over the row k = 1, and over the one row v > 15.
+        (_sub("s.v + 9223372036854775807"), LS, [], "traps over the row of one key"),
+        (_sub("s.i8 - 1"), LS, [], "traps over the row of one key"),
+        (
+            _sub("s.v + 9223372036854775807", "s.v > 15"),
+            LS,
+            [],
+            "traps over the one row of the table",
+        ),
+        (_sub("s.v + t.j"), LS, [], "which reads t.j of the outer query"),
+        (_sub("s.v + zz"), LS, [], "column 'zz' does not exist"),
+        (_sub("s"), ST, [], "which reads the whole row of s"),
+        (_sub("s.st['a']"), ST, [], "reads a field or an element of a column of s"),
+        (_sub("st['a'] + 1"), ST, [], "reads a field or an element of a column of s"),
+        (_sub("NULL"), LS, [], "which DuckDB types as NULL"),
+        (_sub("median(v)"), LS, [], "function median"),
+        (_sub("first(v)"), LS, [], "aggregate function first"),
+        (_sub("s.v + (SELECT 1)"), LS, [], "which holds a subquery"),
+        (_sub("g(s.v).p"), LS, [G], "which calls a SQL function"),
+        (_sub("halve(s.v)"), LS, [Halve()], "which calls a UDF or a model"),
+        (_sub("DISTINCT s.v"), LS, [], "a subquery with DISTINCT"),
+        (_sub("s.v, s.k"), LS, [], "more than one SELECT item"),
+        (_sub("*"), LS, [], "a star in its SELECT"),
+    ],
+)
+def test_an_item_over_one_row_refuses_by_name(sql, statics, udfs, why):
+    v = assert_parity(sql, T, statics={"s": statics}, udfs=udfs, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap but in the outer side of a first key and in the left side of
 # IN, ANY or ALL, so these facts never change a served answer. They are why a WHERE term
@@ -2269,3 +2511,43 @@ def test_pin_any_with_a_key_runs_its_left_side_over_the_whole_batch(form):
         got = _pin(sql.format(item), [1, 2])
         assert isinstance(got, Trap), (item, got)
         assert "(2 * 4611686018427387904)" in got.message
+
+
+# The SELECT item over one row, measured 2026-10-15 over PIN_S: the group
+# k = 1 has two rows, the group k = 3 one. The build refuses a group of more
+# than one row, and an item that traps over a row, so these facts never
+# change a served answer.
+
+
+def test_pin_a_request_that_matches_more_than_one_row_traps():
+    sql = "SELECT k, (SELECT s.z FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [2, 3]) == [(2, None), (3, 1)]
+    for sql in (
+        "SELECT k, (SELECT s.z FROM s WHERE s.k = t.k) FROM t",
+        # Under a CASE that the request does not take, too.
+        "SELECT k, CASE WHEN k > 5 THEN (SELECT s.z FROM s WHERE s.k = t.k) END FROM t",
+    ):
+        got = _pin(sql, [1, 3])
+        assert isinstance(got, Trap), (sql, got)
+        assert "More than one row returned by a subquery" in got.message
+
+
+def test_pin_the_item_over_one_row_runs_over_the_matched_row_only():
+    sql = f"SELECT k, (SELECT s.z + {BIG} FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [2]) == [(2, None)]
+    got = _pin(sql, [3])
+    assert isinstance(got, Trap), got
+    assert "Overflow in addition of INT64" in got.message
+    # No row matches: NULL, not the item over no rows.
+    sql = "SELECT k, (SELECT coalesce(s.z, 7) FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [2]) == [(2, None)]
+
+
+def test_pin_an_uncorrelated_item_over_more_than_one_row_traps_on_every_call():
+    got = _pin("SELECT k, (SELECT s.z FROM s) FROM t", [])
+    assert isinstance(got, Trap), got
+    assert "More than one row returned by a subquery" in got.message
+    assert _pin("SELECT k, (SELECT s.z FROM s WHERE s.k = 3) FROM t", [1]) == [(1, 1)]
+    assert _pin("SELECT k, (SELECT s.z FROM s WHERE s.k = 2) FROM t", [1]) == [
+        (1, None)
+    ]
