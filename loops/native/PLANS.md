@@ -6,9 +6,43 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-Easiest first; each is one family, one PR.
+Easiest first; each is one PR.
 
-Nothing open: the loop builds the rulings below.
+1. **The projections' signed zeros** (reading 6, finding 77). Where every
+   product of an output field rounds to 0, the entries of `TruncatedSVD`
+   and `GaussianRandomProjection` answer -0.0 where the twin answers 0.0:
+   403 output fields over seeds 0 to 199 of the parity run (392 with
+   S = 0), within the bound. Add 0.0 to each output field of `project.py`
+   (`x + 0.0`, as `compose.py` does for a sparse stack since T36), and
+   check that no field of the parity run then differs in its sign alone.
+2. **The projections, `PolynomialFeatures` and the splines on confit
+   #459.** #459 (merged 2026-10-15, master 8fbdd11) lowers a CASE that
+   cannot trap to selects when it is small or a field read's NULL guard,
+   the need "A value read many times" below. On the confit loop's
+   container the catalog's `PCA` over 256 features of 64 components serves
+   64 rows in 4.9-5.2 ms (59 ms before) and builds in 3.2 s (7.3-7.5 s).
+   Measure the width curves of these families again; if the projections'
+   builds changed, fit `project._build_estimate` again, which now keeps
+   about 80 components over 256 features Python. Then remove that need.
+3. **The build estimates on confit #461** (reading 6, finding 76).
+   Since #456, a struct read field by field builds in about the square of
+   its fields, past the estimates of `trees.py`, `spline.py` and
+   `quantile.py`: 100 trees of depth 6 (estimate 3.4 s) build in 18 s,
+   250 of depth 5 (6.5 s) in 42-44 s, 10 quantiles over 800 features in
+   60-63 s (`to_native`; release build, master 98033e8, uv's CPython).
+   The confit loop traced the cost to its check for a subquery at each
+   SELECT item (`subquery::has_subquery`), which walked the whole call
+   again at every field read. #461 (merged 2026-10-15, master 620112e)
+   keeps the answer for each call: on the confit loop's container 4,000
+   fields build in 1.00-1.12 s (23.6-27.8 s before) and the catalog's
+   250 trees of depth 5 (5,982 fields) in 5.8-6.2 s (158 s); above 4,000
+   fields the build still grows faster than linearly (8,000 fields:
+   3.2 s). Measure the builds of these three families again with reading
+   6's scripts (`/mnt/project-files/transforms-loop/reading-6/`:
+   `widths_r6.py`, `struct_list.py`, `steps_at.py`); if a step still
+   builds past its estimate, fit that estimate again. Then remove the
+   need "A struct read field by field that builds about as fast as before
+   #456" below.
 
 ## Ruled 2026-10-06, to build
 
@@ -46,6 +80,20 @@ that request, `to_native(step, allow_bound=True)`. In order:
 
 ## Needs from confit
 
+- **A struct read field by field that builds about as fast as before
+  #456.** Since confit #456 (0def508), a query that reads a struct output
+  field by field, one SELECT item a field, as `query(step)` does, builds
+  in a time that grows about as the square of the fields read. 4,000
+  fields over 8 parameters build in 0.92-1.01 s at 4bb88f5 and in
+  5.84-6.13 s on master; read whole, 0.60-0.67 s on both. In the catalog,
+  250 trees of depth 5 build in 42-44 s as a struct (5.9-6.5 s at reading
+  5) and 2.0-2.2 s as a list. T35's catalog code on confit 0def508 builds
+  the widest bench forest in 0.60-0.64 s, T36's on 4bb88f5 in 0.25-0.33 s
+  (release build, uv's CPython, 2026-10-14). A confit-only reproduction
+  is in `/mnt/project-files/transforms-loop/confit-field-reads-456.py`,
+  sent to the confit loop on 2026-10-14. Delivered by confit #461
+  (merged 2026-10-15, master 620112e). Measure ("Next", item 3), then
+  remove this item.
 - **A value read many times, at about the cost of one read.** The catalog
   reads each numeric feature as `coalesce(x, NaN)`, one `confit.sql`
   object that every output field reads. Read once, it costs about 15 ns a
@@ -56,8 +104,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `/mnt/project-files/transforms-loop/confit-shared-value-reads.py`, sent
   to the confit loop. It sets the speed of the linear projections (T37):
   `PCA` over 256 features of 64 components serves 64 rows in 78 ms,
-  against the twin's 39 ms. When it lands, measure the projections,
-  `PolynomialFeatures` and the splines again.
+  against the twin's 39 ms. Delivered by confit #459 (merged
+  2026-10-15): it lowers a CASE that cannot trap to selects when it is
+  small or a field read's NULL guard; on the confit loop's container that
+  `PCA` serves 64 rows in 4.9 to 5.2 ms, against 59 ms before. Measure
+  ("Next", item 2), then remove this item.
 - **A struct output read field by field, built once for the call.**
   Where a query reads each field of a struct output one by one
   (`to_native`'s trial build does, and so does a serving query that names
@@ -111,7 +162,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   body to do so. For `QuantileTransformer` at 8,000 quantiles over one
   feature it takes 1.7 to 1.9 s beside a build of 6.9 to 7.3 s, in a
   `to_native` of 8.8 to 9.1 s (release build, master 94d7bb1, T34). The
-  build estimates do not count it. Low priority for confit.
+  build estimates do not count it. Low priority for confit. A confit-only
+  reproduction, `/mnt/project-files/transforms-loop/confit-function-body-pass.py`
+  (a tree of 8,000 leaves: 0.68 s in `SqlFunction` beside 4.34 s for the
+  build and one call, master 98033e8), was sent to the confit loop on
+  2026-10-14; it recorded it at low priority.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call

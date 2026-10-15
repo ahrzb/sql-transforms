@@ -77,16 +77,16 @@ anchor (`{#what-moved}` and so on).
    and name the limit.
 
 4. **Exactness.** List every parity bound above 0 that the catalog
-   registers: each ulp bound that is not 0, and each error scale. For each
-   bound, give the family, the configuration, the bound, the seeds and date
+   registers: each ulp bound that is not 0, and each parity bound that a
+   family declares with an error scale. For each bound, give the family, the configuration, the bound, the seeds and date
    of the measurement, and the reason. The reason is usually the order of
    the twin's additions, which the entry cannot follow. If every entry is
    bit-exact, say so.
    - A class can declare a different bound for each configuration, that
      is, for each set of constructor arguments. The code for this is
-     `translates(cls, ulps=ceiling, bound=...)`: `ceiling` is the largest
-     bound of the class, and `bound` gives the bound of one fitted
-     estimator. List each configuration with a bound above 0 on its own
+     `translates(cls, ulps=ceiling, bound=...)`. Here `ceiling` is the
+     largest bound that the class allows. `bound` is a function that gives
+     the bound of one fitted estimator. List each configuration with a bound above 0 on its own
      line, for example `FunctionTransformer(np.log10)`, 2 ulps.
    - A family can declare its parity bound with an error scale. The code
      for this is `translates(cls, scale=ErrorScale(k, s, tau))`, where `k`,
@@ -96,11 +96,13 @@ anchor (`{#what-moved}` and so on).
      |entry − twin| / (eps·S) for each number of features. Do not use this
      value as K. It is only evidence that K holds.
    - The KPI `nonzero_ulp_bounds` is the number of catalog classes that
-     have a bound above 0 for at least one configuration. Such a bound can
-     be an ulp bound or an error scale. A class counts once, however many
-     of its configurations have such a bound.
+     have a parity bound above 0 for at least one configuration. This is an
+     ulp bound above 0, or a parity bound with an error scale. The KPI is
+     older than error scales, so its name says only "ulp". A class counts
+     once, however many of its configurations have such a bound.
      `python -m sql_transform.native.coverage --bounds` prints the count.
-   - Run the parity test on 200 seeds of every fixture configuration
+   - Run the parity test (`test_an_entry_matches_its_twin` in
+     `native/catalog_test.py`) on 200 seeds of every fixture configuration
      (`NATIVE_SEEDS=200`). Give the number of steps and of configurations
      that it checked, and its failures and skips.
 
