@@ -14,6 +14,10 @@ optimizer-on reading runs; the second is the whole verdict. The parent reads
 the second line under a budget of its own too: a slow bracket reading costs
 only its label.
 
+A line `timeout <seed>` asks for the witness of a seed whose oracle reading
+ran past the time limit in an earlier worker: one line,
+`fuzz.oracle.timeout_json`.
+
 A worker runs thousands of cases, so it keeps one oracle database for all of
 them (`fuzz.oracle.reuse_oracle`).
 """
@@ -27,7 +31,12 @@ import sys
 # harness's time, not DuckDB's or ours (see fuzz.oracle.PHASE_MARK).
 print("@@phase harness:startup", file=sys.stderr, flush=True)
 
-from .oracle import refusal_json, reuse_oracle, run_case_json  # noqa: E402
+from .oracle import (  # noqa: E402
+    refusal_json,
+    reuse_oracle,
+    run_case_json,
+    timeout_json,
+)
 
 
 def main() -> None:
@@ -35,6 +44,9 @@ def main() -> None:
     for line in sys.stdin:
         line = line.strip()
         if not line:
+            continue
+        if line.startswith("timeout "):
+            print(json.dumps(timeout_json(int(line.split()[1]))), flush=True)
             continue
         seed = int(line)
         print("@@phase harness:gen", file=sys.stderr, flush=True)

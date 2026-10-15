@@ -10,6 +10,12 @@ A verdict line marked `"bracket": "pending"` is followed by the whole verdict,
 which the runner reads under the bracket's own budget. Bracket stand-ins send
 AGREE before the bracket and DIVERGE_OPT after it, and on odd seeds hang in or
 die in the bracket reading.
+
+A worker that runs past the time limit of a seed in the oracle is replaced,
+and the new worker gets a line `timeout <seed>`: the witness of the exclusion
+rules that decide a timeout (`fuzz.oracle.timeout_json`). Timeout stand-ins
+answer AGREE on even seeds and hang on odd ones, then excuse, keep or hang in
+the witness.
 """
 
 from __future__ import annotations
@@ -63,6 +69,30 @@ for line in sys.stdin:
         if mode == "die":
             sys.exit(3)
     print(json.dumps({**verdict, "kind": "DIVERGE_OPT", "klass": "k"}), flush=True)
+"""
+
+
+TIMEOUT_STAND_IN = r"""
+import json, sys, time
+mode = sys.argv[1]
+for line in sys.stdin:
+    if line.startswith("timeout "):
+        if mode == "hang":
+            time.sleep(60)
+        if mode == "raise":
+            print(json.dumps({"excused": None, "error": "E: w"}), flush=True)
+            continue
+        excused = None if mode == "keep" else ["oracle-timeout-before-a-trap", "w"]
+        print(json.dumps({"excused": excused}), flush=True)
+        continue
+    seed = int(line)
+    if seed % 2:
+        side = "confit:run" if mode == "confit" else "oracle"
+        print(f"@@phase {side}", file=sys.stderr, flush=True)
+        time.sleep(60)
+    verdict = {"seed": seed, "sql": "", "kind": "AGREE", "klass": "", "detail": "",
+               "tags": [], "triples": []}
+    print(json.dumps(verdict), flush=True)
 """
 
 
@@ -209,3 +239,42 @@ def test_an_unfinished_reading_is_reported_with_its_reason(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "over-budget    1  the reading ran past --report-timeout" in out
     assert "died           1  the worker died in the reading" in out
+
+
+@pytest.mark.parametrize(
+    ("mode", "kind", "klass", "workers"),
+    [
+        ("excuse", "EXCLUDED", "oracle-timeout-before-a-trap", 3),
+        ("keep", "TIMEOUT", "timeout:oracle", 3),
+        ("raise", "TIMEOUT", "timeout:oracle", 3),
+        ("hang", "TIMEOUT", "timeout:oracle", 5),
+        ("confit", "TIMEOUT", "timeout:confit", 3),
+    ],
+)
+def test_an_oracle_timeout_is_read_again_by_its_witness(
+    tmp_path, monkeypatch, mode, kind, klass, workers
+):
+    """A witness that excuses the seed makes its TIMEOUT an EXCLUDED verdict,
+    which keeps the TIMEOUT as its raw verdict. A witness that excuses
+    nothing, raises or runs past the time limit leaves the TIMEOUT, and a
+    worker lost in confit gets no witness."""
+    spawned = _stand_in(monkeypatch, mode, script=TIMEOUT_STAND_IN)
+    results = runner.campaign(
+        0,
+        4,
+        1,
+        timeout=1.0,
+        out=tmp_path / "f.jsonl",
+        report_timeout=1.0,
+        bracket_timeout=1.0,
+    )
+    got = {r["seed"]: r for r in results}
+    assert [got[s]["kind"] for s in range(4)] == ["AGREE", kind] * 2
+    assert got[1]["klass"] == got[3]["klass"] == klass
+    if kind == "EXCLUDED":
+        assert got[1]["raw"] == "TIMEOUT timeout:oracle"
+        assert runner.gate(results, None) == []
+    else:
+        assert runner.gate(results, None) == ["2 TIMEOUT"]
+    assert got[1].get("witness_error") == ("E: w" if mode == "raise" else None)
+    assert len(spawned) == workers

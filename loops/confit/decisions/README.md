@@ -4,7 +4,6 @@ This folder holds one record for each question. Each record states the question,
 and the ground.
 
 - [open/](open) holds records that wait for a ruling:
-  - [the oracle times out where confit traps first](open/oracle-timeout-before-a-trap.md)
   - [JOIN with GROUP BY as an aggregate for each request](open/join-group-by-per-request.md)
   - [the open parts of the float-reduction bound](open/double-sum-bound.md)
 - [closed/](closed) holds rulings in force:
@@ -16,6 +15,7 @@ and the ground.
   - [empty-static join trap timing](closed/empty-static-join-trap-timing.md)
   - [an INNER join whose static keys are all NULL](closed/all-null-key-static.md)
   - [Empty-static witness: trap order](closed/empty-static-witness-trap-order.md)
+  - [the oracle times out where confit traps first](closed/oracle-timeout-before-a-trap.md)
 - [postponed/](postponed) holds questions decided "not now". Each record names the condition that reopens it:
   - [Public refusal codes](postponed/public-reason-codes.md)
   - [pin governance metadata](postponed/pin-governance-metadata.md)

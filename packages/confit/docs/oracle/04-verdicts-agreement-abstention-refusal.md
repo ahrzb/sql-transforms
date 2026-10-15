@@ -116,9 +116,9 @@ worker-failure kinds.
 | `BUILD_EXC` | confit construction raises something other than the contract `ValueError` |
 | `REFUSED` | both confit backends reject construction with `ValueError` |
 | `UNSHIPPED` | an enumerated missing width prevents value comparison |
-| `EXCLUDED` | both confit backends trap on a resource ceiling of the serving contract's `resource-ceilings` exclusion (`fuzz.oracle.RESOURCE_CEILINGS`, matched verbatim). The exclusion is defined by the ceiling, so DuckDB is not run: past it DuckDB builds the gigabyte value, which can take minutes and cannot be interrupted inside one vector |
+| `EXCLUDED` | a rule of the exclusion registry (`fuzz/exclusions.py`) removes the case from the comparison, and the class names the rule. Under `resource-ceiling`, both confit backends trap on a resource ceiling of the serving contract (`fuzz.oracle.RESOURCE_CEILINGS`, matched verbatim), so DuckDB is not run: past the ceiling, DuckDB builds the gigabyte value, which can take minutes and cannot be interrupted inside one vector. The other rules decide after a DuckDB reading, and the case keeps that reading's verdict as `raw` ([the divergence ledger](07-the-divergence-ledger.md#exclusions-in-force)) |
 | `SKIP` | an exception escapes the case harness |
-| `TIMEOUT` | a worker exceeds the per-case budget; detail is an 800-byte stderr tail |
+| `TIMEOUT` | a worker exceeds the per-case budget; detail is an 800-byte stderr tail. If the worker was in the oracle (its side is `oracle`), a new worker first reads the witness of the rules that decide a timeout (`fuzz.exclusions.after_timeout`) under the same budget, which can make the case `EXCLUDED` with `TIMEOUT` as its `raw` verdict |
 | `PANIC` | a worker exits without returning a verdict; detail has the same shape |
 
 *Enforced-by:* `fuzz.oracle.KINDS`, `fuzz.oracle.run_case`, and `fuzz.runner`.
@@ -289,8 +289,11 @@ reads the last marker a killed worker wrote: the finding's `side` is `oracle`, `
 inputs are regenerated from the seed in the parent, so they are preserved even though
 the worker never returned. Oracle-side and confit-side timeouts imply opposite problems.
 In nightly seed 1102717, confit traps immediately on an INT32 overflow. DuckDB spends
-seconds building a 2 GiB `repeat` before it reaches the same overflow. The markers are
-internal audit vocabulary, not a public API.
+seconds building a 2 GiB `repeat` before it reaches the same overflow. Such an
+oracle-side timeout gets one more reading: the exclusion `oracle-timeout-before-a-trap`
+reads the oracle again with each string length capped at 1,000
+([the divergence ledger](07-the-divergence-ledger.md)). The markers are internal audit
+vocabulary, not a public API.
 
 *Enforced-by:* `fuzz.oracle._phase`, `fuzz.worker`, `fuzz.runner.side_of`, and
 `fuzz.runner.blame`.

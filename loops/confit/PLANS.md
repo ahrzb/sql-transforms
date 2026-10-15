@@ -30,9 +30,10 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    ruling. Two questions needed the owner. The empty-static witness now
    accepts any trap, so the multi-trap row side of seed 4313391 is excused
    ([decisions/closed/empty-static-witness-trap-order.md](decisions/closed/empty-static-witness-trap-order.md)).
-   The oracle TIMEOUT where confit traps first (seeds 4226438, 946454) has a
-   ruling to apply next
-   ([decisions/open/oracle-timeout-before-a-trap.md](decisions/open/oracle-timeout-before-a-trap.md)).
+   The oracle TIMEOUT where confit traps first (seeds 4226438, 946454) is
+   excused by its ruling: once the oracle runs past the time limit, a new
+   process reads it again with each string length capped at 1,000
+   ([decisions/closed/oracle-timeout-before-a-trap.md](decisions/closed/oracle-timeout-before-a-trap.md)).
 
    The 2026-10-06 night (seeds 4600000..4999999, replayed on master
    f72214b with the generator that declares SQL functions) is triaged, its
@@ -50,8 +51,8 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    of a struct's CASE folds at bind instead of panicking the fold (4704064);
    a field read over a struct stays a call unless DuckDB's binder makes each
    NULL a constant (`outputs::DuckNulls`; 4848122). Its TIMEOUT cases are the
-   open oracle-TIMEOUT record's mechanism, added to it as evidence with a
-   witness that covers a trap inside the long string's own expression; its
+   oracle-TIMEOUT record's mechanism, which its ruling now excuses (the
+   witness covers a trap inside the long string's own expression too); its
    OPT_EMULATED case (4889739), an INNER join whose static keys are all NULL,
    is excused: the owner extended the empty-static ruling to such a join
    ([decisions/closed/all-null-key-static.md](decisions/closed/all-null-key-static.md)).
@@ -87,8 +88,8 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    optimizer-on reading folds a constant string of 2^31 - 1 characters, and
    it now runs under a time limit of its own (`--bracket-timeout`), so they
    keep their optimizer-off verdict;
-   24 of the 26 DuckDB TIMEOUTs with seeds are the open oracle-TIMEOUT
-   record's mechanism, and the two OPT_EMULATED cases (7242549, 7829571)
+   24 of the 26 DuckDB TIMEOUTs with seeds are the oracle-TIMEOUT record's
+   mechanism (now excused by its ruling), and the two OPT_EMULATED cases (7242549, 7829571)
    are the all-NULL-key record's, now canaries of the empty-static rule.
    Their seeds are in those two records.
 
@@ -106,8 +107,8 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    empty-static witness pads a timestamp column with the epoch, so 8522528
    is excused by its ruling. Not confit defects: in 8249704 confit traps on
    `- c2` over -2147483648 while the oracle first builds an `lpad` of
-   2^31 - 1 characters in another column (the open oracle-TIMEOUT record's
-   mechanism, added to its evidence; 55 s alone, AGREE_TRAP); in 8517819
+   2^31 - 1 characters in another column (the oracle-TIMEOUT record's
+   mechanism, now a canary of its rule; 55 s alone, AGREE_TRAP); in 8517819
    both engines serve the same `repeat(lpad('0', c1, 'a'), c1)` over
    c1 = 32767, a string of 1,073,676,289 characters just under the 1 GiB
    ceiling of a string builder, and the case takes more than the 20 s

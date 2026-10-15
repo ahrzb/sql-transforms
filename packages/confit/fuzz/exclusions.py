@@ -27,7 +27,8 @@ report can be recomputed without a rule. The ledger table in
 (`python -m fuzz.exclusions --ledger`), and a test keeps the two in step.
 
 Three kinds of record share the registry: verdict rules (applied inside
-`fuzz.oracle.run_case`), rewrite tolerances (`fuzz.metamorphic`), and
+`fuzz.oracle.run_case`, or by `fuzz.runner` once the oracle runs past the
+time limit of a case), rewrite tolerances (`fuzz.metamorphic`), and
 input-source exclusions (the DuckDB test-corpus replay).
 """
 
@@ -108,8 +109,10 @@ def joins_static_where(
 @dataclass(frozen=True)
 class Rule:
     """A verdict rule. Exactly one of `pre` (decided from the confit run,
-    before DuckDB runs) and `post` (decided after the raw verdict) is set;
-    each returns the excusing detail, or None."""
+    before DuckDB runs), `post` (decided after the raw verdict) and `timeout`
+    (decided in a new worker after the oracle ran past the time limit of the
+    case, from the case alone) is set; each returns the excusing detail, or
+    None."""
 
     id: str
     ledger: str  # the anchor in docs/oracle/07-the-divergence-ledger.md
@@ -119,6 +122,7 @@ class Rule:
     expected_per_100k: float  # the nightly flags a count far above this
     pre: Callable[[Evidence], str | None] | None = None
     post: Callable[[Evidence, object], str | None] | None = None
+    timeout: Callable[[object], str | None] | None = None  # over a fuzz.gen.Case
     oracle: str = ORACLE
     status: str = "ruled"  # or "kept": in force before a ruling, as the ledger says
     kind: str = "verdict"
@@ -276,6 +280,123 @@ def _duck_with_padding(ev: Evidence, statics: list[str]) -> str | None:
         )
 
 
+# The witness of an oracle reading that ran past the time limit of a case:
+# the oracle reads the query again with each length that a string builder
+# takes capped at LENGTH_CAP. A temporary macro hides the builtin of its name
+# (DuckDB looks in the temporary schema first, measured on 1.5.5, SQL
+# functions' bodies included) and calls the builtin through `system.main`,
+# with the length passed through a UDF that counts the lengths it caps.
+LENGTH_CAP = 1000
+_BUILDERS = (
+    # name, parameters, the type of the length: lpad's count is INTEGER and
+    # takes no BIGINT, repeat's is BIGINT
+    ("lpad", ("s", "n", "c"), "INTEGER"),
+    ("rpad", ("s", "n", "c"), "INTEGER"),
+    ("repeat", ("s", "n"), "BIGINT"),
+)
+
+
+def _kind(msg: str | None) -> str | None:
+    """The kind of a DuckDB error inside a trap text, such as "out of range
+    error" in "OutOfRangeException: Out of Range Error: Overflow ...": the
+    field after the exception name, when it names one. Confit's texts name
+    one where they copy DuckDB's ("ValueError: Conversion Error: ..."), and
+    not always ("ValueError: cannot take square root of a negative number")."""
+    if not msg:
+        return None
+    parts = [p.strip() for p in msg.split(":")]
+    if len(parts) >= 2 and parts[1].lower().endswith("error"):
+        return parts[1].lower()
+    return None
+
+
+def _confit_traps(case, udf_objs) -> tuple[str | None, str | None] | None:
+    """Confit's trap on each backend over the case's rows, read as
+    `fuzz.oracle.run_case` reads it: `(cranelift, interpreter)`, None for
+    rows; None when a backend does not build."""
+    from fuzz import oracle as O  # noqa: PLC0415 -- oracle imports this module
+
+    sql = O._sql(case)
+    schema = O._arrow_schema(case.row_schema)
+    statics = {n: O._arrow_table(sch, rows) for n, (sch, rows) in case.statics.items()}
+    table = O._arrow_table(case.row_schema, case.rows)
+    traps = []
+    for force in (False, True):
+        try:
+            fn = O._build(sql, schema, statics, udf_objs, case.shape, force)
+        except Exception:  # noqa: BLE001 -- a refusal or a build error: no witness
+            return None
+        try:
+            fn.infer_arrow(table)
+            traps.append(None)
+        except Exception as e:  # noqa: BLE001 -- a trap, as run_case reads it
+            traps.append(f"{type(e).__name__}: {e}")
+    return traps[0], traps[1]
+
+
+def _capped_oracle(case, udf_objs) -> tuple[str | None, str | None, int]:
+    """The oracle's reading of the case with each string builder's length
+    capped at LENGTH_CAP: `(phase, error, capped)`. `phase` is "build" or
+    "run" when DuckDB raises, None for rows, and `capped` counts the lengths
+    above the cap. The reading has a database of its own, which ends with
+    the macros in it."""
+    from confit.oracle import Oracle  # noqa: PLC0415
+
+    from fuzz import oracle as O  # noqa: PLC0415 -- oracle imports this module
+
+    capped = 0
+
+    def cap(n):
+        nonlocal capped
+        if n is not None and n > LENGTH_CAP:
+            capped += 1
+            return LENGTH_CAP
+        return n
+
+    con = Oracle()
+    try:
+        for width in ("INTEGER", "BIGINT"):
+            name = f"__confit_length_cap_{width.lower()}"
+            con.create_function(name, cap, [width], width, null_handling="special")
+        for name, params, width in _BUILDERS:
+            cap_fn = f"__confit_length_cap_{width.lower()}"
+            args = ", ".join(f"{cap_fn}({p})" if p == "n" else p for p in params)
+            con.execute(
+                f"CREATE TEMP MACRO {name}({', '.join(params)}) AS "
+                f"system.main.{name}({args})"
+            )
+        if O._load(con, case, udf_objs) is not None:
+            return "build", None, capped
+        _, phase, err = O._exec(con, O._sql(case))
+        return phase, err, capped
+    finally:
+        con.close()
+
+
+def _long_string(case) -> str | None:
+    # The scope: confit traps on both backends. The witness: the oracle,
+    # with each length capped, caps at least one length and raises an error
+    # of confit's kind (where both texts name one). Unlike the empty-static
+    # witness, the kind stays: a cap changes the values that the query
+    # computes, so the capped query can raise an error that the original
+    # does not, such as a cast of a string that the cap made shorter
+    # (loops/confit/decisions/closed/oracle-timeout-before-a-trap.md).
+    from fuzz import oracle as O  # noqa: PLC0415 -- oracle imports this module
+
+    udf_objs = O._udf_objs(case)
+    traps = _confit_traps(case, udf_objs)
+    if traps is None or None in traps:
+        return None
+    phase, err, capped = _capped_oracle(case, udf_objs)
+    if phase != "run" or capped == 0:
+        return None
+    ours, theirs = _kind(traps[0]), _kind(err)
+    if ours is not None and theirs is not None and ours != theirs:
+        return None
+    first = err.splitlines()[0] if err else ""
+    return f"the oracle with lengths capped at {LENGTH_CAP} traps too: {first[:200]}"
+
+
 RULES: tuple[Rule, ...] = (
     Rule(
         id="resource-ceiling",
@@ -319,8 +440,29 @@ RULES: tuple[Rule, ...] = (
             7242549,
             7829571,
         ),
-        expected_per_100k=2,
+        # 6 in the 50,000 seeds 31000000..31049999 on 5e641eb, each a comma
+        # join over an empty static table
+        expected_per_100k=12,
         post=_empty_static,
+    ),
+    Rule(
+        id="oracle-timeout-before-a-trap",
+        ledger="divergence: oracle-timeout-before-a-trap",
+        ruling="loops/confit/decisions/closed/oracle-timeout-before-a-trap.md",
+        claim=(
+            "Confit traps on a request before it builds a long string. The "
+            "oracle evaluates one expression over all the requests at a "
+            "time, so it first builds the string (lpad, rpad or repeat over "
+            "a computed length, up to 2^31 - 1 characters) and runs past the "
+            "time limit of the case. The witness reads the oracle again "
+            "with each such length capped at 1,000: it must cap at least one "
+            "length, and the oracle must then raise an error of confit's "
+            "kind where both texts name one. Rows, an error of another kind "
+            "or a trap on one backend only stay a TIMEOUT."
+        ),
+        canaries=(946454, 4226438, 4657943, 8249704, 9195711),
+        expected_per_100k=1,
+        timeout=_long_string,
     ),
 )
 
@@ -412,6 +554,18 @@ def post_verdict(ev: Evidence, raw):
     for r in RULES:
         if r.post is not None and active(r):
             detail = r.post(ev, raw)
+            if detail is not None:
+                return r.id, detail
+    return None
+
+
+def after_timeout(case):
+    """(rule id, detail) of the first rule that excuses `case` once its
+    oracle reading ran past the time limit of the campaign (`fuzz.runner`),
+    or None."""
+    for r in RULES:
+        if r.timeout is not None and active(r):
+            detail = r.timeout(case)
             if detail is not None:
                 return r.id, detail
     return None

@@ -10,7 +10,11 @@ so it runs after the verdict, under its own --report-timeout, and running
 out of that costs the report an outcome, not a finding. Likewise the
 optimizer-on (bracket) reading runs after the baseline verdict is sent,
 under its own --bracket-timeout, and running out of that costs the verdict
-its bracket label (DIVERGE_OPT, OPT_EMULATED), not a TIMEOUT. Verdict counts,
+its bracket label (DIVERGE_OPT, OPT_EMULATED), not a TIMEOUT. A seed whose
+oracle reading runs past --timeout gets one more reading in the new worker,
+under the same budget: the witness of the exclusion rules that decide a
+timeout (`fuzz.exclusions.after_timeout`), which can make the TIMEOUT an
+EXCLUDED verdict. Verdict counts,
 refusal classes, the unshipped-feature bucket, and a construct-coverage
 histogram over AGREE cases print at the end — a grammar hole should be
 visible, not silent.
@@ -243,13 +247,52 @@ def _drive(seeds, results, timeout, lock, report_timeout, bracket_timeout):
             continue
         kind = "TIMEOUT" if fired else "PANIC"
         stderr = _stderr_all(err)
-        results.append(blame(seed, kind, stderr[-800:], stderr))
+        r = blame(seed, kind, stderr[-800:], stderr)
         proc.kill()
         err.close()
         proc, err = _spawn()
+        if kind == "TIMEOUT" and r["side"] == "oracle":
+            r, proc, err = _after_timeout(r, proc, err, timeout)
+        results.append(r)
     proc.stdin.close()
     proc.wait(timeout=10)
     err.close()
+
+
+def _after_timeout(r: dict, proc, err, timeout: float):
+    """`(finding, proc, err)` for a seed whose oracle reading ran past
+    `timeout`: the new worker `proc` runs the witness of the rules that
+    decide a timeout (`fuzz.oracle.timeout_json`) under the same budget. A
+    witness that excuses the case makes `r` an EXCLUDED verdict that keeps
+    the TIMEOUT as its raw verdict. Anything else leaves the TIMEOUT `r`: a
+    witness that excuses nothing (or raises, which `r` then names as
+    `witness_error`), or a worker that outruns the budget or dies, which is
+    then replaced."""
+    try:
+        proc.stdin.write(f"timeout {r['seed']}\n")
+        proc.stdin.flush()
+    except OSError:
+        line, fired = "", False
+    else:
+        line, fired = _read(proc, timeout)
+    if fired or not line:
+        proc.kill()
+        err.close()
+        proc, err = _spawn()
+        return r, proc, err
+    out = json.loads(line)
+    hit = out.get("excused")
+    if not hit:
+        if out.get("error"):
+            r = {**r, "witness_error": out["error"]}
+        return r, proc, err
+    rule, detail = hit
+    raw = f"{r['kind']} {r['klass']}"
+    return (
+        {**r, "kind": "EXCLUDED", "klass": rule, "detail": detail, "raw": raw},
+        proc,
+        err,
+    )
 
 
 def _unbracketed(r: dict, over: bool, err) -> dict:

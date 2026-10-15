@@ -88,3 +88,59 @@ that exclusion does not apply.
 
 **Recommendation.** Choose option 1. The witness limits the exclusion to this cause, as the ruling on the
 [trap timing of a join on an empty static table](../closed/empty-static-join-trap-timing.md) does.
+
+**Ruling (owner, 2026-10-15).** The owner wrote in the project chat:
+
+> In cases where duckdb times out, you can reduce the size (say that 2GB blob) and see if there is an actual failure in query or not
+> Ofc you can reject a 2GB string as it is not a feasible number on a real proof scenario
+
+The loop reads the first sentence as option 1: the witness runs the query again on the oracle with smaller
+lengths, and the oracle must then raise an error. The second sentence agrees with the serving contract of
+confit (`packages/confit/docs/specs/serving-contract.md`). Confit already traps when a function builds a
+string that is longer than 1 GiB.
+
+**How the loop applies the ruling.** The rule `oracle-timeout-before-a-trap` in `fuzz/exclusions.py` decides
+a case after the oracle runs past the time limit of the case (20 s in the nightly campaign). The runner of
+the campaign (`fuzz/runner.py`) then stops the process of the case, and a new process runs the witness
+under the same time limit. The witness runs the query again on the oracle, with each length of `lpad`,
+`rpad` and `repeat` that is above 1,000 replaced by 1,000, the value of option 1. A constant length is
+replaced too. The witness does not change the text of the query. It hides the three functions behind
+functions of the same name, which replace the length and then call the original function.
+
+The rule excuses the case if all of these are true:
+
+- Confit traps on both backends.
+- The witness replaces at least one length.
+- The oracle then raises an error while it runs the query.
+- The error of the oracle has the same kind as the error of confit. The kind is the name at the start of
+  the text of an error, such as "Out of Range Error" or "Conversion Error". Some texts of confit name no
+  kind, such as "Overflow in addition of INT64". Then the witness cannot compare the kind, and an error of
+  any kind counts.
+
+The case then gets the verdict EXCLUDED, and its raw verdict stays TIMEOUT. If the oracle returns rows, or
+if the witness also runs past the time limit, the verdict stays TIMEOUT.
+
+Option 1 limits the rule to a string builder whose length is not a constant. The rule does not read the
+text of the SQL to find such a length. It measures instead: the witness must replace at least one length.
+
+**Why the witness compares the kind of the error.** The ruling on the [error
+kind](empty-static-witness-trap-order.md) removed this comparison from the witness of the exclusion
+`empty-static-trap-timing`. This witness keeps it, as option 1 says, for a reason that the other witness
+does not have. A replaced length changes the values that the query computes. So the witness can raise an
+error that the original query does not raise. For example, `CAST(substr(lpad('1', n, '0'), 1001) AS
+INTEGER)` gives 1 for n = 1,002. For n = 1,000, `substr` gives an empty string, and the cast fails. An error
+of the same kind is evidence that the oracle reaches the same failure as confit. The witness of
+`empty-static-trap-timing` adds a row to a static table and changes no value.
+
+**Measurement.** On master 5e641eb, the loop ran the witness on the 36 cases of this record in which confit
+traps on both backends: the 35 cases of the last table above and seed 8249704. The witness excuses 35 of
+them, in 0.03 s to 0.51 s for each case. It replaces one length in 26 cases and two lengths in 9 cases. In
+24 cases, the error of confit names a kind (16 Conversion Error, 8 Out of Range Error), and the oracle raises
+an error of the same kind. In 11 cases, the error of confit names no kind. So the comparison of the kind
+rejects no case. The witness does not excuse seed 7157597. On master 5e641eb, this seed gets the verdict
+AGREE in 0.5 s, so the oracle does not run past the time limit.
+
+The canaries of the rule are seeds that the rule must still excuse: 946454, 4226438, 4657943, 8249704 and
+9195711. Tests in `tests/test_exclusions.py` plant an error in the run of confit: an error of another kind,
+an error where the oracle returns rows after the replacement, and an error on one backend only. The witness
+excuses none of these planted errors.
