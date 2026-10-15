@@ -176,6 +176,12 @@ pub struct Agg {
     pub func: AggFunc,
     /// The source lane it reads; `None` for `count(*)`.
     pub arg: Option<u32>,
+    /// Whether it reads each distinct value of its argument once, as in
+    /// `count(DISTINCT v)`. DuckDB's equality decides which values are
+    /// equal: -0.0 and 0.0 are one DOUBLE, as are all NaNs (measured
+    /// 2026-10-15). Never set for `min` and `max`, whose answer DISTINCT
+    /// does not change.
+    pub distinct: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,11 +5,12 @@
 //! `s` is TRUE (its filter, [`plan::AggFilter`]), in groups with equal keys,
 //! one row per group holding the group's aggregate. A request reads the row
 //! of the group it matches, and a request that matches no group reads the
-//! aggregate of no rows: 0 for `count`, NULL for the others. If the SELECT
-//! item is an expression over aggregates, `max(s.v) + 1`, the row holds the
-//! expression over the group's aggregates instead ([`plan::AggPost`]), and a
-//! request that matches no group reads the expression over the aggregates
-//! of no rows, which the bind evaluates.
+//! aggregate of no rows: 0 for `count`, NULL for the others. An aggregate
+//! can read each distinct value of its column once, `count(DISTINCT s.v)`.
+//! If the SELECT item is an expression over aggregates, `max(s.v) + 1`, the
+//! row holds the expression over the group's aggregates instead
+//! ([`plan::AggPost`]), and a request that matches no group reads the
+//! expression over the aggregates of no rows, which the bind evaluates.
 //!
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15)
 //! evaluates the subquery's WHERE over (distinct correlated values) x
@@ -31,7 +32,7 @@
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
-use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+use sqlparser::ast::{DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArguments};
 
 /// The subquery's one static table, as its WHERE and its aggregate see it.
 struct Inner<'s> {
@@ -215,10 +216,11 @@ pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareE
 /// The refusal of a subquery form outside what this module serves.
 fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
-        "a scalar subquery with {what} -- served: (SELECT count(*) | count(c) | min(c) | \
-         max(c) | sum(c) | avg(c) FROM s WHERE ...) over one static table, each WHERE term \
-         s.k = <outer expression> or a term that reads only s, and none that can trap but \
-         the outer expression of the first key"
+        "a scalar subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) \
+         FROM s WHERE ...) with f one of count, min, max, sum and avg, or an expression over \
+         such aggregates, over one static table, each WHERE term s.k = <outer expression> or \
+         a term that reads only s, and none that can trap but the outer expression of the \
+         first key"
     ))
 }
 
@@ -532,7 +534,9 @@ impl Binder<'_> {
 
     /// One served aggregate call, `count(*)`, `count`, `min`, `max`, `sum`
     /// or `avg` over a column of the subquery's table (`func` names it), and
-    /// the type of its answer.
+    /// the type of its answer. A call over a column may read each distinct
+    /// value once, `count(DISTINCT v)`, and the answer keeps its type
+    /// (measured 2026-10-15).
     fn agg_call(
         &self,
         inner: &Inner<'_>,
@@ -552,21 +556,25 @@ impl Binder<'_> {
         let FunctionArguments::List(list) = &f.args else {
             return Err(form_refusal(&format!("the aggregate call {f}")));
         };
-        if list.duplicate_treatment.is_some() || !list.clauses.is_empty() {
-            return Err(form_refusal(&format!("the aggregate call {f} (DISTINCT, ALL or ORDER BY)")));
+        if !list.clauses.is_empty() {
+            return Err(form_refusal(&format!("the aggregate call {f} (ORDER BY or another clause)")));
         }
+        let distinct = list.duplicate_treatment == Some(DuplicateTreatment::Distinct);
         let [arg] = list.args.as_slice() else {
             return Err(form_refusal(&format!("the aggregate call {f}")));
         };
         let (func, arg) = match (func, arg) {
-            (AggFunc::Count, FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) => (AggFunc::CountStar, None),
+            (AggFunc::Count, FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) if !distinct => {
+                (AggFunc::CountStar, None)
+            }
             // A constant that is not NULL counts every row: count(1) and
             // count('x') answer count(*) (measured).
             (AggFunc::Count, FunctionArg::Unnamed(FunctionArgExpr::Expr(SqlExpr::Value(v))))
-                if matches!(
-                    &v.value,
-                    SqlValue::Number(..) | SqlValue::SingleQuotedString(_) | SqlValue::Boolean(_)
-                ) =>
+                if !distinct
+                    && matches!(
+                        &v.value,
+                        SqlValue::Number(..) | SqlValue::SingleQuotedString(_) | SqlValue::Boolean(_)
+                    ) =>
             {
                 (AggFunc::CountStar, None)
             }
@@ -634,7 +642,10 @@ impl Binder<'_> {
                 )))
             }
         };
-        Ok((Agg { func, arg }, ty))
+        // The least or greatest of the distinct values is the least or
+        // greatest of all of them.
+        let distinct = distinct && !matches!(func, AggFunc::Min | AggFunc::Max);
+        Ok((Agg { func, arg, distinct }, ty))
     }
 
     /// The SELECT item of a subquery that is an expression over its
@@ -950,6 +961,7 @@ impl Binder<'_> {
             aggs: vec![Agg {
                 func: AggFunc::CountStar,
                 arg: None,
+                distinct: false,
             }],
             filter,
             post: None,

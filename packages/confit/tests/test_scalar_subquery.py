@@ -21,6 +21,7 @@ Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 
 from __future__ import annotations
 
+import struct
 import sys
 from datetime import datetime
 from decimal import Decimal
@@ -218,6 +219,10 @@ FORMS = [
     "SELECT (SELECT count(*) FROM s WHERE s.k = t.k), "
     "(SELECT max(x.v) FROM s AS x WHERE x.k = t.k AND x.j = t.j), "
     "(SELECT count(*) AS n FROM s) FROM __THIS__ AS t",
+    "SELECT (SELECT count(DISTINCT s.v) FROM s WHERE s.k = t.k), "
+    "(SELECT sum(ALL s.v) FROM s WHERE s.k = t.k AND s.v NOT BETWEEN 1 AND 3), "
+    "(SELECT max(DISTINCT x.v) + count(x.v) FROM s AS x WHERE x.k = t.k) "
+    "FROM __THIS__ AS t",
     # Beside a FROM join (under the default shape its duplicate keys refuse).
     "SELECT t.id, (SELECT count(*) FROM s WHERE s.k = t.k) AS c "
     "FROM __THIS__ AS t JOIN s AS s2 ON s2.k = t.k",
@@ -468,7 +473,6 @@ def test_static_term_that_calls_a_sql_function_refuses():
         (_sub("median(v)"), "the aggregate median"),
         (_sub("sum(f)"), "sum over a DOUBLE column"),
         (_sub("avg(f)"), "avg over a DOUBLE column"),
-        (_sub("count(DISTINCT v)"), "DISTINCT"),
         (_sub("v"), "one aggregate call"),
         (_sub("count(NULL)"), "must be a column of its table"),
         (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
@@ -924,6 +928,194 @@ def test_an_expression_over_the_aggregates_refuses_by_name(sql, udfs, why):
     assert why in v.detail, v.detail
 
 
+# An aggregate over DISTINCT values reads each value of a class of equal
+# values once. The oracle's equality decides the classes: -0.0 and 0.0 are
+# one DOUBLE, as are all NaNs (the pin at the end). Each group of DS repeats
+# values: k = 1 holds equal values that differ in their bits, and k = 3 only
+# NULL values.
+
+NAN2 = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
+NEG_NAN = struct.unpack("<d", struct.pack("<Q", 0xFFF8000000000000))[0]
+DS = table(
+    {
+        "k": "int64?",
+        "v": "int64?",
+        "f": "double?",
+        "s": "string?",
+        "b": "bool?",
+        "d": "decimal(9,4)?",
+        "u": "uint64",
+        "i8": "int8?",
+    },
+    [
+        {
+            "k": 1,
+            "v": 10,
+            "f": 0.0,
+            "s": "a",
+            "b": True,
+            "d": Decimal("1.5"),
+            "u": U64,
+            "i8": 127,
+        },
+        {
+            "k": 1,
+            "v": 10,
+            "f": -0.0,
+            "s": "a ",
+            "b": True,
+            "d": Decimal("1.50"),
+            "u": U64,
+            "i8": 127,
+        },
+        {
+            "k": 1,
+            "v": 20,
+            "f": NAN,
+            "s": "A",
+            "b": False,
+            "d": None,
+            "u": 1,
+            "i8": -128,
+        },
+        {
+            "k": 1,
+            "v": None,
+            "f": NAN2,
+            "s": "a",
+            "b": None,
+            "d": Decimal("2.25"),
+            "u": U64,
+            "i8": 127,
+        },
+        {
+            "k": 2,
+            "v": -5,
+            "f": 1.5,
+            "s": None,
+            "b": None,
+            "d": Decimal("-3"),
+            "u": 3,
+            "i8": 1,
+        },
+        {
+            "k": 2,
+            "v": -5,
+            "f": NEG_NAN,
+            "s": "",
+            "b": False,
+            "d": Decimal("-3"),
+            "u": 3,
+            "i8": 1,
+        },
+        {
+            "k": None,
+            "v": 7,
+            "f": 2.0,
+            "s": "z",
+            "b": True,
+            "d": Decimal("1"),
+            "u": 0,
+            "i8": None,
+        },
+        {
+            "k": 3,
+            "v": None,
+            "f": None,
+            "s": None,
+            "b": None,
+            "d": None,
+            "u": 0,
+            "i8": None,
+        },
+    ],
+)
+
+DISTINCT_AGGREGATES = [
+    "count(DISTINCT v)",
+    "count(DISTINCT f)",
+    "count(DISTINCT s)",
+    "count(DISTINCT b)",
+    "count(DISTINCT d)",
+    "count(DISTINCT u)",
+    "count(DISTINCT i8)",
+    "sum(DISTINCT v)",
+    "sum(DISTINCT b)",
+    "sum(DISTINCT d)",
+    "sum(DISTINCT u)",
+    "sum(DISTINCT i8)",
+    "avg(DISTINCT v)",
+    "avg(DISTINCT d)",
+    "avg(DISTINCT u)",
+    "avg(DISTINCT i8)",
+    "min(DISTINCT v)",
+    "max(DISTINCT s)",
+    "min(DISTINCT b)",
+    "max(DISTINCT d)",
+    "min(DISTINCT u)",
+    "max(DISTINCT i8)",
+    "count(ALL v)",
+    "sum(ALL d)",
+    # Beside the same aggregate over all values.
+    "count(DISTINCT v) + count(v)",
+    "sum(v) - sum(DISTINCT v)",
+    "coalesce(avg(DISTINCT d), -1.5)",
+    "count(DISTINCT f) * 10 + count(f)",
+    "max(DISTINCT v) - min(v)",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", "s.k = t.k AND s.v > 5", None])
+@pytest.mark.parametrize("agg", DISTINCT_AGGREGATES)
+def test_an_aggregate_over_distinct_values(agg, where, shape):
+    if where is None:
+        sql = f"SELECT id, (SELECT {agg} FROM s) AS c FROM __THIS__ AS t"
+    else:
+        sql = _sub(agg, where)
+    assert_parity(sql, T, statics={"s": DS}, shape=shape)
+
+
+@pytest.mark.parametrize(
+    "sql, why",
+    [
+        (_sub("count(DISTINCT *)"), "the aggregate call count(DISTINCT *)"),
+        (_sub("count(DISTINCT 1)"), "must be a column of its table"),
+        (_sub("sum(DISTINCT f)"), "sum over a DOUBLE column"),
+        (_sub("sum(v ORDER BY v)"), "ORDER BY or another clause"),
+        # The class -0.0 = 0.0 of the group k = 1: which value DuckDB keeps
+        # depends on the order of the rows.
+        (_sub("min(DISTINCT f)"), "ties DOUBLE values with other bits"),
+    ],
+)
+def test_an_aggregate_over_distinct_values_refuses_by_name(sql, why):
+    v = assert_parity(sql, T, statics={"s": DS}, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
+def test_a_sum_over_distinct_values_adds_each_value_once():
+    # The sum over all the values overflows its result, and the sum over the
+    # distinct values does not.
+    big = Decimal("9" * 38)
+    wide = table(
+        {"k": "int64", "w": "decimal(38,0)"}, [{"k": 1, "w": big}, {"k": 1, "w": big}]
+    )
+    assert_parity(_sub("sum(DISTINCT w)"), T, statics={"s": wide})
+    assert_parity(_sub("avg(DISTINCT w)"), T, statics={"s": wide})
+    v = assert_parity(_sub("sum(w)"), T, statics={"s": wide}, expect="REFUSED")
+    assert "adds absolute values past the range of its result" in v.detail
+    two = table(
+        {"k": "int64", "w": "decimal(38,0)"},
+        [
+            {"k": 1, "w": big},
+            {"k": 1, "w": Decimal("9" * 37 + "8")},
+            {"k": 1, "w": big},
+        ],
+    )
+    v = assert_parity(_sub("sum(DISTINCT w)"), T, statics={"s": two}, expect="REFUSED")
+    assert "sum(DISTINCT w) over the rows of one key" in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap but in the outer side of a first key, so these facts never
 # change a served answer. They are why a WHERE term that reads only the
@@ -1082,3 +1274,15 @@ def test_pin_a_column_outside_an_aggregate_call_is_a_binder_error():
     got = _pin("SELECT k, (SELECT s.z + max(s.z) FROM s WHERE s.k = t.k) FROM t", [1])
     assert isinstance(got, Trap), got
     assert "must appear in the GROUP BY clause" in got.message
+
+
+def test_pin_distinct_reads_one_value_for_each_class_of_equal_values():
+    # -0.0 and 0.0 are one value, as are NaNs with other bits; NULL is none.
+    d = pa.table(
+        {"f": pa.array([0.0, -0.0, NAN, NAN2, NEG_NAN, 1.5, None], pa.float64())}
+    )
+    with Oracle() as o:
+        o.table("t", "k BIGINT", [(1,)])
+        o.load("d", d)
+        got = o.try_answer("SELECT (SELECT count(DISTINCT d.f) FROM d) FROM t")
+    assert [tuple(r.values()) for r in got.to_pylist()] == [(3,)]

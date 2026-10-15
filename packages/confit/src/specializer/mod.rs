@@ -175,6 +175,8 @@ pub struct AggVal {
     /// The argument column's type in the source table (`count(*)`: BIGINT,
     /// unread).
     pub src: ir::Ty,
+    /// Whether it reads each distinct value once ([`plan::Agg::distinct`]).
+    pub distinct: bool,
 }
 
 /// One join of the bound plan, as the exclusion rules read it
@@ -538,6 +540,7 @@ fn agg_spec(
         aggs.push(AggVal {
             func: agg.func,
             src: agg.arg.map_or(ir::Ty::I64, |l| source.cols[l as usize].ty.ty),
+            distinct: agg.distinct,
         });
     };
     let post = match &a.post {

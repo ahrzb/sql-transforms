@@ -148,12 +148,18 @@ The aggregate is `count(*)`, `count` of a column or of a constant that is not
 NULL, `min` or `max` of a column, `sum` of an integer, BOOLEAN or DECIMAL
 column, or `avg` of an integer or DECIMAL column. On a platform other than
 x86_64 Linux, confit serves `avg` only for SMALLINT and for a DECIMAL with a
-precision of 4 or less (see below). The SELECT item can also be an expression
-over such aggregates, for example `max(s.v) + 1` or
-`coalesce(sum(s.v), 0) + count(*)`. Then the expression reads the columns of
-`s` only inside its aggregates. If it reads a column outside them, the oracle
-stops with a binder error. Confit refuses an expression that holds a subquery
-or calls a SQL function, a UDF or a tree model.
+precision of 4 or less (see below).
+
+An aggregate of a column can read each distinct value of the column once, for
+example `count(DISTINCT s.v)`. Two values are one distinct value if the oracle
+compares them as equal. So `-0.0` and `0.0` are one DOUBLE value, and all NaN
+values are one value. The keyword `ALL`, as in `sum(ALL s.v)`, changes nothing.
+
+The SELECT item can also be an expression over such aggregates, for example
+`max(s.v) + 1` or `coalesce(sum(s.v), 0) + count(*)`. Then the expression reads
+the columns of `s` only inside its aggregates. If it reads a column outside
+them, the oracle stops with a binder error. Confit refuses an expression that
+holds a subquery or calls a SQL function, a UDF or a tree model.
 
 Each term of the WHERE has one of two forms. A key compares a column of `s`
 with an expression of the outer query, its outer expression, by `=` or
@@ -167,14 +173,16 @@ calls a SQL function.
 
 At build, confit keeps the rows of `s` on which each term that reads only `s`
 is TRUE. It puts these rows into groups with equal keys and computes the
-aggregate of each group. The keys are the columns of `s` that the WHERE
-compares with the outer query. If no term compares one, all the rows that
-confit keeps make one group. If the item is an expression, confit computes it
-over the aggregates of each group. A request reads the value of the group
-that it matches, through a LEFT join. If a request matches no group, it reads
-0 for `count` and NULL for the other aggregates. If the item is an
-expression, the request reads the expression over these values. Confit
-computes the value of this expression once, at build.
+aggregate of each group. An aggregate over DISTINCT values reads each distinct
+value of the group once. The keys are the columns of `s` that the WHERE
+compares with the outer query. If no term compares a column of `s` with the
+outer query, all the rows that confit keeps make one group. If the item is an
+expression, confit computes it over the aggregates of each group.
+
+A request reads the value of the group that it matches, through a LEFT join. If
+a request matches no group, it reads 0 for `count` and NULL for the other
+aggregates. If the item is an expression, the request reads the expression over
+these values. Confit computes the value of this expression once, at build.
 
 The oracle evaluates the WHERE of the subquery in written order, for each
 pair of a distinct outer value and a row of `s`. It evaluates the argument of
@@ -271,7 +279,8 @@ cases that depend on the rows of `s`:
   which the oracle keeps the sum. For `sum`, this is the range of its result
   (HUGEINT, a 128-bit integer, or a DECIMAL with 38 digits). For `avg`, this
   is the range of HUGEINT. Then a partial sum can overflow in some order of
-  the additions.
+  the additions. For an aggregate over DISTINCT values, the sum adds each
+  distinct value once.
 - A DOUBLE `min` or `max` finds two values that compare as equal but have
   different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
   of the oracle depends on the order of the rows.
@@ -289,7 +298,8 @@ after division by 43 is 33, the generator tries to add this form to the case.
 If it adds the form, it tags the case `scalar-subquery`. About one subquery in
 ten that it adds selects an expression over aggregates. It adds up to three
 subqueries to a case, so about one case in six of those tagged
-`scalar-subquery` has such an expression.
+`scalar-subquery` has such an expression. About one aggregate of a column in
+five reads DISTINCT values.
 
 ## UDF and model boundary
 
