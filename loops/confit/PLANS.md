@@ -562,13 +562,21 @@ The first five are ruled, in this order; the rest follow.
   WHERE, from three counts (`in_subquery` in `subquery.rs`): `hit`, with the
   IN test `s.c = x` as one more key after the WHERE terms; `rows`,
   `count(*)`; and `values`, `count(s.c)`. IN is TRUE if `hit > 0`, else FALSE
-  if `rows = 0`, else NULL if `x` is NULL or `values < rows`, else FALSE, and
-  NOT IN swaps TRUE and FALSE (measured 2026-10-15 and pinned). DuckDB
-  evaluates `x` once the subquery has a row: after the whole WHERE, both
-  bounds of BETWEEN included, so over a WHERE without a key `x` is a guarded
-  key over every term (`guarded_key` with `halves` false); over a WHERE with
-  a key, for every request of the batch once one request matches a static
-  row, so an `x` that can trap refuses there (batch-dependent). The item must
+  if `rows = 0`, else NULL if `values < rows`, else NULL if `x` is NULL, else
+  FALSE, and NOT IN swaps TRUE and FALSE (measured 2026-10-15 and pinned).
+  DuckDB evaluates `x` once the subquery has an item that is not NULL (its
+  hash table holds no NULL): after the whole WHERE, both bounds of BETWEEN
+  included, so over a WHERE without a key `x` is a guarded key over every
+  term whose guard counts the items that are not NULL (`guarded_key` with
+  `Guard::InItem`), and the CASE tests `x IS NULL` only after
+  `values < rows`, so only if `values > 0`. #474 guarded `x` by `count(*)`
+  and tested it in the same arm as `values < rows`, so confit trapped where
+  DuckDB answers NULL, when every item that passes the WHERE is NULL; the
+  fix after #474 adds two parity cases that fail on #474 (IN and NOT IN with
+  the WHERE `s.f IS NULL`). Over a WHERE with a
+  key, DuckDB evaluates `x` for every request of the batch once one request
+  matches a static row, with a NULL item too, so an `x` that can trap
+  refuses there (batch-dependent). The item must
   be a column of the table, since DuckDB evaluates it over the matched rows;
   a VARCHAR against another type is DuckDB's binder error and refuses, as do
   an `x` that reads a joined table or holds a subquery. The 27 IN forms now
