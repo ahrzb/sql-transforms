@@ -65,12 +65,12 @@ bracket), seed range, and platform. Every verdict line carries its SQL and its c
 `::test_a_dead_worker_is_blamed_with_its_sql_and_inputs`, and
 `packages/confit/tests/test_fuzz_smoke.py::test_a_verdict_line_carries_its_inputs_not_just_a_seed`.
 
-**claim: generator-version-stamps.** `pin_ast_shapes.py`, `gen_casemap.py`, and
-`gen_strip_accents.py` stamp the DuckDB version they read; the latter two call for
-regeneration after a version change.
+**claim: generator-version-stamps.** `pin_ast_shapes.py`, `pin_precedence.py`,
+`gen_casemap.py`, and `gen_strip_accents.py` stamp the DuckDB version they read; the
+latter two call for regeneration after a version change.
 
-*Evidence:* `scripts/pin_ast_shapes.py`, `scripts/gen_casemap.py`, and
-`scripts/gen_strip_accents.py`.
+*Evidence:* `scripts/pin_ast_shapes.py`, `scripts/pin_precedence.py`,
+`scripts/gen_casemap.py`, and `scripts/gen_strip_accents.py`.
 
 **claim: uniform-pin-header.** Every pin file opens with a `_pin` header of one shape:
 `schema`, `subject`, `engine`, `engine_version`, `optimizer`, `captured`, `harness`, and

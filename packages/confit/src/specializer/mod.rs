@@ -12,6 +12,7 @@ pub mod frontend;
 pub mod ir;
 pub mod lower;
 pub mod plan;
+pub(crate) mod precedence;
 mod retrans;
 mod share;
 pub(crate) mod rewrite;
