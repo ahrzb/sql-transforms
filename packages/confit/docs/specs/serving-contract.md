@@ -175,6 +175,54 @@ forms. Pins at the end of `tests/test_scalar_subquery.py` record this. In the
 oracle, `NOT EXISTS (...) IS NULL` means `NOT (EXISTS (...) IS NULL)`, as for
 any other `NOT`, and confit parses it in the same way.
 
+Confit also serves `x IN (SELECT s.c FROM s WHERE ...)` and `x NOT IN (...)`
+over such a subquery, for example `t.k IN (SELECT s.v FROM s WHERE s.j = t.j)`.
+The left side `x` is an expression of the outer query. The SELECT item `s.c`
+is one column of `s`. The oracle evaluates the item over the rows that pass
+the WHERE of the subquery. So confit refuses an item that is not a column of
+`s`, such as `s.v + 1` or `count(*)`, because it can trap there. Confit also
+refuses these forms:
+
+- more than one item;
+- DISTINCT, GROUP BY, ORDER BY or LIMIT in the subquery;
+- an `x` that holds a subquery, or that reads a table that the outer query
+  joins;
+- an `x` and an item where one is a VARCHAR and the other is not. The oracle
+  stops with a binder error for this form.
+
+The oracle compares `x` with the item as `=` does, so `-0.0` equals `0.0`,
+and a NaN equals a NaN.
+
+For a request, `x IN (...)` is TRUE if the item of a row that passes the
+WHERE of the subquery equals `x`. Else it is FALSE if no row passes this
+WHERE. Else it is NULL if `x` is NULL or the item of a row that passes this
+WHERE is NULL. Else it is FALSE. `x NOT IN (...)` is NOT over this value.
+
+A key of the WHERE is a term that compares a column of `s` with an expression
+of the outer query (see below). Confit computes three counts of the rows that
+pass the WHERE:
+
+1. The rows whose item equals `x`. For this count, confit adds the test
+   `s.c = x` as one more key, after the terms of the WHERE. So `s.c` is one
+   more key column of the groups of this count.
+2. All the rows.
+3. The rows whose item is not NULL.
+
+Then `x IN (...)` is TRUE if count 1 is above 0. Else it is FALSE if count 2
+is 0. Else it is NULL if `x` is NULL or count 3 is less than count 2. Else it
+is FALSE. The pins at the end of `tests/test_scalar_subquery.py` record that
+the oracle gives the same values.
+
+The oracle evaluates `x` only if a row of `s` passes the whole WHERE of the
+subquery, both bounds of a BETWEEN included. If this WHERE has no key, the
+rows that pass it are the same for all the requests. Then confit counts these
+rows at build, and it evaluates `x` only if the count is above 0. If the WHERE
+has a key, the oracle evaluates `x` for every request of the batch once one
+request matches a row of `s`. So if `x` can trap, whether the oracle traps for
+a request depends on the other requests in the same batch. Confit serves only
+answers that do not depend on the other requests, so it refuses an `x` that
+can trap over a WHERE with a key.
+
 Each term of the WHERE has one of two forms. A key compares a column of `s`
 with an expression of the outer query, its outer expression, by `=` or
 `IS NOT DISTINCT FROM`. Each other term reads only `s`, such as `s.v > 5`.
@@ -205,11 +253,12 @@ distinct outer value, over the aggregates of the matched rows. If no row
 matches, it evaluates the item over the aggregates of no rows. The pins at the
 end of `tests/test_scalar_subquery.py` record these facts. The order of
 evaluation matters only where an evaluation can trap. In a served subquery,
-only the outer expression of the first key can trap. The argument of the
-aggregate, if it has one, is a column or a constant. Only the running total of
-a `sum` or an `avg` can overflow. Confit computes it at build, and it refuses
-the build if the total can overflow (the build refusals at the end of this
-section list this case). An expression item can also raise an error, for
+only the outer expression of the first key, and the left side `x` of IN over a
+WHERE without a key, can trap. The argument of the aggregate, if it has one,
+is a column or a constant. Only
+the running total of a `sum` or an `avg` can overflow. Confit computes it at
+build, and it refuses the build if the total can overflow (the build refusals
+at the end of this section list this case). An expression item can also raise an error, for
 example `max(s.v) + 1` if `s.v` is a TINYINT column with the value 127.
 Confit evaluates the expression at build, so a served subquery does not trap
 in it. Confit refuses the build if the expression raises an error:
@@ -234,8 +283,9 @@ evaluates the outer expression only if this count is above 0. The oracle also
 runs a subquery in the SELECT list for each row that the outer WHERE passes,
 and a subquery in the WHERE for each row that reaches the WHERE. The oracle
 does this also for a subquery inside a CASE, whatever the condition of the
-CASE is. Confit evaluates the outer expression of the first key for the same
-rows. It refuses the subquery in two cases:
+CASE is. Confit evaluates the outer expression of the first key, and the left
+side `x` of IN, for the same rows as the oracle. If one of them can trap,
+confit refuses the subquery in two cases:
 
 - The subquery is in the WHERE, and the outer query has a comma join whose
   key is a term of the WHERE. The oracle runs the subquery for every pair of
@@ -315,6 +365,12 @@ subqueries to a case, so about one case in six of those tagged
 `scalar-subquery` has such an expression. About one aggregate of a column in
 five reads DISTINCT values. About one subquery in five that is an item of the
 outer query, or the operand of IS NULL, is `EXISTS` or `NOT EXISTS` instead.
+About one in five of the other subqueries that are an item or the operand of
+IS NULL is `x IN (...)` or `x NOT IN (...)` instead. The generator makes up to
+two key columns in `s`. It fills about half of the rows of a key column with
+values of one column of the request table, so that requests match these rows.
+The item is a key column, and `x` is its column of the request table, or, in
+about one case in ten, this column + 1.
 
 ## UDF and model boundary
 

@@ -1196,9 +1196,11 @@ struct Binder<'a> {
     /// outer side that can trap, which `bind_select` checks against the
     /// level's shape and comma tables once the WHERE has bound.
     trap_keys: std::cell::RefCell<Vec<u32>>,
-    /// Each scalar subquery bound at this level and what it reads, so that
-    /// binding the same text again reads the same join.
-    agg_reads: std::cell::RefCell<Vec<(sqlparser::ast::Query, SExpr)>>,
+    /// Each scalar subquery bound at this level, with the IN test it may
+    /// add as a key (`subquery.rs`), and what it reads, so that binding the
+    /// same text again reads the same join.
+    #[allow(clippy::type_complexity)]
+    agg_reads: std::cell::RefCell<Vec<(sqlparser::ast::Query, Option<(SqlExpr, SqlExpr)>, SExpr)>>,
     /// The grouped static tables of the whole query, handed between levels
     /// like `minted_lanes`: append-only, so a join's table index never moves.
     agg_tables: std::cell::RefCell<Vec<super::plan::AggTable>>,

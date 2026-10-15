@@ -474,8 +474,9 @@ class ScalarSub(Node):
     which reads the i-th call as `AggRead(i)`. The calls whose index is in
     `distinct` read DISTINCT values. With `exists` set it is
     `[NOT] EXISTS (SELECT item FROM ...)` over the same WHERE instead, and
-    reads no aggregate. Its kids are the outer sides of the keys, then those
-    terms."""
+    reads no aggregate; with `in_` set it is `x [NOT] IN (SELECT column FROM
+    ...)`. Its kids are the outer sides of the keys, then those terms, then
+    x."""
 
     func: str  # count | min | max | sum | avg
     arg: str | None  # a column of `table`; None is `*`
@@ -488,17 +489,23 @@ class ScalarSub(Node):
     distinct: set[int] = field(default_factory=set)  # 0 is func(arg), i more[i - 1]
     # (NOT, the SELECT item: "*", "1" or a column of `table`)
     exists: tuple[bool, str] | None = None
+    # (NOT, x, the SELECT item: a column of `table`)
+    in_: tuple[bool, Node, str] | None = None
 
     def kids(self):
-        return [o for _, _, o in self.keys] + [p for _, p in self.preds]
+        x = [] if self.in_ is None else [self.in_[1]]
+        return [o for _, _, o in self.keys] + [p for _, p in self.preds] + x
 
     def swap(self, i, new):
         if i < len(self.keys):
             c, op, _ = self.keys[i]
             self.keys[i] = (c, op, new)
-        else:
+        elif i < len(self.keys) + len(self.preds):
             at, _ = self.preds[i - len(self.keys)]
             self.preds[i - len(self.keys)] = (at, new)
+        else:
+            assert self.in_ is not None
+            self.in_ = (self.in_[0], new, self.in_[2])
 
 
 @dataclass
@@ -1029,6 +1036,11 @@ def rexpr(e: Node) -> str:
             it = it if it in ("*", "1") else f"{scope}.{_ident(it)}"
             not_ = "NOT " if neg else ""
             return f"{not_}EXISTS (SELECT {it} FROM {frm}{where})"  # noqa: S608
+        if e.in_ is not None:
+            neg, x, it = e.in_
+            not_ = "NOT " if neg else ""
+            sub = f"SELECT {scope}.{_ident(it)} FROM {frm}{where}"  # noqa: S608
+            return f"{rexpr(x)} {not_}IN ({sub})"
         return f"(SELECT {item} FROM {frm}{where})"  # noqa: S608
     raise TypeError(e)
 
@@ -1615,12 +1627,15 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     aggregate of the same table for it. About one aggregate over a column in
     five reads DISTINCT values. About one subquery in five that is an item,
     or the operand of IS NULL, is `[NOT] EXISTS (SELECT * | 1 | column ...)`
-    over the same WHERE instead. A few subqueries take a form that confit
+    over the same WHERE instead, and about one in five of the others is
+    `x [NOT] IN (SELECT key column ...)`, where x is the key's outer column
+    or, one time in ten, that column + 1. A few subqueries take a form that confit
     refuses by name: a DOUBLE sum or avg, IS NOT DISTINCT FROM under
     shape='many', an outer side that can trap after another key or under
     shape='many', a term over the table that can trap, an expression over
-    the aggregates that traps at build or over the aggregates of no rows.
-    An avg over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
+    the aggregates that traps at build or over the aggregates of no rows, a
+    left side of IN that can trap over a WHERE with a key. An avg over a
+    BOOLEAN or VARCHAR column is DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1729,6 +1744,17 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
             r = qrng.random()
             it = "*" if r < 0.4 else "1" if r < 0.7 else qrng.choice(list(sch))
             s.exists = (qrng.random() < 0.4, it)
+    # IN in place of about one other subquery in five that stands alone,
+    # drawn last too: the outer column of a key, or that column + 1 (which
+    # can trap), against the key's column. NOT IN has no parentheses of its
+    # own either.
+    for s in alone:
+        if s.exists is None and keys and qrng.random() < 0.2:
+            kc, _, oc, ot = qrng.choice(keys)
+            x: Node = Col(oc, "__THIS__" if b.joins else None, ot)
+            if ot == "int" and qrng.random() < 0.1:
+                x = Bin("+", x, Lit(1, "int"))  # can trap
+            s.in_ = (qrng.random() < 0.4, x, kc)
     tags.append("scalar-subquery")
     return True
 

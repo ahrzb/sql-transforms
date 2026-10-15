@@ -515,6 +515,18 @@ mod tests {
                 subquery,
                 negated: false,
             } => format!("EXISTS({subquery})"),
+            Expr::InSubquery {
+                expr,
+                subquery,
+                negated,
+            } => {
+                let any = format!("({} = ANY({subquery}))", tree(expr));
+                if *negated {
+                    format!("(NOT {any})")
+                } else {
+                    any
+                }
+            }
             other => format!("<unprinted: {other}>"),
         }
     }
