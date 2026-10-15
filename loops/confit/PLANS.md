@@ -88,6 +88,17 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    24 of the 26 DuckDB TIMEOUTs with seeds are the open oracle-TIMEOUT
    record's mechanism, and the two OPT_EMULATED cases (7242549, 7829571)
    are the all-NULL-key record's. Their seeds are in those two records.
+
+   The 2026-10-15 night (seeds 8200000..8599999, master df653be) filed no
+   findings: each shard died after its campaign and left no summary. Under
+   the nightly's debug assertions, the slot-arity check in
+   `materialize_statics` failed for every grouped table whose item is an
+   expression over its aggregates (#471): 137 PANIC verdicts in shard 0.
+   The metamorphic suite then met such a panic, which `outcome` did not
+   catch and the pool could not send back. Still open from it: the night's
+   other gated classes, which only the shard logs show (shard 0: a
+   DIVERGE_BUILD over an ambiguous reference, 8244787, and an oracle
+   TIMEOUT, 8249704).
 2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
@@ -757,7 +768,12 @@ The first five are ruled, in this order; the rest follow.
 
 - **No debug-assertion pytest pass.** Lowering invariants are `debug_assert!`s
   the release extension compiles out. The nightly campaign builds with them on
-  (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`); the PR gate does not.
+  (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`); the PR gate does not. That cost
+  the 2026-10-15 night: the check that #471 broke fails in
+  `test_scalar_subquery.py` under debug assertions. The confit tests take
+  3 min under them on 4 workers, after a build of about 6 min in a target
+  directory of its own. Until a gate runs them, run `tests/` under such a
+  build before merging a change to lowering or to the materializer.
 - **IR generator coverage.** `ir::gen::gen_program` never emits `Dtof`, `Itod`,
   the decimal-expression opcodes (`Dop`, `Dcast`, `DcastOk`, `Dunary`, `Dtos`),
   `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`, `ExternCall`,

@@ -22,7 +22,7 @@ it as `<out>/report.md`. `--merge` renders the shards' summaries as the
 night's ONE report, written to be filed as an issue. It names any shard that
 left no summary, and leaves out, by name, any summary that is not a shard of
 the same run. The exit status is 1 when anything gated, when the metamorphic
-suite found anything, or when a shard is missing or left out.
+suite found anything or died, or when a shard is missing or left out.
 """
 
 from __future__ import annotations
@@ -95,7 +95,25 @@ def run(seeds: range, workers: int, timeout: float, shrink_cap: float, out: Path
     runner.write_cases(results, out / "cases.jsonl")
     t_campaign = time.monotonic() - t0
 
-    m_counts, m_findings = metamorphic.run(seeds, workers)
+    # The spelling checks have no time limit and no crash isolation, and the
+    # campaign already reported each seed it timed out or crashed on. Such a
+    # seed would hold a pool worker for as long as it runs (more than 25
+    # minutes for `levenshtein` over 983,010 characters, seed 8612647) or
+    # kill it, so the checks skip it.
+    skipped = {r["seed"] for r in results if r["kind"] in ("TIMEOUT", "PANIC")}
+    # The campaign's results reach the summary whatever happens to the
+    # spelling checks after it. A pool worker that dies (an abort, which
+    # nothing in the worker can catch) or a bug in a rewrite ends the suite,
+    # not the shard: a shard that ends leaves no summary, and its seeds go
+    # unchecked, as on 2026-10-15.
+    m_error = None
+    try:
+        m_counts, m_findings = metamorphic.run(
+            [s for s in seeds if s not in skipped], workers
+        )
+    except Exception as e:  # noqa: BLE001 -- recorded, and it fails the night
+        m_counts, m_findings = collections.Counter(), []
+        m_error = f"{type(e).__name__}: {e}"
 
     # One representative per gated (kind, class), smallest seed first.
     reps: dict[tuple, dict] = {}
@@ -126,6 +144,8 @@ def run(seeds: range, workers: int, timeout: float, shrink_cap: float, out: Path
             "checked": sum(v for (_, k), v in m_counts.items() if k == "checked"),
             "findings": len(m_findings),
             "examples": examples,
+            "skipped": len(skipped),
+            "error": m_error,
         },
         "t_campaign": t_campaign,
         "t_run": time.monotonic() - t0,
@@ -163,7 +183,10 @@ def failed(summaries: list[dict], missing, left_out=()) -> bool:
     return bool(
         missing
         or left_out
-        or any(s["gated"] or s["metamorphic"]["findings"] for s in summaries)
+        or any(
+            s["gated"] or s["metamorphic"]["findings"] or s["metamorphic"].get("error")
+            for s in summaries
+        )
     )
 
 
@@ -171,13 +194,14 @@ def render(summaries: list[dict], k: int = 1, missing=(), left_out=()) -> str:
     """The report for a night's shard summaries, however many: verdicts
     summed, one shrunk representative per gated class (from the shard with
     the smallest seeds, so the smallest seed of the class), one metamorphic
-    example per rewrite, each shard in `missing` by name, and each summary
-    `night_of` left out, with why."""
+    example per rewrite, each shard in `missing` by name, each shard whose
+    metamorphic suite died, with why, and each summary `night_of` left out,
+    with why."""
     summaries = sorted(summaries, key=lambda s: s["seeds"][0])
     kinds: collections.Counter = collections.Counter()
     gated: dict[tuple, dict] = {}
     examples: dict[str, str] = {}
-    checked = found = 0
+    checked = found = skipped = 0
     for s in summaries:
         kinds.update(s["kinds"])
         for g in s["gated"]:
@@ -188,6 +212,7 @@ def render(summaries: list[dict], k: int = 1, missing=(), left_out=()) -> str:
                 gated[key] = dict(g)
         checked += s["metamorphic"]["checked"]
         found += s["metamorphic"]["findings"]
+        skipped += s["metamorphic"].get("skipped", 0)
         for rewrite, line in s["metamorphic"]["examples"].items():
             examples.setdefault(rewrite, line)
 
@@ -222,6 +247,15 @@ def render(summaries: list[dict], k: int = 1, missing=(), left_out=()) -> str:
             "went unchecked; see the run.",
             "",
         ]
+    for s in summaries:
+        if s["metamorphic"].get("error"):
+            (i, sk), (lo, hi) = s["shard"], s["seeds"]
+            lines += [
+                f"**Metamorphic tests died:** shard {i}/{sk} (seeds {lo}..{hi}): "
+                f"`{s['metamorphic']['error'][:300]}`. Its spellings went "
+                "unchecked; its campaign verdicts are counted.",
+                "",
+            ]
     for why in left_out:
         lines += [f"**Left out:** {why}; none of its counts are in this report.", ""]
     lines += [
@@ -244,6 +278,11 @@ def render(summaries: list[dict], k: int = 1, missing=(), left_out=()) -> str:
     if examples:
         lines += ["## Metamorphic findings", "", "```", *examples.values(), "```", ""]
     lines.append(f"Metamorphic pairs checked: {checked}.")
+    if skipped:
+        lines[-1] += (
+            f" The metamorphic suite skipped {skipped} seed(s) that timed out or"
+            " crashed in the campaign."
+        )
     lines.append(
         "Replay a seed: `uv run python -m fuzz.shrink <seed>` in packages/confit."
     )

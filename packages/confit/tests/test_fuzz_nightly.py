@@ -8,6 +8,7 @@ campaign.
 
 from __future__ import annotations
 
+import collections
 import json
 import sys
 from pathlib import Path
@@ -175,3 +176,77 @@ def test_a_shard_outside_the_count_is_refused(tmp_path):
     with pytest.raises(SystemExit):
         nightly.main(["--shard", "4/4", "--out", str(out)])
     assert not out.exists()
+
+
+def test_a_shard_whose_metamorphic_suite_died_is_named_and_fails_the_night(tmp_path):
+    window = (1_000, 40)
+    shards = [_summary(0, 2, window), _summary(1, 2, window)]
+    shards[1]["metamorphic"]["error"] = "BrokenProcessPool: a worker died"
+    status, report = _merge(tmp_path, shards, 2)
+    assert status == 1
+    assert "**FAIL**: 0 gated class(es), 0 metamorphic finding(s)." in report
+    assert (
+        "**Metamorphic tests died:** shard 1/2 (seeds 1020..1039): "
+        "`BrokenProcessPool: a worker died`." in report
+    )
+    assert "| AGREE | 40 |" in report
+
+
+def test_a_shard_keeps_its_campaign_when_the_metamorphic_suite_dies(
+    tmp_path, monkeypatch
+):
+    """On 2026-10-15 every shard ran its campaign, then died in the
+    metamorphic suite, and left no summary: the night's seeds went
+    unchecked."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    from fuzz import metamorphic, runner
+
+    def died(seeds, workers):
+        raise BrokenProcessPool("a worker died")
+
+    verdicts = [{"seed": s, "kind": "AGREE"} for s in range(7, 10)]
+    monkeypatch.setattr(runner, "campaign", lambda *_args: verdicts)
+    monkeypatch.setattr(runner, "write_cases", lambda *_args: None)
+    monkeypatch.setattr(metamorphic, "run", died)
+    summary = nightly.run(range(7, 10), 1, 1.0, 1.0, tmp_path)
+    assert summary["kinds"] == {"AGREE": 3}
+    assert summary["metamorphic"] == {
+        "checked": 0,
+        "findings": 0,
+        "examples": {},
+        "skipped": 0,
+        "error": "BrokenProcessPool: a worker died",
+    }
+
+
+def test_the_metamorphic_suite_skips_the_seeds_the_campaign_timed_out_or_crashed_on(
+    tmp_path, monkeypatch
+):
+    """The suite has no time limit: on 2026-10-16's seeds 8600000..8624999,
+    it checked 24,999 seeds in 62 s, and seed 8612647, a TIMEOUT in the
+    campaign, held it for more than 25 minutes."""
+    from fuzz import metamorphic, runner
+
+    kinds = {7: "AGREE", 8: "TIMEOUT", 9: "PANIC", 10: "REFUSED"}
+    verdicts = [{"seed": s, "kind": k, "klass": ""} for s, k in kinds.items()]
+    ran = []
+
+    def spellings(seeds, workers):
+        ran.extend(seeds)
+        return collections.Counter({("quote-all", "checked"): len(ran)}), []
+
+    monkeypatch.setattr(runner, "campaign", lambda *_args: verdicts)
+    monkeypatch.setattr(runner, "write_cases", lambda *_args: None)
+    monkeypatch.setattr(metamorphic, "run", spellings)
+    monkeypatch.setattr(nightly, "shrunk", lambda seed, cap: f"shrunk {seed}")
+    summary = nightly.run(range(7, 11), 1, 1.0, 1.0, tmp_path)
+    assert ran == [7, 10]
+    assert summary["metamorphic"]["skipped"] == 2
+    assert summary["metamorphic"]["checked"] == 2
+    summary.update(shard=[0, 1], window=[7, 4])
+    report = nightly.render([summary])
+    assert (
+        "Metamorphic pairs checked: 2. The metamorphic suite skipped 2 seed(s) "
+        "that timed out or crashed in the campaign." in report
+    )

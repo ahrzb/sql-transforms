@@ -2118,13 +2118,22 @@ fn materialize_statics(
         // before any row is read, instead of downstream naming one row's shape
         // — and it covers the zero-row table the entry loop walks vacuously.
         // Debug-only, so release behavior is untouched.
+        //
+        // A grouped table whose SELECT item is an expression over its
+        // aggregates stores that one value, laid out by `post.map`: its
+        // `vals` describe the aggregates the build computes it from, not the
+        // entry (`materialize_aggs`).
+        let val_slots = match &spec.post {
+            Some(p) => p.map.slots().len(),
+            None => spec.vals.iter().map(|v| v.map.slots().len()).sum::<usize>(),
+        };
         debug_assert_eq!(
             spec.keys.iter().map(|k| k.map.slots().len()).sum::<usize>(),
             keys.len(),
             "StaticSpec and StaticTy disagree on key slot arity"
         );
         debug_assert_eq!(
-            spec.vals.iter().map(|v| v.map.slots().len()).sum::<usize>(),
+            val_slots,
             values.len(),
             "StaticSpec and StaticTy disagree on value slot arity"
         );
