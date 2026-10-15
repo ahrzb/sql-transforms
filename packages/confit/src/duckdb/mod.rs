@@ -28,7 +28,8 @@ use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
 use crate::specializer::frontend::macros::SqlMacro;
 use crate::specializer::{
-    prepare_full, FilterSpec, OrderSpec, PostSpec, SortSpec, StaticSpec, WideOut, WideShape,
+    prepare_full, FilterSpec, OrderSpec, PostSpec, ScanSpec, SortSpec, StaticSpec, WideOut,
+    WideShape,
 };
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
@@ -1347,7 +1348,16 @@ fn materialize_map(
     if let Some(aggs) = &spec.aggs {
         return materialize_aggs(py, table, spec, aggs, bounds);
     }
-    let rows = table.bind(py).call_method0("to_pylist")?;
+    let rows: Vec<Bound<'_, PyAny>> = table
+        .bind(py)
+        .call_method0("to_pylist")?
+        .try_iter()?
+        .collect::<PyResult<_>>()?;
+    // The rows of a scan keep only those that pass the subquery's filter.
+    let keep = match &spec.filter {
+        Some(f) => Some(filter_rows(f, &rows, &spec.table)?),
+        None => None,
+    };
     // `to_pylist` hands `decimal.Decimal` for a DECIMAL column (the ordinary
     // fit path — sum(BIGINT) params are decimal128(38,0)), and it becomes
     // the SCALED i128 exactly. No f64-exactness guard rides here on purpose:
@@ -1355,8 +1365,10 @@ fn materialize_map(
     // f64 could not hold refused ordinary ones — 2^63+1 is a plain
     // sum(BIGINT), referenced or not.
     let mut entries = Vec::new();
-    for item in rows.try_iter()? {
-        let row = item?;
+    for (r, row) in rows.iter().enumerate() {
+        if keep.as_ref().is_some_and(|k| !k[r]) {
+            continue;
+        }
         let row = row.cast::<PyDict>().map_err(|_| {
             build_err(format!(
                 "static table '{}': to_pylist row is not a dict",
@@ -1442,7 +1454,38 @@ fn materialize_map(
         }
         entries.push((keys, vals));
     }
+    if let Some(ScanSpec::Rows { limit }) = spec.scan {
+        scan_limit(&entries, limit, &spec.table)?;
+    }
     Ok(StaticData::Map(entries))
+}
+
+/// Refuse the rows of a scan ([`ScanSpec::Rows`]) where more than `limit`
+/// rows share one key: one request would scan all of them. Keys compare as
+/// the probe compares them, -0.0 equal to 0.0 and every NaN equal.
+fn scan_limit(entries: &[(Vec<KeyBits>, Vec<ScalarVal>)], limit: usize, table: &str) -> PyResult<()> {
+    let mut counts: std::collections::BTreeMap<Vec<KeyBits>, usize> = Default::default();
+    let mut most = 0;
+    for (keys, _) in entries {
+        let mut keys = keys.clone();
+        for kb in keys.iter_mut() {
+            if let KeyBits::F64(bits) = kb {
+                *bits = exec::canon_f64_bits(f64::from_bits(*bits));
+            }
+        }
+        let n = counts.entry(keys).or_default();
+        *n += 1;
+        most = most.max(*n);
+    }
+    if most > limit {
+        return Err(build_err(format!(
+            "unsupported: static table '{table}': a scalar subquery whose WHERE compares the \
+             table with the request other than by a key scans, for one request, the rows that \
+             share its keys and pass the WHERE terms that read only the table, and {most} rows \
+             do here, more than the {limit} that confit scans"
+        )));
+    }
+    Ok(())
 }
 
 /// One value an aggregate reads, as the source column holds it: an integer
@@ -2549,8 +2592,9 @@ fn materialize_statics(
     let mut data = Vec::with_capacity(prepared.program.statics.len());
     // Program statics and StaticSpecs are both indexed by join id.
     for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-        if spec.batch {
-            // Multiplicity self-join: built per call by the executor.
+        // Multiplicity self-join: built per call by the executor. The fold
+        // of a scan: computed for each request by the program.
+        if spec.batch || spec.scan == Some(ScanSpec::Fold) {
             data.push(StaticData::Map(Vec::new()));
             continue;
         }

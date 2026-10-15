@@ -37,7 +37,9 @@ use super::ir::{DecOp,
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
     StrOp2, Term, Ty, Value,
 };
-use super::plan::{self, ArithOp, JoinKind, JoinSpec, KeyCmp, Plan, SExpr, SKind, StaticTable};
+use super::plan::{
+    self, AggFunc, ArithOp, JoinKind, JoinSpec, KeyCmp, Plan, SExpr, SKind, StaticTable,
+};
 
 
 /// Can this kind's NARROW result sit outside its width's range?
@@ -311,18 +313,23 @@ pub fn lower(
     fb.term(Term::Emit);
 
     // Map static @j belongs to join j: keyed by the (already promoted) key
-    // expression types, valued by the join's value columns.
+    // expression types, valued by the join's value columns. The rows that
+    // a fold scans are a multimap: a key can hold more than one row.
     let statics = joins
         .iter()
-        .map(|spec| StaticTy::Map {
-            keys: plan::map_keys(&spec.keys, &spec.key_cols)
+        .map(|spec| {
+            let keys = plan::map_keys(&spec.keys, &spec.key_cols)
                 .iter()
                 .flat_map(|k| k.slots())
-                .collect(),
-            values: plan::map_vals(&catalog[spec.table].cols, &spec.val_cols)
+                .collect();
+            let values = plan::map_vals(&catalog[spec.table].cols, &spec.val_cols)
                 .iter()
                 .flat_map(|v| v.slots())
-                .collect(),
+                .collect();
+            match spec.scan {
+                Some(_) => StaticTy::MultiMap { keys, values },
+                None => StaticTy::Map { keys, values },
+            }
         })
         .collect();
     let statics = [statics, model_statics].concat();
@@ -2107,7 +2114,7 @@ impl<'a> FB<'a> {
     /// `live` holds the previous stage's slots and is left as it was found.
     fn lower_stage_head(&mut self, stage: &plan::Stage, live: &mut Live) -> Result<(), PrepareError> {
         for &j in &stage.joins {
-            if self.joins[j as usize].after_where {
+            if self.joins[j as usize].after_where || self.unforced(j) {
                 continue;
             }
             let (valid_hit, _) = self.emit_probe(j, live)?;
@@ -2153,11 +2160,19 @@ impl<'a> FB<'a> {
             self.enter_block(live, &keep_params);
         }
         for &j in &stage.joins {
-            if self.joins[j as usize].after_where {
+            if self.joins[j as usize].after_where && !self.unforced(j) {
                 self.emit_probe(j, live)?;
             }
         }
         Ok(())
+    }
+
+    /// Whether the stage head leaves join `j` alone: the rows that a fold
+    /// scans are read only by the fold, and a fold, which cannot trap, runs
+    /// where a value reads it ([`Self::emit_fold`]).
+    fn unforced(&self, j: u32) -> bool {
+        let spec = &self.joins[j as usize];
+        spec.scan.is_some() || spec.fold.is_some()
     }
 
     /// Multiplicity loops for the joins under shape='many': one loop per
@@ -2203,6 +2218,13 @@ impl<'a> FB<'a> {
         let mut seeds: Vec<ManySeed> = Vec::new();
         let mut live: Live = Vec::new();
         for &j in joins {
+            if self.joins[j as usize].scan.is_some() {
+                continue;
+            }
+            if self.joins[j as usize].fold.is_some() {
+                self.many_fold(j, &mut open, &mut seeds, &mut live)?;
+                continue;
+            }
             let spec = &self.joins[j as usize];
             let (kind, residual, keys_expr) = (spec.kind, spec.residual.clone(), spec.keys.clone());
             let key_layout = plan::map_keys(&keys_expr, &spec.key_cols);
@@ -2431,6 +2453,62 @@ impl<'a> FB<'a> {
         Ok(())
     }
 
+    /// A fold join ([`Self::emit_fold`]) among the loops of
+    /// [`Self::lower_many_loops`]: one row, matched or not, as the LEFT
+    /// join to the one group of a scalar subquery. Its state rides the live
+    /// stack as a loop's does, [0, 0, any, values...], and its continuation
+    /// leaves at once for the next row of the loop around it.
+    fn many_fold(
+        &mut self,
+        j: u32,
+        open: &mut Vec<(usize, usize)>,
+        seeds: &mut Vec<ManySeed>,
+        live: &mut Live,
+    ) -> Result<(), PrepareError> {
+        let at = live.len();
+        self.many = seeds.clone();
+        self.seed_many(live);
+        let folded = self.emit_fold(j, live);
+        self.many.clear();
+        let (any, outs) = folded?;
+        let tys = self.val_flat_tys(j);
+        // cont(ctx, i, end, any): the level is over.
+        let here = self.cur;
+        let kept = live.clone();
+        let ctx_tys = Self::live_types(live);
+        let w = ctx_tys.len();
+        let (cont, cp) = self.create_block(&[ctx_tys, vec![Ty::I64, Ty::I64, Ty::I1]].concat());
+        self.switch(cont);
+        self.enter_block(live, &cp[..w]);
+        match open.last() {
+            None => self.term(Term::Skip),
+            Some(&(outer, oat)) => {
+                let args = self.continue_args(live, oat);
+                self.term(Term::Jump {
+                    to: BlockId(outer as u32),
+                    args,
+                });
+            }
+        }
+        self.switch(here);
+        *live = kept;
+        let zero = self.const_lit(Lit::I64(0));
+        live.push((Lane { flag: None, val: zero }, Ty::I64));
+        live.push((Lane { flag: None, val: zero }, Ty::I64));
+        live.push((Lane { flag: None, val: any }, Ty::I1));
+        for (&o, &ty) in outs.iter().zip(&tys) {
+            live.push((Lane { flag: None, val: o }, ty));
+        }
+        open.push((cont, at));
+        seeds.push(ManySeed {
+            join: j,
+            hit: ManyHit::Live(at + 2),
+            base: at + 3,
+            nd: tys.len(),
+        });
+        Ok(())
+    }
+
     /// The arguments that continue the many loop whose state starts at
     /// `at` on the live stack with its next row: the state of the loops
     /// around it, then its own (i, end) and any=TRUE (a row got here).
@@ -2557,6 +2635,14 @@ impl<'a> FB<'a> {
                 "probe cache for @{j} lost inside its own residual"
             )));
         }
+        if self.joins[j as usize].fold.is_some() {
+            return self.emit_fold(j, live);
+        }
+        if self.joins[j as usize].scan.is_some() {
+            return Err(PrepareError::Internal(format!(
+                "@{j} holds the rows of a scan, which only its fold reads"
+            )));
+        }
         let spec = &self.joins[j as usize];
         let nkeys = spec.keys.len();
         for key in &spec.keys {
@@ -2675,6 +2761,286 @@ impl<'a> FB<'a> {
         // read the cache: store the final MATCH there.
         self.blocks[self.cur].probes.insert(j, (match_v, dsts.clone()));
         Ok((match_v, dsts))
+    }
+
+    /// The values of the fold join `j` ([`plan::Fold`]) for the current
+    /// row: a loop over the rows of its row join whose keys equal the
+    /// row's, which keeps each row on which the fold's predicate is TRUE
+    /// and adds it to the accumulators. The accumulators have the layout of
+    /// the join's value lanes ([`Self::val_slots`]): a count is one lane,
+    /// and a sum, min or max is a lane that says whether a value was added
+    /// and the value. Returns, as [`Self::emit_probe`] does, whether a row
+    /// was kept and the value lanes, which it caches in the block after
+    /// the loop.
+    ///
+    ///   entry:  the keys, ProbeRange -> [lo, hi) (a NULL key: empty),
+    ///           jump header(lo, hi, any=false, accumulators at 0)
+    ///   header(i, end, any, accs): i < end ? body : after(any, accs)
+    ///   body:   ProbeRead the row, then the predicate (SELECTION context):
+    ///           TRUE -> step(i + 1, end, any, accs, row), else
+    ///           header(i + 1, end, any, accs)
+    ///   step:   the accumulators over the row ->
+    ///           header(i + 1, end, any=true, accs')
+    ///   after:  the value lanes are the accumulators.
+    ///
+    /// The loop's state and the row ride the live stack, so a split inside
+    /// the predicate carries them, and the row join's cache entry is
+    /// re-created in each new block ([`ProbeSeed`]).
+    fn emit_fold(&mut self, j: u32, live: &mut Live) -> Result<(Value, Vec<Value>), PrepareError> {
+        let Some(fold) = self.joins[j as usize].fold.clone() else {
+            return Err(PrepareError::Internal(format!("@{j} is not a fold")));
+        };
+        let r = fold.rows;
+        let rspec = &self.joins[r as usize];
+        let keys_expr = rspec.keys.clone();
+        let key_layout = plan::map_keys(&keys_expr, &rspec.key_cols);
+        let at = live.len();
+        for key in &keys_expr {
+            let lane = self.emit(key, live)?;
+            live.push((lane, key.ty));
+        }
+        let mut keys_valid: Option<Value> = None;
+        let mut key_vals = Vec::with_capacity(keys_expr.len());
+        for (i, k) in key_layout.iter().enumerate() {
+            let (lane, _) = live[at + i];
+            if let Some(f) = self.encode_probe_key(*k, lane, &mut key_vals) {
+                keys_valid = self.combine_flags(keys_valid, Some(f));
+            }
+        }
+        live.truncate(at);
+        let lo = self.fresh();
+        let hi = self.fresh();
+        self.inst(Inst::ProbeRange {
+            static_id: r,
+            start: lo,
+            end: hi,
+            keys: key_vals,
+        });
+        let (lo, hi) = match keys_valid {
+            None => (lo, hi),
+            Some(fl) => {
+                let zero = self.const_lit(Lit::I64(0));
+                (self.select_of(fl, lo, zero), self.select_of(fl, hi, zero))
+            }
+        };
+
+        let ctx_tys = Self::live_types(live);
+        let w = ctx_tys.len();
+        let acc_tys = self.val_flat_tys(j);
+        let na = acc_tys.len();
+        let row_tys = self.val_flat_tys(r);
+        let nr = row_tys.len();
+        let state_tys = [ctx_tys.clone(), vec![Ty::I64, Ty::I64, Ty::I1], acc_tys.clone()].concat();
+        let (header, hp) = self.create_block(&state_tys);
+        let (body, bp) = self.create_block(&state_tys);
+        let (step, sp) = self.create_block(&[state_tys.clone(), row_tys.clone()].concat());
+        let (after, ap) = self.create_block(&[ctx_tys, vec![Ty::I1], acc_tys.clone()].concat());
+        let f0 = self.const_i1(false);
+        let mut args = Self::live_args(live);
+        args.extend([lo, hi, f0]);
+        for &ty in &acc_tys {
+            let d = self.default_of(ty);
+            args.push(d);
+        }
+        self.term(Term::Jump {
+            to: BlockId(header as u32),
+            args,
+        });
+
+        // header(i, end, any, accs)
+        self.switch(header);
+        self.enter_block(live, &hp[..w]);
+        let more = self.fresh();
+        self.inst(Inst::Cmp {
+            pred: CmpPred::Lt,
+            ty: Ty::I64,
+            dst: more,
+            a: hp[w],
+            b: hp[w + 1],
+        });
+        let ctx = Self::live_args(live);
+        self.term(Term::Brif {
+            cond: more,
+            then_to: BlockId(body as u32),
+            then_args: [ctx.clone(), hp[w..].to_vec()].concat(),
+            else_to: BlockId(after as u32),
+            else_args: [ctx, hp[w + 2..].to_vec()].concat(),
+        });
+
+        // body: the row and the predicate, everything riding live as
+        // [ctx..., inext, end, any, accs..., row...].
+        self.switch(body);
+        self.enter_block(live, &bp[..w]);
+        let dsts: Vec<Value> = (0..nr).map(|_| self.fresh()).collect();
+        self.inst(Inst::ProbeRead {
+            static_id: r,
+            idx: bp[w],
+            dsts: dsts.clone(),
+        });
+        let one = self.const_lit(Lit::I64(1));
+        let inext = self.bin(BinOp::Iadd, bp[w], one);
+        live.push((Lane { flag: None, val: inext }, Ty::I64));
+        live.push((Lane { flag: None, val: bp[w + 1] }, Ty::I64));
+        live.push((Lane { flag: None, val: bp[w + 2] }, Ty::I1));
+        for (&v, &ty) in bp[w + 3..].iter().zip(&acc_tys) {
+            live.push((Lane { flag: None, val: v }, ty));
+        }
+        for (&d, &ty) in dsts.iter().zip(&row_tys) {
+            live.push((Lane { flag: None, val: d }, ty));
+        }
+        let cond = match &fold.pred {
+            None => None,
+            Some(p) => {
+                let t = self.const_i1(true);
+                self.blocks[self.cur].probes.insert(r, (t, dsts));
+                self.probe_seeds.push(ProbeSeed {
+                    join: r,
+                    base: live.len() - nr,
+                    nd: nr,
+                });
+                let c = self.emit_truth(p, live);
+                self.probe_seeds.pop();
+                Some(c?)
+            }
+        };
+        let vals = Self::live_args(live);
+        match cond {
+            None => self.term(Term::Jump {
+                to: BlockId(step as u32),
+                args: vals,
+            }),
+            Some(c) => self.term(Term::Brif {
+                cond: c,
+                then_to: BlockId(step as u32),
+                then_args: vals.clone(),
+                else_to: BlockId(header as u32),
+                else_args: vals[..w + 3 + na].to_vec(),
+            }),
+        }
+        live.truncate(at);
+
+        // step: the accumulators over the kept row.
+        self.switch(step);
+        self.enter_block(live, &sp[..w]);
+        let (accs, row) = (&sp[w + 3..w + 3 + na], &sp[w + 3 + na..]);
+        let slots = self.val_slots(j);
+        let row_slots = self.val_slots(r);
+        let row_cols = self.map_vals(r);
+        let mut next = Vec::with_capacity(na);
+        for (&(func, arg), &(seen, acc)) in fold.aggs.iter().zip(&slots) {
+            let arg = arg.map(|a| {
+                let (validity, payload) = row_slots[a as usize];
+                (validity.map(|v| row[v]), row[payload], row_cols[a as usize].ty)
+            });
+            let acc_v = accs[acc];
+            match (func, arg) {
+                (AggFunc::CountStar, _) | (AggFunc::Count, Some((None, _, _))) => {
+                    let one = self.const_lit(Lit::I64(1));
+                    next.push(self.bin(BinOp::Iadd, acc_v, one));
+                }
+                (AggFunc::Count, Some((Some(flag), _, _))) => {
+                    let one = self.const_lit(Lit::I64(1));
+                    let added = self.bin(BinOp::Iadd, acc_v, one);
+                    next.push(self.select_of(flag, added, acc_v));
+                }
+                (AggFunc::Sum, Some((flag, x, ty))) => {
+                    let Some(seen) = seen else {
+                        return Err(PrepareError::Internal("a sum without its flag".into()));
+                    };
+                    let x = match ty {
+                        Ty::I64 => {
+                            let dst = self.fresh();
+                            self.inst(Inst::Dcast {
+                                from: Ty::I64,
+                                to: Ty::I128,
+                                dst,
+                                a: x,
+                            });
+                            dst
+                        }
+                        Ty::I1 => {
+                            let one = self.const_lit(Lit::I128(1));
+                            let zero = self.const_lit(Lit::I128(0));
+                            self.select_of(x, one, zero)
+                        }
+                        _ => x,
+                    };
+                    // A DECIMAL adds at its own scale; at most SCAN_LIMIT
+                    // values of at most 36 digits stay below 10^38.
+                    let added = match ty {
+                        Ty::Dec(..) => {
+                            let dst = self.fresh();
+                            self.inst(Inst::Dop {
+                                op: DecOp::Add,
+                                check: 0,
+                                ty: acc_tys[acc],
+                                dst,
+                                a: acc_v,
+                                b: x,
+                            });
+                            dst
+                        }
+                        _ => self.bin(BinOp::Hadd, acc_v, x),
+                    };
+                    let (seen_v, added) = match flag {
+                        None => (self.const_i1(true), added),
+                        Some(f) => {
+                            let seen_v = self.bin(BinOp::Or, accs[seen], f);
+                            (seen_v, self.select_of(f, added, acc_v))
+                        }
+                    };
+                    next.push(seen_v);
+                    next.push(added);
+                }
+                (AggFunc::Min | AggFunc::Max, Some((flag, x, ty))) => {
+                    let Some(seen) = seen else {
+                        return Err(PrepareError::Internal("an extreme without its flag".into()));
+                    };
+                    let better = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: if func == AggFunc::Min {
+                            CmpPred::Lt
+                        } else {
+                            CmpPred::Gt
+                        },
+                        ty,
+                        dst: better,
+                        a: x,
+                        b: acc_v,
+                    });
+                    let first = self.not(accs[seen]);
+                    let take = self.bin(BinOp::Or, first, better);
+                    let (take, seen_v) = match flag {
+                        None => (take, self.const_i1(true)),
+                        Some(f) => (self.bin(BinOp::And, f, take), self.bin(BinOp::Or, accs[seen], f)),
+                    };
+                    next.push(seen_v);
+                    next.push(self.select_of(take, x, acc_v));
+                }
+                _ => {
+                    return Err(PrepareError::Internal(format!(
+                        "a fold of {func:?} over {arg:?}",
+                        arg = arg.map(|a| a.2)
+                    )))
+                }
+            }
+        }
+        let t = self.const_i1(true);
+        let mut args = Self::live_args(live);
+        args.extend([sp[w], sp[w + 1], t]);
+        args.extend(next);
+        self.term(Term::Jump {
+            to: BlockId(header as u32),
+            args,
+        });
+
+        // after(any, accs): the value lanes.
+        self.switch(after);
+        self.enter_block(live, &ap[..w]);
+        let any = ap[w];
+        let outs = ap[w + 1..].to_vec();
+        self.blocks[self.cur].probes.insert(j, (any, outs.clone()));
+        Ok((any, outs))
     }
 
     /// Emit (or reuse, per block, keyed by call site) one extern call:

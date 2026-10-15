@@ -118,6 +118,9 @@ says whether each form is inside the model.
   over aggregates, or an expression over the columns of the one row that a
   request matches or that the subquery's ORDER BY and LIMIT keep
   ([serving contract](specs/serving-contract.md#scalar-subqueries-over-a-static-table)).
+  A WHERE term of this subquery can also compare the static table with the
+  request in another way, such as `s.lo <= t.x`, if one request reads at
+  most 100 rows of the table.
 - `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT` — row-independent transforms
   don't reorder or deduplicate. Confit serves a query that ends with
   `LIMIT ALL` or `LIMIT NULL`, without OFFSET, as a query without LIMIT. The

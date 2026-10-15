@@ -114,13 +114,21 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    ceiling of a string builder, and the case takes more than the 20 s
    limit (one confit run 5 to 12 s on each of its two backends, DuckDB
    3.6 s, the rows as Python values about 10 s).
-2. **Subquery design, PR 4** (static-only subqueries computed at
+2. **A key whose outer side tells -0.0 from 0.0** (correctness, found
+   2026-10-15 while building the scan). The build-time join of a scalar
+   subquery evaluates a key's outer side for each request, and DuckDB once
+   for each distinct outer value, where -0.0 and 0.0 are one value. So for
+   `s.s = CAST(t.x AS VARCHAR)`, if an earlier request of the batch has x =
+   -0.0, DuckDB answers a request with x = 0.0 from the rows of '-0.0';
+   confit answers it from the rows of '0.0'. Fix: refuse such a key by
+   name, with the scan's `double_taint` check.
+3. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
 
-3. **Owner docs in simple English.** The docs the owner reviews or maintains
+4. **Owner docs in simple English.** The docs the owner reviews or maintains
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
@@ -772,6 +780,25 @@ The first five are ruled, in this order; the rest follow.
   WHERE inside it); an uncorrelated one traps even on an empty batch.
   Measured 2026-10-15: a WHERE subquery under a comma join runs over every
   pair of the cross product, before the WHERE matches the comma key.
+  The scan (owner idea, decisions thread 2026-10-15 20:17Z, "say 100 or so
+  items"): a WHERE term that compares the table with the request other than
+  by a key serves by a scan of at most 100 rows for each request
+  (`Binder::scan_value` in `subquery.rs`; `emit_fold` and `many_fold` in
+  `lower.rs`; the build check `scan_limit` in `src/duckdb/mod.rs`; tests
+  `test_a_scan*`; the generator adds such a term to about one subquery in
+  four that selects an aggregate or is EXISTS). It serves count, integer,
+  BOOLEAN and DECIMAL(<=36) sum, min and max over integer, DECIMAL and
+  VARCHAR, and EXISTS, where no term can trap and no term tells -0.0 from
+  0.0 (DuckDB evaluates the subquery once per distinct outer value, with the
+  first request's value; pin `test_pin_the_subquery_runs_once_for_minus_zero_and_zero`).
+  A program with a scan runs on the interpreter only (MultiMap statics).
+  Open for the scan, in value order: terms that can trap (`s.v BETWEEN t.a
+  - 5 AND t.a + 5`: evaluate the whole WHERE per pair in written order and
+  place the scan where DuckDB plans the subquery, as `guarded_key` does); an
+  expression over the aggregate; avg and DOUBLE sum (float-reduction bound);
+  min and max over DOUBLE (refuse at build a column with equal values of
+  other bits); IN, ANY and ALL; ORDER BY with LIMIT; Cranelift code for
+  ProbeRange and ProbeRead.
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
   set operations.** Refused today, except the scalar subquery, EXISTS and
   IN above; only batch-dependent forms are out of scope. Row-local derived

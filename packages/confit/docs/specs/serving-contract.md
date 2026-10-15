@@ -109,7 +109,7 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build. A DOUBLE `sum` or `avg` compares within a bound ([claim: float-reduction-bound](../oracle/05-the-comparison-contract.md#floating-point-comparisons)) |
+| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep. Other terms that compare the static table with the outer query serve if one request reads at most 100 rows ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build, or computed by a scan for each request. A DOUBLE `sum` or `avg` compares within a bound ([claim: float-reduction-bound](../oracle/05-the-comparison-contract.md#floating-point-comparisons)) |
 | A scalar subquery of another form, for example with an item that calls a UDF, or with a DOUBLE `sum` or `avg` that is not a whole output column. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
@@ -354,15 +354,59 @@ every request of the batch once one request matches a row of `s`. This rule is
 the same as for IN. So confit refuses an `x` that can trap over a WHERE with a
 key.
 
-Each term of the WHERE has one of two forms. A key compares a column of `s`
+Each term of the WHERE has one of three forms. A key compares a column of `s`
 with an expression of the outer query, its outer expression, by `=` or
-`IS NOT DISTINCT FROM`. Each other term reads only `s`, such as `s.v > 5`.
-The WHERE can also be absent. The outer expression of the first key in the
-written order can trap (see below). Confit refuses the subquery if the outer
-expression of a key after the first can trap, or if a term that reads only
-`s` can trap. It also refuses an outer expression that reads a table that the
-outer query joins, and a term that reads only `s` but holds a subquery or
-calls a SQL function.
+`IS NOT DISTINCT FROM`. A term of the second form reads only `s`, such as
+`s.v > 5`. A term of the third form compares `s` with the outer query in
+another way, such as `s.lo <= t.x`. Confit serves this form by a scan of `s`
+for each request (see "The scan" below). The WHERE can also be absent. The
+outer expression of the first key in the written order can trap (see below).
+Confit refuses the subquery if the outer expression of a key after the first
+can trap, or if a term that reads only `s` can trap. It also refuses an outer
+expression that reads a table that the outer query joins, and a term that
+reads only `s` but holds a subquery or calls a SQL function.
+
+**The scan.** If the WHERE has a term of the third form, confit computes the
+value for each request by a scan of `s`. An example is
+`(SELECT sum(s.v) FROM s WHERE s.lo <= t.x AND t.x < s.hi)`. The scan reads
+the rows of `s` that pass the terms that read only `s`. It reads only the
+rows whose keys equal the keys of the request. Then it keeps each row on which
+every other term is TRUE, and it computes the aggregate over these rows. The
+scan does not use a key that compares by `IS NOT DISTINCT FROM` to find rows.
+It tests such a key on each row, as it tests the other terms. At build,
+confit refuses `s` if one request can read more than 100 rows. For example,
+it refuses `s` if more than 100 of these rows have the same key, or if the
+subquery has no key and more than 100 rows pass. The limit of 100 rows
+follows the owner's proposal of 2026-10-15.
+
+The scan serves a subquery that selects one of these aggregates, and EXISTS
+and NOT EXISTS:
+
+- `count(*)`, and `count` of a column or of a constant;
+- `sum` of an integer or BOOLEAN column, or of a DECIMAL column with at most
+  36 digits;
+- `min` and `max` of an integer, DECIMAL or VARCHAR column.
+
+The answer of each of these aggregates does not depend on the order of the
+rows. A `sum` cannot overflow. 100 integer values add up to much less than
+the range of the HUGEINT answer, and 100 DECIMAL values with at most 36
+digits add up to less than 10^38. Confit refuses the scan in these cases:
+
+- a term of the scan can trap, or the outer expression of any key can trap,
+  the first key included;
+- a term of the scan can give different answers for the outer values `-0.0`
+  and `0.0`, such as `s.f < 1.0 / t.x`, where `1.0 / -0.0` is `-inf` and
+  `1.0 / 0.0` is `inf`;
+- the subquery is under IN, ANY or ALL, or it has ORDER BY or LIMIT;
+- the SELECT item is another aggregate, an aggregate over DISTINCT values,
+  or an expression.
+
+The oracle evaluates the subquery once for each distinct value of the outer
+query, and `-0.0` and `0.0` are one value. In two measured batches, it used the
+value of the first request with one of the two. So for a request with `-0.0`,
+the answer of such a term depends on the other requests of the batch.
+The pin `test_pin_the_subquery_runs_once_for_minus_zero_and_zero` in
+`tests/test_scalar_subquery.py` records this.
 
 At build, confit keeps the rows of `s` on which each term that reads only `s`
 is TRUE. It puts these rows into groups with equal keys and computes the

@@ -187,6 +187,8 @@ pub(super) fn batch_spec(n_plain: usize, kind: JoinKind, residual: Option<SExpr>
         val_cols: (0..n_plain as u32).collect(),
         residual,
         after_where: false,
+        fold: None,
+        scan: None,
     }
 }
 
@@ -616,6 +618,8 @@ pub(super) fn bind_from<'a>(
             val_cols,
             residual,
             after_where: false,
+            fold: None,
+            scan: None,
         });
     }
 
@@ -740,6 +744,8 @@ pub(super) fn bind_from<'a>(
             val_cols,
             residual: None,
             after_where: false,
+            fold: None,
+            scan: None,
         });
     }
 

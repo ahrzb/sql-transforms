@@ -140,6 +140,20 @@ pub struct StaticSpec {
     /// then describe the aggregates, and the entry's one value is the
     /// expression over them.
     pub post: Option<PostSpec>,
+    /// Set for the statics of a scalar subquery that the program computes
+    /// for each request by a scan ([`plan::Fold`]).
+    pub scan: Option<ScanSpec>,
+}
+
+/// The part a static plays in a scan for each request ([`plan::Fold`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanSpec {
+    /// The rows that the scan reads ([`plan::ScanRows`]): one entry per
+    /// row of the table that the filter keeps. The build refuses a table
+    /// where more than `limit` of these rows share one key.
+    Rows { limit: usize },
+    /// The fold's values, which the program computes: no entry.
+    Fold,
 }
 
 /// The SELECT item of a scalar subquery over its aggregates
@@ -214,6 +228,10 @@ pub struct AggVal {
 /// zero keys.
 #[derive(Clone, Debug)]
 pub struct JoinFact {
+    /// `inner` or `left` for a join of the FROM, `aggregate` for the hidden
+    /// join of a scalar subquery, `fold` for one whose value a scan computes
+    /// for each request ([`plan::Fold`]), and `scan` for the rows that it
+    /// scans ([`plan::ScanRows`]).
     pub kind: &'static str,
     /// The static table it reads; `None` for a multiplicity self-join,
     /// which builds from the batch.
@@ -369,6 +387,8 @@ pub fn prepare_full(
         .iter()
         .map(|j| JoinFact {
             kind: match (agg_of(j), j.kind) {
+                _ if j.scan.is_some() => "scan",
+                _ if j.fold.is_some() => "fold",
                 (Some(_), _) => "aggregate",
                 (None, plan::JoinKind::Inner) => "inner",
                 (None, plan::JoinKind::Left) => "left",
@@ -394,7 +414,7 @@ pub fn prepare_full(
     if many
         && plan.stages.len() > 1
         && !joins.is_empty()
-        && joins.iter().all(|j| agg_of(j).is_some())
+        && joins.iter().all(|j| agg_of(j).is_some() || j.scan.is_some())
     {
         return Err(PrepareError::Unsupported(
             "a subquery under a shape='many' join (confit runs a scalar subquery over a static \
@@ -446,6 +466,19 @@ pub fn prepare_full(
                     aggs: None,
                     filter: None,
                     post: None,
+                    scan: None,
+                });
+            }
+            if j.fold.is_some() {
+                return Ok(StaticSpec {
+                    batch: false,
+                    table: agg_of(j).map_or_else(String::new, |a| statics[a.source].name.clone()),
+                    keys: Vec::new(),
+                    vals: Vec::new(),
+                    aggs: None,
+                    filter: None,
+                    post: None,
+                    scan: Some(ScanSpec::Fold),
                 });
             }
             if let Some(a) = agg_of(j) {
@@ -502,8 +535,16 @@ pub fn prepare_full(
                     })
                     .collect(),
                 aggs: None,
-                filter: None,
+                filter: j
+                    .scan
+                    .as_ref()
+                    .and_then(|r| r.filter.as_ref())
+                    .map(filter_spec)
+                    .transpose()?,
                 post: None,
+                scan: j.scan.as_ref().map(|_| ScanSpec::Rows {
+                    limit: plan::SCAN_LIMIT,
+                }),
             })
         })
         .collect::<Result<Vec<_>, PrepareError>>()?;
@@ -647,6 +688,7 @@ fn agg_spec(
         aggs: Some(aggs),
         filter: a.filter.as_ref().map(filter_spec).transpose()?,
         post,
+        scan: None,
     })
 }
 
@@ -802,7 +844,14 @@ fn float_bounds(
         }
         for &j in &stage.joins {
             let spec = &joins[j as usize];
-            if spec.keys.iter().chain(&spec.residual).any(|k| reads(&mut k.clone(), &leaf)) {
+            let fold_pred = spec.fold.as_ref().and_then(|f| f.pred.as_ref());
+            if spec
+                .keys
+                .iter()
+                .chain(&spec.residual)
+                .chain(fold_pred)
+                .any(|k| reads(&mut k.clone(), &leaf))
+            {
                 return Err(refusal("a join condition"));
             }
         }
