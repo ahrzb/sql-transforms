@@ -21,6 +21,11 @@
 //! prefix `NOT` right after an operator of level 5 (`a || NOT b`) and as the
 //! lower bound of `BETWEEN`. This dialect refuses them too.
 //!
+//! A comparison with ANY, SOME or ALL over a subquery, `a > ANY (SELECT
+//! ...)`, takes the level of the comparisons on its left and ends at the
+//! subquery's closing parenthesis: the operators after it, of any level,
+//! take it as their left operand (`a > ANY (SELECT 1) = b` too).
+//!
 //! The tests hold this to DuckDB's own parses, pinned in
 //! `docs/specs/pins-wave5/operator-precedence.json`
 //! (`scripts/pin_precedence.py` records them).
@@ -228,6 +233,9 @@ impl Dialect for DuckDbPrecedence {
         if let Err(e) = no_chain(parser, expr, precedence) {
             return Some(Err(e));
         }
+        if let Some(q) = quantified(parser, expr) {
+            return Some(q);
+        }
         // sqlparser takes a whole expression after IS [NOT] DISTINCT FROM,
         // a following AND or OR included.
         let negated = if parser.parse_keywords(&[Keyword::IS, Keyword::DISTINCT, Keyword::FROM]) {
@@ -295,6 +303,51 @@ fn no_chain(parser: &Parser, left: &Expr, precedence: u8) -> Result<(), ParserEr
         "syntax error at or near \"{}\": DuckDB {what}; add parentheses",
         parser.peek_token_ref().token
     )))
+}
+
+/// A comparison with ANY, SOME or ALL over a subquery, `a > ANY (SELECT
+/// ...)`, which ends at the subquery's closing parenthesis in DuckDB's
+/// grammar: `a > ANY (SELECT 1) || b` is `(a > ANY (SELECT 1)) || b`.
+/// sqlparser takes the subquery as the left operand of the operators that
+/// follow it, `a > ANY ((SELECT 1) || b)`. `None` for any other operator.
+fn quantified(parser: &mut Parser, left: &Expr) -> Option<Result<Expr, ParserError>> {
+    use BinaryOperator as B;
+    let op = match parser.peek_token_ref().token {
+        Token::Eq | Token::DoubleEq => B::Eq,
+        Token::Neq => B::NotEq,
+        Token::Lt => B::Lt,
+        Token::LtEq => B::LtEq,
+        Token::Gt => B::Gt,
+        Token::GtEq => B::GtEq,
+        _ => return None,
+    };
+    let [all, some, any] = [Keyword::ALL, Keyword::SOME, Keyword::ANY].map(|k| keyword(parser, 1, k));
+    let subquery = parser.peek_nth_token_ref(2).token == Token::LParen
+        && (keyword(parser, 3, Keyword::SELECT) || keyword(parser, 3, Keyword::WITH));
+    if !(all || some || any) || !subquery {
+        return None;
+    }
+    parser.advance_token();
+    parser.advance_token();
+    let right = match parser.parse_prefix() {
+        Ok(r) => Box::new(r),
+        Err(e) => return Some(Err(e)),
+    };
+    let left = Box::new(left.clone());
+    Some(Ok(if all {
+        Expr::AllOp {
+            left,
+            compare_op: op,
+            right,
+        }
+    } else {
+        Expr::AnyOp {
+            left,
+            compare_op: op,
+            right,
+            is_some: some,
+        }
+    }))
 }
 
 /// True when the token `n` places ahead is the keyword `k`.
@@ -527,6 +580,25 @@ mod tests {
                     any
                 }
             }
+            // DuckDB writes SOME as ANY, and ALL as NOT over ANY with the
+            // opposite comparison.
+            Expr::AnyOp {
+                left,
+                compare_op,
+                right,
+                ..
+            } => match comparison(compare_op) {
+                Some((op, _)) => format!("({} {op} ANY{right})", tree(left)),
+                None => format!("<unprinted: {e}>"),
+            },
+            Expr::AllOp {
+                left,
+                compare_op,
+                right,
+            } => match comparison(compare_op) {
+                Some((_, op)) => format!("(NOT ({} {op} ANY{right}))", tree(left)),
+                None => format!("<unprinted: {e}>"),
+            },
             other => format!("<unprinted: {other}>"),
         }
     }

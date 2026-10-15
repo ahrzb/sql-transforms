@@ -652,6 +652,31 @@ fn print(e: &SqlExpr) -> Option<String> {
                 any
             }
         }
+        // SOME is ANY, and ALL is NOT over ANY with the opposite comparison.
+        SqlExpr::AnyOp {
+            left,
+            compare_op,
+            right,
+            ..
+        } => match right.as_ref() {
+            SqlExpr::Subquery(q) => {
+                format!("({} {} ANY({}))", print(left)?, cmp_op(compare_op)?, select_text(q)?)
+            }
+            _ => return None,
+        },
+        SqlExpr::AllOp {
+            left,
+            compare_op,
+            right,
+        } => match right.as_ref() {
+            SqlExpr::Subquery(q) => format!(
+                "(NOT ({} {} ANY({})))",
+                print(left)?,
+                negate_cmp(compare_op)?,
+                select_text(q)?
+            ),
+            _ => return None,
+        },
         _ => return None,
     })
 }

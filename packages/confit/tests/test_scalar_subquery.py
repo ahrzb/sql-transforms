@@ -11,13 +11,16 @@ over the group's aggregates, and a request that matches no group reads the
 expression over the aggregates of no rows. `EXISTS (SELECT * FROM s WHERE
 ...)` is the count of the same rows above 0, and `x IN (SELECT s.c FROM s
 WHERE ...)` is a CASE over three counts: of the rows whose item equals x, of
-all the rows, and of the rows whose item is not NULL. The oracle evaluates the
-subquery's WHERE in written order over (distinct outer values) x (static
-rows), the aggregate's argument over the matched rows only, and the item once
-for each distinct outer value (the pins at the end). Only the outer side of a
-first key and the left side of IN can trap, and confit evaluates them for the
-same rows as the oracle; an item that traps before any request refuses;
-elsewhere the values are what compares.
+all the rows, and of the rows whose item is not NULL. `x < ANY (SELECT ...)`
+and the other comparisons but = test x against the extremes of the items in
+place of the first count; `x op ALL` is NOT over ANY with the opposite
+comparison. The oracle evaluates the subquery's WHERE in written order over
+(distinct outer values) x (static rows), the aggregate's argument over the
+matched rows only, and the item once for each distinct outer value (the pins
+at the end). Only the outer side of a first key and the left side of IN, ANY
+or ALL can trap, and confit evaluates them for the same rows as the oracle;
+an item that traps before any request refuses; elsewhere the values are what
+compares.
 
 Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 """
@@ -1549,9 +1552,320 @@ def test_in_whose_left_side_reads_a_joined_table_refuses():
     assert "which reads a joined table" in v.detail, v.detail
 
 
+# x op ANY (SELECT ...), SOME alike, and x op ALL. The oracle answers ALL as
+# NOT over ANY with the opposite comparison, and = ANY as IN (so <> ALL as NOT
+# IN). For another comparison, one more hidden join tests x against the
+# extremes of the item in the group, and the counts of IN tell FALSE from
+# NULL. The oracle evaluates x once a row passes the whole WHERE, NULL items
+# too, unlike IN (the pins).
+
+QUANTIFIED = [
+    "= ANY",
+    "<> ANY",
+    "< ANY",
+    "<= SOME",
+    "> ANY",
+    ">= ANY",
+    "= ALL",
+    "<> ALL",
+    "< ALL",
+    "<= ALL",
+    "> ALL",
+    ">= ALL",
+]
+
+
+def _any(op="< ANY", x="t.k", item="s.v", where="s.k = t.k"):
+    w = "" if where is None else f" WHERE {where}"
+    return f"{x} {op} (SELECT {item} FROM s{w})"
+
+
+ANY_TESTS = [
+    *IN_TESTS,
+    ("t.x", "s.d", "s.k = t.k"),  # DOUBLE against DECIMAL, with a key
+    ("t.k", "s.f", None),  # NaN above every number
+    ("t.j", "s.b", None),  # INTEGER against BOOLEAN
+    ("(t.j = 1)", "s.b", "s.k = t.k"),  # BOOLEAN against BOOLEAN
+]
+
+
+@pytest.mark.parametrize("op", QUANTIFIED)
+@pytest.mark.parametrize("x, item, where", ANY_TESTS)
+def test_any(x, item, where, op):
+    sql = f"SELECT id, {_any(op, x, item, where)} AS c FROM __THIS__ AS t"
+    if (x, item) == ("t.j", "s.b") and op in ("= ANY", "<> ALL"):
+        # As IN, a hash join: its key does not compare BOOLEAN with INTEGER.
+        assert_parity(sql, T, statics={"s": S}, expect="REFUSED")
+        return
+    assert_parity(sql, T, statics={"s": S})
+
+
+@pytest.mark.parametrize("op", ["<> ANY", "< ALL", "= ALL", ">= SOME"])
+@pytest.mark.parametrize("x, item, where", IN_TESTS)
+def test_any_under_shape_many(x, item, where, op):
+    sql = f"SELECT id, {_any(op, x, item, where)} AS c FROM __THIS__ AS t"
+    if x == "t.k + 1" or "DISTINCT" in (where or ""):
+        # As in a scalar subquery: under shape='many' an outer expression
+        # that can trap, and IS NOT DISTINCT FROM, refuse.
+        assert_parity(sql, T, statics={"s": S}, shape="many", expect="REFUSED")
+        return
+    assert_parity(sql, T, statics={"s": S}, shape="many")
+
+
+# Extremes that tie values with other bits: -0.0 with 0.0, and two NaNs.
+# Only the comparison reads them, so the build answers either.
+TIES = table(
+    {"k": "int64", "f": "double"},
+    [
+        {"k": 1, "f": 0.0},
+        {"k": 1, "f": -0.0},
+        {"k": 2, "f": NAN},
+        {"k": 2, "f": NAN2},
+        {"k": 2, "f": 1.0},
+    ],
+)
+
+
+@pytest.mark.parametrize("op", ["< ANY", "> ALL", "<> ANY", "= ALL", ">= ANY"])
+@pytest.mark.parametrize("where", ["s.k = t.k", None])
+def test_any_over_extremes_that_tie_with_other_bits(op, where):
+    sql = f"SELECT id, {_any(op, 't.x', 's.f', where)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": TIES})
+
+
+@pytest.mark.parametrize("op", ["< ANY", ">= ANY", "<> ANY", "= ALL", "> ALL"])
+def test_any_compares_decimals_at_their_max_type(op):
+    # DuckDB casts both sides of ANY to their max type: a DECIMAL(10,4)
+    # against a DECIMAL(38,0) is a DECIMAL(38,0), so x = 1.5 rounds to 2.
+    # The comparison operator would compare them at DECIMAL(38,4).
+    s = table({"h": "decimal(38,0)?"}, [{"h": Decimal(2)}, {"h": Decimal(3)}])
+    x = "CAST(t.j AS DECIMAL(9,4)) + 0.5"
+    sql = f"SELECT id, {_any(op, x, 's.h', None)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": s})
+
+
+ANY_FORMS = [
+    # In the WHERE, alone, negated and beside other terms.
+    f"SELECT id FROM __THIS__ AS t WHERE {_any()}",
+    f"SELECT id FROM __THIS__ AS t WHERE NOT {_any('>= ALL', 't.j', 's.j')}",
+    f"SELECT id FROM __THIS__ AS t WHERE t.j = 1 AND {_any('<> ANY', where=None)}",
+    f"SELECT id FROM __THIS__ AS t WHERE t.j = 2 OR {_any('= ALL')}",
+    # Under CASE, inside expressions, and under IS NULL.
+    f"SELECT id, CASE WHEN {_any()} THEN 'y' ELSE 'n' END AS c FROM __THIS__ AS t",
+    f"SELECT id, coalesce({_any('> ALL')}, FALSE) AS c FROM __THIS__ AS t",
+    f"SELECT id, {_any('<= SOME')} IS NULL AS c FROM __THIS__ AS t",
+    f"SELECT id, {_any('<> ALL')} IS NOT DISTINCT FROM t.j > 1 AS c FROM __THIS__ AS t",
+    # Two tests of one subquery, and its other forms beside them.
+    f"SELECT id, {_any()} AND {_any('> ANY')} AS c FROM __THIS__ AS t",
+    f"SELECT id, {_any()} = {_in()} AS c, {_any('< ALL')} AS d, "
+    "(SELECT max(s.v) FROM s WHERE s.k = t.k) AS n FROM __THIS__ AS t",
+    # The table aliased, its columns renamed, and qualified by schema.
+    "SELECT id, t.k < ANY (SELECT v FROM s AS z(kk, jj, v) WHERE z.kk = t.k) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, t.k >= ALL (SELECT main.s.v FROM main.s WHERE main.s.k = t.k) AS c "
+    "FROM __THIS__ AS t",
+    # x names the outer column; a bare name in the subquery names its own.
+    "SELECT id, k > ANY (SELECT k FROM s) AS c FROM __THIS__ AS t",
+    # A lateral alias as x, and WHERE reading an item's alias.
+    "SELECT id, j AS jj, jj <> ALL (SELECT s.j FROM s) AS c FROM __THIS__ AS t",
+    f"SELECT id, {_any('< ANY', where=None)} AS c FROM __THIS__ AS t WHERE c",
+    # The subquery in parentheses of its own.
+    "SELECT id, t.k < ANY ((SELECT s.v FROM s)) AS c FROM __THIS__ AS t",
+    # DuckDB's names of unaliased items: SOME as ANY, ALL as NOT over ANY.
+    f"SELECT {_any()}, t.j <= SOME (SELECT x.j FROM s AS x), "
+    f"{_any('> ALL', 't.j', 's.j')}, {_any('<> ALL')}, NOT {_any('= ANY')} "
+    "FROM __THIS__ AS t",
+    # Beside a FROM join (under the default shape its duplicate keys refuse).
+    f"SELECT t.id, {_any()} AS c FROM __THIS__ AS t JOIN s AS s2 ON s2.k = t.k",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("sql", ANY_FORMS)
+def test_any_forms(sql, shape):
+    if shape is None and "JOIN s AS s2" in sql:
+        assert_parity(sql, T, statics={"s": S}, expect="REFUSED")
+        return
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+@pytest.mark.parametrize("op", ["<> ANY", "> ALL", "= ALL"])
+@pytest.mark.parametrize("where", ["s.k = t.k", "s.v > 5", None])
+def test_any_over_an_empty_table_and_an_empty_batch(op, where):
+    sql = f"SELECT id, {_any(op, 't.k', 's.v', where)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, T, statics={"s": S.slice(0, 0)})
+    assert_parity(sql, T.slice(0, 0), statics={"s": S})
+
+
+def _kany(op: str, x: str, where: str | None = None, tail: str = "") -> str:
+    w = "" if where is None else f" WHERE {where}"
+    return f"SELECT pid, {x} {op} (SELECT s.k FROM s{w}) AS c FROM __THIS__{tail}"
+
+
+@pytest.mark.parametrize("op", ["<> ANY", "< ANY", ">= ALL", "= ALL"])
+@pytest.mark.parametrize(
+    "case, expect",
+    [
+        # Without a key, x runs once a row passes the whole WHERE.
+        ((None, ""), "AGREE_TRAP"),
+        (("s.f = 7", ""), ROWS_OR_OPT),
+        (("s.f = 0", ""), "AGREE_TRAP"),
+        (("s.v BETWEEN 2 AND 1", ""), ROWS_OR_OPT),
+        (("s.v BETWEEN 1 AND 3", ""), "AGREE_TRAP"),
+        # A row whose item is NULL counts too, unlike under IN.
+        (("s.f IS NULL", ""), "AGREE_TRAP"),
+        (("s.k IS NULL", ""), "AGREE_TRAP"),
+        # In the SELECT list after the outer WHERE.
+        ((None, " WHERE x = 0 OR x IS NULL"), "AGREE"),
+    ],
+)
+def test_any_whose_left_side_can_trap(op, case, expect):
+    where, tail = case
+    assert_parity(_kany(op, TRAP, where, tail), KT, statics={"s": KS}, expect=expect)
+
+
+@pytest.mark.parametrize("op", ["<> ANY", "< ANY", ">= ALL", "= ALL"])
+@pytest.mark.parametrize(
+    "sql, expect",
+    [
+        # In the WHERE before the outer WHERE runs, and under CASE for every
+        # request.
+        (
+            "SELECT pid FROM __THIS__ WHERE x = 0 AND {t} {op} (SELECT s.k FROM s)",
+            TRAP_OR_OPT,
+        ),
+        (
+            "SELECT pid, CASE WHEN x = 0 THEN {t} {op} (SELECT s.k FROM s) END AS c "
+            "FROM __THIS__",
+            "AGREE_TRAP",
+        ),
+        (
+            "SELECT pid, CASE WHEN x = 0 THEN {t} {op} (SELECT s.k FROM s "
+            "WHERE s.f = 7) END AS c FROM __THIS__",
+            ROWS_OR_OPT,
+        ),
+        (
+            "SELECT pid, CASE WHEN x = 0 THEN {t} {op} (SELECT s.k FROM s "
+            "WHERE s.f IS NULL) END AS c FROM __THIS__",
+            "AGREE_TRAP",
+        ),
+        # The first key of the WHERE runs as in a scalar subquery.
+        (
+            "SELECT pid, x {op} (SELECT s.k FROM s WHERE s.k = {t}) AS c FROM __THIS__",
+            "AGREE_TRAP",
+        ),
+        (
+            "SELECT pid, x {op} (SELECT s.k FROM s WHERE s.f = 7 AND s.k = {t}) AS c "
+            "FROM __THIS__",
+            ROWS_OR_OPT,
+        ),
+    ],
+)
+def test_any_runs_where_duckdb_plans_it(op, sql, expect):
+    sql = sql.format(t=TRAP, op=op)
+    assert_parity(sql, KT, statics={"s": KS}, expect=expect)
+
+
+@pytest.mark.parametrize(
+    "sql, why",
+    [
+        (
+            f"SELECT id, {_any('< ANY', 't.k', item)} AS c FROM __THIS__ AS t",
+            f"the SELECT item {item} under < ANY",
+        )
+        for item in ["s.v + 9223372036854775807", "count(*)", "t.j", "*", "1"]
+    ]
+    + [
+        (
+            f"SELECT id, {_any('> ALL', 't.k', 's.v, s.k')} AS c FROM __THIS__ AS t",
+            "more than one SELECT item under > ALL",
+        ),
+        (
+            f"SELECT id, {_any('<> ANY', 't.name', 's.k')} AS c FROM __THIS__ AS t",
+            "compares VARCHAR with another type",
+        ),
+        (
+            # The BIGINT item casts to DECIMAL(38,20), which holds 18 digits
+            # before the point, and DuckDB casts every item.
+            f"SELECT id, {_any('< ANY', 'CAST(t.j AS DECIMAL(38,20))', 's.v', None)} "
+            "AS c FROM __THIS__ AS t",
+            "whose cast to the type of the comparison can trap",
+        ),
+        (
+            f"SELECT id, {_any('= ALL', 't.k', 's.s')} AS c FROM __THIS__ AS t",
+            "compares VARCHAR with another type",
+        ),
+        (
+            f"SELECT id, {_any('< ANY', '(SELECT max(s.k) FROM s)', 's.v', None)} AS c "
+            "FROM __THIS__ AS t",
+            "which holds a subquery",
+        ),
+        (
+            f"SELECT id, {_any(where='s.k = t.k LIMIT 1')} AS c FROM __THIS__ AS t",
+            "ORDER BY or LIMIT",
+        ),
+        (
+            f"SELECT id, {_any(item='DISTINCT s.v')} AS c FROM __THIS__ AS t",
+            "a subquery with DISTINCT",
+        ),
+        (
+            f"SELECT id, {_any(where='s.k = t.k AND s.v + 9223372036854775807 > 0')} "
+            "AS c FROM __THIS__ AS t",
+            "reads only its table and can trap",
+        ),
+        (
+            "SELECT id, t.k < ANY (SELECT r.k FROM __THIS__ AS r) AS c "
+            "FROM __THIS__ AS t",
+            "over the request table",
+        ),
+        (
+            f"SELECT t.id FROM __THIS__ AS t JOIN s AS s2 ON {_any()}",
+            "in FROM or in a JOIN condition",
+        ),
+        (
+            "SELECT id, t.k = ANY ([1, 2]) AS c FROM __THIS__ AS t",
+            "ANY/ALL over",
+        ),
+    ]
+    + [
+        (
+            f"SELECT id, {_any(op, 't.k + 9223372036854775807', 's.v', w)} AS c "
+            "FROM __THIS__ AS t",
+            "which can trap, over a WHERE with a key",
+        )
+        for op in ["<> ANY", ">= ALL"]
+        for w in ["s.k = t.k", "s.k = t.k AND s.v > 1000"]
+    ],
+)
+def test_any_refuses_by_name(sql, why):
+    v = assert_parity(sql, T, statics={"s": S}, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
+def test_any_whose_left_side_reads_a_joined_table_refuses():
+    sql = (
+        "SELECT t.id, s2.v < ANY (SELECT s.v FROM s) AS c FROM __THIS__ AS t "
+        "JOIN s AS s2 ON s2.k = t.k"
+    )
+    v = assert_parity(sql, T, statics={"s": S}, shape="many", expect="REFUSED")
+    assert "which reads a joined table" in v.detail, v.detail
+
+
+def test_any_beside_a_comma_join_refuses_an_x_that_can_trap():
+    # The oracle runs the subquery over every pair of the comma join, before
+    # the WHERE matches the comma table's key.
+    sql = (
+        f"SELECT pid FROM __THIS__, s2 WHERE pid = s2.id AND {TRAP} < ANY "
+        "(SELECT s.k FROM s)"
+    )
+    s2 = table({"id": "int"}, [{"id": 1}, {"id": 2}])
+    v = assert_parity(sql, KT, statics={"s": KS, "s2": s2}, expect="REFUSED")
+    assert "beside a comma join" in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap but in the outer side of a first key and in the left side of
-# IN, so these facts never change a served answer. They are why a WHERE term
+# IN, ANY or ALL, so these facts never change a served answer. They are why a WHERE term
 # that reads only the table and can trap refuses today.
 
 BIG = 2**63 - 1
@@ -1792,12 +2106,16 @@ def test_pin_exists_over_an_aggregate_is_true():
 # after the whole WHERE; with a key, for every request of the batch once one
 # request matches a static row. Its item runs over the matched rows, so an
 # item that can trap refuses.
-IN_COUNTS = (
-    "CASE WHEN (SELECT count(*) FROM v WHERE v.c = t.k) > 0 THEN TRUE "
-    "WHEN (SELECT count(*) FROM v) = 0 THEN FALSE "
-    "WHEN t.k IS NULL OR (SELECT count(v.c) FROM v) < (SELECT count(*) FROM v) "
-    "THEN NULL ELSE FALSE END"
-)
+def _counts(hit: str) -> str:
+    return (
+        f"CASE WHEN {hit} THEN TRUE "
+        "WHEN (SELECT count(*) FROM v) = 0 THEN FALSE "
+        "WHEN t.k IS NULL OR (SELECT count(v.c) FROM v) < (SELECT count(*) FROM v) "
+        "THEN NULL ELSE FALSE END"
+    )
+
+
+IN_COUNTS = _counts("(SELECT count(*) FROM v WHERE v.c = t.k) > 0")
 
 
 @pytest.mark.parametrize("neg", [False, True])
@@ -1849,11 +2167,105 @@ def test_pin_in_with_a_key_runs_its_left_side_over_the_whole_batch():
         assert "(2 * 4611686018427387904)" in got.message
 
 
-def test_pin_the_item_under_in_runs_over_the_matched_rows():
-    sql = f"SELECT k, k IN (SELECT s.z + {BIG} FROM s WHERE s.k = t.k) FROM t"
-    assert _pin(sql, [1, 2]) == [(1, False), (2, False)]
+@pytest.mark.parametrize(
+    "form, want",
+    [
+        ("IN", [(1, False), (2, False)]),
+        ("< ANY", [(1, True), (2, False)]),
+        ("= ALL", [(1, False), (2, True)]),
+    ],
+)
+def test_pin_the_item_under_in_or_any_runs_over_the_matched_rows(form, want):
+    sql = f"SELECT k, k {form} (SELECT s.z + {BIG} FROM s WHERE s.k = t.k) FROM t"
+    assert _pin(sql, [1, 2]) == want
     # An uncorrelated item runs on every call.
     for q, keys in [(sql, [3]), (sql.replace(" WHERE s.k = t.k", ""), [])]:
         got = _pin(q, keys)
         assert isinstance(got, Trap), (q, got)
         assert "Overflow in addition of INT64" in got.message
+
+
+# ANY and ALL, measured 2026-10-15 over PIN_S. The oracle answers x op ALL as
+# NOT over x op' ANY, where op' is the opposite comparison, and = ANY as IN.
+# For another comparison, the value is that of IN with a test of x against
+# the extremes of the items in place of the count of the items equal to x.
+# The oracle evaluates x once a row passes the whole WHERE, NULL items too.
+ANY_HIT = {
+    "<": "t.k < (SELECT max(v.c) FROM v)",
+    "<=": "t.k <= (SELECT max(v.c) FROM v)",
+    ">": "t.k > (SELECT min(v.c) FROM v)",
+    ">=": "t.k >= (SELECT min(v.c) FROM v)",
+    "<>": "(t.k <> (SELECT min(v.c) FROM v) OR t.k <> (SELECT max(v.c) FROM v))",
+}
+OPPOSITE = {"<": ">=", "<=": ">", ">": "<=", ">=": "<", "=": "<>"}
+ANY_PIN_VALUES = [
+    *(("BIGINT", [1, 2, 3, None], v) for v in [[1, 2], [2, 2], [1, None], [None], []]),
+    *(
+        ("DOUBLE", [0.0, -0.0, 1.0, NAN, None], v)
+        for v in [[1.0, NAN], [-0.0, 0.0], [NAN, None], [-1.0, 1.0]]
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["< ANY", "<= ANY", "> ANY", ">= ANY", "<> ANY"]
+    + ["< ALL", "<= ALL", "> ALL", ">= ALL", "= ALL"],
+)
+@pytest.mark.parametrize("ty, keys, vals", ANY_PIN_VALUES)
+def test_pin_any_answers_as_its_extremes_under_the_counts_of_in(form, ty, keys, vals):
+    # NaN is above every number, and -0.0 equals 0.0, in the comparison and
+    # in min and max alike.
+    op, quant = form.split()
+    want = _counts(ANY_HIT[op if quant == "ANY" else OPPOSITE[op]])
+    want = want if quant == "ANY" else f"NOT ({want})"
+    arrow = pa.int64() if ty == "BIGINT" else pa.float64()
+    with Oracle() as o:
+        o.table("t", f"k {ty}", [(k,) for k in keys])
+        o.load("v", pa.table({"c": pa.array(vals, arrow)}))
+        got = o.try_answer(f"SELECT t.k {form} (SELECT v.c FROM v) FROM t")
+        want = o.try_answer(f"SELECT {want} FROM t")
+    assert got.column(0).to_pylist() == want.column(0).to_pylist()
+
+
+@pytest.mark.parametrize(
+    "form", ["< ANY", "<> ANY", "> ALL", "= ALL", "= ANY", "<> ALL"]
+)
+def test_pin_any_runs_its_left_side_once_a_row_passes_the_whole_where(form):
+    sql = f"SELECT k, (k + {BIG}) {form} (SELECT {{}} FROM s{{}}) FROM t"
+    empty = form.endswith("ALL")  # the value over no rows
+    # The row z = 1 passes the lower bound of BETWEEN 1 AND 0, and x does not
+    # run: it runs after the whole WHERE.
+    for where in [" WHERE s.z > 5", " WHERE s.z BETWEEN 1 AND 0"]:
+        assert _pin(sql.format("s.z", where), [1]) == [(1, empty)], where
+    # The rows k = 1 pass, and NULLIF makes their items NULL. x runs, but
+    # = ANY runs as IN, and <> ALL as NOT IN: then x does not run.
+    got = _pin(sql.format("NULLIF(s.z, 0)", " WHERE s.k = 1"), [1])
+    if form in ("= ANY", "<> ALL"):
+        assert got == [(1, None)], got
+    else:
+        assert isinstance(got, Trap), got
+        assert "Overflow in addition of INT64" in got.message
+    for where in ["", " WHERE s.z BETWEEN 0 AND 0"]:
+        got = _pin(sql.format("s.z", where), [1])
+        assert isinstance(got, Trap), (where, got)
+        assert "Overflow in addition of INT64" in got.message
+
+
+@pytest.mark.parametrize(
+    "form", ["< ANY", "<> ANY", "> ALL", "= ALL", "= ANY", "<> ALL"]
+)
+def test_pin_any_with_a_key_runs_its_left_side_over_the_whole_batch(form):
+    # Once the request k = 1 matches a static row, x runs for k = 2 too,
+    # which matches none. This holds also if the items of the matched rows
+    # are NULL (NULLIF makes them NULL).
+    sql = (
+        f"SELECT k, k * 4611686018427387904 {form} "
+        "(SELECT {} FROM s WHERE s.k = t.k) FROM t"
+    )
+    empty = form.endswith("ALL")  # the value over no rows
+    for item in ["s.z", "NULLIF(s.z, 0)"]:
+        assert _pin(sql.format(item), [2]) == [(2, empty)], item
+        got = _pin(sql.format(item), [1, 2])
+        assert isinstance(got, Trap), (item, got)
+        assert "(2 * 4611686018427387904)" in got.message

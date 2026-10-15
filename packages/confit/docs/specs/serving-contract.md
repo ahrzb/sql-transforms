@@ -228,6 +228,59 @@ depends on the other requests in the same batch. Confit serves only answers
 that do not depend on the other requests, so it refuses an `x` that can trap
 over a WHERE with a key.
 
+Confit also serves `x op ANY (SELECT s.c FROM s WHERE ...)` and
+`x op ALL (...)` over such a subquery, for example
+`t.k < ANY (SELECT s.v FROM s WHERE s.j = t.j)`. Here `op` is one of the
+comparisons `=`, `<>`, `<`, `<=`, `>` and `>=`, and `SOME` is the same as
+`ANY`. The rules for `x` and for the item `s.c` are those of IN, and confit
+refuses the same forms.
+
+The oracle answers `x op ALL (...)` as `NOT (x op' ANY (...))`, where `op'` is
+the opposite comparison. For example, `x > ALL (...)` is
+`NOT (x <= ANY (...))`. The oracle answers `x = ANY (...)` as `x IN (...)`, so
+`x <> ALL (...)` is `x NOT IN (...)`. Confit serves these two forms as IN and
+NOT IN.
+
+For another comparison, the value of `x op ANY (...)` follows the rules of IN,
+with the test `x op c` in place of `x = c`. So it is TRUE for a request if
+`x op c` is TRUE for the item `c` of a row that passes the WHERE of the
+subquery. Else it is FALSE if no row passes this WHERE. Else it is NULL if
+`x` is NULL or the item of a row that passes this WHERE is NULL. Else it is
+FALSE.
+
+Confit computes counts 2 and 3 of IN, and it uses one more hidden join in
+place of count 1. For each group, this join holds the count of the rows of
+the group and the least or the greatest item of the group, or both. A row of
+the group passes the test as follows:
+
+- A row passes `x < c` or `x <= c` if and only if the row with the greatest
+  item passes it.
+- A row passes `x > c` or `x >= c` if and only if the row with the least item
+  passes it.
+- A row passes `x <> c` if and only if the row with the least item or the row
+  with the greatest item passes it.
+
+These facts are true because the oracle compares the values of a type in one
+total order. In this order, a NaN is above every other DOUBLE, and `-0.0`
+equals `0.0`. The pins at the end of `tests/test_scalar_subquery.py` record
+that the oracle gives the same values as this computation. The least or the
+greatest item can be one of two values that compare as equal but have
+different bits, such as `-0.0` and `0.0`. Only a comparison reads this item,
+and both values give the same answer. So confit serves this case, which it
+refuses for `min` and `max` (see the build refusals at the end of this
+section).
+
+The oracle casts `x` and each item to one type before it compares them.
+Confit refuses an item whose cast can trap, because the oracle casts every
+item, not only the least and the greatest.
+
+The oracle evaluates `x` once a row of `s` passes the whole WHERE of the
+subquery, also if the item of this row is NULL. This is different from IN.
+Confit evaluates `x` only if the count of the rows of the group is above 0.
+If the WHERE has a key, the oracle evaluates `x` for every request of the
+batch once one request matches a row of `s`, as for IN. So confit refuses an
+`x` that can trap over a WHERE with a key.
+
 Each term of the WHERE has one of two forms. A key compares a column of `s`
 with an expression of the outer query, its outer expression, by `=` or
 `IS NOT DISTINCT FROM`. Each other term reads only `s`, such as `s.v > 5`.
@@ -258,8 +311,8 @@ distinct outer value, over the aggregates of the matched rows. If no row
 matches, it evaluates the item over the aggregates of no rows. The pins at the
 end of `tests/test_scalar_subquery.py` record these facts. The order of
 evaluation matters only where an evaluation can trap. In a served subquery,
-only the outer expression of the first key, and the left side `x` of IN over a
-WHERE without a key, can trap. The argument of the aggregate, if it has one,
+only the outer expression of the first key, and the left side `x` of IN, ANY
+or ALL over a WHERE without a key, can trap. The argument of the aggregate, if it has one,
 is a column or a constant. Only
 the running total of a `sum` or an `avg` can overflow. Confit computes it at
 build, and it refuses the build if the total can overflow (the build refusals
@@ -289,7 +342,7 @@ runs a subquery in the SELECT list for each row that the outer WHERE passes,
 and a subquery in the WHERE for each row that reaches the WHERE. The oracle
 does this also for a subquery inside a CASE, whatever the condition of the
 CASE is. Confit evaluates the outer expression of the first key, and the left
-side `x` of IN, for the same rows as the oracle. If one of them can trap,
+side `x` of IN, ANY or ALL, for the same rows as the oracle. If one of them can trap,
 confit refuses the subquery in two cases:
 
 - The subquery is in the WHERE, and the outer query has a comma join whose
@@ -352,7 +405,8 @@ cases that depend on the rows of `s`:
   distinct value once.
 - A DOUBLE `min` or `max` finds two values that compare as equal but have
   different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
-  of the oracle depends on the order of the rows.
+  of the oracle depends on the order of the rows. This refusal does not apply
+  to the least and the greatest item of ANY and ALL.
 - An expression item raises an error over the aggregates of a group.
 
 A SELECT item can read the alias of an earlier item. The oracle rejects such
@@ -371,8 +425,10 @@ subqueries to a case, so about one case in six of those tagged
 five reads DISTINCT values. About one subquery in five that is an item of the
 outer query, or the operand of IS NULL, is `EXISTS` or `NOT EXISTS` instead.
 About one in five of the other subqueries that are an item or the operand of
-IS NULL is `x IN (...)` or `x NOT IN (...)` instead. The generator makes up to
-two key columns in `s`. It fills about half of the rows of a key column with
+IS NULL is `x IN (...)` or `x NOT IN (...)` instead. About one IN in two is
+`x op ANY (...)`, `x op SOME (...)` or `x op ALL (...)` instead, under NOT
+in about two cases in five, with `op` one of the six comparisons. The
+generator makes up to two key columns in `s`. It fills about half of the rows of a key column with
 values of one column of the request table, so that requests match these rows.
 The item is a key column, and `x` is its column of the request table, or, in
 about one case in ten, this column + 1.

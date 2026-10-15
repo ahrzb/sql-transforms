@@ -983,16 +983,18 @@ fn bind_select(
         }
         if env.many {
             return Err(unsup(
-                "a subquery whose first key has an outer side that can trap, under \
-                 shape='many' -- each join runs before the WHERE there, and DuckDB runs the \
-                 subquery of a SELECT item after it",
+                "a subquery with an outer expression that can trap (the outer side of its \
+                 first key, or the left side of IN, ANY or ALL), under shape='many' -- each \
+                 join runs before the WHERE there, and DuckDB runs the subquery of a SELECT \
+                 item after it",
             ));
         }
         if in_where && !comma_terms.is_empty() {
             return Err(unsup(
-                "a subquery in the WHERE whose first key has an outer side that can \
-                 trap, beside a comma join -- DuckDB evaluates that side for every row pair \
-                 of the comma join, confit for the pairs that its keys match; use JOIN ... ON",
+                "a subquery in the WHERE with an outer expression that can trap (the outer \
+                 side of its first key, or the left side of IN, ANY or ALL), beside a comma \
+                 join -- DuckDB evaluates it for every row pair of the comma join, confit for \
+                 the pairs that its keys match; use JOIN ... ON",
             ));
         }
     }
@@ -1192,15 +1194,19 @@ struct Binder<'a> {
     /// order they first bound; they run after the FROM joins
     /// (`subquery.rs`).
     agg_joins: std::cell::RefCell<Vec<JoinSpec>>,
-    /// The hidden joins (numbered at this level) whose first key has an
-    /// outer side that can trap, which `bind_select` checks against the
+    /// The hidden joins (numbered at this level) whose probe evaluates an
+    /// outer expression that can trap: the outer side of the first key, or
+    /// the left side of ANY or ALL. `bind_select` checks them against the
     /// level's shape and comma tables once the WHERE has bound.
     trap_keys: std::cell::RefCell<Vec<u32>>,
-    /// Each scalar subquery bound at this level, with the IN test it may
-    /// add as a key (`subquery.rs`), and what it reads, so that binding the
-    /// same text again reads the same join.
+    /// Each scalar subquery bound at this level, with the test of IN, ANY
+    /// or ALL it may add (`subquery.rs`: the item, the left side, and the
+    /// comparison of ANY), and what it reads, so that binding the same text
+    /// again reads the same join.
     #[allow(clippy::type_complexity)]
-    agg_reads: std::cell::RefCell<Vec<(sqlparser::ast::Query, Option<(SqlExpr, SqlExpr)>, SExpr)>>,
+    agg_reads: std::cell::RefCell<
+        Vec<(sqlparser::ast::Query, Option<(SqlExpr, SqlExpr, Option<CmpPred>)>, SExpr)>,
+    >,
     /// The grouped static tables of the whole query, handed between levels
     /// like `minted_lanes`: append-only, so a join's table index never moves.
     agg_tables: std::cell::RefCell<Vec<super::plan::AggTable>>,

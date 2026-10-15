@@ -481,7 +481,18 @@ impl Binder<'_> {
                 expr,
                 subquery,
                 negated,
-            } => self.in_subquery(expr, subquery, *negated),
+            } => self.in_subquery(expr, subquery, *negated, "IN"),
+            SqlExpr::AnyOp {
+                left,
+                compare_op,
+                right,
+                ..
+            } => self.quantified_subquery(left, compare_op, right, false),
+            SqlExpr::AllOp {
+                left,
+                compare_op,
+                right,
+            } => self.quantified_subquery(left, compare_op, right, true),
             SqlExpr::Value(v) => literal(&v.value),
             // DuckDB puts << >> & | in ONE flat left-associative tier, and
             // the parser ranks them so (precedence.rs): 4|1&1 is (4|1)&1=1.
