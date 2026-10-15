@@ -809,15 +809,15 @@ _LEAF_D = pa.table(
 )
 
 
-def _leaf_parity(sql, **kw):
+def _leaf_parity(sql, static=_LEAF_D, **kw):
     o = Oracle()
     o.load("__THIS__", pa.Table.from_pylist(_LEAF_ROWS, schema=_LEAF_ROW))
-    o.load("d", _LEAF_D)
+    o.load("d", static)
     res = o.execute(sql)
     names = [c[0] for c in res.description]
     want = [dict(zip(names, r, strict=True)) for r in res.fetchall()]
     fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": _LEAF_ROW}, static_tables={"d": _LEAF_D}, **kw
+        sql, row_tables={"__THIS__": _LEAF_ROW}, static_tables={"d": static}, **kw
     )
     got = fn.infer_rows(_LEAF_ROWS)
     key = lambda r: repr(sorted(r.items()))  # noqa: E731
@@ -873,3 +873,62 @@ def test_a_struct_leaf_head_in_both_relations_is_ambiguous():
             row_tables={"__THIS__": _LEAF_ROW},
             static_tables={"d": _LEAF_D},
         )
+
+
+# --- a computed comma key over a name both relations have --------------------
+#
+# A comma join (or CROSS JOIN) takes `expr = d.col` from its WHERE as a probe
+# key, and binds `expr` before `d` is in scope. A bare name that `d` has too is
+# still ambiguous there, as on DuckDB (nightly seed 8244787). Before, the key
+# bound the name to the request table and served.
+
+_BOTH_D = pa.table(
+    {
+        "id": pa.array([2, 3], pa.int64()),
+        "x": pa.array([5, 6], pa.int64()),
+        "w": pa.array([{"x": 1}, None], pa.struct([("x", pa.int64())])),
+        "z": pa.array([10, 20], pa.int64()),
+        "flag": pa.array([True, False]),
+    }
+)
+
+
+@pytest.mark.parametrize(
+    ("sql", "name"),
+    [
+        ("SELECT z FROM __THIS__, d WHERE (x + 1) = d.id", "x"),
+        ("SELECT z FROM __THIS__ CROSS JOIN d WHERE d.id = (x + 1)", "x"),
+        ("SELECT z FROM __THIS__, d WHERE k = 4 AND (x > 1) = d.flag", "x"),
+        ("SELECT z FROM __THIS__, d WHERE (w.x + 1) = d.id", "w"),
+        ("SELECT z FROM __THIS__ CROSS JOIN d WHERE abs(x) = d.id", "x"),
+    ],
+)
+@pytest.mark.parametrize("shape", ["filter", "many"])
+def test_a_computed_comma_key_over_a_name_both_relations_have_is_ambiguous(
+    sql, name, shape
+):
+    o = Oracle()
+    o.load("__THIS__", pa.Table.from_pylist(_LEAF_ROWS, schema=_LEAF_ROW))
+    o.load("d", _BOTH_D)
+    with pytest.raises(Exception, match=f'Ambiguous reference to column name "{name}"'):
+        o.execute(sql)
+    with pytest.raises(ValueError, match=f"ambiguous column '{name}'"):
+        DuckDBInferFn(
+            sql,
+            row_tables={"__THIS__": _LEAF_ROW},
+            static_tables={"d": _BOTH_D},
+            shape=shape,
+        )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT z FROM __THIS__, d WHERE (__THIS__.x + 1) = d.id",
+        "SELECT z FROM __THIS__ AS t CROSS JOIN d WHERE d.id = (t.x + 1)",
+        "SELECT z FROM __THIS__, d WHERE (__THIS__.w.x + 2) = d.id",
+        "SELECT z FROM __THIS__, d WHERE (k - 1) = d.id",
+    ],
+)
+def test_a_computed_comma_key_over_a_qualified_name_keys_the_join(sql):
+    _leaf_parity(sql, static=_BOTH_D, shape="many")

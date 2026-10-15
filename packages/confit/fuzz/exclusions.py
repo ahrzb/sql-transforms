@@ -212,10 +212,19 @@ def _empty_static(ev: Evidence, raw) -> str | None:
 
 
 def _plain_value(t):
-    """A non-NULL value of Arrow type `t`: 0, 0.0, '', False, a decimal 0, or a
-    struct of those. None where there is no plain value (opaque types)."""
+    """A non-NULL value of Arrow type `t`: 0, 0.0, '', False, a decimal 0, the
+    epoch, or a struct of those. None where there is no plain value (other
+    opaque types)."""
+    import datetime  # noqa: PLC0415
+
     import pyarrow as pa  # noqa: PLC0415
 
+    # The generator's static tables have opaque timestamp columns (nightly
+    # seed 8522528): without a value for one, no witness ran.
+    if pa.types.is_timestamp(t):
+        return datetime.datetime(1970, 1, 1)
+    if pa.types.is_date(t):
+        return datetime.date(1970, 1, 1)
     if pa.types.is_integer(t):
         return 0
     if pa.types.is_floating(t):

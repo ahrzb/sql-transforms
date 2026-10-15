@@ -688,8 +688,14 @@ pub(super) fn bind_from<'a>(
             }
             // The dynamic side must bind in the scope BEFORE this table —
             // if it references this or a later comma table, leave the
-            // conjunct in WHERE (a later table may consume it).
-            let Ok(key) = binder.expr(dyn_side) else {
+            // conjunct in WHERE (a later table may consume it). A bare name
+            // that this table has too is ambiguous on DuckDB, so that
+            // conjunct stays in WHERE as well, where it refuses (nightly
+            // seed 8244787: `(c0 > 1) = s0.c2.f1` with `c0` in both).
+            *binder.beside.borrow_mut() = static_head_names(st);
+            let key = binder.expr(dyn_side);
+            binder.beside.borrow_mut().clear();
+            let Ok(key) = key else {
                 continue;
             };
             let key = promote_key(fold(key), st, col)?;

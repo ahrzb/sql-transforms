@@ -66,6 +66,11 @@ that exclusion does not apply.
   only the optimizer-on reading runs out of time. In the other 19 cases, the oracle runs out of time. When
   the loop runs four of the 35 cases at a time on the same machine, 34 of them run out of time with #442. So
   the verdict of the 16 cases depends on the load of the machine.
+- The nightly of 2026-10-15 (seeds 8200000 to 8599999) ran on master df653be, which has #442. It had one case
+  of this kind, seed 8249704, with the verdict TIMEOUT. In the first request, `c2` is -2,147,483,648, and
+  confit traps when one field of the output struct computes `- c2`. In the fifth request, another field calls
+  `lpad` with a length of 2,147,483,647. The loop ran the case again alone, without a time limit. The case took
+  about 55 s, and it got the verdict AGREE_TRAP.
 
 **Options.**
 1. **Exclude with a witness.** The campaign gives the case the verdict EXCLUDED if all of these are true:
