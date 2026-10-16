@@ -21,10 +21,9 @@ from confit import sql as S
 from confit.oracle import Oracle
 from sklearn.preprocessing import SplineTransformer
 
-from sql_transform._udf import PythonTransform
-from sql_transform.native._registry import ErrorScale, catalog, is_trap, query
+from sql_transform._udf import PythonTransform, _as_feature
+from sql_transform.native._registry import FieldBounds, catalog, is_trap, query
 
-EPS = np.longdouble(2.0**-52)
 _DBL_MAX = np.longdouble(sys.float_info.max)
 
 
@@ -92,12 +91,34 @@ def _features(rows: pa.Table, i: int, names: list[str]) -> np.ndarray:
     )
 
 
-def _bounds(scale: ErrorScale, est: Any, x: np.ndarray, width: int) -> np.ndarray:
-    """Each output field's bound at one row, K*eps*S + tau."""
-    k, tau = scale.k(est), scale.tau(est)
-    s = scale.s(est, x)
-    b = np.asarray(k, np.longdouble) * EPS * np.asarray(s, np.longdouble)
-    return np.broadcast_to(b + np.asarray(tau, np.longdouble), (width,))
+def _twin_input(step: PythonTransform, rows: pa.Table, i: int) -> list[list[Any]]:
+    """Row `i` as the twin's `transform` takes it, a one-row list of each
+    feature's value as the step hands it (`_as_feature`): where a
+    composition's parts read it each their own way (`PartBounds`)."""
+    return [
+        [
+            _as_feature(rows.column(n)[i].as_py(), t)
+            for n, t in zip(step.takes.names, step.take_types, strict=True)
+        ]
+    ]
+
+
+def _past_part(fields: FieldBounds, j: int, a: float, b: float) -> str | None:
+    """How `a` (the step's) and `b` (the native twin's) breach output field
+    `j`'s bound in a composition, the bound of the part that gives it, or
+    None where they do not."""
+    bound = fields.near[j]
+    if np.isnan(bound):
+        u = int(fields.ulps[j])
+        if _same(a, b, u):
+            return None
+        return f"{ulp_distance(a, b)} ulps, its part's bound {u}"
+    if near(a, b, bound):
+        return None
+    return (
+        f"past its part's bound K*eps*S + tau = {float(bound):.6g}"
+        f" ({_apart(a, b, None)} apart)"
+    )
 
 
 def _output_fields(rec: dict) -> list[tuple[str, Any]]:
@@ -299,10 +320,12 @@ def check(
             )
         compared += 1
         entry = None if est is None else entries.get(type(est))
-        scale = None if ulps is not None or entry is None else entry.scale
+        scale = parts = None
+        if ulps is None and entry is not None:
+            scale, parts = entry.scale, entry.part_bounds(est)
         if ulps is not None:
             u = ulps
-        elif entry is None or scale is not None:
+        elif entry is None or scale is not None or parts is not None:
             u = 0  # what is not a double (NULL, say) compares exactly
         else:
             u = entry.bound(est)
@@ -311,9 +334,20 @@ def check(
             raise ParityError(
                 f"row {i}: step {a!r}, native {b!r}; input {_input(rows, i)}"
             )
-        bounds = None
+        bounds = fields = None
         for j, ((name, x), (_, y)) in enumerate(zip(la, lb, strict=True)):
-            if scale is None or not (isinstance(x, float) and isinstance(y, float)):
+            floats = isinstance(x, float) and isinstance(y, float)
+            if parts is not None and floats and repr(x) != repr(y):
+                if fields is None:
+                    fields = parts.at(_twin_input(step, rows, i))
+                why = _past_part(fields, j, x, y)
+                if why:
+                    raise ParityError(
+                        f"row {i} output field {name!r}: step {x!r}, native {y!r}"
+                        f" ({why}); input {_input(rows, i)}"
+                    )
+                continue
+            if scale is None or not floats:
                 if _same(x, y, u):
                     continue
                 d = (
@@ -329,7 +363,7 @@ def check(
                 continue
             if bounds is None:
                 x_in = _features(rows, i, list(step.takes.names))
-                bounds = _bounds(scale, est, x_in, len(la))
+                bounds = scale.at(est, x_in, len(la))
             if not near(x, y, bounds[j], scale.g):
                 raise ParityError(
                     f"row {i} output field {name!r}: step {x!r}, native {y!r}, past"

@@ -7,6 +7,8 @@ are within about n·eps·S: K = n + 1 covers it
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import math
 import re
 import sys
@@ -15,7 +17,8 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -230,15 +233,86 @@ def test_an_error_scale_serves_only_on_request(dot):
         bound_of(est)
 
 
-def test_a_composition_refuses_an_error_scale(dot):
-    pipe = Pipeline([("dot", _Dot(((1.0, 2.0),)))]).fit(np.zeros((2, 2)))
-    step = PythonTransform(
-        "p", {0: pipe}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
+def _composed(est, n: int) -> PythonTransform:
+    est.fit(_cancelling(n, 32, seed=3))
+    width = est.transform(np.ones((1, n))).shape[1]
+    return PythonTransform(
+        "p",
+        {0: est},
+        pa.schema([(f"x{i}", pa.float64()) for i in range(n)]),
+        pa.struct([(f"f{k}", pa.float64()) for k in range(width)]),
     )
+
+
+def _dots(rows: int = 3) -> _Dot:
+    c = np.random.default_rng(1).normal(size=(rows, 8))
+    return _Dot(tuple(tuple(r) for r in c))
+
+
+def test_a_composition_holds_its_last_step_to_its_error_scale(dot):
+    # What the last step reads is bit-exact: its own error scale holds,
+    # at the row the step before it hands on.
+    pipe = Pipeline([("s", StandardScaler()), ("dot", _dots())])
+    step = _composed(pipe, 8)
+    with pytest.raises(
+        NotNative, match="instance 0: Pipeline is within the bound of its step 'dot'"
+    ):
+        to_native(step, strict=True)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_cancelling(8, 64))
+    with pytest.raises(ParityError, match="ulps, bound 0"):
+        check(step, native, rows, ulps=0)
+    assert check(step, native, rows) == 64
+    with pytest.raises(ValueError, match="its parity bound is its parts'"):
+        bound_of(pipe)
+    # Where the twin's last step read another row, the bound would not
+    # hold: a dropped term breaches it.
+    dot(_without_the_last_term)
+    native = to_native(step, strict=True, allow_bound=True)
+    with pytest.raises(
+        ParityError, match=r"'f0'.*\(past its part's bound K\*eps\*S \+ tau = "
+    ):
+        check(step, native, rows)
+
+
+def test_a_composition_holds_a_bit_exact_part_bit_exactly(dot):
+    # Each output field keeps the bound of the part that gives it: the
+    # scaler's fields are bit-exact beside the dot product's.
+    union = FeatureUnion([("s", StandardScaler()), ("dot", _dots())])
+    step = _composed(union, 8)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_cancelling(8, 64))
+    assert check(step, native, rows) == 64
+    twin = copy.deepcopy(union)
+    scaler = twin.transformer_list[0][1]
+    scaler.scale_ = np.nextafter(scaler.scale_, np.inf)
+    with pytest.raises(
+        ParityError, match=r"output field 'f0'.* \(1 ulps, its part's bound 0\)"
+    ):
+        check(dataclasses.replace(step, instances={0: twin}), native, rows)
+
+
+def test_a_composition_refuses_an_error_scale_a_later_step_reads(dot):
+    pipe = Pipeline([("dot", _dots(1)), ("s", StandardScaler())])
     with pytest.raises(
         NotNative,
-        match=r"Pipeline step 'dot': _Dot is within 3·eps·S \+ τ \(S its error"
-        r" scale\), which no later step keeps bounded",
+        match=r"Pipeline step 'dot': _Dot is within 9·eps·S \+ τ \(S its error"
+        r" scale\), and a later step reads its output, for which no bound is"
+        " derived yet",
+    ):
+        to_native(_composed(pipe, 8), strict=True, allow_bound=True)
+
+
+def test_a_composition_refuses_an_error_scale_through_a_map(monkeypatch):
+    from sql_transform.native import _registry
+
+    scale = dataclasses.replace(SCALE, g=np.square)
+    monkeypatch.setitem(_registry._CATALOG, _Dot, Entry(_left_to_right, 0, None, scale))
+    step = _composed(Pipeline([("s", StandardScaler()), ("dot", _dots())]), 8)
+    with pytest.raises(
+        NotNative,
+        match="Pipeline step 'dot': _Dot compares through a map, which a"
+        " composition does not pass on",
     ):
         to_native(step, strict=True, allow_bound=True)
 

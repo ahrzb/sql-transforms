@@ -54,7 +54,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import reduce
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pyarrow as pa
@@ -65,6 +65,8 @@ from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native._helpers import SameTree, f64, isnan
 
 Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
+
+EPS = np.longdouble(2.0**-52)
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,40 @@ class ErrorScale:
     tau: Callable[[Any], Any]
     g: Callable[[Any], Any] | None = None
 
+    def at(self, est: Any, x: np.ndarray, width: int) -> np.ndarray:
+        """Each of the `width` output fields' bound K*eps*S + tau at one
+        row `x`, as long doubles."""
+        k, tau = self.k(est), self.tau(est)
+        b = (
+            np.asarray(k, np.longdouble)
+            * EPS
+            * np.asarray(self.s(est, x), np.longdouble)
+        )
+        return np.broadcast_to(b + np.asarray(tau, np.longdouble), (width,))
+
+
+class FieldBounds(NamedTuple):
+    """Each output field's parity bound at one row of a composition
+    (`PartBounds`): where `near[j]` is NaN, within `ulps[j]` doubles of the
+    twin (0 = bit-exact); else |entry - twin| <= near[j], the K*eps*S + tau
+    of the error scale of the part that gives the field."""
+
+    ulps: np.ndarray
+    near: np.ndarray
+
+
+@dataclass(frozen=True)
+class PartBounds:
+    """The parity bound of a composition that holds a part whose bound is
+    above 0 (compose.py): each output field keeps the bound of the part
+    that gives it, which reads what its twin reads. `at(X)` answers each
+    output field's bound at the one-row input `X`, as the twin's
+    `transform` takes it (`FieldBounds`); `within` names that bound as a
+    message reads it."""
+
+    at: Callable[[Any], FieldBounds]
+    within: str
+
 
 @dataclass(frozen=True)
 class Entry:
@@ -107,7 +143,10 @@ class Entry:
     `base(est, types)` is the input guard's probe row, a value the twin
     accepts in each feature, for a family where the default (`_base`)
     may not be one (an encoder's categories). A composition (`composes`)
-    is not probed: its parts are."""
+    is not probed: its parts are. Its bound is its parts' too:
+    `part_bounds_of(est)` answers it (`PartBounds`), None where each part
+    is bit-exact, or raises `NotNative` where a part whose bound is above
+    0 sits where no bound is derived."""
 
     translate: Translator
     ulps: int
@@ -115,18 +154,25 @@ class Entry:
     scale: ErrorScale | None = None
     base: Callable[[Any, list[pa.DataType]], list[Any]] | None = None
     composes: bool = False
+    part_bounds_of: Callable[[Any], PartBounds | None] | None = None
 
     @property
     def varies(self) -> bool:
         """The bound is the estimator's, not one for the whole class."""
         return self.per_estimator is not None
 
+    def part_bounds(self, est: Any) -> PartBounds | None:
+        """A composition's bound from its parts; None where each part is
+        bit-exact, and for any other entry."""
+        return None if self.part_bounds_of is None else self.part_bounds_of(est)
+
     def bound(self, est: Any) -> int:
         """`est`'s own ulp bound: what its translation is checked to."""
+        name = type(est).__name__
         if self.scale is not None:
-            raise ValueError(
-                f"{type(est).__name__}: its parity bound is an error scale, not ulps"
-            )
+            raise ValueError(f"{name}: its parity bound is an error scale, not ulps")
+        if self.part_bounds(est) is not None:
+            raise ValueError(f"{name}: its parity bound is its parts', not ulps")
         if self.per_estimator is None:
             return self.ulps
         b = self.per_estimator(est)
@@ -139,10 +185,17 @@ class Entry:
 
     def exact(self, est: Any) -> bool:
         """The translation of `est` is bit-exact."""
-        return self.scale is None and self.bound(est) == 0
+        return (
+            self.scale is None
+            and self.part_bounds(est) is None
+            and self.bound(est) == 0
+        )
 
     def within(self, est: Any) -> str:
         """`est`'s parity bound, as a message reads it."""
+        parts = self.part_bounds(est)
+        if parts is not None:
+            return parts.within
         if self.scale is None:
             return f"within {self.bound(est)} ulps"
         k = self.scale.k(est)
@@ -179,14 +232,15 @@ def translates(
     scale: ErrorScale | None = None,
     base: Callable[[Any, list[pa.DataType]], list[Any]] | None = None,
     composes: bool = False,
+    part_bounds: Callable[[Any], PartBounds | None] | None = None,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
     unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
     ceiling and `bound(est)` each fitted estimator's own bound (a class
     whose configurations differ: `FunctionTransformer` is bit-exact for the
     identity and within 2 ulps for `np.log10`). With `scale`, the bound is
-    that error scale. `base` and `composes` are the input guard's
-    (`Entry`). A subclass is not covered: it may override what
+    that error scale. `base`, `composes` and a composition's `part_bounds`
+    are `Entry`'s. A subclass is not covered: it may override what
     `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
@@ -197,7 +251,7 @@ def translates(
         for c in classes:
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
-            _CATALOG[c] = Entry(fn, ulps, bound, scale, base, composes)
+            _CATALOG[c] = Entry(fn, ulps, bound, scale, base, composes, part_bounds)
         return fn
 
     return deco
@@ -599,12 +653,13 @@ def bound(step: Any) -> int:
 
 
 def _loosest(step: PythonTransform) -> tuple[int, Any]:
-    """The instance whose bound is the loosest, the first by id: one with
-    an error scale, else the one with the most ulps."""
+    """The instance whose bound is the loosest, the first by id: one whose
+    bound is an error scale or its parts' (a composition), else the one
+    with the most ulps."""
 
     def looseness(ke: tuple[int, Any]) -> tuple[bool, int]:
         entry = _CATALOG[type(ke[1])]
-        if entry.scale is not None:
+        if entry.scale is not None or entry.part_bounds(ke[1]) is not None:
             return (True, 0)
         return (False, entry.bound(ke[1]))
 
