@@ -129,7 +129,16 @@ def _exact(est: Any) -> bool:
         return True  # it stays Python: no bound to read
     if any(kernel_distance(f) != 0 for f in (np.log, np.sin, np.cos)):
         return False
-    return all(c == math.cosh(math.pi * j * s) for j, c in enumerate(consts, start=1))
+    return all(c == _glibc_cosh(math.pi * j * s) for j, c in enumerate(consts, start=1))
+
+
+def _glibc_cosh(v: float) -> float:
+    """glibc's `cosh(v)`, which `math.cosh` calls: inf where it overflows,
+    where `math.cosh` raises instead (at an interval of 1e306)."""
+    try:
+        return math.cosh(v)
+    except OverflowError:
+        return math.inf
 
 
 def _scale(est: Any, x: np.ndarray) -> np.ndarray:

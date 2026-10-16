@@ -151,6 +151,8 @@ def test_where_the_kernel_probes_read_0_the_entry_is_bit_exact(monkeypatch):
     )
     monkeypatch.setattr(K, "kernel_distance", lambda func: 0)
     assert entry.exact(est) == same
+    # At 1e306 the cosh overflows on both sides, where `math.cosh` raises.
+    assert entry.exact(_steps(2, 1, 1e306))
     monkeypatch.setattr(K, "kernel_distance", lambda func: 1)
     assert not entry.exact(est)
     assert entry.exact(_steps(1, 1))
