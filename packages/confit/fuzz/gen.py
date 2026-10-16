@@ -1852,10 +1852,10 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     # A term that compares the table with the request other than by a key,
     # in about one subquery in four that selects an aggregate or is EXISTS,
     # drawn last too: a comparison of a column of the table with a column of
-    # the request, or the request's column BETWEEN two columns of the table;
-    # one time in five an integer column of the request + 1, which can trap.
+    # the request, or the request's column BETWEEN two columns of the table.
     # Confit serves it by a scan of the rows of the table for each request,
     # and refuses by name the forms that the scan does not serve.
+    scans = []
     for s in made:
         if s.in_ is not None or s.row is not None or qrng.random() >= 0.25:
             continue
@@ -1864,14 +1864,14 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         if not near:
             continue
         o: Node = Col(oc, "__THIS__" if b.joins else None, ot)
-        if ot == "int" and qrng.random() < 0.2:
-            o = Bin("+", o, Lit(1, "int"))  # can trap
         cols = [Col(n, t, ty) for t, n, ty in (qrng.choice(near) for _ in range(2))]
         if qrng.random() < 0.3:
             term: Node = Between(o, cols[0], cols[1], neg=qrng.random() < 0.3)
         else:
             term = Bin(qrng.choice(CMP[1:]), *qrng.sample([cols[0], o], 2))
         s.preds.append((qrng.randrange(len(s.keys) + 1), term))
+        if ot == "int":
+            scans.append((term, o))
         if "subquery-scan" not in tags:
             tags.append("subquery-scan")
     # A boolean or bitwise aggregate, or count_if, in place of about one
@@ -1907,6 +1907,13 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
                     for c in by[: qrng.choice([1, 1, 2])]
                 ]
         (s.func, s.arg), s.more = calls[0], calls[1:]
+    # In about one scan term in five over an integer column of the request,
+    # that column + 1, which can trap. Drawn last of all, so that a subquery
+    # without it is the one it was before.
+    for term, o in scans:
+        if qrng.random() < 0.2:
+            i = next(i for i, k in enumerate(term.kids()) if k is o)
+            term.swap(i, Bin("+", o, Lit(1, "int")))  # can trap
     tags.append("scalar-subquery")
     return True
 

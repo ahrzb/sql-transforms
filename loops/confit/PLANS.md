@@ -812,7 +812,12 @@ The first five are ruled, in this order; the rest follow.
   WHERE or a CASE condition (master: OPT_EMULATED for `WHERE b IN (0, a +
   1)`; the generator draws only literal items, so the campaign never saw
   it): the binder wraps a list with an item that can trap in NOT over NOT
-  (`expr.rs`), which `emit_truth` lowers as a value. CAMPAIGN_NUMBERS
+  (`expr.rs`), which `emit_truth` lowers as a value. The campaign of the
+  6,000 subquery seeds (scratch n1042/camp): 3,415 AGREE, 2,417 REFUSED, 127
+  AGREE_TRAP, 34 DIVERGE_OPT, 7 EXCLUDED, no gated verdict (#490: 3,394,
+  2,449, 119, 31, 7). The generator's `+ 1`, drawn after every other draw of
+  the pass, changes the SQL of 138 seeds; of the others, 40 that master
+  refused now serve and none that it served refuses.
   Open for the scan, in value order (refusals in the 2026-10-16 prepare-only
   sweep of the 6,000 subquery seeds of 50,000,000.., scratch n1040/sweep): an
   expression over the aggregate (66); DISTINCT (34); `bool_and`, `bool_or`

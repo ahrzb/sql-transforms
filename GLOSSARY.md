@@ -81,6 +81,12 @@ The number of output rows for each request that a build proves: `map` (one
 row), `filter` (zero or one row) or `many` (any number).
 _Avoid_: multiplicity mode
 
+**Scan**:
+How confit serves a scalar subquery over a static table when a table that
+it computes at build cannot give the value. For each request, the function
+reads the rows of the static table that match the keys of the request, at
+most 100, and computes the value of the subquery over these rows.
+
 **Backend**:
 One of the two executors of a built function: Cranelift (native code) or the
 interpreter. The two backends must agree byte for byte.
