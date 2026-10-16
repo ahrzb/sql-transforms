@@ -101,9 +101,19 @@ reading `coalesce(x, NaN)`, within 0.90 to 1.18 times (1.09 to 1.89).
 Neither cap took a build past 7.11 s. So a `PCA` of 2 components reads
 `x - 0.0` up to about 3,000 features (4,600 before), and the cap takes it
 up to about 4,600 (6,500); of one component, up to about 5,000 (8,000).
+T49 (#503) serves `AdditiveChi2Sampler` with `sample_steps=1` (kernel.py),
+bit-exact: one output field per feature, 0 where the feature is 0, else
+`sqrt(x * s)` with s the sample interval, a product and a root that both
+sides round correctly. Coverage is 46 of 68. The entry traps where the
+twin raises: on a negative number, NaN, NULL or an infinity. Its cos and
+sin fields (`sample_steps` of 2 or more, the default 2 included) stay
+Python until the error scale of the ruling. Over boolean features only,
+the twin keeps the array boolean, so True answers 1.0: the entry stays
+Python there unless sqrt(s) is 0 or 1. A step builds about as fast as a
+`StandardScaler` of its width (1.1 s at 1,024 features, as a list).
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it.
 
 Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`AdditiveChi2Sampler` first, one PR each).
+`AdditiveChi2Sampler`'s cos and sin fields first, one PR each).
