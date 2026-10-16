@@ -15,7 +15,7 @@ def test_every_named_class_has_a_row():
 
 
 def test_a_bound_reads_by_its_shape():
-    from sql_transform.native import Entry
+    from sql_transform.native import Entry, ErrorScale
 
     def t(est, x, types):
         return x
@@ -29,6 +29,16 @@ def test_a_bound_reads_by_its_shape():
         coverage._exactness(Entry(t, 3, lambda est: 0))
         == "bit-exact; within 3 ulps for some configurations,"
         " served only with `allow_bound=True`"
+    )
+    scale = ErrorScale(lambda est: 4, lambda est, x: x, lambda est: 0)
+    assert (
+        coverage._exactness(Entry(t, 0, scale=scale))
+        == "within K·eps·S + τ (S its error scale), served only with `allow_bound=True`"
+    )
+    assert (
+        coverage._exactness(Entry(t, 0, scale=scale, scaled_of=lambda est: False))
+        == "bit-exact; within K·eps·S + τ (S its error scale) for some"
+        " configurations, served only with `allow_bound=True`"
     )
 
 

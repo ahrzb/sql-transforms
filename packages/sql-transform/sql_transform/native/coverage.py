@@ -81,7 +81,10 @@ def _exactness(entry: Entry) -> str:
     on_request = "served only with `allow_bound=True`"
     if entry.scale is not None:
         on = f" {entry.scale.on}" if entry.scale.on else ""
-        return f"within K·eps·S + τ{on} (S its error scale), {on_request}"
+        within = f"within K·eps·S + τ{on} (S its error scale)"
+        if entry.varies:
+            return f"bit-exact; {within} for some configurations, {on_request}"
+        return f"{within}, {on_request}"
     if b == 0:
         return "bit-exact"
     if entry.varies:

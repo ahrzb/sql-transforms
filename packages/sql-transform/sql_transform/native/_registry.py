@@ -147,8 +147,9 @@ class Entry:
     configuration also has `per_estimator`, which answers one fitted
     estimator's own bound, from 0 to the ceiling; without it, every
     estimator's bound is the ceiling. An entry with a `scale` is bounded
-    by that error scale instead, never bit-exact. A step whose bound is
-    above 0 serves only with `to_native(step, allow_bound=True)`.
+    by that error scale instead, never bit-exact, unless `scaled_of(est)`
+    says that one estimator is bit-exact (`scale_for`). A step whose bound
+    is above 0 serves only with `to_native(step, allow_bound=True)`.
 
     `base(est, types)` is the input guard's probe row, a value the twin
     accepts in each feature, for a family where the default (`_base`)
@@ -171,6 +172,7 @@ class Entry:
     composes: bool = False
     part_bounds_of: Callable[[Any], PartBounds | None] | None = None
     apart_of: Callable[[Any], bool] | None = None
+    scaled_of: Callable[[Any], bool] | None = None
 
     def apart(self, est: Any) -> bool:
         """The translator reads each number of `est`'s row as `x - 0.0`."""
@@ -179,7 +181,14 @@ class Entry:
     @property
     def varies(self) -> bool:
         """The bound is the estimator's, not one for the whole class."""
-        return self.per_estimator is not None
+        return self.per_estimator is not None or self.scaled_of is not None
+
+    def scale_for(self, est: Any) -> ErrorScale | None:
+        """`est`'s error scale: the entry's, None where it has none or
+        where `scaled_of(est)` says that `est` is bit-exact."""
+        if self.scale is None or (self.scaled_of and not self.scaled_of(est)):
+            return None
+        return self.scale
 
     def part_bounds(self, est: Any) -> PartBounds | None:
         """A composition's bound from its parts; None where each part is
@@ -189,7 +198,7 @@ class Entry:
     def bound(self, est: Any) -> int:
         """`est`'s own ulp bound: what its translation is checked to."""
         name = type(est).__name__
-        if self.scale is not None:
+        if self.scale_for(est) is not None:
             raise ValueError(f"{name}: its parity bound is an error scale, not ulps")
         if self.part_bounds(est) is not None:
             raise ValueError(f"{name}: its parity bound is its parts', not ulps")
@@ -206,7 +215,7 @@ class Entry:
     def exact(self, est: Any) -> bool:
         """The translation of `est` is bit-exact."""
         return (
-            self.scale is None
+            self.scale_for(est) is None
             and self.part_bounds(est) is None
             and self.bound(est) == 0
         )
@@ -216,11 +225,12 @@ class Entry:
         parts = self.part_bounds(est)
         if parts is not None:
             return parts.within
-        if self.scale is None:
+        scale = self.scale_for(est)
+        if scale is None:
             return f"within {self.bound(est)} ulps"
-        k = self.scale.k(est)
+        k = scale.k(est)
         kk = f"{float(k):g}" if np.ndim(k) == 0 else "K"
-        on = f" {self.scale.on}" if self.scale.on else ""
+        on = f" {scale.on}" if scale.on else ""
         return f"within {kk}·eps·S + τ{on} (S its error scale)"
 
 
@@ -255,26 +265,31 @@ def translates(
     composes: bool = False,
     part_bounds: Callable[[Any], PartBounds | None] | None = None,
     apart: Callable[[Any], bool] | None = None,
+    scaled: Callable[[Any], bool] | None = None,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
     unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
     ceiling and `bound(est)` each fitted estimator's own bound (a class
     whose configurations differ: `FunctionTransformer` is bit-exact for the
     identity and within 2 ulps for `np.log10`). With `scale`, the bound is
-    that error scale. `base`, `composes`, a composition's `part_bounds`
-    and `apart` (`apart_of`) are `Entry`'s. A subclass is not covered: it
-    may override what `transform` computes."""
+    that error scale, and with `scaled` too, only where `scaled(est)` says
+    so: elsewhere the estimator is bit-exact (`AdditiveChi2Sampler` of one
+    sample step). `base`, `composes`, a composition's `part_bounds` and
+    `apart` (`apart_of`) are `Entry`'s. A subclass is not covered: it may
+    override what `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
     if scale is not None and (ulps or bound is not None):
         raise ValueError("an error scale is the whole bound, without ulps")
+    if scaled is not None and scale is None:
+        raise ValueError("`scaled` says where an error scale applies, and needs one")
 
     def deco(fn: Translator) -> Translator:
         for c in classes:
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
             _CATALOG[c] = Entry(
-                fn, ulps, bound, scale, base, composes, part_bounds, apart
+                fn, ulps, bound, scale, base, composes, part_bounds, apart, scaled
             )
         return fn
 
@@ -790,7 +805,7 @@ def _loosest(step: PythonTransform) -> tuple[int, Any]:
 
     def looseness(ke: tuple[int, Any]) -> tuple[bool, int]:
         entry = _CATALOG[type(ke[1])]
-        if entry.scale is not None or entry.part_bounds(ke[1]) is not None:
+        if entry.scale_for(ke[1]) is not None or entry.part_bounds(ke[1]) is not None:
             return (True, 0)
         return (False, entry.bound(ke[1]))
 

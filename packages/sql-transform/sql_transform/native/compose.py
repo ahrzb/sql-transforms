@@ -232,7 +232,7 @@ def _bounds_of(where: str, part: Any) -> PartBounds | None:
         raise NotNative(f"{where}: {e}") from None
     if bounds is not None:
         return bounds
-    scale = entry.scale
+    scale = entry.scale_for(part)
     if scale is None:
         u = entry.bound(part)
         if u == 0:
