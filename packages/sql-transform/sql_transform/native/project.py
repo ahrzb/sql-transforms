@@ -282,7 +282,7 @@ def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
             j = int(np.argmax(off))
             raise NotNative(
                 f"{name}(whiten=False): row {j} of the unmixing matrix has a norm"
-                f" of {norms[j]:.3g}, not 1: its fit broke down"
+                f" of {norms[j]:.9g}, not 1: its fit broke down"
             )
         return
     # Row j of `whitening_` is a unit vector over the j-th singular value
@@ -368,8 +368,17 @@ def _project_centered(
     at 64 features, against K = 65; the least room is at 3 features, 1.68
     for `LinearDiscriminantAnalysis` against K = 4. At one feature each
     field equals the twin's. One `FastICA` step of 32 features stayed
-    Python, for a whitened component of rounding noise. The entry gave no
-    zero of the twin the other sign."""
+    Python, for a whitened component of rounding noise.
+
+    Each field gives a zero the twin's sign. Where every product is a
+    zero, the twin's sum of more than one product is 0.0, so the entry
+    adds 0.0 to each sum. At one feature and one output field, the twin's
+    `np.dot` of the 1×1 row and the 1×1 matrix answers the product
+    itself, so the entry of `FastICA` and of the PLS classes answers the
+    product too: -0.0 where it is -0.0. Before T43, the entry added 0.0
+    there as well, and in reading 7's parity run 54 fields of `FastICA` at
+    one feature answered 0.0 where the twin answered -0.0 (finding 81).
+    The `@` of `LinearDiscriminantAnalysis` adds the product to 0.0."""
     name = type(est).__name__
     if isinstance(est, LinearDiscriminantAnalysis) and est.solver == "lsqr":
         raise NotNative(f"{name}(solver='lsqr') has no transform")
@@ -391,8 +400,10 @@ def _project_centered(
         # Dividing by 1.0 (a scale of 0 that sklearn replaced, or
         # `scale=False`) leaves every double as it is.
         d = [di if si == 1.0 else di / f64(si) for di, si in zip(d, sd, strict=True)]
-    # `+ 0.0`: where every product is a zero, the twin answers 0.0.
-    return [
-        _tree([di * f64(ci) for di, ci in zip(d, cj, strict=True)]) + f64(0.0)
-        for cj in c
-    ]
+    sums = [_tree([di * f64(ci) for di, ci in zip(d, cj, strict=True)]) for cj in c]
+    # `+ 0.0`: where every product is a zero, the twin answers 0.0. But
+    # `np.dot` of a 1×1 row and a 1×1 matrix answers the product itself,
+    # -0.0 included (finding 81), where `@` adds it to 0.0.
+    if n == k == 1 and not isinstance(est, LinearDiscriminantAnalysis):
+        return sums
+    return [s + f64(0.0) for s in sums]

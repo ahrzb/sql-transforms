@@ -5,6 +5,8 @@ projections, which subtract the mean before the product."""
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pyarrow as pa
 import pytest
@@ -241,6 +243,48 @@ def test_a_centered_projection_answers_0_where_every_product_is_a_zero(make):
     assert check(step, native, rows, ulps=0) == rows.num_rows
 
 
+ONE_FEATURE = [
+    lambda: FastICA(random_state=0),
+    lambda: FastICA(whiten=False, random_state=0),
+    LinearDiscriminantAnalysis,
+    lambda: LinearDiscriminantAnalysis(solver="eigen"),
+    lambda: PLSRegression(n_components=1),
+    lambda: PLSCanonical(n_components=1, scale=False),
+    lambda: CCA(n_components=1),
+    lambda: PLSSVD(n_components=1),
+]
+
+
+@pytest.mark.parametrize("make", ONE_FEATURE, ids=_id)
+def test_a_centered_projection_of_one_feature_answers_the_twins_zero(make):
+    # At one feature, the twin of FastICA and of the PLS classes multiplies
+    # a 1×1 row by a 1×1 matrix with `np.dot`, which answers the product
+    # itself: -0.0 where the difference is a zero and the coefficient has
+    # the other sign (finding 81). The `@` of LinearDiscriminantAnalysis
+    # answers 0.0. The matrix is negated in turn, so that one of the two
+    # signs gives -0.0: the twin and the entry read the same fitted state.
+    from sql_transform.native.project import _centered
+
+    x, _ = _data(10, 1)
+    answers = []
+    for negate in (False, True):
+        est = _fit(make, x)
+        for name in ("components_", "scalings_", "x_rotations_", "x_weights_"):
+            if negate and hasattr(est, name):
+                setattr(est, name, -getattr(est, name))
+        m = _centered(est)[0]
+        rows = _rows(np.array([[0.0], [-0.0]] if m is None else [m]))
+        step = _step(est)
+        native = to_native(step, strict=True, allow_bound=True)
+        assert check(step, native, rows, ulps=0) == rows.num_rows
+        answers += [step(0, v)[0] for v in rows.column("x0").to_pylist()]
+    assert all(a == 0.0 for a in answers)
+    signs = {math.copysign(1.0, a) for a in answers}
+    assert signs == (
+        {1.0} if isinstance(est, LinearDiscriminantAnalysis) else {1.0, -1.0}
+    )
+
+
 def _step_of(est, k: int) -> PythonTransform:
     n = est.n_features_in_
     return PythonTransform(
@@ -289,7 +333,9 @@ def test_a_fastica_fit_that_broke_down_stays_python():
     # its unmixing matrix collapses to rows of norm 1/sqrt(3), not 1.
     x = np.random.default_rng(0).normal(size=(50, 3)) * 1e3 + 1e4
     est = FastICA(whiten=False, random_state=0).fit(x)
-    with pytest.raises(NotNative, match=r"a norm of 0\.577, not 1: its fit broke down"):
+    with pytest.raises(
+        NotNative, match=r"a norm of 0\.57735028, not 1: its fit broke down"
+    ):
         to_native(_step(est), strict=True, allow_bound=True)
     # A constant column whose mean rounds: the source has no spread, and
     # "unit-variance" divides its row by 0.
