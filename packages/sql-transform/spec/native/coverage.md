@@ -12,15 +12,15 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**41 of 68** in-scope transformers are native (84 listed by sklearn).
+**45 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
 | `AdditiveChi2Sampler` | not yet |  |
 | `BernoulliRBM` | not yet |  |
 | `Binarizer` | native | bit-exact |
-| `Birch` | not yet |  |
-| `BisectingKMeans` | not yet |  |
+| `Birch` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
+| `BisectingKMeans` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
 | `CCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `ColumnTransformer` | composition | routes columns to parts; served over entries, one with a parity bound above 0 only as an unweighted part, with `allow_bound=True` |
 | `DictVectorizer` | out of scope | input is dicts, not a row of columns |
@@ -38,7 +38,7 @@ owner's ruling).
 | `Isomap` | not yet |  |
 | `IsotonicRegression` | native | bit-exact |
 | `KBinsDiscretizer` | native | bit-exact |
-| `KMeans` | not yet |  |
+| `KMeans` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
 | `KNNImputer` | not yet |  |
 | `KNeighborsTransformer` | not yet |  |
 | `KernelCenterer` | out of scope | input is a kernel matrix |
@@ -51,7 +51,7 @@ owner's ruling).
 | `MaxAbsScaler` | native | bit-exact |
 | `MinMaxScaler` | native | bit-exact |
 | `MiniBatchDictionaryLearning` | not yet |  |
-| `MiniBatchKMeans` | not yet |  |
+| `MiniBatchKMeans` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
 | `MiniBatchNMF` | not yet |  |
 | `MiniBatchSparsePCA` | not yet |  |
 | `MissingIndicator` | native | bit-exact |

@@ -130,7 +130,8 @@ The maximum distance that a family allows between a catalog entry and its
 twin, for each output field. The distance is K·eps·S + τ, with these terms:
 S is the error scale of the field. K is a constant that the family derives.
 eps is 2^-52. τ is a small floor for underflow. A bound with K = 0 is
-bit-exact.
+bit-exact. A family can compare a map of the two answers, such as their
+squares, and not the answers themselves.
 _Avoid_: tolerance
 
 **Error scale**:

@@ -89,12 +89,18 @@ class ErrorScale:
     long double is a double, as on macOS on arm64, an S past DBL_MAX
     bounds nothing). `g` maps both sides before they are compared: the
     identity unless the family names one (a distance compares its
-    square)."""
+    square). `on` names what a map compares, as a message reads it after
+    the bound ("on the squares"): a map and its name come together."""
 
     k: Callable[[Any], Any]
     s: Callable[[Any, np.ndarray], Any]
     tau: Callable[[Any], Any]
     g: Callable[[Any], Any] | None = None
+    on: str = ""
+
+    def __post_init__(self) -> None:
+        if (self.g is None) != (not self.on):
+            raise ValueError("an error scale names its map with `on`, and only a map")
 
     def at(self, est: Any, x: np.ndarray, width: int) -> np.ndarray:
         """Each of the `width` output fields' bound K*eps*S + tau at one
@@ -214,7 +220,8 @@ class Entry:
             return f"within {self.bound(est)} ulps"
         k = self.scale.k(est)
         kk = f"{float(k):g}" if np.ndim(k) == 0 else "K"
-        return f"within {kk}·eps·S + τ (S its error scale)"
+        on = f" {self.scale.on}" if self.scale.on else ""
+        return f"within {kk}·eps·S + τ{on} (S its error scale)"
 
 
 _CATALOG: dict[type, Entry] = {}

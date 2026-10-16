@@ -92,9 +92,12 @@ anchor (`{#what-moved}` and so on).
      for this is `translates(cls, scale=ErrorScale(k, s, tau))`, where `k`,
      `s` and `tau` give K, S and τ. For such a family, give the formulas of
      K, S and τ. For example, the linear projections have K = n + 3, where
-     n is the number of features. Also give the largest measured value of
-     |entry − twin| / (eps·S) for each number of features. Do not use this
-     value as K. It is only evidence that K holds.
+     n is the number of features. A family can also compare a map g of the
+     two answers (`ErrorScale(..., g, on)`). If it does, give the map. For
+     example, a distance to a fitted centre compares the squares. Also give
+     the largest measured value of |g(entry) − g(twin)| / (eps·S) for each
+     number of features, with g the identity if the family has no map. Do
+     not use this value as K. It is only evidence that K holds.
    - The KPI `nonzero_ulp_bounds` is the number of catalog classes that
      have a parity bound above 0 for at least one configuration. This is an
      ulp bound above 0, or a parity bound with an error scale. The KPI is

@@ -27,6 +27,11 @@ operations in the twin's order, or where a kernel probe reads 0.
   training values.
 - A parity bound is K·eps·S + τ for each output field. S is the error
   scale that the family declares, and K is derived, not measured.
+- A family can compare a map of the two answers, and not the answers
+  themselves. A distance to a fitted centre compares the two squares,
+  because near the centre the distance itself has no small bound. A step
+  that compares through a map is never part of a composition:
+  `to_native` returns such a composition unchanged.
 - In a composition, each output field has the parity bound of the step or
   part that gives it. With `allow_bound=True`, a step with a parity bound
   above 0 can be the last step of a `Pipeline`. It can also be a part of a
@@ -45,7 +50,7 @@ operations in the twin's order, or where a kernel probe reads 0.
 - NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
   are different answers.
 
-*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`, `native/compose_test.py::test_a_bounded_step_serves_last_or_as_a_part_on_request`, `native/compose_test.py::test_a_pipeline_names_the_step_it_refuses`, `native/check_test.py::test_a_composition_holds_its_last_step_to_its_error_scale`, `native/check_test.py::test_a_composition_holds_a_bit_exact_part_bit_exactly`.
+*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`, `native/compose_test.py::test_a_bounded_step_serves_last_or_as_a_part_on_request`, `native/compose_test.py::test_a_pipeline_names_the_step_it_refuses`, `native/check_test.py::test_a_composition_holds_its_last_step_to_its_error_scale`, `native/check_test.py::test_a_composition_holds_a_bit_exact_part_bit_exactly`, `native/distance_test.py::test_a_distance_near_a_centre_is_compared_by_its_square`, `native/distance_test.py::test_a_distance_in_a_composition_stays_python`.
 
 **claim: entry-same-inputs.** **The same inputs.** A feature reaches the
 translation as `PythonTransform` hands it to `transform`. A number or a

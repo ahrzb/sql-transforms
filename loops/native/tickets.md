@@ -70,9 +70,24 @@ isotonic thresholds (19,700 at T40), 15,000 quantile leaves (13,400), 170
 to 230 spline features of degree 3 and 8 knots (unchanged), and 10,000
 forest output fields at 8 features (10,300), but 5,200 at 128 (6,800):
 with T44's reads, a forest over 128 features builds in 1.22 times the
-time. The loop runs from the "Transforms Loop" project thread. The Confit
-Loop is paused since 2026-10-16: a confit need waits, and the loop works
-around it.
+time. T47 (#501) serves the distances to fitted centres of `KMeans`,
+`MiniBatchKMeans`, `BisectingKMeans` and `Birch` (distance.py), with
+`allow_bound=True`, within K = n + 5 on the squares: near a centre the
+distance itself has no small bound, so the family compares squares
+(`ErrorScale.g`), and each message that states the bound says so
+(`ErrorScale.on`). Coverage is 45 of 68. Over seeds 0 to 199 of the
+parity run (6,386 steps of 1 to 64 features), 53% of 13.6 million output
+fields part from the twin, none at one feature; the largest |entry² −
+twin²| / (eps·S) is 7.39 (`Birch`, 64 features, K = 69), and the least
+room 2.79 against K = 7 at 2 features. The entry sums ‖x‖² as a balanced
+tree: in numpy's order, a chain n/2 deep, confit refused it at 1,024
+features and raised `RecursionError` at 2,048, which `Normalizer(l2)`
+still meets (finding 86). The build cap reads its own estimate, fitted
+on 66 shapes (0.85 to 1.27 times it): a struct of 2,000 centres over 2
+features builds in 73 s, and `PCA`'s estimate misses a term in n² at wide
+rows (finding 87). The loop runs from the "Transforms Loop" project
+thread. The Confit Loop is paused since 2026-10-16: a confit need waits,
+and the loop works around it.
 
-Next: the rest of PLANS "Ruled 2026-10-06, to build", item 1
-(`FactorAnalysis` first), then the rest of item 2.
+Next: PLANS "Next" (findings 86 and 87 in one PR, then the rest of
+"Ruled 2026-10-06, to build", item 1, `AdditiveChi2Sampler` first).

@@ -6,8 +6,21 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-The rest of "Ruled 2026-10-06, to build", item 1 (`FactorAnalysis`
-first), one PR each; then the rest of item 2.
+1. T47's two findings, one PR. `to_native` raises `RecursionError`, not
+   `NotNative`, for `Normalizer(norm="l2")` over 2,048 features (finding
+   86, master c06a15a): its sum of squares follows numpy's order, a chain
+   1,024 additions deep, and confit's `SqlFunction` writes each bound
+   value's SQL by recursion (`sql.shared_texts`), outside the catch of
+   `_registry._builds`. Refuse it by name in `_translate`. And the
+   projections' build estimates miss a term in n² at wide rows (finding
+   87): `PCA` of 2 components over 4,096 features builds in 12.1 s as a
+   list (6.9 s as a struct), against 5.9 s by
+   `_centered_build_estimate`, which the cap takes; of 4 over 2,048, in
+   4.5 s against 3.2 s (`to_native`, release build, master c06a15a). Fit
+   them again over few components at wide rows, as
+   `distance._build_estimate` is.
+2. The rest of "Ruled 2026-10-06, to build", item 1 (`AdditiveChi2Sampler`
+   first, `FactorAnalysis` last), one PR each; then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -18,7 +31,7 @@ flip HistGradientBoosting labels on repeated training values). T19 built
 that request, `to_native(step, allow_bound=True)`. In order:
 
 1. **Families on the parity bound.** Since T24 a family declares its error
-   scale, `translates(cls, scale=ErrorScale(k, s, tau, g))`, and
+   scale, `translates(cls, scale=ErrorScale(k, s, tau, g, on))`, and
    `native.check` holds each row to it (`_registry.ErrorScale` says what
    each operand is). T37 served the first family, `PCA`, `IncrementalPCA`,
    `TruncatedSVD` and `GaussianRandomProjection` (project.py: S_full,
@@ -27,17 +40,23 @@ that request, `to_native(step, allow_bound=True)`. In order:
      the centered ones (`FastICA`, the PLS family and
      `LinearDiscriminantAnalysis`: project.py, `_project_centered`).
      `FactorAnalysis` chains two products, so the first one's error passes
-     through the second; `SparseRandomProjection` sums in scipy's CSR
-     order, which SQL may follow bit-exactly behind a kernel probe.
+     through the second, and its twin computes the inverse `cov_z` with
+     LAPACK on each call: a bound that holds on another host needs that
+     inverse's own error, so it comes last. `SparseRandomProjection` sums
+     in scipy's CSR order, which SQL may follow bit-exactly behind a
+     kernel probe.
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
      probes read 0; ship `sample_steps=1` (bit-exact) first. Since T29
      the kernel probe draws random significands (`_random_doubles`).
-   - Distances to fitted centres (`KMeans` and kin): compare squares,
-     K = n + 5. `RBFSampler` n + 3, `SkewedChi2Sampler` n + 4, `Nystroem`
-     max(n + 5, m + 3). `PolynomialCountSketch` is an FFT, not a matvec:
-     not served until a normwise S is derived.
+   - T47 served the distances to fitted centres (`KMeans`,
+     `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
+     compare squares (`ErrorScale.g`), K = n + 5. `RBFSampler` n + 3,
+     `SkewedChi2Sampler` n + 4, `Nystroem` max(n + 5, m + 3): an RBF
+     kernel of `Nystroem` reads the same expansion of ‖x - c‖² as
+     distance.py. `PolynomialCountSketch` is an FFT, not a matvec: not
+     served until a normwise S is derived.
 2. **A bounded step inside a composition** (ruled 2026-10-15,
    [decisions/closed/bounded-steps-in-compositions.md](decisions/closed/bounded-steps-in-compositions.md)).
    T42 served option 1: with `allow_bound=True`, a step whose bound is
@@ -71,7 +90,22 @@ that request, `to_native(step, allow_bound=True)`. In order:
   0.5 s (T40, release build, master 318575b with confit #461). A
   confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
   1.4 s read field by field and 0.09 s read whole (loops/confit/PLANS.md).
-  When it lands, measure the builds again and refit the estimates.
+  The distances to fitted centres grow faster, about as k³: a struct of
+  1,000 centres over 2 features builds in 8.6 s, of 2,000 in 73 s
+  (1.1 s as a list), and confit refuses one of 4,000 after 475 s, as
+  past the code generator's size limit (T47, release build, master
+  c06a15a), so
+  their cap takes about 920 centres over 2 features
+  (`distance._build_estimate`). When it lands, measure the builds again
+  and refit the estimates.
+- **Deep expressions.** confit's parser refuses a bound value whose SQL
+  nests about 512 additions deep ("a let: sql parser error":
+  `Normalizer(norm="l2")` over 1,024 features, whose sum of squares
+  follows numpy's order), and `SqlFunction` writes a bound value's SQL by
+  recursion, so a chain 1,024 deep raises `RecursionError` (finding 86).
+  A family within an error scale sums as a balanced tree, log2(n) deep;
+  of the entries measured, only `Normalizer(norm="l2")`, bit-exact in
+  numpy's order, meets it. Low priority for confit.
 - **A named refusal, not a Cranelift verifier error.** `OneHotEncoder`
   over 16 string features of 125 categories (2,000 fields) stopped after
   31 s with `cranelift define: verifier error`, an internal error, where
