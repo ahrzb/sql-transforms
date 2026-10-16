@@ -18,9 +18,9 @@ comparison. The oracle evaluates the subquery's WHERE in written order over
 (distinct outer values) x (static rows), the aggregate's argument over the
 matched rows only, and the item once for each distinct outer value (the pins
 at the end). The outer side of a first key, the left side of IN, ANY or ALL
-and a WHERE term of a scan can trap, and confit evaluates them for the same
-rows as the oracle; an item that traps before any request refuses; elsewhere
-the values are what compares.
+and a WHERE term or the item of a scan can trap, and confit evaluates them for
+the same rows as the oracle; outside a scan, an item that traps before any
+request refuses; elsewhere the values are what compares.
 
 Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 """
