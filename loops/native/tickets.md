@@ -123,10 +123,24 @@ on a host without AVX-512, the entry is bit-exact and serves by default.
 An entry's error scale now applies where `scaled(est)` says so
 (`Entry.scale_for`), so `sample_steps=1` stays bit-exact. A float32 or
 float16 interval keeps the cos and sin fields Python: the twin computes
-its `cosh` in that dtype.
+its `cosh` in that dtype. On CI, whose numpy `log` is glibc's, `_exact`
+first raised where `math.cosh` overflows: tests that a kernel probe gates
+now also run with `NPY_DISABLE_CPU_FEATURES` set.
+T51 (#505) serves `RBFSampler` with `allow_bound=True` (kernel.py),
+within the error scale of the ruling: K = n + 3, S = c·(Σ|x_i·W_ij| +
+|b_j| + 1). The entry sums the products as a balanced tree, adds the
+offset, takes `cos` (NaN at an infinite angle, as numpy answers) and
+multiplies by c. Over 328 million output fields of 20 seeds at 1 to 64
+features, the largest |entry - twin| / (eps·S) is 6.79 against K = 67; the
+least room is 1.96 against K = 5, at 2 features. It reads numpy's `cos`
+as confit's (its kernel probe reads 0), else it stays Python. A float32
+fit serves over numbers, and stays Python over boolean features only,
+where the twin computes in float32. It has its own build estimates, one
+per reading: the projections' took builds of 9.2 s and 15.4 s. Coverage
+is 47 of 68.
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it.
 
 Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`RBFSampler` and `SkewedChi2Sampler` next, one PR each).
+`SkewedChi2Sampler` next, then `Nystroem`, one PR each).

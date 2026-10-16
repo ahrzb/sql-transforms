@@ -53,7 +53,7 @@ from sklearn.feature_selection import (
 )
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.isotonic import IsotonicRegression
-from sklearn.kernel_approximation import AdditiveChi2Sampler
+from sklearn.kernel_approximation import AdditiveChi2Sampler, RBFSampler
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
@@ -862,6 +862,16 @@ FIXTURES[Pipeline] += [
     lambda: make_pipeline(MinMaxScaler(), AdditiveChi2Sampler(sample_steps=1)),
     lambda: make_pipeline(MinMaxScaler(), AdditiveChi2Sampler()),
 ]
+# The RBF sampler (kernel.py), within its error scale: few and many
+# components, and a `gamma` the fit derives from the data's variance. The
+# fit draws the weights, so each fixes `random_state`.
+FIXTURES[RBFSampler] = [
+    lambda: RBFSampler(n_components=5, random_state=0),
+    lambda: RBFSampler(gamma="scale", n_components=100, random_state=1),
+]
+FIXTURES[Pipeline].append(
+    lambda: make_pipeline(StandardScaler(), RBFSampler(n_components=8, random_state=2))
+)
 
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]

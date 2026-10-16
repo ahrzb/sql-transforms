@@ -1,6 +1,8 @@
-"""The additive chi2 map (kernel.py): its first field bit-exact, a product
-and a square root, each correctly rounded on both sides; its cos and sin
-fields within their error scale, as numpy's log parts from glibc's."""
+"""The kernel approximations (kernel.py). The additive chi2 map: its first
+field bit-exact, a product and a square root, each correctly rounded on
+both sides; its cos and sin fields within their error scale, as numpy's log
+parts from glibc's. The RBF sampler within its error scale, as the twin's
+BLAS sum and the entry's balanced tree part by rounding."""
 
 from __future__ import annotations
 
@@ -10,9 +12,9 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pytest
-from sklearn.kernel_approximation import AdditiveChi2Sampler
+from sklearn.kernel_approximation import AdditiveChi2Sampler, RBFSampler
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -253,3 +255,149 @@ def test_a_negative_output_of_a_scaler_traps():
     step = _step(est, [pa.float64()] * 2, pa.list_(pa.float64(), 2))
     rows = _rows([5.0, -1.0, 5.0, 11.0, 0.0], [2.0, 2.0, 0.5, 4.0, 1.0])
     assert check(step, to_native(step, strict=True), rows) == 3
+
+
+def _rbf(n: int, m: int = 20, dtype: Any = np.float64, **kw) -> RBFSampler:
+    est = RBFSampler(n_components=m, random_state=0, **kw)
+    return est.fit(np.random.default_rng(n).normal(size=(8, n)).astype(dtype))
+
+
+def _rbf_step(est: Any, types: list[pa.DataType] | None = None) -> PythonTransform:
+    n, m = np.shape(est.random_weights_)
+    return _step(est, types or [pa.float64()] * n, pa.list_(pa.float64(), m))
+
+
+def _draws(seed: int, n: int) -> np.ndarray:
+    """Rows of features of scales 1e-2 to 1e3, and small whole numbers."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(60, n)) * 10.0 ** rng.uniform(-2, 3, size=(60, 1))
+    return np.vstack([x, rng.integers(-3, 4, size=(20, n)).astype(float)])
+
+
+def _table(x: np.ndarray) -> pa.Table:
+    return _rows(*(x[:, i].tolist() for i in range(x.shape[1])))
+
+
+@pytest.mark.parametrize(
+    "n, m, gamma", [(3, 20, 1.0), (12, 100, "scale"), (64, 30, 0.01)]
+)
+def test_an_rbf_sampler_parts_from_its_twin_within_its_error_scale(n, m, gamma):
+    est = _rbf(n, m, gamma=gamma)
+    step = _rbf_step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _table(_draws(n, n))
+    with pytest.raises(ParityError, match="ulps, bound 0"):
+        check(step, native, rows, ulps=0)
+    assert check(step, native, rows) == rows.num_rows
+
+
+def test_an_rbf_sampler_of_one_feature_answers_the_twins_bits():
+    # The angle is one product and the offset on both sides.
+    step = _rbf_step(_rbf(1))
+    rows = _table(_draws(1, 1))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows, ulps=0)
+
+
+# Doubles where the sampler can part from its twin, and the values its
+# validation rejects; none so large that a product overflows, which the
+# bound does not cover (one sum can overflow where another does not).
+RBF_SPECIALS = [
+    0.0, -0.0, 5e-324, -5e-324, 1e-310, 1e-300, 0.5, -1.0, 2.5, 7.25, 1e300,
+    -1e300, math.inf, -math.inf, math.nan, None,
+]  # fmt: skip
+
+
+def test_an_rbf_sampler_serves_special_values():
+    step = _rbf_step(_rbf(2))
+    k = len(RBF_SPECIALS)
+    rows = _rows(
+        [RBF_SPECIALS[i % k] for i in range(k * k)],
+        [RBF_SPECIALS[i // k] for i in range(k * k)],
+    )
+    valid = [v for v in RBF_SPECIALS if v is not None and math.isfinite(v)]
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, rows) == len(valid) ** 2
+
+
+def test_an_infinite_angle_answers_nan_as_numpys_cos():
+    # A product past the largest double makes the angle infinite, where
+    # numpy's cos answers NaN and DuckDB's raises.
+    est = _rbf(2)
+    big = np.finfo(np.float64).max
+    rows = np.array([[big, 0.0], [-big, 0.0], [0.0, big]])
+    assert np.isnan(est.transform(rows)).any()
+    step = _rbf_step(est)
+    assert check(step, to_native(step, strict=True, allow_bound=True), _table(rows))
+
+
+def test_an_rbf_sampler_serves_only_on_request():
+    step = _rbf_step(_rbf(2))
+    assert to_native(step) is step
+    assert "within 5·eps·S + τ (S its error scale)" in explain_native(step)
+    with pytest.raises(NotNative, match="only with allow_bound=True"):
+        to_native(step, strict=True)
+
+
+def test_a_changed_weight_breaches_the_error_scale():
+    # A weight moved by 1e-9 of itself moves an angle by about 1e-9 of its
+    # terms, far past (n + 3)·eps·S.
+    est = _rbf(4)
+    step = _rbf_step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    est.random_weights_ = est.random_weights_.copy()
+    est.random_weights_[0, 0] *= 1 + 1e-9
+    with pytest.raises(ParityError, match=r"past its bound K\*eps\*S \+ tau"):
+        check(step, native, _table(_draws(4, 4)))
+
+
+def test_an_rbf_sampler_in_a_pipeline_serves_as_its_last_step():
+    est = make_pipeline(StandardScaler(), RBFSampler(n_components=8, random_state=0))
+    est.fit(np.random.default_rng(5).normal(size=(30, 3)) * 100)
+    step = _step(est, [pa.float64()] * 3, pa.list_(pa.float64(), 8))
+    rows = _table(_draws(6, 3) * 100)
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_an_rbf_sampler_over_booleans_only_serves():
+    step = _rbf_step(_rbf(2), [pa.bool_()] * 2)
+    rows = _rows([a for a in BITS for _ in BITS], [b for _ in BITS for b in BITS])
+    # A NULL makes the row float64 with NaN, which the twin rejects.
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 4
+
+
+def test_an_rbf_sampler_fitted_in_float32_serves_over_numbers():
+    # numpy widens the weights and offsets to float64 for a row of doubles.
+    step = _rbf_step(_rbf(3, dtype=np.float32))
+    rows = _table(_draws(7, 3))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_an_rbf_sampler_fitted_in_float32_over_booleans_only_stays_python():
+    # A boolean array times float32 weights is a float32 product.
+    step = _rbf_step(_rbf(2, dtype=np.float32), [pa.bool_()] * 2)
+    with pytest.raises(NotNative, match="over boolean features only, fitted in"):
+        to_native(step, strict=True, allow_bound=True)
+
+
+def test_a_cos_apart_from_confits_keeps_an_rbf_sampler_python(monkeypatch):
+    monkeypatch.setattr(K, "kernel_distance", lambda func: 1)
+    with pytest.raises(NotNative, match="numpy cos is 1 ulps from confit's"):
+        to_native(_rbf_step(_rbf(2)), strict=True, allow_bound=True)
+
+
+def test_a_weight_not_finite_keeps_an_rbf_sampler_python():
+    est = _rbf(2)
+    est.random_weights_[1, 3] = math.inf
+    with pytest.raises(NotNative, match="a random weight or offset not finite"):
+        to_native(_rbf_step(est), strict=True, allow_bound=True)
+
+
+def test_an_rbf_sampler_takes_a_fit_by_its_estimated_build():
+    # It reads `x - 0.0` where the build so read stays within the cap, else
+    # `coalesce(x, NaN)`; past both, the cap refuses it.
+    assert K._rbf_reads_apart(_rbf(64, 100))
+    wide = RBFSampler(n_components=60, random_state=0).fit(np.ones((2, 1024)))
+    assert not K._rbf_reads_apart(wide)
+    huge = RBFSampler(n_components=400, random_state=0).fit(np.ones((2, 256)))
+    with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
+        to_native(_rbf_step(huge), strict=True, allow_bound=True)
