@@ -3,7 +3,10 @@
 `PCA` and `IncrementalPCA` (`_BasePCA._transform`): `X @ components_.T`,
 minus the projected mean `mean_ @ components_.T`, then under `whiten`
 divided by `sqrt(explained_variance_)`, which sklearn clips below at eps.
-`TruncatedSVD` and `GaussianRandomProjection`: `X @ components_.T`.
+`TruncatedSVD` and `GaussianRandomProjection`: `X @ components_.T`. The
+centered projections, `FastICA`, `LinearDiscriminantAnalysis` and the PLS
+family, subtract a fitted mean from the row before the product, and may
+divide it by a fitted scale: `_project_centered` gives their bound.
 
 The twin hands each product to BLAS: `ddot` for one component, `gemv` for
 more. OpenBLAS picks its kernel for the CPU at run time and sums with fused
@@ -78,12 +81,15 @@ feature's `coalesce(x, NaN)`, in about 60 ns a read."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
-from sklearn.decomposition import PCA, IncrementalPCA, TruncatedSVD
+from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
+from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection
 
 from sql_transform.native._helpers import f64
@@ -148,6 +154,40 @@ def _build_estimate(n: int, k: int) -> float:
     return 5.86e-4 * n + 6.54e-5 * p + 2.72e-8 * p * n + 8.63e-8 * p * k
 
 
+def _centered_build_estimate(n: int, k: int) -> float:
+    """The seconds confit takes to build the entry of a centered projection
+    that subtracts a mean (`_project_centered`): `_build_estimate` and a
+    term in n²·k. Each product there reads the feature's difference from
+    the mean, not the feature, and the build grows with the features: on
+    one commit, it took 0.9 to 1.7 times a `PCA` build of the same shape,
+    about 1.0 at 256 features and 1.5 to 1.7 at 2,048. Fitted on the
+    slower of the two returns over 45 shapes (64 to 2,048 features, 16 to
+    256 components, builds of 0.34 to 12.7 s; `FastICA`, `PLSRegression`
+    and `LinearDiscriminantAnalysis` by "svd"; master 9186b3d, 2026-10-16):
+    each within 0.92 to 1.32 times the estimate, and 0.92 to 1.16 over
+    1 s. The cap took on none slower than 6.6 s and refused none faster
+    than 7.1 s. It takes about 244 components over 256 features, 108 over
+    512, 39 over 1,024 or 11 over 2,048, against 277, 142, 63 and 23 for a
+    `PCA`. On the same commit, `PCA` builds took 1.05 to 1.32 times
+    `_build_estimate`, which was fitted on master bea1372. The centered
+    projections that subtract no mean, an unwhitened `FastICA` and a
+    `LinearDiscriminantAnalysis` by "eigen", took 1.04 to 1.41 times it,
+    0.89 to 1.30 times a `PCA` build of the same shape: the cap estimates
+    them by `_build_estimate`."""
+    return _build_estimate(n, k) + 6.15e-8 * n * n * k
+
+
+def _refuse_past_cap(
+    name: str, n: int, k: int, by: Callable[[int, int], float] = _build_estimate
+) -> None:
+    estimate = by(n, k)
+    if estimate > MAX_BUILD_S:
+        raise NotNative(
+            f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
+            f" ({k:,} component{'s' * (k != 1)} over {n:,} features)"
+        )
+
+
 def _tree(terms: list[S.Expr]) -> S.Expr:
     """The sum of `terms` as a balanced tree: its depth is log2 of their
     number, and its error bound γ_{⌈log2 n⌉+1}, half the provable one of a
@@ -166,12 +206,7 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
     if m is not None and np.result_type(m, c) != np.float64:
         raise NotNative(f"{name}: a float32 fit projects its mean in float32")
     k, n = c.shape
-    estimate = _build_estimate(n, k)
-    if estimate > MAX_BUILD_S:
-        raise NotNative(
-            f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
-            f" ({k:,} component{'s' * (k != 1)} over {n:,} features)"
-        )
+    _refuse_past_cap(name, n, k)
     whiten = bool(getattr(est, "whiten", False))
     s = _scale(est)
     if whiten:
@@ -194,3 +229,170 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
             e = e / f64(s[j])
         out.append(e)
     return out
+
+
+def _centered(est: Any) -> tuple[Any, Any, np.ndarray]:
+    """What the twin subtracts from each feature before the product, what it
+    then divides each difference by (None where it does neither), and the
+    matrix of the product, one row per output field."""
+    if isinstance(est, FastICA):
+        return (est.mean_ if est.whiten else None), None, np.asarray(est.components_)
+    if isinstance(est, LinearDiscriminantAnalysis):
+        c = np.asarray(est.scalings_)[:, : est._max_components].T
+        return (est.xbar_ if est.solver == "svd" else None), None, c
+    w = est.x_weights_ if isinstance(est, PLSSVD) else est.x_rotations_
+    return est._x_mean, est._x_std, np.asarray(w).T
+
+
+def _d(est: Any, x: np.ndarray) -> np.ndarray:
+    """The row the twin multiplies, in its own float64 arithmetic."""
+    m, sd, _ = _centered(est)
+    d = np.asarray(x, dtype=np.float64)
+    if m is not None:
+        d = d - m
+    if sd is not None:
+        d = d / sd
+    return d
+
+
+def _centered_s(est: Any, x: np.ndarray) -> np.ndarray:
+    c = np.abs(np.asarray(_centered(est)[2], dtype=np.longdouble))
+    return c @ np.abs(np.asarray(_d(est, x), dtype=np.longdouble))
+
+
+CENTERED = ErrorScale(
+    k=lambda est: est.n_features_in_ + 1,
+    s=_centered_s,
+    tau=lambda est: 2.0 * est.n_features_in_ * _TINY,
+)
+
+
+def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
+    """A `FastICA` fit whose output fields mix in rounding noise of size
+    O(1), or that broke down, stays Python, as a whitened `PCA` component
+    of rounding noise does (the ruling, item 7)."""
+    if not est.whiten:
+        # The twin takes the data as white: the unmixing matrix is
+        # orthogonal, each row a unit vector, unless the fit broke down
+        # (its symmetric decorrelation divided by an eigenvalue that it
+        # raised to the smallest normal double, to rows of norm 1e147).
+        norms = np.linalg.norm(np.asarray(est.components_, dtype=np.float64), axis=1)
+        off = ~(np.abs(norms - 1.0) <= 1e-6)
+        if off.any():
+            j = int(np.argmax(off))
+            raise NotNative(
+                f"{name}(whiten=False): row {j} of the unmixing matrix has a norm"
+                f" of {norms[j]:.3g}, not 1: its fit broke down"
+            )
+        return
+    # Row j of `whitening_` is a unit vector over the j-th singular value
+    # d_j of the centered fit data: the smaller d_j, the larger the norm (a
+    # row of zeros reads nothing, where sklearn's sign rule zeroed it). A
+    # d_j of 0 (a norm not finite), at most sqrt(eps) times the largest, or
+    # that the "eigh" solver raised to its floor sqrt(10·eps) is noise.
+    norms = np.linalg.norm(np.asarray(est.whitening_, dtype=np.float64), axis=1)
+    top = np.min(norms, initial=np.inf, where=np.isfinite(norms) & (norms > 0))
+    noise = ~(top > np.sqrt(_EPS) * norms)
+    if est.whiten_solver == "eigh":
+        floor = np.sqrt(10 * np.finfo(est.whitening_.dtype).eps)
+        noise |= norms * floor >= 1 - 1e-9
+    if noise.any():
+        raise NotNative(
+            f"{name}(whiten={est.whiten!r}): the whitening's direction"
+            f" {int(np.argmax(noise))} is a whitened component of rounding noise"
+        )
+    # Under "unit-variance", sklearn divides each row by the spread of its
+    # source over the fit data: a source of no spread, such as a column
+    # constant but for the rounding of its mean, makes the row infinite.
+    off = ~np.isfinite(np.asarray(est.components_)).all(axis=1)
+    if off.any():
+        raise NotNative(
+            f"{name}(whiten={est.whiten!r}): row {int(np.argmax(off))} of"
+            " components_ is not finite: its fit broke down"
+        )
+
+
+@translates(
+    FastICA,
+    LinearDiscriminantAnalysis,
+    PLSRegression,
+    PLSCanonical,
+    CCA,
+    PLSSVD,
+    scale=CENTERED,
+)
+def _project_centered(
+    est: Any, x: list[S.Expr], types: list[pa.DataType]
+) -> list[S.Expr]:
+    """The centered projections (sklearn 1.9). The twin subtracts a fitted
+    mean from the row, and may divide each difference by a fitted scale,
+    before the product (`_centered`):
+
+    - `FastICA` (`transform`): under `whiten`, `X -= mean_`; then
+      `np.dot(X, components_.T)`.
+    - `LinearDiscriminantAnalysis` (`transform`): `(X - xbar_) @ scalings_`
+      under the "svd" solver and `X @ scalings_` under "eigen", then the
+      first `_max_components` columns. Under "lsqr" the twin raises.
+    - `PLSRegression`, `PLSCanonical` and `CCA` (`_PLS.transform`):
+      `X -= _x_mean`, `X /= _x_std`, then `np.dot(X, x_rotations_)`.
+      `PLSSVD`: `(X - _x_mean) / _x_std`, then `np.dot(Xr, x_weights_)`.
+
+    Each subtraction and division is one IEEE operation on each side, so
+    the entry multiplies the twin's own row d, and only the sums differ.
+    For output field k,
+
+        |entry - twin| <= (n + 1)·eps·S_k + tau_k,   S_k = sum_i |d_i·c_ki|,
+
+    with c_k the row of the matrix that gives field k. Each side is within
+    γ_n·S_k of the exact sum (the module's derivation), so the two are
+    within n·eps·S_k to first order; n + 1 also covers the second order and
+    the rounding of S in `check`. `tau_k = 2n·2**-1074` covers the products
+    that underflow. As for the projections above, the bound assumes that no
+    partial sum overflows. A fit in float32 serves: numpy widens the mean,
+    the scale and the matrix to float64 before it subtracts, divides and
+    multiplies.
+
+    `FastICA` stays Python where its output fields mix in rounding noise of
+    size O(1), as a whitened `PCA` component of rounding noise does, or
+    where its fit broke down (`_refuse_a_degenerate_ica`). Where the twin
+    subtracts a mean, the entry builds in up to 1.7 times as long as a
+    `PCA` of the same shape, and the cap estimates it so
+    (`_centered_build_estimate`).
+
+    Measured over 200 seeds of each class at 1, 2, 3, 5, 8, 17, 32 and 64
+    features (correlated features of scales 1e-2 to 1e4 and means up to
+    100 times as large, a random configuration of each class, rows near
+    the mean and rows drawn like the fit; master 9186b3d, 2026-10-16):
+    9,599 steps, 4.3 million output fields, 64% of them apart from the
+    twin. The largest |entry - twin| / (eps·S) is 4.09, for `PLSCanonical`
+    at 64 features, against K = 65; the least room is at 3 features, 1.68
+    for `LinearDiscriminantAnalysis` against K = 4. At one feature each
+    field equals the twin's. One `FastICA` step of 32 features stayed
+    Python, for a whitened component of rounding noise. The entry gave no
+    zero of the twin the other sign."""
+    name = type(est).__name__
+    if isinstance(est, LinearDiscriminantAnalysis) and est.solver == "lsqr":
+        raise NotNative(f"{name}(solver='lsqr') has no transform")
+    m, sd, c = _centered(est)
+    k, n = c.shape
+    if k == 0:
+        raise NotNative(f"{name}: no output fields")
+    _refuse_past_cap(
+        name, n, k, _build_estimate if m is None else _centered_build_estimate
+    )
+    if isinstance(est, FastICA):
+        _refuse_a_degenerate_ica(est, name)
+    if not all(np.isfinite(a).all() for a in (m, sd, c) if a is not None):
+        raise NotNative(f"{name}: a fitted mean, scale or matrix not all finite")
+    d = list(x)
+    if m is not None:
+        d = [di - f64(mi) for di, mi in zip(d, m, strict=True)]
+    if sd is not None:
+        # Dividing by 1.0 (a scale of 0 that sklearn replaced, or
+        # `scale=False`) leaves every double as it is.
+        d = [di if si == 1.0 else di / f64(si) for di, si in zip(d, sd, strict=True)]
+    # `+ 0.0`: where every product is a zero, the twin answers 0.0.
+    return [
+        _tree([di * f64(ci) for di, ci in zip(d, cj, strict=True)]) + f64(0.0)
+        for cj in c
+    ]

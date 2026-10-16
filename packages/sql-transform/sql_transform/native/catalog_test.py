@@ -21,7 +21,15 @@ import pyarrow as pa
 import pytest
 from sklearn.cluster import FeatureAgglomeration
 from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import PCA, IncrementalPCA, KernelPCA, TruncatedSVD
+from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
+from sklearn.decomposition import (
+    PCA,
+    FastICA,
+    IncrementalPCA,
+    KernelPCA,
+    TruncatedSVD,
+)
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import RandomTreesEmbedding
 from sklearn.feature_selection import (
     RFE,
@@ -752,6 +760,35 @@ FIXTURES[GaussianRandomProjection] = [
     lambda: GaussianRandomProjection(n_components=1, random_state=0),
     lambda: GaussianRandomProjection(n_components=4, random_state=1),
 ]
+# The centered projections (project.py, `_project_centered`), within their
+# own error scale. The generator fits a classifier to a binary target, so a
+# discriminant analysis has one output field, and a regressor to one target,
+# so PLSCanonical, CCA and PLSSVD have one component. A FastICA can whiten
+# rounding noise, as a whitened PCA can, which stays Python (REFUSED).
+FIXTURES[FastICA] = [
+    lambda: FastICA(random_state=0),
+    lambda: FastICA(n_components=2, whiten="arbitrary-variance", random_state=1),
+    lambda: FastICA(n_components=1, whiten_solver="eigh", random_state=2),
+    lambda: FastICA(whiten=False, random_state=3),
+]
+FIXTURES[LinearDiscriminantAnalysis] = [
+    LinearDiscriminantAnalysis,
+    lambda: LinearDiscriminantAnalysis(solver="eigen"),
+    lambda: LinearDiscriminantAnalysis(solver="eigen", shrinkage="auto"),
+]
+FIXTURES[PLSRegression] = [
+    lambda: PLSRegression(n_components=1),
+    lambda: PLSRegression(scale=False),
+]
+FIXTURES[PLSCanonical] = [
+    lambda: PLSCanonical(n_components=1),
+    lambda: PLSCanonical(n_components=1, scale=False, algorithm="svd"),
+]
+FIXTURES[CCA] = [lambda: CCA(n_components=1)]
+FIXTURES[PLSSVD] = [
+    lambda: PLSSVD(n_components=1),
+    lambda: PLSSVD(n_components=1, scale=False),
+]
 
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]
@@ -772,9 +809,13 @@ SHARES = [0.6, 0.85]
 BOOL_STEPS = 0.07
 # Refusals the generator draws, each tested by name on its own
 # (test_a_function_transformer_refuses, compose_test.py, project_test.py):
-# a function the twin computes in a narrower dtype on a boolean array, and
-# a whitened component of rounding noise.
-REFUSED = ("over boolean features only", "a whitened component of rounding noise")
+# a function the twin computes in a narrower dtype on a boolean array, a
+# whitened component of rounding noise, and a FastICA fit that broke down.
+REFUSED = (
+    "over boolean features only",
+    "a whitened component of rounding noise",
+    "its fit broke down",
+)
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
@@ -986,9 +1027,11 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
                 if k and w != width:
                     break
                 instances[k], width = est, w
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, IndexError):
             # sklearn rejects the data, or numpy cannot run the fit on it
-            # (a quantile of a boolean column subtracts booleans).
+            # (a quantile of a boolean column subtracts booleans), or the
+            # fit fails on it (a discriminant analysis by SVD indexes an
+            # empty spectrum where no feature varies within a class).
             return None
     if width == 0 or width > MAX_OUTPUT_FIELDS:
         return None

@@ -12,7 +12,7 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**35 of 68** in-scope transformers are native (84 listed by sklearn).
+**41 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -21,12 +21,12 @@ owner's ruling).
 | `Binarizer` | native | bit-exact |
 | `Birch` | not yet |  |
 | `BisectingKMeans` | not yet |  |
-| `CCA` | not yet |  |
+| `CCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `ColumnTransformer` | composition | routes columns to parts; served over bit-exact entries |
 | `DictVectorizer` | out of scope | input is dicts, not a row of columns |
 | `DictionaryLearning` | not yet |  |
 | `FactorAnalysis` | not yet |  |
-| `FastICA` | not yet |  |
+| `FastICA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `FeatureAgglomeration` | native | bit-exact |
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
 | `FeatureUnion` | composition | concatenates parts' outputs; served over bit-exact entries |
@@ -46,7 +46,7 @@ owner's ruling).
 | `LabelBinarizer` | out of scope | encodes a target, not features |
 | `LabelEncoder` | out of scope | encodes a target, not features |
 | `LatentDirichletAllocation` | not yet |  |
-| `LinearDiscriminantAnalysis` | not yet |  |
+| `LinearDiscriminantAnalysis` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `LocallyLinearEmbedding` | not yet |  |
 | `MaxAbsScaler` | native | bit-exact |
 | `MinMaxScaler` | native | bit-exact |
@@ -63,9 +63,9 @@ owner's ruling).
 | `OneHotEncoder` | native | bit-exact |
 | `OrdinalEncoder` | native | bit-exact |
 | `PCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
-| `PLSCanonical` | not yet |  |
-| `PLSRegression` | not yet |  |
-| `PLSSVD` | not yet |  |
+| `PLSCanonical` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
+| `PLSRegression` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
+| `PLSSVD` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `PatchExtractor` | out of scope | input is images |
 | `Pipeline` | composition | chains steps; served over bit-exact entries |
 | `PolynomialCountSketch` | not yet |  |

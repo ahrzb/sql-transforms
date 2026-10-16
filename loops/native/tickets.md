@@ -38,14 +38,18 @@ before), 19,700 isotonic thresholds (11,700), 13,400 quantile leaves
 2026-10-15 the owner asked the loops to wind down: finish the work in
 flight and pick no new ticket. After T40 and a short reading
 ([`reports/2026-10-15-short-reading.md`](reports/2026-10-15-short-reading.md)),
-the loop stopped.
+the loop stopped. On 2026-10-16 the owner paused the Confit Loop and
+started this loop again. T41 (#494) serves the centered projections,
+`FastICA`, `LinearDiscriminantAnalysis` and the PLS family
+(`PLSRegression`, `PLSCanonical`, `CCA` and `PLSSVD`), within
+(n + 1)·eps·S + τ under `allow_bound=True`: over 200 seeds of each class
+the largest |entry - twin| was 4.09·eps·S, at 64 features against K = 65.
+`sklearn.cross_decomposition` and `sklearn.discriminant_analysis` are now
+wholly native, and coverage is 41 of 68.
 
-Next, on a restart: PLANS "Ruled 2026-10-06, to build", item 1, the rest
-of the linear projections, then the other families on the parity bound.
-A draft of the centered projections (T41: `FastICA`,
-`LinearDiscriminantAnalysis` and the PLS family), written while T40 ran
-and never run, is in the project's shared files at
-`transforms-loop/t41-draft/`.
-The owner ruled `decisions/closed/bounded-steps-in-compositions.md` on
-2026-10-15 (PLANS.md, "Ruled 2026-10-06, to build", item 2); `compose.py`
-refuses bounded steps until that is built.
+Next: reading 7, a milestone report (two whole sklearn modules went
+native). Then PLANS "Ruled 2026-10-06, to build", item 2, a bounded step
+in a composition (`decisions/closed/bounded-steps-in-compositions.md`,
+ruled 2026-10-15): `compose.py` refuses bounded steps until it is built.
+Then the rest of item 1. While the Confit Loop is paused, a confit need
+waits: the loop works around it.
