@@ -53,6 +53,7 @@ from sklearn.feature_selection import (
 )
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.isotonic import IsotonicRegression
+from sklearn.kernel_approximation import AdditiveChi2Sampler
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
@@ -681,7 +682,8 @@ FIXTURES[FeatureAgglomeration] = [
 def positive(factory: Callable[[], Any]) -> Callable[[], Any]:
     """`factory`'s fits and rows draw strictly positive numbers (an
     estimator that rejects the rest): absolute values, a fitted zero made
-    one. A serving zero stays, for the twin to reject."""
+    one. A serving zero stays: Box-Cox's twin rejects it, and the additive
+    chi2 map answers 0."""
     factory.positive = True  # type: ignore[attr-defined]
     return factory
 
@@ -843,6 +845,16 @@ FIXTURES[Birch] = [
     Birch,
     lambda: Birch(threshold=100.0, n_clusters=None, branching_factor=5),
 ]
+# The additive chi2 map's first field, bit-exact (kernel.py): the default
+# interval, and one past 1. After a MinMaxScaler, a row past the fit's
+# range is negative, where the twin's second step raises.
+FIXTURES[AdditiveChi2Sampler] = [
+    positive(lambda: AdditiveChi2Sampler(sample_steps=1)),
+    positive(lambda: AdditiveChi2Sampler(sample_steps=1, sample_interval=2.7)),
+]
+FIXTURES[Pipeline].append(
+    lambda: make_pipeline(MinMaxScaler(), AdditiveChi2Sampler(sample_steps=1))
+)
 
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]

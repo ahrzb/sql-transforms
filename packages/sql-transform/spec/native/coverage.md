@@ -12,11 +12,11 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**45 of 68** in-scope transformers are native (84 listed by sklearn).
+**46 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
-| `AdditiveChi2Sampler` | not yet |  |
+| `AdditiveChi2Sampler` | native | bit-exact |
 | `BernoulliRBM` | not yet |  |
 | `Binarizer` | native | bit-exact |
 | `Birch` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
