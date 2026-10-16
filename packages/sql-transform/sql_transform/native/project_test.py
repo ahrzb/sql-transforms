@@ -159,10 +159,14 @@ def test_a_float32_fit_without_a_mean_serves(make):
 def test_a_projection_takes_a_fit_by_its_estimated_build():
     from sql_transform.native.project import MAX_BUILD_S, _build_estimate
 
-    # 128 components over 512 features built in 5.9 to 6.3 s, 32 over 2,048
-    # in 8.1 to 8.8 s (project.py, `_build_estimate`).
-    assert _build_estimate(512, 128) <= MAX_BUILD_S
-    assert _build_estimate(2048, 32) > MAX_BUILD_S
+    # Read `coalesce(x, NaN)`, 96 components over 512 features built in 5.1
+    # to 6.0 s and 2 over 4,096 in 5.5 to 5.9 s; 63 over 1,024 in 7.2 to
+    # 8.5 s and one over 6,144 in 8.7 to 9.5 s (project.py,
+    # `_build_estimate`).
+    assert _build_estimate(512, 96) <= MAX_BUILD_S
+    assert _build_estimate(4096, 2) <= MAX_BUILD_S
+    assert _build_estimate(1024, 63) > MAX_BUILD_S
+    assert _build_estimate(6144, 1) > MAX_BUILD_S
     x = np.random.default_rng(6).normal(size=(10, 2048))
     est = GaussianRandomProjection(n_components=32, random_state=0).fit(x)
     with pytest.raises(
@@ -200,6 +204,29 @@ def test_a_projection_reads_a_shared_value_where_its_build_allows(make, monkeypa
     native = to_native(step, strict=True, allow_bound=True)
     assert apart not in native.sql_body
     assert check(step, native, rows) == rows.num_rows
+
+
+def test_a_list_of_few_components_over_wide_rows_is_estimated_so():
+    # A list over shared values builds about as their number squared
+    # (finding 87). Read `x - 0.0`, 2 components over 4,096 features built
+    # in 11.3 s as a list and 5.9 s as a struct, and one component in 5.0
+    # to 5.1 s; read `coalesce(x, NaN)`, 2 in 5.5 to 5.9 s (project.py,
+    # `_centered_build_estimate`). Where the twin subtracts a mean, each
+    # product reads a shared difference in either reading.
+    from sql_transform.native import project as P
+
+    assert P._build_estimate(4096, 2) <= P.MAX_BUILD_S
+    assert P._centered_build_estimate(4096, 2) > P.MAX_BUILD_S
+    assert P._centered_build_estimate(4096, 1) <= P.MAX_BUILD_S
+    x = np.random.default_rng(8).normal(size=(10, 4096))
+    assert not P._reads_apart(PCA(n_components=2).fit(x))
+    assert P._reads_apart(PCA(n_components=1).fit(x))
+    est = FastICA(n_components=2, max_iter=3, random_state=0).fit(x)
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated 12 s build, past 7 s \(2 components over 4,096",
+    ):
+        to_native(_step(est), strict=True, allow_bound=True)
 
 
 def _fit(make, x: np.ndarray, seed: int = 0):
@@ -383,9 +410,10 @@ def test_a_centered_projection_takes_a_fit_by_its_estimated_build():
         _centered_build_estimate,
     )
 
-    # Centered, 96 components over 512 features built in 5.3 to 6.5 s, 48
-    # over 1,024 in 7.8 to 8.4 s: past the cap, though a PCA of 48 over
-    # 1,024 is within it (project.py, `_centered_build_estimate`).
+    # Centered, 96 components over 512 features built in 6.0 to 6.8 s, 48
+    # over 1,024 in 8.1 to 8.7 s: past the cap, though a PCA of 48 over
+    # 1,024 that reads `coalesce(x, NaN)`, in 5.1 to 6.7 s, is within it
+    # (project.py, `_centered_build_estimate`).
     assert _centered_build_estimate(512, 96) <= MAX_BUILD_S
     assert _build_estimate(1024, 48) <= MAX_BUILD_S < _centered_build_estimate(1024, 48)
     x = np.random.default_rng(7).normal(size=(98, 1024))

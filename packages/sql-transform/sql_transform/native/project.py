@@ -64,30 +64,34 @@ least room is at 5 features, 1.97 against K = 8. Four steps of 64 features
 stayed Python, each for a whitened component of rounding noise. The
 measured value is evidence for K, not K.
 
-A step builds in about the time of its n·k products (`_build_estimate`):
-64 features of 64 components in 0.25 to 0.37 s, 256 of 64 in 1.1 to 1.5 s,
-256 of 256 in 5.0 to 6.8 s. The entry refuses a step estimated past
-MAX_BUILD_S, before confit is asked: about 280 components over 256
-features, 140 over 512, 63 over 1,024 or 6 over 4,096. Serving 64 rows
-takes 43 to 138 us up to 16 features of 4 components, against the twin's
-6.9 to 8.8 ms; 0.26 to 0.38 ms at 32 of 16 (twin 10.6 to 13.9 ms); 0.9 to
-1.0 ms at 64 of 64 (twin 16.9 to 21.8 ms); 3.7 to 4.3 ms at 256 of 64
-(twin 29.7 to 34.0 ms); 12.7 to 13.6 ms at 256 of 256 (twin 47 to 53 ms);
-and 17.7 to 19.0 ms at 512 of 128 (twin 56 to 62 ms). Release build,
-master bea1372 with confit #459 and #461, one container, 2026-10-15.
-Before confit #459, the entry served 256 of 64 in 77 to 83 ms, twice the
-twin's time: confit read a value that the body builds once, such as a
-feature's `coalesce(x, NaN)`, in about 60 ns a read.
+A step builds in about the time of its n·k products, with terms in the
+features and their square (`_build_estimate`). Read `coalesce(x, NaN)`, 64
+features of 64 components built in 0.34 to 0.48 s, 256 of 64 in
+1.5 to 1.8 s, 256 of 256 in 6.4 to 8.2 s, and one component over 6,144
+features in 8.7 to 9.5 s (release build, master af89dae, 2026-10-16). The
+entry refuses a step estimated past MAX_BUILD_S, before confit is asked:
+about 233 components over 256 features, 116 over 512, 51 over 1,024, 3 over
+4,096 or one over 5,000. Serving 64 rows takes 43 to 138 us up to 16
+features of 4 components, against the twin's 6.9 to 8.8 ms; 0.26 to 0.38 ms
+at 32 of 16 (twin 10.6 to 13.9 ms); 0.9 to 1.0 ms at 64 of 64 (twin
+16.9 to 21.8 ms); 3.7 to 4.3 ms at 256 of 64 (twin 29.7 to 34.0 ms);
+12.7 to 13.6 ms at 256 of 256 (twin 47 to 53 ms); and 17.7 to 19.0 ms at
+512 of 128 (twin 56 to 62 ms). Release build, master bea1372 with confit
+#459 and #461, one container, 2026-10-15. Before confit #459, the entry
+served 256 of 64 in 77 to 83 ms, twice the twin's time: confit read a value
+that the body builds once, such as a feature's `coalesce(x, NaN)`, in about
+60 ns a read.
 
-Since T44, where `_centered_build_estimate` keeps the build within the
-cap, each product reads the feature as `x - 0.0`, a value confit computes
-once a row (`_reads_apart`), and the build grows with the features as a
-centered projection's does: up to about 244 components over 256
-features, 108 over 512, 39 over 1,024 or 11 over 2,048. At 256 features
-of 16 and 64 components, 64 rows then served in 0.56 to 0.67 times the
-time (the five classes, one process; 2.7 to 4.5 ms at 64 components,
-against 4.1 to 6.7 ms), and the query of 256 of 64 built in 1.17 to
-1.20 s, against 1.02 to 1.07 s (release build, master 9f74bc0,
+Since T44, where `_centered_build_estimate` keeps the build within the cap,
+each product reads the feature as `x - 0.0`, a value confit computes once a
+row (`_reads_apart`), and the build grows with the features as a centered
+projection's does: up to about 220 components over 256 features, 101 over
+512, 39 over 1,024, 9 over 2,048 or one over 4,700. A list of few
+components then builds about as the square of the features (T48, finding
+87). At 256 features of 16 and 64 components, 64 rows then served in
+0.56 to 0.67 times the time (the five classes, one process; 2.7 to 4.5 ms
+at 64 components, against 4.1 to 6.7 ms), and the query of 256 of 64 built
+in 1.17 to 1.20 s, against 1.02 to 1.07 s (release build, master 9f74bc0,
 2026-10-16). A wider step reads `coalesce(x, NaN)`, which confit computes
 again at each read, and builds as before."""
 
@@ -151,49 +155,59 @@ MAX_BUILD_S = 7.0
 
 
 def _build_estimate(n: int, k: int) -> float:
-    """The seconds confit takes to build the entry (warm, release build),
-    from its n features and k components. The build is about linear in the
-    products n·k, with terms in n²·k and n·k² past that and a term in the
-    features. Fitted on the slower of the two returns, a struct and a list,
-    over 93 builds of 0.3 to 22 s (64 to 4,096 features, 1 to 256
-    components; `PCA` with and without `whiten`, and the Gaussian random
-    projection; master bea1372 with confit #459 and #461, 2026-10-15): each
-    within 0.86 to 1.41 times the estimate, and 0.86 to 1.31 over 1 s. The
-    cap took on none slower than 6.9 s and refused none faster than 6.5 s.
-    Before confit #459 and #461, the same builds took 1.3 to 9 times as
-    long, a median of 3.2 (master bf42757). Since T44 it is the build of
-    a step whose products read `coalesce(x, NaN)`, past the reach of
-    `_centered_build_estimate` (`_reads_apart`)."""
+    """The seconds confit takes to build the entry (warm, release build)
+    of a step whose products read `coalesce(x, NaN)`, past the reach of
+    `_centered_build_estimate` (`_reads_apart`), from its n features and k
+    components. The build is about linear in the products n·k, with terms
+    in n²·k and n·k² past that, and terms in the features and their
+    square. Fitted on the slower return of each shape (a list and a struct;
+    of one component, a scalar and a struct of one field) over 41 shapes of
+    `PCA` (64 to 6,144 features, 1 to 256 components; builds of 0.34 to
+    9.5 s; master af89dae, 2026-10-16): each within 0.90 to 1.18 times the
+    estimate. The cap took on none slower than 7.11 s and refused none
+    faster than 7.12 s. A Gaussian random projection of more components
+    than features (2 to 128 features, 125 to 2,000 components) took 0.76
+    to 1.09 times it over 1 s. Before T48 the estimate had no term in n²
+    (master bea1372): these builds took 1.09 to 1.89 times it, and one
+    component over 6,144 features built in 9.5 s against an estimate of
+    5.0 s (finding 87)."""
     p = n * k
-    return 5.86e-4 * n + 6.54e-5 * p + 2.72e-8 * p * n + 8.63e-8 * p * k
+    return (
+        6.10e-4 * n + 9.28e-5 * p + 2.14e-8 * p * n + 6.82e-8 * p * k + 1.14e-7 * n * n
+    )
 
 
 def _centered_build_estimate(n: int, k: int) -> float:
-    """The seconds confit takes to build the entry of a centered projection
-    that subtracts a mean (`_project_centered`): `_build_estimate` and a
-    term in n²·k. Each product there reads the feature's difference from
-    the mean, not the feature, and the build grows with the features: on
-    one commit, it took 0.9 to 1.7 times a `PCA` build of the same shape,
-    about 1.0 at 256 features and 1.5 to 1.7 at 2,048. Fitted on the
-    slower of the two returns over 45 shapes (64 to 2,048 features, 16 to
-    256 components, builds of 0.34 to 12.7 s; `FastICA`, `PLSRegression`
-    and `LinearDiscriminantAnalysis` by "svd"; master 9186b3d, 2026-10-16):
-    each within 0.92 to 1.32 times the estimate, and 0.92 to 1.16 over
-    1 s. The cap took on none slower than 6.6 s and refused none faster
-    than 7.1 s. It takes about 244 components over 256 features, 108 over
-    512, 39 over 1,024 or 11 over 2,048, against 277, 142, 63 and 23 for a
-    `PCA`. On the same commit, `PCA` builds took 1.05 to 1.32 times
-    `_build_estimate`, which was fitted on master bea1372. The centered
-    projections that subtract no mean, an unwhitened `FastICA` and a
-    `LinearDiscriminantAnalysis` by "eigen", took 1.04 to 1.41 times it,
-    0.89 to 1.30 times a `PCA` build of the same shape: the cap estimates
-    them by `_build_estimate`. Since T44, a projection whose products read
-    `x - 0.0` (`_reads_apart`) builds as a centered one: `PCA` at 256 to
-    1,024 features of 8 to 128 components took 1.03 to 1.08 times this
-    estimate, where reading `coalesce(x, NaN)` it took 1.08 to 1.18 times
-    `_build_estimate` (`to_native`, the faster of two; release build,
-    master 9f74bc0, 2026-10-16)."""
-    return _build_estimate(n, k) + 6.15e-8 * n * n * k
+    """The seconds confit takes to build the entry where each product reads
+    a value that confit shares: the feature's difference from the mean of
+    a centered projection that subtracts one (`_project_centered`), or,
+    since T44, the feature as `x - 0.0` (`_reads_apart`). It is
+    `_build_estimate`, a term in n²·k, and a term in n² where the return
+    can be a list, of two components or more. A list over shared values
+    builds about as their number squared, where a struct, which `query`
+    reads field by field, and a single component do not: `PCA` of 2
+    components over 4,096 features, read `x - 0.0`, built in 11.3 s as a
+    list and 5.9 s as a struct (PLANS.md, "Needs from confit"). Fitted on
+    the slower return of each shape over 177 shapes (64 to 6,144 features,
+    1 to 256 components; builds of 0.29 to 17 s; `PCA` read `x - 0.0`,
+    `FastICA` in both readings, `PLSRegression` and
+    `LinearDiscriminantAnalysis` by "svd"; master af89dae, 2026-10-16):
+    each within 0.74 to 1.27 times the estimate, and 0.86 to 1.21 over
+    1 s. The cap took on none slower than 6.85 s and refused none faster
+    than 6.88 s. It takes about 220 components over 256 features, 101 over
+    512, 39 over 1,024, 9 over 2,048, or one over 4,700, against 233, 116,
+    51, 18 and 5,000 for `_build_estimate`. A Gaussian random projection of
+    more components than features, read `x - 0.0`, took 0.70 to 0.93 times
+    it over 1 s. On the builds of T41 (master 9186b3d), each centered
+    projection that subtracts a mean took 0.75 to 1.06 times it. Before
+    T48 the estimate had no term in n²: these builds took 0.96 to 2.04
+    times it, and `FastICA` of 2 components over 4,096 features built in
+    11.7 s as a list against an estimate of 5.9 s (finding 87)."""
+    return (
+        _build_estimate(n, k)
+        + 3.01e-8 * n * n * k
+        + (2.99e-7 * n * n if k > 1 else 0.0)
+    )
 
 
 def _refuse_past_cap(
@@ -399,9 +413,10 @@ def _project_centered(
     `FastICA` stays Python where its output fields mix in rounding noise of
     size O(1), as a whitened `PCA` component of rounding noise does, or
     where its fit broke down (`_refuse_a_degenerate_ica`). Where the twin
-    subtracts a mean, the entry builds in up to 1.7 times as long as a
-    `PCA` of the same shape, and the cap estimates it so
-    (`_centered_build_estimate`).
+    subtracts a mean, the entry builds in 0.93 to 2.1 times the time of a
+    `PCA` of the same shape that reads `coalesce(x, NaN)`, and in 0.81 to
+    1.35 times that of one that reads `x - 0.0` (T48), and the cap
+    estimates it so (`_centered_build_estimate`).
 
     Measured over 200 seeds of each class at 1, 2, 3, 5, 8, 17, 32 and 64
     features (correlated features of scales 1e-2 to 1e4 and means up to

@@ -715,14 +715,25 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
     whole = pa.types.is_struct(step.returns) or pa.types.is_fixed_size_list(
         step.returns
     )
-    fn = SqlFunction(
-        step.name,
-        takes,
-        step.returns,
-        body,
-        # A NULL id is a NULL struct or list, not one of NULL output fields.
-        null_when=(lambda iid, *_: iid.isnull()) if whole else None,
-    )
+    try:
+        fn = SqlFunction(
+            step.name,
+            takes,
+            step.returns,
+            body,
+            # A NULL id is a NULL struct or list, not one of NULL output fields.
+            null_when=(lambda iid, *_: iid.isnull()) if whole else None,
+        )
+    except RecursionError:
+        # confit writes each value the body reads twice as SQL by recursion
+        # (`sql.shared_texts`), so a value nested deeper than Python's
+        # recursion limit raises here, before `_builds`: `Normalizer(l2)`
+        # over 2,048 features, whose sum of squares follows numpy's chain
+        # (finding 86). The step stays Python.
+        raise NotNative(
+            "confit does not build it: an expression nested past Python's"
+            " recursion limit"
+        ) from None
     _builds(step, fn)
     return fn
 
