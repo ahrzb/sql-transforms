@@ -2,7 +2,8 @@
 field bit-exact, a product and a square root, each correctly rounded on
 both sides; its cos and sin fields within their error scale, as numpy's log
 parts from glibc's. The RBF sampler within its error scale, as the twin's
-BLAS sum and the entry's balanced tree part by rounding."""
+BLAS sum and the entry's balanced tree part by rounding; the skewed chi2
+sampler, the same over ln(x + s), within its own."""
 
 from __future__ import annotations
 
@@ -12,7 +13,11 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pytest
-from sklearn.kernel_approximation import AdditiveChi2Sampler, RBFSampler
+from sklearn.kernel_approximation import (
+    AdditiveChi2Sampler,
+    RBFSampler,
+    SkewedChi2Sampler,
+)
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
@@ -401,3 +406,191 @@ def test_an_rbf_sampler_takes_a_fit_by_its_estimated_build():
     huge = RBFSampler(n_components=400, random_state=0).fit(np.ones((2, 256)))
     with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
         to_native(_rbf_step(huge), strict=True, allow_bound=True)
+
+
+def _skewed(n: int, m: int = 20, dtype: Any = np.float64, **kw) -> SkewedChi2Sampler:
+    est = SkewedChi2Sampler(n_components=m, random_state=0, **kw)
+    return est.fit(np.ones((2, n), dtype=dtype))
+
+
+def _above(seed: int, n: int, s: float) -> np.ndarray:
+    """Rows above -s, where the twin answers: x + s of magnitudes 1e-5 to
+    1e5, near 1, and small whole numbers."""
+    rng = np.random.default_rng(seed)
+    p = np.vstack(
+        [
+            10.0 ** rng.uniform(-5, 5, size=(50, n)),
+            1.0 + rng.normal(size=(20, n)) * 1e-4,
+            rng.integers(1, 9, size=(20, n)).astype(float),
+        ]
+    )
+    return p - s
+
+
+@pytest.mark.parametrize("n, m, s", [(3, 20, 1.0), (12, 100, 0.5), (64, 30, -2.0)])
+def test_a_skewed_chi2_sampler_parts_from_its_twin_within_its_error_scale(n, m, s):
+    step = _rbf_step(_skewed(n, m, skewedness=s))
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _table(_above(n, n, s))
+    with pytest.raises(ParityError, match="ulps, bound 0"):
+        check(step, native, rows, ulps=0)
+    assert check(step, native, rows) == rows.num_rows
+
+
+# Doubles about -s = -1: at and below it, which the twin rejects; just
+# above it (ln near -37); signed zeros and subnormals; the largest double;
+# the values its validation rejects.
+SKEWED_SPECIALS = [
+    -1.0, -1.0000000000000002, -0.9999999999999999, -1e300, -0.5, 0.0, -0.0,
+    5e-324, 1e-300, 0.5, 2.5, 1e300, 1.7976931348623157e308, math.inf,
+    -math.inf, math.nan, None,
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("s", [1.0, 0.0])
+def test_a_skewed_chi2_sampler_serves_special_values(s):
+    # Each pair, shifted by 1 - s, and the signed zeros: the twin answers
+    # where both are above -s and finite, and the entry traps on the others
+    # (at s = 0, on both zeros).
+    step = _rbf_step(_skewed(2, skewedness=s))
+    shift = 1.0 - s
+    vals = [v if v is None or not shift else v + shift for v in SKEWED_SPECIALS]
+    vals += [0.0, -0.0]
+    k = len(vals)
+    rows = _rows(
+        [vals[i % k] for i in range(k * k)], [vals[i // k] for i in range(k * k)]
+    )
+    valid = [v for v in vals if v is not None and -s < v < math.inf]
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, rows) == len(valid) ** 2
+
+
+def test_a_skewed_chi2_sampler_serves_only_on_request():
+    step = _rbf_step(_skewed(2))
+    assert to_native(step) is step
+    assert "within 6·eps·S + τ (S its error scale)" in explain_native(step)
+    with pytest.raises(NotNative, match="only with allow_bound=True"):
+        to_native(step, strict=True)
+
+
+def test_a_changed_skewed_weight_breaches_the_error_scale():
+    est = _skewed(4)
+    step = _rbf_step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    est.random_weights_ = est.random_weights_.copy()
+    est.random_weights_[0, 0] *= 1 + 1e-9
+    with pytest.raises(ParityError, match=r"past its bound K\*eps\*S \+ tau"):
+        check(step, native, _table(_above(4, 4, 1.0)))
+
+
+def test_a_skewed_chi2_sampler_in_a_pipeline_serves_as_its_last_step():
+    est = make_pipeline(
+        MinMaxScaler(), SkewedChi2Sampler(n_components=8, random_state=0)
+    )
+    est.fit(np.random.default_rng(5).normal(size=(30, 3)))
+    step = _step(est, [pa.float64()] * 3, pa.list_(pa.float64(), 8))
+    # Rows past the fit's range scale below 0, and below -1 the twin raises.
+    rows = _table(np.random.default_rng(6).normal(size=(80, 3)) * 2)
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) > 0
+
+
+@pytest.mark.parametrize("s, answered", [(1.0, 4), (0.0, 1)])
+def test_a_skewed_chi2_sampler_over_booleans_only_serves(s, answered):
+    # The twin's validation makes a boolean a double; NULL is NaN, which
+    # it rejects, and at s = 0 so is False (0 <= -s).
+    step = _rbf_step(_skewed(2, skewedness=s), [pa.bool_()] * 2)
+    rows = _rows([a for a in BITS for _ in BITS], [b for _ in BITS for b in BITS])
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == answered
+
+
+def test_a_skewed_chi2_sampler_over_booleans_only_traps_where_it_rejects_both():
+    # At s = -1, the twin rejects True and False (x <= 1): the entry traps
+    # each row, so that `check` compares none.
+    step = _rbf_step(_skewed(2, skewedness=-1.0), [pa.bool_()] * 2)
+    rows = _rows([a for a in BITS for _ in BITS], [b for _ in BITS for b in BITS])
+    native = to_native(step, strict=True, allow_bound=True)
+    with pytest.raises(ParityError, match="the step raises on each of 9 rows"):
+        check(step, native, rows)
+
+
+def test_a_skewed_chi2_sampler_over_a_string_feature_stays_python():
+    # The twin rejects a string, so the probe row holds one.
+    step = _rbf_step(_skewed(2), [pa.string(), pa.float64()])
+    with pytest.raises(NotNative, match="raises on the input guard's probe row"):
+        to_native(step, strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("bits", [False, True])
+def test_a_skewed_chi2_sampler_fitted_in_float32_serves(bits):
+    # The twin's validation makes the row doubles, and numpy widens the
+    # weights and offsets to float64 over them.
+    n = 3
+    step = _rbf_step(_skewed(n, dtype=np.float32), [pa.bool_()] * n if bits else None)
+    if bits:
+        rows = _rows(*([a for a in BITS for _ in BITS] for _ in range(n)))
+    else:
+        rows = _table(_above(7, n, 1.0))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+@pytest.mark.parametrize(
+    "probes, read",
+    [({"log": 2}, "2 and 0"), ({"log": None}, "None and 0"), ({"cos": 1}, "1 and 1")],
+)
+def test_a_log_or_cos_apart_keeps_a_skewed_chi2_sampler_python(
+    monkeypatch, probes, read
+):
+    # K = n + 4 reads numpy's log within 1 ulp of confit's, and its cos equal.
+    defaults = {"log": 1, "cos": 0}
+    monkeypatch.setattr(
+        K, "kernel_distance", lambda func: {**defaults, **probes}[func.__name__]
+    )
+    with pytest.raises(NotNative, match=f"numpy log and cos are {read} ulps"):
+        to_native(_rbf_step(_skewed(2)), strict=True, allow_bound=True)
+
+
+def test_a_log_and_cos_equal_to_confits_serve_a_skewed_chi2_sampler(monkeypatch):
+    monkeypatch.setattr(K, "kernel_distance", lambda func: 0)
+    step = _rbf_step(_skewed(2))
+    assert check(
+        step, to_native(step, strict=True, allow_bound=True), _table(_above(3, 2, 1.0))
+    )
+
+
+@pytest.mark.parametrize("given", [np.longdouble(1.0), math.inf, math.nan, "1"])
+def test_a_skewedness_read_otherwise_than_as_a_double_stays_python(given):
+    # The fit rejects the infinities and NaN, which `transform` does not
+    # read again; a long double makes the twin add in long doubles.
+    est = _skewed(2)
+    est.skewedness = given
+    with pytest.raises(NotNative, match=r"SkewedChi2Sampler\(skewedness="):
+        to_native(_rbf_step(est), strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("given", [np.float32(0.3), np.float16(0.3), 2])
+def test_a_skewedness_of_another_numpy_type_is_read_as_a_double(given):
+    step = _rbf_step(_skewed(2, skewedness=given))
+    rows = _table(_above(4, 2, float(given)))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_a_skewed_weight_not_finite_stays_python():
+    est = _skewed(2)
+    est.random_offset_[3] = math.nan
+    with pytest.raises(NotNative, match="a random weight or offset not finite"):
+        to_native(_rbf_step(est), strict=True, allow_bound=True)
+
+
+def test_a_skewed_chi2_sampler_past_2048_products_stays_python():
+    # It computes the logarithm in each product: past 2,048 it would serve
+    # about as slowly as the twin.
+    with pytest.raises(NotNative, match="3,200 products past 2,048"):
+        to_native(_rbf_step(_skewed(64, 50)), strict=True, allow_bound=True)
+
+
+def test_a_skewed_chi2_sampler_takes_a_fit_by_its_estimated_build():
+    # A struct grows about as n·m²: within the products, the cap takes 8
+    # features of 256 components and refuses 2 of 1,024.
+    assert K._skewed_build_estimate(8, 256) <= 7
+    with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
+        to_native(_rbf_step(_skewed(2, 1024)), strict=True, allow_bound=True)

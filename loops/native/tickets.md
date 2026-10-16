@@ -138,9 +138,28 @@ fit serves over numbers, and stays Python over boolean features only,
 where the twin computes in float32. It has its own build estimates, one
 per reading: the projections' took builds of 9.2 s and 15.4 s. Coverage
 is 47 of 68.
+T52 (#506) serves `SkewedChi2Sampler` with `allow_bound=True` (kernel.py),
+within the error scale of the ruling: K = n + 4, S = c·(Σ|L_i·W_ij| +
+|b_j| + 1) with L_i = ln(x_i + s). The entry is the RBF entry over L_i
+(`_projection_cos`), behind a guard that traps where any x <= -s, as the
+twin raises; there `ln` cannot raise, so the entry reads it bare. It reads
+numpy's `log` within 1 ulp of confit's `ln` and its `cos` as confit's
+(the kernel probes), else it stays Python. Over 154 million output fields
+of 6 seeds at 1 to 64 features, 102 million with numpy's `log` of AVX-512
+and 51 million with glibc's, the largest |entry - twin| / (eps·S) is 2.91
+against K = 68; the least room is 1.86 against K = 6, at 2 features. The
+twin's validation makes every row a double, so booleans and a float32 fit
+serve. confit shares no `ln` (a value that can raise), so the entry
+computes the logarithm in each of its n·m products: within 2,048 products
+a call of 64 rows serves 1.5 to 73 times as fast as the twin, and past
+them the step stays Python, as a struct can serve more slowly than the
+twin (0.9 times as fast at 3,200). A struct read field by field grows
+about as n·m², so the entry has its own build estimate; a struct of 2,048
+components over one feature ran out of 16 GB of memory. The need is in
+PLANS "Needs from confit". Coverage is 48 of 68.
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it.
 
-Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`SkewedChi2Sampler` next, then `Nystroem`, one PR each).
+Next: PLANS "Next" (reading 8, then the rest of "Ruled 2026-10-06, to
+build", item 1, `Nystroem` next, one PR each).

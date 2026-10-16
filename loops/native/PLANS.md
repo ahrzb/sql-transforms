@@ -6,9 +6,11 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. The rest of "Ruled 2026-10-06, to build", item 1 (`SkewedChi2Sampler`
-   next, in kernel.py, then `Nystroem`; `FactorAnalysis` last), one PR
-   each; then the rest of item 2.
+1. Reading 8 (`../reporting.md`, KPI crosses a mark: T47 made
+   `sklearn.cluster` wholly native).
+2. The rest of "Ruled 2026-10-06, to build", item 1 (`Nystroem` next, in
+   kernel.py; `FactorAnalysis` last), one PR each; then the rest of item
+   2.
 
 ## Ruled 2026-10-06, to build
 
@@ -40,10 +42,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
      compare squares (`ErrorScale.g`), K = n + 5. T51 served
-     `RBFSampler`, K = n + 3 (kernel.py, its own build estimates). Left:
-     `SkewedChi2Sampler` n + 4 (the RBF entry over ln(x + s), numpy's
-     `log` within 1 ulp), `Nystroem` max(n + 5, m + 3): an RBF kernel of
-     `Nystroem` reads the same expansion of ‖x - c‖² as distance.py.
+     `RBFSampler`, K = n + 3 (kernel.py, its own build estimates), and
+     T52 `SkewedChi2Sampler`, K = n + 4 (the RBF entry over ln(x + s),
+     numpy's `log` within 1 ulp). Left: `Nystroem` max(n + 5, m + 3): an
+     RBF kernel of `Nystroem` reads the same expansion of ‖x - c‖² as
+     distance.py.
      `PolynomialCountSketch` is an FFT, not a matvec: not served until a
      normwise S is derived.
 2. **A bounded step inside a composition** (ruled 2026-10-15,
@@ -159,6 +162,24 @@ that request, `to_native(step, allow_bound=True)`. In order:
   priority for confit. A confit-only reproduction is
   `/mnt/project-files/transforms-loop/t44/reads3.py`: send it to the
   Confit Loop when it runs again.
+- **A logarithm computed once a row.** confit's pass that computes a
+  repeated value once a row (`share.rs`) shares only a value that cannot
+  raise, judged node by node without the facts of its CASE, so it never
+  shares `ln`, bare or under a CASE that rules its raise out.
+  `SkewedChi2Sampler` (T52, kernel.py) reads ln(x_i + s) in each of the m
+  products of x_i, so confit computes n·m logarithms a row, not n. At 32
+  features of 64 components a call of 64 rows serves in 5.9 ms as a list
+  and 11.8 ms as a struct, and in 0.78 and 0.74 ms where `exp`, which
+  confit shares, stands in for `ln`; the builds take 0.48 and 1.70 s,
+  against 0.20 and 0.30 s (release build, master 220a5e8). A struct read
+  field by field also carries every field's logarithms (the first need
+  above), so it builds about as n·m²: 2,048 components over one feature
+  ran out of 16 GB of memory. So T52 stays Python past 2,048 products,
+  where a call can take longer than the twin's. When it lands, measure
+  again, lift that cap (`kernel._SKEWED_PRODUCTS`) and refit
+  `kernel._skewed_build_estimate`. Low priority for confit: no other entry
+  reads a logarithm in many products. Send it to the Confit Loop when it
+  runs again.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
