@@ -53,7 +53,11 @@ from sklearn.feature_selection import (
 )
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.isotonic import IsotonicRegression
-from sklearn.kernel_approximation import AdditiveChi2Sampler, RBFSampler
+from sklearn.kernel_approximation import (
+    AdditiveChi2Sampler,
+    RBFSampler,
+    SkewedChi2Sampler,
+)
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
@@ -871,6 +875,18 @@ FIXTURES[RBFSampler] = [
 ]
 FIXTURES[Pipeline].append(
     lambda: make_pipeline(StandardScaler(), RBFSampler(n_components=8, random_state=2))
+)
+# The skewed chi2 sampler (kernel.py), within its error scale: rows above
+# -s, where each row answers, and rows of either sign at s = 3, where the
+# twin rejects each x <= -3.
+FIXTURES[SkewedChi2Sampler] = [
+    positive(lambda: SkewedChi2Sampler(n_components=5, random_state=0)),
+    lambda: SkewedChi2Sampler(skewedness=3.0, n_components=50, random_state=1),
+]
+FIXTURES[Pipeline].append(
+    lambda: make_pipeline(
+        MinMaxScaler(), SkewedChi2Sampler(n_components=8, random_state=2)
+    )
 )
 
 # A string feature's fitted values, and the unseen ones serving adds.

@@ -1,6 +1,8 @@
 """Kernel approximations (sklearn 1.9, `sklearn/kernel_approximation.py`):
-`AdditiveChi2Sampler`, which maps each feature on its own, and
-`RBFSampler`, the cosine of a random projection of the row (`_rbf`).
+`AdditiveChi2Sampler`, which maps each feature on its own; `RBFSampler`,
+the cosine of a random projection of the row (`_rbf`); and
+`SkewedChi2Sampler`, the same over the logarithm of each feature shifted
+by the skewedness (`_skewed_chi2`).
 
 For each feature x, with s the sample interval, the twin
 (`_transform_dense`) answers 0 where x is 0, else `sqrt(x * s)`; then, for
@@ -54,7 +56,11 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
-from sklearn.kernel_approximation import AdditiveChi2Sampler, RBFSampler
+from sklearn.kernel_approximation import (
+    AdditiveChi2Sampler,
+    RBFSampler,
+    SkewedChi2Sampler,
+)
 
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import ErrorScale, NotNative, rejects, translates
@@ -370,10 +376,197 @@ def _rbf(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
             f"RBFSampler: this platform's numpy cos is {d} ulps from confit's on"
             " the kernel probe, where K = n + 3 reads the same function"
         )
-    c = f64(_factor(est))
-    w64, b64 = w.astype(np.float64), b.astype(np.float64)
+    return _projection_cos(est, x, _factor(est))
+
+
+def _projection_cos(est: Any, ins: list[S.Expr], c: float) -> list[S.Expr]:
+    """`c * cos(sum_i ins_i * W_ij + b_j)` for each component j, with W the
+    random weights and b the random offsets as doubles (numpy widens a
+    float32 fit's over a row of doubles): the products summed as a
+    balanced tree, then the offset, then `cos`, NaN at an infinite angle
+    as numpy answers (`_trig`), then the product by c."""
+    w = np.asarray(est.random_weights_, dtype=np.float64)
+    b = np.asarray(est.random_offset_, dtype=np.float64)
     out = []
-    for j in range(m):
-        angle = _tree([xi * f64(wi) for xi, wi in zip(x, w64[:, j], strict=True)])
-        out.append(_trig("cos", angle + f64(b64[j])) * c)
+    for j in range(w.shape[1]):
+        angle = _tree([v * f64(wi) for v, wi in zip(ins, w[:, j], strict=True)])
+        out.append(_trig("cos", angle + f64(b[j])) * f64(c))
     return out
+
+
+def _skewedness(est: Any) -> float:
+    """The skewedness s as a double, as the twin adds it to a row of
+    doubles. NotNative where the twin adds it in another dtype (a long
+    double rounds `x + s` twice), or where it is not finite."""
+    given = est.skewedness
+    try:
+        dtype = (np.ones(1) + given).dtype
+        s = float(given)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise NotNative(f"SkewedChi2Sampler(skewedness={given!r})") from e
+    if dtype != np.float64:
+        raise NotNative(
+            f"SkewedChi2Sampler(skewedness={given!r}): the twin adds it in {dtype}"
+        )
+    if not math.isfinite(s):
+        raise NotNative(f"SkewedChi2Sampler(skewedness={given!r})")
+    return s
+
+
+def _skewed_factor(est: Any) -> float:
+    """The twin's output factor, `np.sqrt(2.0) / np.sqrt(n_components)`:
+    two square roots and a quotient, each correctly rounded, so the same
+    double on every host."""
+    return float(np.sqrt(2.0) / np.sqrt(est.n_components))
+
+
+def _skewed_s(est: Any, x: np.ndarray) -> np.ndarray:
+    """S for each output field at the row `x` (long doubles):
+    c·(Σ|L_i|·|W_ij| + |b_j| + 1), with L_i = ln(x_i + s) and c the output
+    factor. L_i reads 0 where x_i + s is not above 0, which the twin
+    rejects."""
+    p = np.asarray(x, np.longdouble) + np.longdouble(_skewedness(est))
+    ln = np.abs(np.log(np.where(p > 0, p, np.longdouble(1.0))))
+    w = np.abs(np.asarray(est.random_weights_, dtype=np.longdouble))
+    b = np.abs(np.asarray(est.random_offset_, dtype=np.longdouble))
+    return np.longdouble(_skewed_factor(est)) * (ln @ w + b + 1)
+
+
+SKEWED_CHI2 = ErrorScale(
+    k=lambda est: est.n_features_in_ + 4,
+    s=_skewed_s,
+    tau=lambda est: 0,
+)
+
+
+def _above_skew(est: Any, types: list[pa.DataType]) -> list[Any]:
+    """The input guard's probe row: each feature above -s, which the twin
+    takes. A number reads 1.0, or -2·s where s < 0; a boolean False where
+    s > 0, else True (where s <= -1, the twin rejects every boolean); a
+    string, which the twin rejects, an empty string (`_registry._base`)."""
+    s = _skewedness(est)
+    number = 1.0 if s >= 0 else -2.0 * s
+    return [
+        "" if t == pa.string() else s <= 0 if t == pa.bool_() else number for t in types
+    ]
+
+
+# The most products x_i·W_ij the entry takes (`_skewed_chi2`): confit
+# computes the logarithm in each, as it shares no `ln`, so past this many
+# a struct serves a call about as fast as the twin, or more slowly.
+_SKEWED_PRODUCTS = 2048
+
+
+def _skewed_build_estimate(n: int, m: int) -> float:
+    """The seconds confit takes to build the entry (warm, release build)
+    from its n features and m components, where n·m is at most
+    `_SKEWED_PRODUCTS`. confit computes the logarithm in each product, and
+    a struct read field by field carries every field's logarithms, so a
+    struct grows about as n·m²: one of 1,024 components over one feature
+    builds in 12.8 s, against 0.61 s as a list, and one of 2,048 ran out of
+    16 GB of memory. Fitted on the slower return of each shape over 53
+    shapes (1 to 2,048 features, 1 to 1,024 components; builds of 0.004
+    to 26.1 s; master 220a5e8, 2026-10-16): over 0.3 s, each within 0.75
+    to 1.41 times the estimate. The cap took none slower than 5.18 s and
+    refused none faster than 8.91 s, and it refuses the struct that ran
+    out of memory, at an estimated 37 s."""
+    return (
+        7.40e-4 * n
+        + 3.57e-4 * n * m
+        + 7.48e-7 * n * n * m
+        + 8.76e-6 * n * m * m
+        + (6.13e-6 * n * n if m > 1 else 0.0)
+    )
+
+
+@translates(SkewedChi2Sampler, scale=SKEWED_CHI2, base=_above_skew)
+def _skewed_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
+    """`SkewedChi2Sampler` (`transform`): `validate_data` into doubles (a
+    boolean reads 0 or 1), where NaN and the infinities raise; a raise
+    where any x <= -s; then `X += s`, `np.log`, `X @ random_weights_`
+    (BLAS), `+= random_offset_`, `np.cos`, and `*= np.sqrt(2.0) /
+    np.sqrt(n_components)`.
+
+    The entry is `_rbf`'s over L_i = ln(x_i + s), held to the error scale
+    of the ruling (decisions/closed/matvec-parity-bound.md, item 4): for
+    output field j,
+
+        |entry - twin| <= (n + 4)·eps·S_j,   S_j = c·(T_j + 1),
+        T_j = sum_i |L_i·W_ij| + |b_j|.
+
+    `x + s` is correctly rounded on both sides, and above 0 where the twin
+    takes x. numpy's `log` is within d = 1 ulp of confit's `ln` (SVML's on
+    x86-64 with AVX-512, glibc's elsewhere; where the kernel probe reads
+    more, the step stays Python), and an ulp of L_i is at most eps·|L_i|,
+    so the two sides' L differ by eps·|L_i| at most, and the exact sums of
+    their products and the offset by eps·T_j. With `_rbf`'s γ_{n+1}·T_j
+    on each side, the two angles are within (n + 2)·eps·T_j to first
+    order. `cos` is 1-Lipschitz and the same function on both sides (its
+    probe reads 0): each side's rounding of it adds up to eps, and the
+    products by c eps·c between them. c is the same double on every host.
+    So the fields are within c·eps·((n + 2)·T_j + 3), which (n + 4)·eps·S_j
+    covers at every n, with room for the rounding of S in `check`; tau is
+    0, as for `_rbf`. `check` reads L_i as the logarithm of the exact sum
+    x_i + s, which parts from each side's by eps/2 at most, a change far
+    within that room.
+
+    Measured over 6 seeds of 1, 2, 3, 5, 8, 17, 32 and 64 features of 64
+    components (s of 1, 0.01, 10, -1.5 and 0; x + s near 1, of magnitudes
+    1e-5 to 1e5, uniform in (0, 1e3), 1e-300 to 1e-5, and small whole
+    numbers; master 220a5e8, 2026-10-16): 154 million output fields
+    against the twin of the whole call, 34% of them apart, and 15 million
+    against the twin of each row alone, 29% apart (the two twins part in
+    31%). 102 million read numpy's `log` of AVX-512, 1 ulp from confit's
+    on its probe, and 51 million glibc's (`NPY_DISABLE_CPU_FEATURES`). The
+    largest |entry - twin| / (eps·S) is 2.91, at 64 features against
+    K = 68; the least room is at 2 features, 1.86 against K = 6. At one
+    feature, each field equals the twin's where numpy's `log` is glibc's,
+    and is within 1.00·eps·S where it is AVX-512's. The measured value is
+    evidence for K, not K.
+
+    confit computes the logarithm in each of the n·m products, as it
+    shares no `ln` (a value that can raise), so the entry serves more
+    slowly than `_rbf`, the more so as n·m grows. A call of 64 rows takes
+    119 to 123 µs at 2 features of 10 components, against 8.2 to 9.0 ms for
+    the twin; 1.6 to 2.9 ms at 4 of 100, 6.3 times as fast as the twin; and
+    4.9 to 41 ms at 1,600 to 2,048 products, 1.5 to 5.2 times as fast (a
+    list or a struct, one thread, the median of 30 warm calls, release
+    build, master 220a5e8). Past 2,048 products a call can take longer
+    than the twin's: a struct serves 0.9 times as fast at 3,200 products
+    (64 features of 50 components), and a list and a struct 0.9 and 0.7
+    times as fast at 6,400 (64 of 100). So the step stays Python past
+    2,048 (`_SKEWED_PRODUCTS`). Within them, a step builds by
+    `_skewed_build_estimate`, which the cap reads.
+
+    A fit in float32 serves: the twin's validation makes every row a
+    double, booleans included, and numpy widens the weights and offsets
+    to float64 over it."""
+    w = np.asarray(est.random_weights_)
+    b = np.asarray(est.random_offset_)
+    n, m = w.shape
+    s = _skewedness(est)
+    if n * m > _SKEWED_PRODUCTS:
+        raise NotNative(
+            f"SkewedChi2Sampler: {n} features of {m} components, {n * m:,}"
+            f" products past {_SKEWED_PRODUCTS:,}: confit computes the logarithm"
+            " in each, so the entry would serve about as slowly as the twin"
+        )
+    _refuse_past_cap("SkewedChi2Sampler", n, m, _skewed_build_estimate)
+    if not (np.isfinite(w).all() and np.isfinite(b).all()):
+        raise NotNative("SkewedChi2Sampler: a random weight or offset not finite")
+    d = {f.__name__: kernel_distance(f) for f in (np.log, np.cos)}
+    if d["log"] is None or d["log"] > 1 or d["cos"] != 0:
+        raise NotNative(
+            "SkewedChi2Sampler: this platform's numpy log and cos are"
+            f" {d['log']} and {d['cos']} ulps from confit's on the kernel probe,"
+            " past what K = n + 4 reads (1 and 0)"
+        )
+    # NaN, above every number in DuckDB, is the least only where every
+    # feature is NaN, which the probe's test traps.
+    rejects((x[0] if n == 1 else S.fn("least", *x)) <= f64(-s))
+    # `x + s` is above 0 where the guard passes x, so `ln` raises only
+    # where the guard traps. Bare, `ln` builds and serves faster than under
+    # a CASE that rules its raise out: confit shares neither (each product
+    # computes its own), and the CASE splits a block in each.
+    logs = [S.fn("ln", xi + f64(s)) for xi in x]
+    return _projection_cos(est, logs, _skewed_factor(est))
