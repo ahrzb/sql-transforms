@@ -203,8 +203,14 @@ def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
         _reject(xj, string, rows, raises, null if booleans else None, search)
         if booleans:
             _reject(xj, string, rows_b, False, ~null)
+        present = [c for c in classes[j] if not _missing(c)]
+        ends = (
+            (min(present), max(present))
+            if present and t not in (pa.string(), pa.bool_())
+            else None
+        )
         for field in range(offset, offset + widths[j]):
-            e = _field(xj, string, rows, unknown, field)
+            e = _field(xj, string, rows, unknown, field, ends)
             if booleans:
                 b = _field(xj, string, rows_b, None, field)
                 if b.sql() != e.sql():
@@ -300,11 +306,18 @@ def _field(
     rows: list[tuple[Any, list[float] | None]],
     unknown: list[float] | None,
     field: int,
+    ends: tuple[float, float] | None = None,
 ) -> S.Expr:
     """One output field: the CASE over the feature's classes, the values
     grouped. The ELSE answers unknown values or, where the twin raises on
     them (`unknown` is None), the largest group: every other value it then
-    meets is one the twin raises on, where the input guard traps."""
+    meets is one the twin raises on, where the input guard traps.
+
+    Over a number feature whose classes run from `ends[0]` to `ends[1]`, a
+    CASE of more than one arm first answers a number outside them as the
+    ELSE does. That test reads the feature twice in one arm, so that confit
+    computes it once a row, where each arm of the chain read it again
+    (`_registry._apart`)."""
     groups: dict[str, tuple[float, list[Any]]] = {}
     for c, got in rows:
         if got is None:
@@ -323,6 +336,9 @@ def _field(
     tail = S.lit(None, "DOUBLE") if other is None else f64(other)
     if not arms:
         return tail
+    if ends is not None and len(arms) > 1:
+        lo, hi = f64(ends[0]), f64(ends[1])
+        arms = [((xj < lo) | ((xj > hi) & ~isnan(xj)), tail), *arms]
     (c0, v0), *rest = arms
     e = S.case(c0, v0)
     for c, v in rest:

@@ -33,8 +33,9 @@ condition that tests both ends, which reads the feature twice in one CASE
 arm. confit computes a value once a row only where a function reads it
 twice or more outside any CASE arm, or twice in one arm (its shared values,
 `share.rs`). A chain of one test per edge read the translator's `x - 0.0`
-(`_registry._apart`) once in each arm, so confit computed it again in each
-(float64; float32's input guard reads it twice). At 32 features of 31 bins
+(`_registry._apart`) once in each arm, so confit computed it again in each.
+Under float32 on master eeefa31, the input guard read it too, and confit
+computed it once a row. At 32 features of 31 bins
 a row of a 1,024-row call took 4.5 µs, against 15.7 µs with the chain
 (float32: 4.9 against 6.0 µs), and at 8 features of 255 bins 1.4 µs,
 against 36 µs (float32: 1.9 against 11 µs) (release build, master eeefa31,

@@ -1326,6 +1326,51 @@ def test_an_encoder_reads_a_string_feature_missing_at_fit(make):
     assert check(step, to_native(step, strict=True), rows) == 5
 
 
+@pytest.mark.parametrize(
+    "make, answered",
+    [
+        (
+            lambda: OrdinalEncoder(
+                handle_unknown="use_encoded_value", unknown_value=-1
+            ),
+            10,
+        ),
+        (
+            lambda: OrdinalEncoder(
+                handle_unknown="use_encoded_value",
+                unknown_value=-1,
+                encoded_missing_value=-2,
+            ),
+            10,
+        ),
+        (OrdinalEncoder, 4),
+    ],
+    ids=["unknown", "missing", "raises"],
+)
+def test_an_ordinal_number_field_answers_past_its_ends_as_its_else(make, answered):
+    # Over a number feature, an ordinal field of more than one arm first
+    # tests the ends of the classes (`encode._field`): a number past them
+    # answers as the ELSE does, and NaN, which DuckDB orders above every
+    # number, goes on to the arms. Where the twin raises (on an infinity,
+    # or on an unknown number by default), the input guard traps.
+    est = make().fit(np.array([[1.0], [2.0], [3.0], [np.nan], [-1.0], [2.0]]))
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64())]),
+        pa.struct([("f0", pa.float64())]),
+    )
+    values = [-1.0, 3.0, 2.5, -1.5, 3.5, -math.inf, math.inf, math.nan, None]
+    values += [0.0, -0.0, 1e300]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.float64()),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == answered
+
+
 def _encoder_fit(beside: str | None, hole: bool) -> tuple[np.ndarray, list]:
     """Two boolean columns (the first constant True), and a third beside
     them: none, a number or a string; with a hole (NaN) in the second."""

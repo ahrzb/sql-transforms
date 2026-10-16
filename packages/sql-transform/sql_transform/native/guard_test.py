@@ -137,6 +137,38 @@ def test_a_translator_reads_each_number_as_a_value_confit_shares():
 
 
 @pytest.mark.parametrize(
+    "est, rows",
+    [
+        (
+            PowerTransformer(method="box-cox", standardize=False),
+            [(1.5, 2.0), (0.0, 2.0)],
+        ),
+        (
+            SplineTransformer(n_knots=3, degree=1, extrapolation="error"),
+            [(1.0, 1.0), (1e6, 1.0)],
+        ),
+    ],
+    ids=["box-cox", "spline"],
+)
+def test_a_translators_tests_for_the_guard_read_each_number_as_it_is(est, rows):
+    # A translator's own tests for the guard (`rejects`) read each number as
+    # the guard does, not as the translator's `x - 0.0` (`_plain`). Read by
+    # the guard, ahead of the body, the value confit shares rode through
+    # the whole body: a spline of 128 features built in 9.2 s, not 3.6 s.
+    X = np.random.default_rng(0).lognormal(size=(20, 2))
+    width = np.asarray(est.fit(X).transform(X[:1])).shape[1]
+    step = _step(est, [pa.float64(), pa.float64()], width)
+    native = to_native(step, strict=True, allow_bound=True)
+    guard, rest = native.sql_body.split(" THEN error(", 1)
+    apart = "- CAST('0.0' AS DOUBLE)"
+    assert apart not in guard
+    assert apart in rest
+    table = _rows(step, rows)
+    assert _traps(step, native, table) == [False, True]
+    assert check(step, native, table) == 1
+
+
+@pytest.mark.parametrize(
     "est, traps",
     [
         # Validation that lets NaN through, and validation that does not.
