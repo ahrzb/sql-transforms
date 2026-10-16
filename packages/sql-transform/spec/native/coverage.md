@@ -16,7 +16,7 @@ owner's ruling).
 
 | transformer | status | note |
 |---|---|---|
-| `AdditiveChi2Sampler` | native | bit-exact |
+| `AdditiveChi2Sampler` | native | bit-exact; within K·eps·S + τ (S its error scale) for some configurations, served only with `allow_bound=True` |
 | `BernoulliRBM` | not yet |  |
 | `Binarizer` | native | bit-exact |
 | `Birch` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |

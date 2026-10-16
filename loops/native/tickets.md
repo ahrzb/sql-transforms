@@ -111,9 +111,22 @@ Python until the error scale of the ruling. Over boolean features only,
 the twin keeps the array boolean, so True answers 1.0: the entry stays
 Python there unless sqrt(s) is 0 or 1. A step builds about as fast as a
 `StandardScaler` of its width (1.1 s at 1,024 features, as a list).
+T50 (#504) serves its cos and sin fields (`sample_steps` of 2 or more,
+the default 2 included) with `allow_bound=True`, within the error scale
+of the ruling: K = 4, S = f·(1 + |j·s·ln x|) per field. The entry spells
+the twin's operations in its order, with the twin's `cosh` as a constant,
+so only `ln` parts from numpy's `log` (SVML's here), by up to 1 ulp. Over
+303 million cos and sin fields of 8 configurations, 0.13% part from the
+twin, and the largest |entry - twin| / (eps·S) is 1.96. Where the kernel
+probes of `log`, `sin` and `cos` read 0 and numpy's `cosh` is glibc's, as
+on a host without AVX-512, the entry is bit-exact and serves by default.
+An entry's error scale now applies where `scaled(est)` says so
+(`Entry.scale_for`), so `sample_steps=1` stays bit-exact. A float32 or
+float16 interval keeps the cos and sin fields Python: the twin computes
+its `cosh` in that dtype.
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it.
 
 Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`AdditiveChi2Sampler`'s cos and sin fields first, one PR each).
+`RBFSampler` and `SkewedChi2Sampler` next, one PR each).

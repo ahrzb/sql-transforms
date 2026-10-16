@@ -322,7 +322,7 @@ def check(
         entry = None if est is None else entries.get(type(est))
         scale = parts = None
         if ulps is None and entry is not None:
-            scale, parts = entry.scale, entry.part_bounds(est)
+            scale, parts = entry.scale_for(est), entry.part_bounds(est)
         if ulps is not None:
             u = ulps
         elif entry is None or scale is not None or parts is not None:

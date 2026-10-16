@@ -845,16 +845,23 @@ FIXTURES[Birch] = [
     Birch,
     lambda: Birch(threshold=100.0, n_clusters=None, branching_factor=5),
 ]
-# The additive chi2 map's first field, bit-exact (kernel.py): the default
-# interval, and one past 1. After a MinMaxScaler, a row past the fit's
-# range is negative, where the twin's second step raises.
+# The additive chi2 map (kernel.py): its first field alone, bit-exact, at
+# the default interval and one past 1; with its cos and sin fields, within
+# their error scale, at sklearn's defaults and at j up to 3 of an interval
+# whose rounding amplifies a log apart most (A = 2/1.0004). After a
+# MinMaxScaler, a row past the fit's range is negative, where the twin's
+# last step raises.
 FIXTURES[AdditiveChi2Sampler] = [
     positive(lambda: AdditiveChi2Sampler(sample_steps=1)),
     positive(lambda: AdditiveChi2Sampler(sample_steps=1, sample_interval=2.7)),
+    positive(AdditiveChi2Sampler),
+    positive(lambda: AdditiveChi2Sampler(sample_steps=3)),
+    positive(lambda: AdditiveChi2Sampler(sample_steps=4, sample_interval=0.2501)),
 ]
-FIXTURES[Pipeline].append(
-    lambda: make_pipeline(MinMaxScaler(), AdditiveChi2Sampler(sample_steps=1))
-)
+FIXTURES[Pipeline] += [
+    lambda: make_pipeline(MinMaxScaler(), AdditiveChi2Sampler(sample_steps=1)),
+    lambda: make_pipeline(MinMaxScaler(), AdditiveChi2Sampler()),
+]
 
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]

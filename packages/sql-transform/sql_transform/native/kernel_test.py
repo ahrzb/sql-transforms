@@ -1,10 +1,11 @@
-"""The additive chi2 map's first field, bit-exact (kernel.py): a product
-and a square root, each correctly rounded on both sides. Its cos and sin
-fields stay Python."""
+"""The additive chi2 map (kernel.py): its first field bit-exact, a product
+and a square root, each correctly rounded on both sides; its cos and sin
+fields within their error scale, as numpy's log parts from glibc's."""
 
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -14,7 +15,15 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import MinMaxScaler
 
 from sql_transform._udf import PythonTransform
-from sql_transform.native import NotNative, check, to_native
+from sql_transform.native import (
+    NotNative,
+    ParityError,
+    catalog,
+    check,
+    explain_native,
+    to_native,
+)
+from sql_transform.native import kernel as K
 
 # The twin's products overflow and meet 0 * inf, as numpy warns.
 pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -74,13 +83,101 @@ def test_one_feature_serves_a_scalar():
     assert check(step, to_native(step, strict=True), _rows(SPECIALS)) == len(VALID)
 
 
-@pytest.mark.parametrize("steps, interval", [(2, None), (3, None), (5, 0.3)])
-def test_its_cos_and_sin_fields_stay_python(steps, interval):
+def _steps(steps: int, n: int, interval: Any = None) -> AdditiveChi2Sampler:
     est = AdditiveChi2Sampler(sample_steps=steps, sample_interval=interval)
-    est.fit(np.ones((2, 1)))
+    return est.fit(np.ones((2, n)))
+
+
+def _pairs(est: AdditiveChi2Sampler) -> PythonTransform:
+    """A step of `est` over two features, returning a list."""
+    width = 2 * (2 * est.sample_steps - 1)
+    return _step(est, [pa.float64()] * 2, pa.list_(pa.float64(), width))
+
+
+def _apart_logs(n: int) -> list[float]:
+    """Up to `n` doubles near 1 whose numpy log is not glibc's (`math.log`,
+    DuckDB's `ln`): about 2% of such draws on x86-64 with AVX-512, none
+    where numpy's log is glibc's."""
+    x = 1 + np.random.default_rng(0).normal(0, 1e-3, 20_000)
+    return [v for v in x.tolist() if float(np.log(v)) != math.log(v)][:n]
+
+
+@pytest.mark.parametrize(
+    "steps, interval", [(2, None), (3, None), (4, 0.2501), (2, 0.0), (2, 1e306)]
+)
+def test_its_cos_and_sin_fields_serve_special_values(steps, interval):
+    # At 1e306, `s * ln x` overflows, and numpy's cos and sin of infinity
+    # are NaN, where DuckDB's raise.
+    step = _pairs(_steps(steps, 2, interval))
+    k = len(SPECIALS)
+    rows = _rows(
+        [SPECIALS[i % k] for i in range(k * k)],
+        [SPECIALS[i // k] for i in range(k * k)],
+    )
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, rows) == len(VALID) ** 2
+
+
+@pytest.mark.parametrize("steps, interval", [(3, None), (18, 0.1)])
+def test_a_field_whose_log_parts_is_held_to_its_scale(steps, interval):
+    xs = _apart_logs(100)
+    if not xs:
+        pytest.skip("numpy's log is glibc's here")
+    est = _steps(steps, 1, interval)
     step = _step(est, [pa.float64()], pa.list_(pa.float64(), 2 * steps - 1))
-    with pytest.raises(NotNative, match=rf"sample_steps={steps}\): its cos and sin"):
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, _rows(xs)) == len(xs)
+    # The fields do part: bit-exact, the same rows fail.
+    with pytest.raises(ParityError, match="output field"):
+        check(step, native, _rows(xs), ulps=0)
+
+
+def test_its_cos_and_sin_fields_serve_only_on_request():
+    est = _steps(2, 2)
+    if K._exact(est):
+        pytest.skip("the kernel probes read 0 here: the entry is bit-exact")
+    step = _pairs(est)
+    assert to_native(step) is step
+    assert "within 4·eps·S + τ (S its error scale)" in explain_native(step)
+    with pytest.raises(NotNative, match="only with allow_bound=True"):
         to_native(step, strict=True)
+
+
+def test_where_the_kernel_probes_read_0_the_entry_is_bit_exact(monkeypatch):
+    # And where numpy's cosh is glibc's for the step's constants.
+    est, entry = _steps(3, 1), catalog()[AdditiveChi2Sampler]
+    same = all(
+        float(np.cosh(np.pi * j * 0.4)) == math.cosh(math.pi * j * 0.4) for j in (1, 2)
+    )
+    monkeypatch.setattr(K, "kernel_distance", lambda func: 0)
+    assert entry.exact(est) == same
+    # At 1e306 the cosh overflows on both sides, where `math.cosh` raises.
+    assert entry.exact(_steps(2, 1, 1e306))
+    monkeypatch.setattr(K, "kernel_distance", lambda func: 1)
+    assert not entry.exact(est)
+    assert entry.exact(_steps(1, 1))
+
+
+def test_a_log_further_from_glibcs_keeps_the_cos_and_sin_fields_python(monkeypatch):
+    # K = 4 reads a log within 1 ulp of glibc's.
+    monkeypatch.setattr(K, "kernel_distance", lambda func: 2 if func is np.log else 0)
+    with pytest.raises(NotNative, match="log, sin and cos are 2, 0 and 0 ulps"):
+        to_native(_pairs(_steps(2, 2)), strict=True, allow_bound=True)
+
+
+def test_a_float32_interval_keeps_the_cos_and_sin_fields_python():
+    # The twin's cosh is then a float32's, which hosts round apart.
+    step = _pairs(_steps(2, 2, np.float32(0.3)))
+    with pytest.raises(NotNative, match="computes its cosh in float32"):
+        to_native(step, strict=True, allow_bound=True)
+
+
+def test_more_steps_without_an_interval_stay_python():
+    # The fit rejects them; set after it, the twin raises.
+    est = _steps(2, 2)
+    est.sample_steps = 4
+    with pytest.raises(NotNative, match=r"sample_steps=4\) without a sample_interval"):
+        to_native(_pairs(est), strict=True, allow_bound=True)
 
 
 def test_an_interval_the_fit_rejects_stays_python():
@@ -123,6 +220,14 @@ def test_booleans_only_stay_python_where_the_twin_answers_true(interval):
     # it keeps boolean: True answers 1.0, not the root of the interval.
     with pytest.raises(NotNative, match="over boolean features only: the twin"):
         to_native(_booleans(interval), strict=True)
+
+
+def test_booleans_only_keep_the_cos_and_sin_fields_python():
+    # The root of 1.0 is 1.0, but a cos field of True is not.
+    est = _steps(2, 2, 1.0)
+    step = _step(est, [pa.bool_()] * 2, pa.list_(pa.float64(), 6))
+    with pytest.raises(NotNative, match="over boolean features only: the twin"):
+        to_native(step, strict=True, allow_bound=True)
 
 
 @pytest.mark.parametrize("interval", [0.0, 1.0])

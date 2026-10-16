@@ -6,9 +6,9 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. The rest of "Ruled 2026-10-06, to build", item 1 (`AdditiveChi2Sampler`'s
-   cos and sin fields first, `FactorAnalysis` last), one PR each; then the
-   rest of item 2.
+1. The rest of "Ruled 2026-10-06, to build", item 1 (`RBFSampler` and
+   `SkewedChi2Sampler` next, in kernel.py, `FactorAnalysis` last), one PR
+   each; then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -21,9 +21,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
 1. **Families on the parity bound.** Since T24 a family declares its error
    scale, `translates(cls, scale=ErrorScale(k, s, tau, g, on))`, and
    `native.check` holds each row to it (`_registry.ErrorScale` says what
-   each operand is). T37 served the first family, `PCA`, `IncrementalPCA`,
-   `TruncatedSVD` and `GaussianRandomProjection` (project.py: S_full,
-   K = n + 3, summed pairwise), and `report-format.md` lists error scales.
+   each operand is); since T50, `scaled=` names the estimators it applies
+   to, the others bit-exact (kernel.py). T37 served the first family,
+   `PCA`, `IncrementalPCA`, `TruncatedSVD` and `GaussianRandomProjection`
+   (project.py: S_full, K = n + 3, summed pairwise), and
+   `report-format.md` lists error scales.
    - The rest of the linear projections, each with its own S. T41 served
      the centered ones (`FastICA`, the PLS family and
      `LinearDiscriminantAnalysis`: project.py, `_project_centered`).
@@ -35,11 +37,6 @@ that request, `to_native(step, allow_bound=True)`. In order:
      kernel probe.
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
-   - `AdditiveChi2Sampler`: T49 served `sample_steps=1`, bit-exact
-     (kernel.py). Left: its cos and sin fields, K = 4 (3 with the twin's
-     own cosh), 0 where the probes of `log`, `sin`, `cos` and `cosh` read
-     0. Since T29 the kernel probe draws random significands
-     (`_random_doubles`).
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
      compare squares (`ErrorScale.g`), K = n + 5. `RBFSampler` n + 3,
