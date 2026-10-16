@@ -38,6 +38,16 @@ ends), which `np.interp` answers `fp[0]` and `fp[-1]` by its exact arms,
 so the entry answers those for `x <= xp[0]` and `x >= xp[-1]`. Under
 "raise" the twin raises outside `[xp[0], xp[-1]]`, and the entry traps
 there: its input guard (`_registry.rejects`).
+
+The entry tests both ends in one condition, which reads the feature twice
+in one CASE arm. confit computes a value once a row only where a function
+reads it twice or more outside any CASE arm, or twice in one arm (its
+shared values, `share.rs`); the tree reads the feature once in each of
+its arms, so tested end by end, each arm computed the translator's `x -
+0.0` again (`_registry._apart`). With `out_of_bounds="nan"` at 12,000
+thresholds, a row of a 1,024-row call took 0.59 µs, against 1.13 µs end by
+end and 1.04 µs before T44, and `to_native` took 4.1 s, against 6.2 s and
+5.8 s (release build, master 9f74bc0, 2026-10-16).
 """
 
 from __future__ import annotations
@@ -156,13 +166,16 @@ def _isotonic(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
         )
     lo, hi = f64(xp[0]), f64(xp[-1])
     inside = _tree(v, _pieces(xp, fp))
+    outside = (v < lo) | (v > hi)
     if est.out_of_bounds == "raise":
-        rejects((v < lo) | (v > hi))
+        rejects(outside)
+    # Each test of both ends reads `v` twice in one arm, so that confit
+    # computes it once a row (the module docstring).
     if est.out_of_bounds == "clip":
-        e = S.case(v <= lo, f64(fp[0])).when(v >= hi, f64(fp[-1]))
+        at_ends = S.case(v <= lo, f64(fp[0])).otherwise(f64(fp[-1]))
+        e = S.case((v <= lo) | (v >= hi), at_ends)
     else:
         # "nan", and "raise" where its input guard traps. NaN reads above
         # every number in DuckDB, so it answers NaN (the twin raises on it).
-        nan = f64(math.nan)
-        e = S.case(v < lo, nan).when(v > hi, nan).when(v == hi, f64(fp[-1]))
+        e = S.case(outside, f64(math.nan)).when(v == hi, f64(fp[-1]))
     return [e.otherwise(inside)]

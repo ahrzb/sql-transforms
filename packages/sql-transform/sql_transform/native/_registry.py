@@ -9,8 +9,11 @@ A translator turns ONE fitted estimator into its output fields, as
 `x` holds one expression per declared feature, `types` the declared type
 of each. A numeric or boolean feature reads as a DOUBLE (a boolean as 0/1)
 with NULL as NaN, as `transform` sees it in a numeric row; a string passes
-as is, NULL as NULL (the step hands it None). A translator that cannot
-serve this estimator's configuration raises `NotNative` naming why.
+as is, NULL as NULL (the step hands it None). A number reaches the
+translator as `x - 0.0`, the same double, which confit can compute once a
+row (`_apart`), unless its entry says otherwise (`Entry.apart`). A
+translator that cannot serve this estimator's configuration raises
+`NotNative` naming why.
 
 The framework does the rest, the same way for every entry: one `SqlFunction`
 named like the step, taking the instance id then the features, whose every
@@ -146,7 +149,12 @@ class Entry:
     is not probed: its parts are. Its bound is its parts' too:
     `part_bounds_of(est)` answers it (`PartBounds`), None where each part
     is bit-exact, or raises `NotNative` where a part whose bound is above
-    0 sits where no bound is derived."""
+    0 sits where no bound is derived.
+
+    `apart(est)` says whether the translator reads each number as `x -
+    0.0` (`_apart`). Every entry does, unless `apart_of(est)` says no for
+    one estimator: a projection whose build would pass its cap where it
+    reads them so (project.py)."""
 
     translate: Translator
     ulps: int
@@ -155,6 +163,11 @@ class Entry:
     base: Callable[[Any, list[pa.DataType]], list[Any]] | None = None
     composes: bool = False
     part_bounds_of: Callable[[Any], PartBounds | None] | None = None
+    apart_of: Callable[[Any], bool] | None = None
+
+    def apart(self, est: Any) -> bool:
+        """The translator reads each number of `est`'s row as `x - 0.0`."""
+        return self.apart_of is None or self.apart_of(est)
 
     @property
     def varies(self) -> bool:
@@ -233,15 +246,16 @@ def translates(
     base: Callable[[Any, list[pa.DataType]], list[Any]] | None = None,
     composes: bool = False,
     part_bounds: Callable[[Any], PartBounds | None] | None = None,
+    apart: Callable[[Any], bool] | None = None,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
     unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
     ceiling and `bound(est)` each fitted estimator's own bound (a class
     whose configurations differ: `FunctionTransformer` is bit-exact for the
     identity and within 2 ulps for `np.log10`). With `scale`, the bound is
-    that error scale. `base`, `composes` and a composition's `part_bounds`
-    are `Entry`'s. A subclass is not covered: it may override what
-    `transform` computes."""
+    that error scale. `base`, `composes`, a composition's `part_bounds`
+    and `apart` (`apart_of`) are `Entry`'s. A subclass is not covered: it
+    may override what `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
     if scale is not None and (ulps or bound is not None):
@@ -251,7 +265,9 @@ def translates(
         for c in classes:
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
-            _CATALOG[c] = Entry(fn, ulps, bound, scale, base, composes, part_bounds)
+            _CATALOG[c] = Entry(
+                fn, ulps, bound, scale, base, composes, part_bounds, apart
+            )
         return fn
 
     return deco
@@ -331,12 +347,36 @@ def translate_part(
     g = _GUARD.get()
     outer, g.hand = g.hand, hand
     try:
-        out = list(entry.translate(est, x, types))
-        if not entry.composes:
-            g.tests += _probed(est, x, types, entry, g)
+        if entry.composes:
+            return list(entry.translate(est, x, types))
+        reads = _apart(x, types) if entry.apart(est) else x
+        out = list(entry.translate(est, reads, types))
+        g.tests += _probed(est, x, types, entry, g)
     finally:
         g.hand = outer
     return out
+
+
+def _apart(x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
+    """`x` as a translator reads it: each number as `x - 0.0`, the same
+    double (-0.0 - 0.0 is -0.0, NaN - 0.0 is NaN), which confit computes
+    once a row where the function reads it twice or more outside any CASE
+    arm, or twice in one arm (its shared values, `share.rs`). The input
+    guard reads `coalesce(x, NaN)`, five nodes, under the six that confit
+    shares, so each read computes it again, and where the guard and many
+    sums read it, each read is slow (reading 7, finding 85). With confit
+    alone, 64 sums of 256 products over such values served a row in 32 to
+    33 µs beside the guard, 17 to 18 µs without it, and 19 to 22 µs where
+    they read `x - 0.0`; `PCA` at 256 features of 64 components serves a
+    row of a 1,024-row call in 20 to 30 µs, against 40 to 51 µs (release
+    build, master 9f74bc0, 2026-10-16). Confit folds only constant
+    subtrees, so it keeps the `- 0.0`. A translator whose reads of a
+    feature each sit in a different CASE arm (a search tree) reads it
+    twice in one arm, so that confit shares it (isotonic.py)."""
+    return [
+        xi if t == pa.string() else xi - f64(0.0)
+        for xi, t in zip(x, types, strict=True)
+    ]
 
 
 def _base(types: list[pa.DataType]) -> list[Any]:
