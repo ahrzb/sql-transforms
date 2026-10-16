@@ -8,29 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-1. **The twin's sign of a zero at one feature, and a fixture that
-   repeats** (reading 7, findings 81 and 82).
-   - `FastICA` and the PLS family multiply with `np.dot`. At one feature
-     the twin's row and matrix are 1×1, and numpy answers the product
-     itself: -0.0 where d is 0.0 and the coefficient negative (or d is
-     -0.0 and it is positive). The entry's `+ 0.0` (T38) answers 0.0
-     there: 54 output fields of `FastICA` in reading 7's parity run, each
-     with S = 0. Drop the `+ 0.0` where the twin's `np.dot` multiplies one
-     feature, keep it for `LinearDiscriminantAnalysis` (its `@` answers
-     0.0), measure the signed zeros of the parity run again, and correct
-     `_project_centered`'s docstring ("The entry gave no zero of the twin
-     the other sign").
-   - Give `TruncatedSVD(n_components=2, algorithm="arpack")` in
-     `catalog_test.FIXTURES` a `random_state`: ARPACK starts from numpy's
-     global random state, so each process fits another step from the same
-     seed, and a failure there may not repeat. It is the only one of the
-     222 configurations whose twin answers differ between two processes
-     (seeds 0 to 3).
-   - `_refuse_a_degenerate_ica` prints the norm with `.3g`, so a norm
-     within 5e-4 of 1 reads "a norm of 1, not 1" (4 steps of the parity
-     run): print enough digits to show the difference.
-
-2. **The input guard slows the reads of the values it reads** (reading
+1. **The input guard slows the reads of the values it reads** (reading
    7, finding 85). The guard of the first output field reads each
    feature's shared value `coalesce(x, NaN)` in a CASE. Where the sums
    read the same shared values, as in `PCA`, a call takes about twice as

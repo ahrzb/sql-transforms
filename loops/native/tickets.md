@@ -23,18 +23,23 @@ as long at the same commit, and T40's builds near the caps take 1.05 to
 1.36 times T40's own times, so a build that a cap takes can take up to
 about 9 s. In the parity run, 236 `FastICA` steps stay Python: 133 fits
 broke down (finding 78), and 103 whiten a component of rounding noise.
-Open: at one feature, `FastICA` answers 0.0 where its twin answers -0.0,
-in 54 output fields (finding 81), and the ARPACK configuration of
-`TruncatedSVD` in FIXTURES has no `random_state`, so the same seed can
-give a different step in each process (finding 82). T42 (#495), merged
-after reading 7's commit, serves option 1 of the ruling on bounded steps
-in compositions (`decisions/closed/bounded-steps-in-compositions.md`):
-with `allow_bound=True`, a step with a parity bound above 0 serves as the
-last step of a `Pipeline`, or as a part of a `ColumnTransformer` or
+T42 (#495), merged after reading 7's commit, serves option 1 of the ruling
+on bounded steps in compositions
+(`decisions/closed/bounded-steps-in-compositions.md`): with
+`allow_bound=True`, a step with a parity bound above 0 serves as the last
+step of a `Pipeline`, or as a part of a `ColumnTransformer` or
 `FeatureUnion` that has no weight, and `native.check` holds each output
-field to the bound of the step that gives it. The loop runs from the
-"Transforms Loop" project thread. The Confit Loop is paused since
-2026-10-16: a confit need waits, and the loop works around it.
+field to the bound of the step that gives it. T43 (#497) fixes findings 81
+and 82. At one feature and one output field, the twin of `FastICA` and of
+the PLS family multiplies a 1×1 row by a 1×1 matrix with `np.dot`, which
+answers the product itself, -0.0 included, so their entries no longer add
+0.0 there: over seeds 0 to 199 of the parity run, no output field of the
+ten projections differs from the twin in its sign alone, against 54 of
+`FastICA` before. The ARPACK configuration of `TruncatedSVD` in FIXTURES
+has a `random_state`, and a test draws every fixture configuration under
+two global random states. The loop runs from the "Transforms Loop" project
+thread. The Confit Loop is paused since 2026-10-16: a confit need waits,
+and the loop works around it.
 
-Next: T43, PLANS "Next" (findings 81 and 82). Then the rest of PLANS
-"Ruled 2026-10-06, to build", item 1, then the rest of item 2.
+Next: PLANS "Next" (finding 85, the input guard's reads). Then the rest
+of PLANS "Ruled 2026-10-06, to build", item 1, then the rest of item 2.
