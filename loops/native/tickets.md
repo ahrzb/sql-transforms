@@ -37,9 +37,20 @@ answers the product itself, -0.0 included, so their entries no longer add
 ten projections differs from the twin in its sign alone, against 54 of
 `FastICA` before. The ARPACK configuration of `TruncatedSVD` in FIXTURES
 has a `random_state`, and a test draws every fixture configuration under
-two global random states. The loop runs from the "Transforms Loop" project
+two global random states. T44 (#498) hands each translator a number as
+`x - 0.0`, the same double, which confit computes once a row where a step
+reads it often; it computed the input guard's `coalesce(x, NaN)` again at
+each read (finding 85). In one process against master 9f74bc0's reads, a
+1,024-row call of `SplineTransformer` takes 0.23 to 0.67 times the time,
+of `QuantileTransformer` over one feature 0.45 to 0.61, of
+`IsotonicRegression` 0.53 to 0.57 (its two ends are tested in one
+condition), of `PCA` up to 256 features 0.59 to 0.81 and of a number
+`OrdinalEncoder` 0.34; no other step measured is slower in every round. A
+projection reads `x - 0.0` only where its build stays within the cap
+(`project._reads_apart`). The loop runs from the "Transforms Loop" project
 thread. The Confit Loop is paused since 2026-10-16: a confit need waits,
 and the loop works around it.
 
-Next: PLANS "Next" (finding 85, the input guard's reads). Then the rest
-of PLANS "Ruled 2026-10-06, to build", item 1, then the rest of item 2.
+Next: PLANS "Next" (the float64 bins of `KBinsDiscretizer`, then the
+build estimates on T44's reads). Then the rest of PLANS "Ruled
+2026-10-06, to build", item 1, then the rest of item 2.

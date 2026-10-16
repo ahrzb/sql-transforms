@@ -113,6 +113,29 @@ def test_a_read_of_any_output_field_fires_the_guard(returns):
             assert f.infer_arrow(rows).to_pylist() == want.to_pylist()
 
 
+def test_a_translator_reads_each_number_as_a_value_confit_shares():
+    # The guard reads each feature's `coalesce(x, NaN)`, which confit
+    # computes again at each read, and the translator `x - 0.0`, the same
+    # double, which confit computes once a row where a step reads it often
+    # (`_apart`, finding 85). The identity hands each value on with its
+    # sign, and +inf still traps.
+    est = StandardScaler(with_mean=False, with_std=False).fit(
+        np.random.default_rng(0).normal(size=(20, 2))
+    )
+    step = _step(est, [pa.float64(), pa.float64()], 2)
+    native = to_native(step, strict=True)
+    guard, rest = native.sql_body.split(" THEN error(", 1)
+    apart = "- CAST('0.0' AS DOUBLE)"
+    assert apart not in guard
+    assert rest.count(apart) == 2
+    values = [(-0.0, 0.0), (0.0, -0.0), (math.nan, -1.5)]
+    rows = _rows(step, [*values, (math.inf, 1.0)])
+    assert check(step, native, rows, ulps=0) == len(values)
+    *got, trap = _serve(query(step), rows, native)
+    assert isinstance(trap, ValueError)
+    assert [repr(tuple(g.values())) for g in got] == list(map(repr, values))
+
+
 @pytest.mark.parametrize(
     "est, traps",
     [

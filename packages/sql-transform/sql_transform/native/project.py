@@ -77,7 +77,19 @@ and 17.7 to 19.0 ms at 512 of 128 (twin 56 to 62 ms). Release build,
 master bea1372 with confit #459 and #461, one container, 2026-10-15.
 Before confit #459, the entry served 256 of 64 in 77 to 83 ms, twice the
 twin's time: confit read a value that the body builds once, such as a
-feature's `coalesce(x, NaN)`, in about 60 ns a read."""
+feature's `coalesce(x, NaN)`, in about 60 ns a read.
+
+Since T44, where `_centered_build_estimate` keeps the build within the
+cap, each product reads the feature as `x - 0.0`, a value confit computes
+once a row (`_reads_apart`), and the build grows with the features as a
+centered projection's does: up to about 244 components over 256
+features, 108 over 512, 39 over 1,024 or 11 over 2,048. At 256 features
+of 16 and 64 components, 64 rows then served in 0.56 to 0.67 times the
+time (the five classes, one process; 2.7 to 4.5 ms at 64 components,
+against 4.1 to 6.7 ms), and the query of 256 of 64 built in 1.17 to
+1.20 s, against 1.02 to 1.07 s (release build, master 9f74bc0,
+2026-10-16). A wider step reads `coalesce(x, NaN)`, which confit computes
+again at each read, and builds as before."""
 
 from __future__ import annotations
 
@@ -149,7 +161,9 @@ def _build_estimate(n: int, k: int) -> float:
     within 0.86 to 1.41 times the estimate, and 0.86 to 1.31 over 1 s. The
     cap took on none slower than 6.9 s and refused none faster than 6.5 s.
     Before confit #459 and #461, the same builds took 1.3 to 9 times as
-    long, a median of 3.2 (master bf42757)."""
+    long, a median of 3.2 (master bf42757). Since T44 it is the build of
+    a step whose products read `coalesce(x, NaN)`, past the reach of
+    `_centered_build_estimate` (`_reads_apart`)."""
     p = n * k
     return 5.86e-4 * n + 6.54e-5 * p + 2.72e-8 * p * n + 8.63e-8 * p * k
 
@@ -173,7 +187,12 @@ def _centered_build_estimate(n: int, k: int) -> float:
     projections that subtract no mean, an unwhitened `FastICA` and a
     `LinearDiscriminantAnalysis` by "eigen", took 1.04 to 1.41 times it,
     0.89 to 1.30 times a `PCA` build of the same shape: the cap estimates
-    them by `_build_estimate`."""
+    them by `_build_estimate`. Since T44, a projection whose products read
+    `x - 0.0` (`_reads_apart`) builds as a centered one: `PCA` at 256 to
+    1,024 features of 8 to 128 components took 1.03 to 1.08 times this
+    estimate, where reading `coalesce(x, NaN)` it took 1.08 to 1.18 times
+    `_build_estimate` (`to_native`, the faster of two; release build,
+    master 9f74bc0, 2026-10-16)."""
     return _build_estimate(n, k) + 6.15e-8 * n * n * k
 
 
@@ -188,6 +207,32 @@ def _refuse_past_cap(
         )
 
 
+# The classes of `_project_centered`.
+_CENTERED = (
+    FastICA,
+    LinearDiscriminantAnalysis,
+    PLSRegression,
+    PLSCanonical,
+    CCA,
+    PLSSVD,
+)
+
+
+def _reads_apart(est: Any) -> bool:
+    """The entry reads each feature as `x - 0.0` (`_registry._apart`), a
+    value confit computes once a row, where the build stays within the cap
+    so: each product then reads a value that confit shares, as the
+    centered projections' differences are, and the build grows with the
+    features as theirs does (`_centered_build_estimate`). Past that, it
+    reads `coalesce(x, NaN)`, which confit computes again at each read: it
+    serves more slowly, and builds by `_build_estimate`."""
+    if isinstance(est, LinearDiscriminantAnalysis) and est.solver == "lsqr":
+        return False  # no transform: `_project_centered` refuses it
+    c = _centered(est)[2] if isinstance(est, _CENTERED) else est.components_
+    k, n = np.shape(c)
+    return _centered_build_estimate(n, k) <= MAX_BUILD_S
+
+
 def _tree(terms: list[S.Expr]) -> S.Expr:
     """The sum of `terms` as a balanced tree: its depth is log2 of their
     number, and its error bound γ_{⌈log2 n⌉+1}, half the provable one of a
@@ -198,7 +243,14 @@ def _tree(terms: list[S.Expr]) -> S.Expr:
     return _tree(terms[:h]) + _tree(terms[h:])
 
 
-@translates(PCA, IncrementalPCA, TruncatedSVD, GaussianRandomProjection, scale=MATVEC)
+@translates(
+    PCA,
+    IncrementalPCA,
+    TruncatedSVD,
+    GaussianRandomProjection,
+    scale=MATVEC,
+    apart=_reads_apart,
+)
 def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     name = type(est).__name__
     c = np.asarray(est.components_)
@@ -312,15 +364,7 @@ def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
         )
 
 
-@translates(
-    FastICA,
-    LinearDiscriminantAnalysis,
-    PLSRegression,
-    PLSCanonical,
-    CCA,
-    PLSSVD,
-    scale=CENTERED,
-)
+@translates(*_CENTERED, scale=CENTERED, apart=_reads_apart)
 def _project_centered(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:

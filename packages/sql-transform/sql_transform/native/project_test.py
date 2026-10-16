@@ -172,6 +172,36 @@ def test_a_projection_takes_a_fit_by_its_estimated_build():
         to_native(_step(est), strict=True, allow_bound=True)
 
 
+@pytest.mark.parametrize(
+    "make",
+    [lambda: PCA(n_components=3), lambda: FastICA(whiten=False, random_state=0)],
+    ids=["PCA", "FastICA-unwhitened"],
+)
+def test_a_projection_reads_a_shared_value_where_its_build_allows(make, monkeypatch):
+    # Each product reads `x - 0.0`, a value confit computes once a row, where
+    # `_centered_build_estimate` keeps the build within the cap; past that it
+    # reads `coalesce(x, NaN)`, and builds by `_build_estimate`
+    # (`_reads_apart`). Either way it parts from the twin by rounding alone.
+    from sql_transform.native import project as P
+
+    x, means = _data(2, 12)
+    est = _fit(make, x)
+    step = _step(est)
+    rows = _rows(_near(3, x, means))
+    apart = "- CAST('0.0' AS DOUBLE)"
+    native = to_native(step, strict=True, allow_bound=True)
+    assert apart in native.sql_body
+    assert check(step, native, rows) == rows.num_rows
+    k, n = np.shape(
+        P._centered(est)[2] if isinstance(est, FastICA) else est.components_
+    )
+    lo, hi = P._build_estimate(n, k), P._centered_build_estimate(n, k)
+    monkeypatch.setattr(P, "MAX_BUILD_S", (lo + hi) / 2)
+    native = to_native(step, strict=True, allow_bound=True)
+    assert apart not in native.sql_body
+    assert check(step, native, rows) == rows.num_rows
+
+
 def _fit(make, x: np.ndarray, seed: int = 0):
     """`make()` fitted on `x`: on 4 classes for a discriminant analysis, on
     2 targets of `x` with noise for the PLS family, on `x` standardized for

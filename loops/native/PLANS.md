@@ -8,23 +8,19 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-1. **The input guard slows the reads of the values it reads** (reading
-   7, finding 85). The guard of the first output field reads each
-   feature's shared value `coalesce(x, NaN)` in a CASE. Where the sums
-   read the same shared values, as in `PCA`, a call takes about twice as
-   long: with confit alone (reading 7's `pca_reads2.py`), 64 sums of 256
-   products serve a row in 32 to 38 µs with such a guard, 17 to 20 µs
-   without it, and 18 to 19 µs where the sums read shared differences
-   `coalesce(x, NaN) - m` that the guard does not read, as in
-   `_project_centered`. So `PCA` at 256 features of 64 components serves
-   a row in about 40 µs, `FastICA` in 19 to 24 µs. Try sums that read a
-   value the guard does not read, and keep the guard's test as it is.
-   Check that confit does not fold an identity such as `v - 0.0` back to
-   `v`, and that the entry stays bit-exact (−0.0 − 0.0 is −0.0). Then
-   measure the widest steps of the bench again: `PolynomialFeatures`,
-   `KBinsDiscretizer`, `SplineTransformer` and the forests also read each
-   feature many times under a guard. If the catalog cannot avoid it, it
-   is a need from confit when the Confit Loop runs again.
+1. **`KBinsDiscretizer`'s float64 ordinal bins read each feature once
+   in each arm** of a CASE chain, so confit computes its `x - 0.0` again
+   in each arm (`_registry._apart`, T44). The float32 bins, whose input
+   guard reads the feature twice, serve a row in 0.36 times the time since
+   T44 (32 features of 31 bins: 7.2 to 9.6 µs, against 21 to 24 µs), the
+   float64 ones in 0.97 times. Read the feature twice in one arm, as
+   `isotonic.py` does, or count the edges at or below it, and measure
+   both.
+2. **Fit the build estimates again on T44's reads.** Where a step reads
+   each feature as a value confit shares, `to_native` of the quantile,
+   spline, forest and isotonic entries takes 0.64 to 0.94 times its time
+   on master 9f74bc0 (the width curves, one process), so their caps refuse
+   some steps that build within 7 s. Fit them as T40 did.
 
 Then the rest of "Ruled 2026-10-06, to build", item 1, then the rest of
 item 2.
@@ -132,6 +128,23 @@ that request, `to_native(step, allow_bound=True)`. In order:
   (a tree of 8,000 leaves: 0.68 s in `SqlFunction` beside 4.34 s for the
   build and one call, master 98033e8), was sent to the confit loop on
   2026-10-14; it recorded it at low priority.
+- **A small value read many times, computed once a row.** confit shares a
+  subexpression of six nodes or more (`share.rs`, `MIN_SHARED_SIZE`), so
+  it computes a feature's `coalesce(x, NaN)`, five nodes, again at each
+  read. Where the input guard reads it too, each read is slow (reading 7,
+  finding 85): with confit alone, 64 sums of 256 products over such values
+  served a row in 32 to 33 µs, 17 to 18 µs without the guard, and 19 to
+  22 µs over `coalesce(x, NaN) - 0.0`, seven nodes, which confit shares
+  (release build, master 9f74bc0). The catalog no longer needs it: since
+  T44 a translator reads each number as `x - 0.0` (`_registry._apart`),
+  and reads it twice in one arm where each of its reads sits in its own
+  CASE arm (`isotonic.py`). But a build that reads many shared values
+  grows with them: `PCA` at 1,024 features of 48 components builds in
+  6.2 s reading `x - 0.0`, and in 3.9 to 5.0 s reading `coalesce(x, NaN)`,
+  so a projection reads `x - 0.0` only within its cap's reach
+  (`project._reads_apart`). Low priority for confit. A confit-only
+  reproduction is `/mnt/project-files/transforms-loop/t44/reads3.py`:
+  send it to the Confit Loop when it runs again.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
