@@ -109,7 +109,7 @@ DuckDB 1.5.5.
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | Derived tables and CTEs read once, over the request table, row-local, driving FROM (joins to static tables beside them included), at any depth | 2 inside, served | one pipeline stage per level ([design](2026-09-26-row-local-subqueries-design.md)) |
-| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep. Other terms that compare the static table with the outer query serve if one request reads at most 100 rows ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build, or computed by a scan for each request. A DOUBLE `sum` or `avg` compares within a bound ([claim: float-reduction-bound](../oracle/05-the-comparison-contract.md#floating-point-comparisons)) |
+| A scalar subquery over one static table, keyed by equalities with the outer query and filtered by terms that read only the static table. It selects an aggregate, an expression over aggregates, or an expression over the columns of the one row that a request matches, or of the row that its ORDER BY and LIMIT keep. If one request reads at most 100 rows, confit also serves other terms that compare the static table with the outer query, and terms that can trap ([claim: scalar-subquery-as-join](#scalar-subqueries-over-a-static-table)) | 2 inside, served | an aggregate, or the expression, over the static rows that one request matches, read through a join to a table that confit computes at build, or computed by a scan for each request. A DOUBLE `sum` or `avg` compares within a bound ([claim: float-reduction-bound](../oracle/05-the-comparison-contract.md#floating-point-comparisons)) |
 | A scalar subquery of another form, for example with an item that calls a UDF, or with a DOUBLE `sum` or `avg` that is not a whole output column. The [claim](#scalar-subqueries-over-a-static-table) lists the served forms. | 2 inside, refused | refused by name |
 | A CTE read twice or joined beside another relation, static-only derived tables and CTEs, `WITH RECURSIVE`, other subqueries, set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | An expression over a constant-NULL derived-table column | 2 inside, refused | DuckDB keeps it SQLNULL-typed across the level; confit does not model that type |
@@ -397,10 +397,13 @@ with an expression of the outer query, its outer expression, by `=` or
 another way, such as `s.lo <= t.x`. Confit serves this form by a scan of `s`
 for each request (see "The scan" below). The WHERE can also be absent. The
 outer expression of the first key in the written order can trap (see below).
-Confit refuses the subquery if the outer expression of a key after the first
-can trap, or if a term that reads only `s` can trap. It also refuses an outer
-expression that reads a table that the outer query joins, and a term that
-reads only `s` but holds a subquery or calls a SQL function.
+If another term can trap, for example the outer expression of a later key or
+a term that reads only `s`, confit serves the subquery by the scan. If no
+term of the WHERE reads the outer query, confit refuses a term that can trap.
+The oracle runs such a subquery once for each batch, also for a batch with no
+requests. Confit also refuses an outer expression that reads a table that the
+outer query joins, and a term that reads only `s` but holds a subquery or
+calls a SQL function.
 
 The oracle evaluates the subquery once for each distinct outer value. It counts
 `-0.0` and `0.0` as one value, because `=` finds them equal. In two measured
@@ -423,7 +426,8 @@ measurement on the oracle on 2026-10-16 gave these answers. The left side `x`
 of IN, ANY and ALL is not part of this rule, because the oracle evaluates `x`
 for each request.
 
-**The scan.** If the WHERE has a term of the third form, confit computes the
+**The scan.** If the WHERE has a term of the third form, or a term that can
+trap other than the outer expression of the first key, confit computes the
 value for each request by a scan of `s`. An example is
 `(SELECT sum(s.v) FROM s WHERE s.lo <= t.x AND t.x < s.hi)`. The scan reads
 the rows of `s` that pass the terms that read only `s`. It reads only the
@@ -434,7 +438,7 @@ It tests such a key on each row, as it tests the other terms. At build,
 confit refuses `s` if one request can read more than 100 rows. For example,
 it refuses `s` if more than 100 of these rows have the same key, or if the
 subquery has no key and more than 100 rows pass. The limit of 100 rows
-follows the owner's proposal of 2026-10-15.
+follows the owner's suggestion of 2026-10-15.
 
 The scan serves a subquery that selects one of these aggregates, and EXISTS
 and NOT EXISTS:
@@ -446,18 +450,37 @@ and NOT EXISTS:
 - `min` and `max` of an integer, DECIMAL or VARCHAR column.
 
 The answer of each of these aggregates does not depend on the order of the
-rows. So an ORDER BY inside the call does not change it. A `sum` cannot overflow. 100 integer values add up to much less than
-the range of the HUGEINT answer, and 100 DECIMAL values with at most 36
-digits add up to less than 10^38. Confit refuses the scan in these cases:
+rows. So an ORDER BY inside the call does not change it. In the scan, a
+`sum` cannot overflow. 100 integer values add up to much less than the range
+of the HUGEINT answer, and 100 DECIMAL values with at most 36 digits add up
+to less than 10^38. Confit refuses the scan in these cases:
 
-- a term of the scan can trap, or the outer expression of any key can trap,
-  the first key included;
 - a term of the scan can give different answers for the outer values `-0.0`
   and `0.0` (see above), such as `s.f < 1.0 / t.x`, where `1.0 / -0.0` is
   `-inf` and `1.0 / 0.0` is `inf`;
 - the subquery is under IN, ANY or ALL, or it has ORDER BY or LIMIT;
 - the SELECT item is another aggregate, an aggregate over DISTINCT values,
   or an expression.
+
+A term of a scan can trap. The oracle evaluates each term for the pairs of a
+distinct outer value and a row of `s` on which the terms before it are TRUE.
+It evaluates the terms in written order, but it splits each
+`x BETWEEN lo AND hi` into the comparisons `x >= lo` and `x <= hi`, and it
+moves `x <= hi` to the end of the WHERE. Inside one term, the oracle
+evaluates the right side of an OR only if the left side is not TRUE.
+Measurements on the oracle on 2026-10-16 gave these facts.
+
+Confit finds the first term that can trap, in the order of the oracle. The
+terms before it cannot trap, so confit evaluates them in any order. From this
+term on, the scan evaluates each term in the order of the oracle, for the
+same pairs. If only terms that read only `s` come before the first key,
+confit skips the outer expression of this key in this search. It evaluates
+this expression as for a subquery without a scan (see below).
+
+Confit binds most terms `x BETWEEN lo AND hi` as these two comparisons, so it
+can evaluate `x <= hi` at the end. A few such terms do not bind as two
+comparisons, for example `5 BETWEEN 0 AND 2`. If the WHERE has such a term
+and the search above finds a term that can trap, confit refuses the subquery.
 
 At build, confit keeps the rows of `s` on which each term that reads only `s`
 is TRUE. It puts these rows into groups with equal keys and computes the
@@ -489,14 +512,15 @@ evaluates an item with no aggregate in another way. It evaluates this item
 over each matched row, before ORDER BY, LIMIT and OFFSET. So this item can
 raise an error over a row that LIMIT does not keep. The pins at the end of
 `tests/test_scalar_subquery.py` record these facts. The order of evaluation
-matters only where an evaluation can trap. In a served subquery,
-only the outer expression of the first key, and the left side `x` of IN, ANY
-or ALL over a WHERE without a key, can trap. The argument of the aggregate, if it has one,
-is a column or a constant. Only
-the running total of a `sum` or an `avg` can overflow. Confit computes it at
-build, and it refuses the build if the total can overflow (the build refusals
-at the end of this section list this case). An expression item can also raise an error, for
-example `max(s.v) + 1` if `s.v` is a TINYINT column with the value 127.
+matters only where an evaluation can trap. In a served subquery, only these
+parts can trap: the outer expression of the first key, the left side `x` of
+IN, ANY or ALL over a WHERE without a key, and a term of a scan. The argument
+of the aggregate, if it has one, is a column or a constant. Without a scan,
+only the running total of a `sum` or an `avg` can overflow. Confit computes
+it at build, and it refuses the build if the total can overflow (the build
+refusals at the end of this section list this case). An expression item can
+also raise an error, for example `max(s.v) + 1` if `s.v` is a TINYINT column
+with the value 127.
 Confit evaluates the expression at build, so a served subquery does not trap
 in it. Confit refuses the build if the expression raises an error:
 
@@ -512,17 +536,17 @@ in it. Confit refuses the build if the expression raises an error:
 
 The oracle evaluates the outer expression of the first key only if a row of
 `s` passes the terms written before that key. The planner of the oracle
-moves the upper bound of `x BETWEEN lo AND hi` to the end of the WHERE, also
-with the optimizer off. So if such a term comes before the key, only its
-lower bound decides if the oracle evaluates the outer expression. At build,
+moves the comparison `x <= hi` of `x BETWEEN lo AND hi` to the end of the
+WHERE, also with the optimizer off. So if such a term comes before the key,
+only `x >= lo` decides if the oracle evaluates the outer expression. At build,
 confit counts the rows of `s` that pass these terms. For each request, it
 evaluates the outer expression only if this count is above 0. The oracle also
 runs a subquery in the SELECT list for each row that the outer WHERE passes,
 and a subquery in the WHERE for each row that reaches the WHERE. The oracle
 does this also for a subquery inside a CASE, whatever the condition of the
-CASE is. Confit evaluates the outer expression of the first key, and the left
-side `x` of IN, ANY or ALL, for the same rows as the oracle. If one of them can trap,
-confit refuses the subquery in two cases:
+CASE is. Confit evaluates the outer expression of the first key, the left
+side `x` of IN, ANY or ALL, and the terms of a scan for the same rows as the
+oracle. If one of them can trap, confit refuses the subquery in two cases:
 
 - The subquery is in the WHERE, and the outer query has a comma join whose
   key is a term of the WHERE. The oracle runs the subquery for every pair of

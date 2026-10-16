@@ -135,13 +135,14 @@ def test_where_guard_skips_an_unknown_model_trap():
 # ===========================================================================
 # Selection context, the full measured matrix.
 #
-# The model: AND is the ONLY lazy operator -- its LEFT always runs, its RIGHT
-# is skipped when the left is not TRUE, recursively. OR always evaluates both
-# sides but passes the context through. Selection context enters at exactly
-# two places -- the WHERE root and every CASE WHEN condition (projections
-# included) -- and exits at NOT / IS NULL / comparisons / function arguments
-# and at CASE ARMS (a taken arm is eager, even under WHERE). Everything below
-# is checked against the LIVE oracle, so if DuckDB moves, this remeasures.
+# The model: AND's LEFT always runs, its RIGHT is skipped when the left is
+# not TRUE, recursively; OR is its exact dual, its right skipped when the
+# left is TRUE. Selection context enters at exactly two places -- the WHERE
+# root and every CASE WHEN condition (projections included) -- and exits at
+# NOT / IS NULL / comparisons / function arguments / IN lists (every item
+# runs) and at CASE ARMS (a taken arm is eager, even under WHERE). Everything
+# below is checked against the LIVE oracle, so if DuckDB moves, this
+# remeasures.
 # ===========================================================================
 _SC124_SCHEMA = pa.schema([pa.field("b", pa.bool_()), pa.field("s", pa.string())])
 _SC124_ROWS = [
@@ -176,6 +177,9 @@ _T124 = "CAST(s AS DOUBLE) > 1"
         f"SELECT s AS o FROM __THIS__ WHERE NOT (b AND {_T124})",
         f"SELECT s AS o FROM __THIS__ WHERE (b AND {_T124}) IS NULL",
         f"SELECT s AS o FROM __THIS__ WHERE (b AND {_T124}) = TRUE",
+        f"SELECT s AS o FROM __THIS__ WHERE (s = 'abc') IN (TRUE, {_T124})",
+        f"SELECT CASE WHEN (s = 'abc') IN (TRUE, {_T124}) THEN 1 END AS o "
+        "FROM __THIS__",
         f"SELECT s AS o FROM __THIS__ WHERE coalesce((b AND {_T124}), TRUE)",
         f"SELECT s AS o FROM __THIS__ WHERE nullif((b AND {_T124}), FALSE)",
         f"SELECT s AS o FROM __THIS__ WHERE CASE WHEN TRUE THEN (b AND {_T124}) "

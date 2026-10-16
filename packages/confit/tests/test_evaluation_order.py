@@ -163,6 +163,42 @@ def test_a_where_between_splits_like_duckdbs_planner(where, expect):
     assert_parity(f"SELECT 1 AS o FROM __THIS__ WHERE {where}", ROWS, expect=expect)
 
 
+# ------------------------------------------------- IN lists
+# DuckDB evaluates the subject and every item of an IN list for each row
+# that reaches it, also in a WHERE and in a CASE condition, where an OR
+# stops at its first TRUE side (measured 2026-10-16). The row of IN_ROWS
+# matches the first item, and the item a + 1 overflows.
+
+IN_ROWS = table(
+    {"b": "int", "a": "int", "c": "int?"}, [{"b": 0, "a": 2**63 - 1, "c": None}]
+)
+
+
+@pytest.mark.parametrize(
+    "sql, traps",
+    [
+        ("SELECT b FROM __THIS__ WHERE b IN (0, a + 1)", True),
+        ("SELECT b FROM __THIS__ WHERE b IN (0, 1, a + 1)", True),
+        ("SELECT b FROM __THIS__ WHERE b IN (0, a + 1) OR TRUE", True),
+        ("SELECT b FROM __THIS__ WHERE b IN (0, 1) AND b IN (0, a + 1)", True),
+        ("SELECT b FROM __THIS__ WHERE c IN (0, a + 1)", True),
+        ("SELECT b FROM __THIS__ WHERE b NOT IN (1, a + 1)", True),
+        ("SELECT CASE WHEN b IN (0, a + 1) THEN 1 END AS o FROM __THIS__", True),
+        ("SELECT b IN (0, a + 1) AS o FROM __THIS__", True),
+        # An OR stops at its first TRUE side.
+        ("SELECT b FROM __THIS__ WHERE b = 0 OR b = a + 1", False),
+        ("SELECT b FROM __THIS__ WHERE TRUE OR b IN (0, a + 1)", False),
+        ("SELECT CASE WHEN b = 0 OR b = a + 1 THEN 1 END AS o FROM __THIS__", False),
+        ("SELECT b FROM __THIS__ WHERE b IN (0, 1)", False),
+    ],
+)
+def test_an_in_list_evaluates_every_item(sql, traps):
+    if traps:
+        assert_parity(sql, IN_ROWS, expect=TRAPS, trap="Overflow")
+    else:
+        assert_parity(sql, IN_ROWS, expect="AGREE")
+
+
 # ------------------------------------------------- joins
 
 

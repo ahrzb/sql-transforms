@@ -1680,13 +1680,15 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     and its comparison is within the float-reduction bound. A few subqueries
     take a form that confit refuses by name: a DOUBLE sum or avg that is not
     a whole output column or that reads a value that is not finite, IS NOT
-    DISTINCT FROM under shape='many', an outer
-    side that can trap after another key or under shape='many', a term over
-    the table that can trap, an expression over the aggregates that traps at
-    build or over the aggregates of no rows, a left side of IN, ANY or ALL
-    that can trap over a WHERE with a key. About one subquery in four that
-    selects an aggregate or is EXISTS gets a term that compares the table
-    with the request other than by a key, which confit serves by a scan. An
+    DISTINCT FROM under shape='many', a term that can trap under
+    shape='many', in a WHERE that reads no column of the request or in a
+    subquery that the scan does not serve, an expression over the
+    aggregates that traps at build or over the aggregates of no rows, a left
+    side of IN, ANY or ALL that can trap over a WHERE with a key. About one
+    subquery in four that selects an aggregate or is EXISTS gets a term that
+    compares the table with the request other than by a key, which confit
+    serves by a scan, as it does a WHERE with a term that can trap other
+    than the outer side of the first key. An
     avg over a BOOLEAN or VARCHAR column is DuckDB's binder error. About one
     min, max or sum in five over a BOOLEAN or integer column is bool_and,
     bool_or, count_if, bit_and, bit_or or bit_xor instead, and about one
@@ -1760,7 +1762,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     # subquery that gets none is the one it was before they existed. Most
     # are one test over the table's columns, which cannot trap (confit's
     # `can_trap` still counts LIKE as one that can); a deeper one may trap,
-    # and then confit refuses the subquery by name.
+    # and then confit serves the subquery by a scan, or refuses it by name.
     tenv = Env([(scope or name, c, t) for c, t, _ in leaves(sch)], [], None)
     for s in made:
         if qrng.random() < 0.5:
@@ -1853,6 +1855,7 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     # the request, or the request's column BETWEEN two columns of the table.
     # Confit serves it by a scan of the rows of the table for each request,
     # and refuses by name the forms that the scan does not serve.
+    scans = []
     for s in made:
         if s.in_ is not None or s.row is not None or qrng.random() >= 0.25:
             continue
@@ -1867,6 +1870,8 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         else:
             term = Bin(qrng.choice(CMP[1:]), *qrng.sample([cols[0], o], 2))
         s.preds.append((qrng.randrange(len(s.keys) + 1), term))
+        if ot == "int":
+            scans.append((term, o))
         if "subquery-scan" not in tags:
             tags.append("subquery-scan")
     # A boolean or bitwise aggregate, or count_if, in place of about one
@@ -1902,6 +1907,13 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
                     for c in by[: qrng.choice([1, 1, 2])]
                 ]
         (s.func, s.arg), s.more = calls[0], calls[1:]
+    # In about one scan term in five over an integer column of the request,
+    # that column + 1, which can trap. Drawn last of all, so that a subquery
+    # without it is the one it was before.
+    for term, o in scans:
+        if qrng.random() < 0.2:
+            i = next(i for i, k in enumerate(term.kids()) if k is o)
+            term.swap(i, Bin("+", o, Lit(1, "int")))  # can trap
     tags.append("scalar-subquery")
     return True
 

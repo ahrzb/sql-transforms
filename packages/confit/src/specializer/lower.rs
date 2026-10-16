@@ -2168,11 +2168,12 @@ impl<'a> FB<'a> {
     }
 
     /// Whether the stage head leaves join `j` alone: the rows that a fold
-    /// scans are read only by the fold, and a fold, which cannot trap, runs
-    /// where a value reads it ([`Self::emit_fold`]).
+    /// scans are read only by the fold, and a fold that cannot trap runs
+    /// where a value reads it ([`Self::emit_fold`]). A fold that can trap
+    /// runs here, for every row that reaches its join ([`plan::Fold::traps`]).
     fn unforced(&self, j: u32) -> bool {
         let spec = &self.joins[j as usize];
-        spec.scan.is_some() || spec.fold.is_some()
+        spec.scan.is_some() || spec.fold.as_ref().is_some_and(|f| !f.traps)
     }
 
     /// Multiplicity loops for the joins under shape='many': one loop per

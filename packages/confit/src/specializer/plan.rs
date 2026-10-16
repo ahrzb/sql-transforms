@@ -659,13 +659,20 @@ pub const SCAN_LIMIT: usize = 100;
 pub struct Fold {
     /// The join whose rows the scan reads ([`JoinSpec::scan`]).
     pub rows: u32,
-    /// The WHERE terms that are not equality keys and do not read only the
-    /// table, ANDed: a BOOLEAN that cannot trap. It reads the row through
-    /// [`SKind::StaticCol`] of the join `rows`.
+    /// The WHERE terms that the scan evaluates over each row, ANDed in
+    /// DuckDB's order: the terms that are not equality keys and do not read
+    /// only the table, and from the first term that can trap on, every
+    /// term. It reads the row through [`SKind::StaticCol`] of the join
+    /// `rows`.
     pub pred: Option<SExpr>,
     /// Per value lane of the join that holds the fold: the aggregate, and
     /// the value lane of `rows` that it reads (`None` for `count(*)`).
     pub aggs: Vec<(AggFunc, Option<u32>)>,
+    /// Whether `pred` or a key of `rows` can trap. Such a fold runs where
+    /// its join runs, for every request that reaches the subquery, as
+    /// DuckDB evaluates the subquery for each of them; any other fold runs
+    /// where a value reads it.
+    pub traps: bool,
 }
 
 /// The rows of a static table that a [`Fold`] scans, as the join that reads

@@ -56,7 +56,8 @@ row path (a reversed batch must reverse), multiset otherwise.
 **Boolean short-circuit** is decided per CONTEXT, as DuckDB decides it: selection context (the
 WHERE root and every `CASE WHEN` condition, projections included) makes
 `AND` lazy left-to-right and `OR` its exact dual, and exits to eager value
-context at `NOT`/`IS NULL`/comparisons/function arguments and CASE arms. The
+context at `NOT`/`IS NULL`/comparisons/function arguments, IN lists (every
+item runs, measured 2026-10-16) and CASE arms. The
 measured matrix runs against the live oracle in
 `known_divergences/test_short_circuit.py`.
 

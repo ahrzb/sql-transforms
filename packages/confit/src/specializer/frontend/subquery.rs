@@ -23,30 +23,33 @@
 //! each group and refuses a group of more than one row, where DuckDB traps
 //! ([`plan::AggPost::row`]). A WHERE term that compares `s` with the outer
 //! query other than by a key, `s.lo <= t.x`, binds as a scan for each
-//! request ([`Binder::scan_value`]): one hidden join reads the rows of `s`
-//! that pass the filter and share the request's keys, at most
-//! [`plan::SCAN_LIMIT`] of them, which the build checks
+//! request ([`Binder::scan_value`]), as does a WHERE with a term that can
+//! trap other than the outer side of the first key: one hidden join reads
+//! the rows of `s` that pass the filter and share the request's keys, at
+//! most [`plan::SCAN_LIMIT`] of them, which the build checks
 //! ([`plan::ScanRows`]), and a second one folds the aggregate over the rows
-//! on which every other term is TRUE ([`plan::Fold`]), where the query reads
-//! its value.
+//! on which every other term is TRUE ([`plan::Fold`]).
 //!
-//! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15) evaluates
+//! DuckDB (1.5.5, optimizer off, measured 2026-10-14 to 2026-10-16) evaluates
 //! the subquery's WHERE over (distinct correlated values) x (static rows), in
-//! written order, the aggregate's argument over the matched rows only, and the
-//! item once for each distinct correlated value, over the aggregates of its
-//! matched rows (of no rows if none matches). It plans the subquery below the
-//! operator that holds it: in the SELECT list it runs over the rows that the
-//! WHERE passes, in the WHERE over the rows that reach the WHERE, under a CASE
-//! too. Only two things served here can trap, and both run where DuckDB runs
-//! them: the outer side of the first key ([`Binder::guarded_key`]), and the
-//! left side of ANY or ALL ([`Binder::quantified_residual`]). No term of a scan
-//! can trap. The inner side of each key is a bare column, no key casts a
-//! VARCHAR, the outer side of a later key cannot trap (`can_trap`), no filter
-//! term can trap, and the aggregates and the item run before any request, the
-//! item over each group and over no rows, where a trap or a sum that could
-//! overflow refuses. So the filter passes the same rows in any order, and the
-//! hidden join runs after the FROM joins of its level, before the WHERE when
-//! the WHERE reads it and after it otherwise ([`plan::JoinSpec::after_where`]).
+//! written order but the upper half of each BETWEEN last, the aggregate's
+//! argument over the matched rows only, and the item once for each distinct
+//! correlated value, over the aggregates of its matched rows (of no rows if
+//! none matches). It plans the subquery below the operator that holds it: in
+//! the SELECT list it runs over the rows that the WHERE passes, in the WHERE
+//! over the rows that reach the WHERE, under a CASE too. A subquery whose
+//! WHERE reads no column of the outer query runs once for each batch, before
+//! any request. Three things served here can trap, and each runs where DuckDB
+//! runs it: the outer side of the first key ([`Binder::guarded_key`]), the
+//! left side of ANY or ALL ([`Binder::quantified_residual`]), and a WHERE term
+//! of a scan ([`plan::Fold::traps`]). Outside a scan, the inner side of each
+//! key is a bare column, no key casts a VARCHAR, the outer side of a later key
+//! cannot trap (`can_trap`), no filter term can trap, and the aggregates and
+//! the item run before any request, the item over each group and over no
+//! rows, where a trap or a sum that could overflow refuses. So the filter
+//! passes the same rows in any order, and the hidden join runs after the FROM
+//! joins of its level, before the WHERE when the WHERE reads it and after it
+//! otherwise ([`plan::JoinSpec::after_where`]).
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
@@ -251,10 +254,10 @@ fn form_refusal(what: &str) -> PrepareError {
          x [NOT] IN (SELECT a column of s FROM s WHERE ...), and x op ANY | SOME | ALL (SELECT \
          a column of s FROM s WHERE ...) with op a comparison, over one static table, each \
          WHERE term s.k = <outer expression> or a term that reads only s, and none that can \
-         trap but the outer expression of the first key, or x over a WHERE without a key; \
-         other WHERE terms that compare s with the outer query serve by a scan of at most \
-         100 rows of s for each request, in (SELECT count(*) | count(c) | sum(c) | count_if(c) \
-         | min(c) | max(c) FROM s WHERE ...) where no term can trap"
+         trap but the outer expression of the first key, or x over a WHERE without a key; a \
+         WHERE with another term, or with another term that can trap and a term that reads the \
+         outer query, serves by a scan of at most 100 rows of s for each request, in (SELECT \
+         count(*) | count(c) | sum(c) | count_if(c) | min(c) | max(c) FROM s WHERE ...)"
     ))
 }
 
@@ -391,20 +394,27 @@ pub(super) fn plain_star(o: &WildcardAdditionalOptions) -> bool {
         && opt_alias.is_none()
 }
 
-/// The refusal of a subquery whose WHERE term `t` compares its table with
-/// the outer query other than by a key, where the scan that serves such a
-/// term ([`Binder::scan_value`]) does not apply, for the reason `why`.
-fn scan_refusal(t: &SqlExpr, why: &str) -> PrepareError {
+/// The refusal of a subquery that confit would serve by a scan
+/// ([`Binder::scan_value`]) for its WHERE term `t`, of which `what` says why,
+/// where the scan does not apply, for the reason `why`.
+fn scan_refusal(t: &SqlExpr, what: &str, why: &str) -> PrepareError {
     unsup(format!(
-        "a subquery with the WHERE term {t}, which compares its table with the outer query \
-         other than by a key, where {why} -- confit serves such a term by a scan of at most \
-         {} rows of the table for each request, in (SELECT count(*) | count(c) | sum(c) | \
-         min(c) | max(c) FROM s WHERE ...) with sum over an integer or BOOLEAN column or a \
-         DECIMAL of at most 36 digits, and min and max over an integer, DECIMAL or VARCHAR \
-         column, where no term can trap",
+        "a subquery with the WHERE term {t}, {what}, where {why} -- confit serves such a WHERE \
+         by a scan of at most {} rows of the table for each request, in (SELECT count(*) | \
+         count(c) | sum(c) | count_if(c) | min(c) | max(c) FROM s WHERE ...) with sum over an \
+         integer or BOOLEAN column or a DECIMAL of at most 36 digits, and min and max over an \
+         integer, DECIMAL or VARCHAR column",
         plan::SCAN_LIMIT
     ))
 }
+
+/// Why a WHERE term makes its subquery a scan, as [`scan_refusal`] says it.
+const MIXED: &str = "which compares its table with the outer query other than by a key";
+const FILTER_TRAP: &str = "which reads only its table and can trap";
+const KEY_TRAP: &str = "whose outer side can trap and follows another key";
+/// Why a scan reads a term that reads only its table, or a key, in a
+/// refusal of that term.
+const SCANNED: &str = "which the scan evaluates for each request";
 
 /// The ORDER BY, LIMIT and OFFSET of a scalar subquery as written, before
 /// the SELECT item binds ([`plan::RowOrder`]): each ORDER BY term with
@@ -577,9 +587,10 @@ impl Binder<'_> {
 
         // WHERE: each term reads only the table (a filter the build applies
         // to its rows), or is an equality between a column of the table and
-        // an expression of the outer scope (a key). Only the outer side of
-        // the first key can trap ([`Binder::guarded_key`]). Any other term
-        // compares the table with the outer scope: the subquery is then a
+        // an expression of the outer scope (a key). Outside a scan, only the
+        // outer side of the first key can trap ([`Binder::guarded_key`]).
+        // Any other term compares the table with the outer scope, and with
+        // such a term, or with another term that can trap, the subquery is a
         // scan for each request ([`Binder::scan_value`]).
         let mut terms = Vec::new();
         if let Some(w) = &select.selection {
@@ -591,15 +602,21 @@ impl Binder<'_> {
         let mut key_terms = Vec::new();
         let mut filters = Vec::new();
         let mut mixed = Vec::new();
+        let mut written = Vec::new();
         // When the outer side of the first key can trap: how many filter
         // terms are written before that key.
         let mut trap_key = None;
+        // Whether the outer side of a key that follows another key, or that
+        // follows a term that compares the table with the outer scope, can
+        // trap.
+        let mut late_trap = false;
         for t in terms {
             let mut t = t;
             while let SqlExpr::Nested(x) = t {
                 t = x;
             }
             if self.reads_only(&inner, t)? {
+                written.push(Written::Filter(filters.len()));
                 filters.push(t);
                 continue;
             }
@@ -611,6 +628,7 @@ impl Binder<'_> {
                 } => (left, right, KeyCmp::Eq),
                 SqlExpr::IsNotDistinctFrom(left, right) => (left, right, KeyCmp::NotDistinct),
                 _ => {
+                    written.push(Written::Mixed(mixed.len()));
                     mixed.push(t);
                     continue;
                 }
@@ -619,11 +637,13 @@ impl Binder<'_> {
                 (Some(c), None) => (c, right.as_ref()),
                 (None, Some(c)) => (c, left.as_ref()),
                 _ => {
+                    written.push(Written::Mixed(mixed.len()));
                     mixed.push(t);
                     continue;
                 }
             };
             if inner.reads(outer)? {
+                written.push(Written::Mixed(mixed.len()));
                 mixed.push(t);
                 continue;
             }
@@ -650,16 +670,16 @@ impl Binder<'_> {
                 )));
             }
             let key = promote_key(key, st, col)?;
+            // DuckDB evaluates a later key only over the static rows that
+            // the terms before it keep, which a scan does too.
             if can_trap(&key) {
-                if !keys.is_empty() {
-                    return Err(form_refusal(&format!(
-                        "the WHERE term {t}, whose outer side can trap and follows another key \
-                         (DuckDB evaluates it only over the static rows that the keys before \
-                         it match)"
-                    )));
+                if keys.is_empty() && mixed.is_empty() {
+                    trap_key = Some(filters.len());
+                } else {
+                    late_trap = true;
                 }
-                trap_key = Some(filters.len());
             }
+            written.push(Written::Key(keys.len()));
             key_cols.push(JoinKey {
                 src: KeySrc::Lane(key_lanes.len() as u32),
                 cmp,
@@ -668,7 +688,25 @@ impl Binder<'_> {
             key_terms.push(t);
             keys.push(key);
         }
-        if !mixed.is_empty() {
+        let filter = match filters.as_slice() {
+            [] => None,
+            _ => Some(self.static_filter(query, select, source, &filters)?),
+        };
+        let filter_trap = filter
+            .as_ref()
+            .and_then(|f| f.project.iter().position(|(_, e)| can_trap(e)));
+        // A WHERE that reads no column of the outer query: DuckDB evaluates
+        // the subquery once for each batch, for an empty batch too, and
+        // before any request (measured 2026-10-16).
+        if let (Some(i), true) = (filter_trap, keys.is_empty() && mixed.is_empty()) {
+            return Err(form_refusal(&format!(
+                "the WHERE term {}, {FILTER_TRAP}, and no WHERE term that reads the outer query \
+                 (DuckDB evaluates such a subquery once for each batch, for an empty batch too, \
+                 and confit evaluates a term that can trap only for a request)",
+                filters[i]
+            )));
+        }
+        if !mixed.is_empty() || late_trap || filter_trap.is_some() {
             return self.scan_value(
                 query,
                 select,
@@ -677,13 +715,14 @@ impl Binder<'_> {
                 member,
                 order.is_some(),
                 ScanWhere {
+                    written,
                     mixed,
                     filters,
+                    filter,
                     keys,
                     key_cols,
                     key_lanes,
                     key_terms,
-                    trap_key: trap_key.is_some(),
                 },
             );
         }
@@ -840,10 +879,6 @@ impl Binder<'_> {
             }
         };
         let val_cols: Vec<u32> = (n_keys..cols.len() as u32).collect();
-        let filter = match filters.as_slice() {
-            [] => None,
-            _ => Some(self.static_filter(query, select, source, &filters)?),
-        };
         if let Some(n) = trap_key {
             let key = keys.remove(0);
             keys.insert(0, self.guarded_key(query, select, source, &filters[..n], key, guard)?);
@@ -1816,8 +1851,9 @@ impl Binder<'_> {
     /// BOOLEAN as DuckDB casts a WHERE term. The build keeps the rows on
     /// which every term is TRUE. It evaluates each term over every row,
     /// where DuckDB evaluates it over the rows that the terms before it
-    /// pass: so a term that can trap refuses, and the others pass the same
-    /// rows on both engines.
+    /// pass: so a term that can trap stays out of the build, and runs in a
+    /// scan ([`Binder::scan_value`]), and the others pass the same rows on
+    /// both engines.
     fn static_filter(
         &self,
         query: &sqlparser::ast::Query,
@@ -1897,11 +1933,6 @@ impl Binder<'_> {
                 return Err(PrepareError::Internal(format!(
                     "the WHERE term {t} bound to {}, not BOOLEAN",
                     e.ty.name()
-                )));
-            }
-            if can_trap(e) {
-                return Err(form_refusal(&format!(
-                    "the WHERE term {t}, which reads only its table and can trap"
                 )));
             }
         }
@@ -2041,24 +2072,35 @@ impl Binder<'_> {
         })
     }
 
-    /// [`Binder::subquery_value`] over a WHERE with a term that compares
-    /// the table with the outer query other than by a key, such as
-    /// `(SELECT sum(s.v) FROM s WHERE s.lo <= t.x AND t.x < s.hi)`: one
-    /// aggregate over the rows that a scan keeps for each request
-    /// ([`plan::Fold`]). The scan reads the rows of the table that pass the
-    /// filter and whose keys equal the request's, at most
-    /// [`plan::SCAN_LIMIT`] of them, which the build checks
-    /// ([`plan::ScanRows`]), and keeps those on which every other term is
-    /// TRUE. A key that compares with IS NOT DISTINCT FROM is such a term.
+    /// [`Binder::subquery_value`] over a WHERE that confit serves by a scan
+    /// for each request: one with a term that compares the table with the
+    /// outer query other than by a key, such as `(SELECT sum(s.v) FROM s
+    /// WHERE s.lo <= t.x AND t.x < s.hi)`, or with a term that can trap,
+    /// other than the outer side of the first key. Its value is one
+    /// aggregate over the rows that the scan keeps ([`plan::Fold`]). The
+    /// scan reads the rows of the table that pass the filter and whose keys
+    /// equal the request's, at most [`plan::SCAN_LIMIT`] of them, which the
+    /// build checks ([`plan::ScanRows`]), and keeps those on which every
+    /// other term is TRUE. A key that compares with IS NOT DISTINCT FROM is
+    /// such a term.
     ///
     /// DuckDB evaluates the WHERE over each pair of a static row and a
-    /// distinct correlated value of the batch (measured 2026-10-15). When
-    /// no term can trap, the rows that it keeps for a value do not depend on
-    /// the batch, and neither does an aggregate whose answer does not depend
-    /// on the order of the rows: a count, a sum over integers, and min and
-    /// max over a type where two equal values are one value. A term must
-    /// not tell apart two DOUBLE values that DuckDB counts as one
-    /// correlated value ([`double_taint`]).
+    /// distinct correlated value of the batch (measured 2026-10-15), each
+    /// term over the pairs on which the terms before it are TRUE: in written
+    /// order, but the upper half of `x BETWEEN lo AND hi` after every other
+    /// term (measured 2026-10-16). So the terms before the first one that
+    /// can trap filter, key and scan in any order, and from that one on the
+    /// scan evaluates each term in DuckDB's order, over the pairs that
+    /// DuckDB evaluates it over. The outer side of the first key is not such
+    /// a term when only filter terms come before it: it runs for each
+    /// request that a row of them reaches ([`Binder::guarded_key`]). A fold
+    /// that can trap runs for each request that reaches the subquery, where
+    /// its join runs ([`plan::Fold::traps`]). The rows that the scan keeps
+    /// for a value do not depend on the batch, and neither does an
+    /// aggregate whose answer does not depend on the order of the rows: a
+    /// count, a sum over integers, and min and max over a type where two
+    /// equal values are one value. A term must not tell apart two DOUBLE
+    /// values that DuckDB counts as one correlated value ([`double_taint`]).
     #[allow(clippy::too_many_arguments)]
     fn scan_value(
         &self,
@@ -2071,33 +2113,40 @@ impl Binder<'_> {
         w: ScanWhere<'_>,
     ) -> Result<SExpr, PrepareError> {
         let ScanWhere {
-            mut mixed,
+            written,
+            mixed,
             filters,
+            filter,
             keys,
             key_cols,
             key_lanes,
             key_terms,
-            trap_key,
         } = w;
-        let first = mixed[0];
+        let bound: Vec<SExpr> = filter
+            .iter()
+            .flat_map(|f| f.project.iter().map(|(_, e)| e.clone()))
+            .collect();
+        // Why the subquery is a scan, for a refusal: its first term that
+        // compares the table with the outer query other than by a key, or
+        // else its first term that can trap.
+        let (cause, what) = match mixed.first() {
+            Some(&t) => (t, MIXED),
+            None => written
+                .iter()
+                .find_map(|&w| match w {
+                    Written::Filter(i) if can_trap(&bound[i]) => Some((filters[i], FILTER_TRAP)),
+                    Written::Key(i) if i > 0 && can_trap(&keys[i]) => {
+                        Some((key_terms[i], KEY_TRAP))
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| PrepareError::Internal("a scan without a reason to scan".into()))?,
+        };
         if !matches!(member, Member::Value) {
-            return Err(scan_refusal(first, "the subquery is under IN, ANY or ALL"));
+            return Err(scan_refusal(cause, what, "the subquery is under IN, ANY or ALL"));
         }
         if ordered {
-            return Err(scan_refusal(first, "the subquery has ORDER BY or LIMIT"));
-        }
-        if trap_key {
-            return Err(scan_refusal(first, "the outer side of a key can trap"));
-        }
-        let mut scan_keys = Vec::new();
-        let mut scan_lanes = Vec::new();
-        for (((key, kc), lane), t) in keys.into_iter().zip(&key_cols).zip(key_lanes).zip(key_terms) {
-            if kc.cmp == KeyCmp::NotDistinct {
-                mixed.push(t);
-                continue;
-            }
-            scan_keys.push(key);
-            scan_lanes.push(lane);
+            return Err(scan_refusal(cause, what, "the subquery has ORDER BY or LIMIT"));
         }
 
         // SELECT: one aggregate call over the kept rows.
@@ -2116,7 +2165,8 @@ impl Binder<'_> {
         };
         let Some((f, func)) = call else {
             return Err(scan_refusal(
-                first,
+                cause,
+                what,
                 &format!("its SELECT item {e} is not one aggregate call"),
             ));
         };
@@ -2137,13 +2187,125 @@ impl Binder<'_> {
                 _ => false,
             };
         if !served {
-            return Err(scan_refusal(first, &format!("its SELECT item is {f}")));
+            return Err(scan_refusal(cause, what, &format!("its SELECT item is {f}")));
         }
 
-        // The terms, over the row of the scan and the outer query.
+        // The terms in DuckDB's order: as written, but the upper half of
+        // each BETWEEN after every other term.
+        let mut steps = Vec::new();
+        let mut uppers = Vec::new();
+        let mut unsplit = None;
+        for &w in &written {
+            match w {
+                Written::Filter(i) => match (&bound[i].kind, is_between(filters[i])) {
+                    (SKind::And { a, b }, true) => {
+                        steps.push(Step::Filter(i, Half::Lower, can_trap(a)));
+                        uppers.push(Step::Filter(i, Half::Upper, can_trap(b)));
+                    }
+                    (_, between) => {
+                        if between {
+                            unsplit.get_or_insert(filters[i]);
+                        }
+                        steps.push(Step::Filter(i, Half::Whole, can_trap(&bound[i])));
+                    }
+                },
+                Written::Key(i) => steps.push(Step::Key(i)),
+                Written::Mixed(i) => {
+                    let e = self.scan_term(query, select, source, inner, mixed[i], MIXED)?;
+                    match (e.kind, is_between(mixed[i])) {
+                        (SKind::And { a, b }, true) => {
+                            steps.push(Step::Term(*a));
+                            uppers.push(Step::Term(*b));
+                        }
+                        (kind, between) => {
+                            if between {
+                                unsplit.get_or_insert(mixed[i]);
+                            }
+                            steps.push(Step::Term(SExpr { kind, ..e }));
+                        }
+                    }
+                }
+            }
+        }
+        steps.extend(uppers);
+        // The first step that can trap. The outer side of the first key
+        // is not one when only filter terms come before it: it runs in the
+        // scan's keys, under the guard of [`Binder::guarded_key`].
+        let mut guarded = false;
+        let mut first = steps.len();
+        for (n, step) in steps.iter().enumerate() {
+            let traps = match step {
+                Step::Filter(_, _, traps) => *traps,
+                Step::Key(i) => can_trap(&keys[*i]),
+                Step::Term(e) => can_trap(e),
+            };
+            if !traps {
+                continue;
+            }
+            if matches!(step, Step::Key(0))
+                && key_cols[0].cmp == KeyCmp::Eq
+                && steps[..n].iter().all(|s| matches!(s, Step::Filter(..)))
+            {
+                guarded = true;
+                continue;
+            }
+            first = n;
+            break;
+        }
+        let traps = guarded || first < steps.len();
+        if let Some(t) = unsplit.filter(|_| first < steps.len()) {
+            return Err(form_refusal(&format!(
+                "the WHERE term {t}, a BETWEEN that does not bind as two comparisons, beside a \
+                 term that can trap (DuckDB evaluates its upper half after every other term)"
+            )));
+        }
+
+        // Before the first step that can trap: each filter term runs at
+        // build, each key that equals the request's keys the scan, and each
+        // other term runs in the scan. From that step on, each term runs in
+        // the scan, in DuckDB's order.
+        let pre = written
+            .iter()
+            .take_while(|w| !matches!(w, Written::Key(0)))
+            .filter(|w| matches!(w, Written::Filter(_)))
+            .count();
+        let mut keep = vec![Keep::Drop; filters.len()];
+        let mut scan_keys = Vec::new();
+        let mut scan_lanes = Vec::new();
         let mut preds = Vec::new();
-        for t in &mixed {
-            preds.push(self.scan_term(query, select, source, inner, t)?);
+        for (n, step) in steps.into_iter().enumerate() {
+            let late = n >= first;
+            match step {
+                Step::Filter(i, half, _) if !late => keep[i] = keep[i].and(half),
+                Step::Filter(i, half, _) => {
+                    let e = self.scan_term(query, select, source, inner, filters[i], SCANNED)?;
+                    preds.push(match (half, e.kind) {
+                        (Half::Lower, SKind::And { a, .. }) => *a,
+                        (Half::Upper, SKind::And { b, .. }) => *b,
+                        (Half::Whole, kind) => SExpr { kind, ..e },
+                        _ => {
+                            return Err(PrepareError::Internal(format!(
+                                "the WHERE term {} bound otherwise in a scan",
+                                filters[i]
+                            )))
+                        }
+                    });
+                }
+                Step::Key(i) if !late && key_cols[i].cmp == KeyCmp::Eq => {
+                    let key = keys[i].clone();
+                    scan_keys.push(if guarded && i == 0 {
+                        let before = &filters[..pre];
+                        self.guarded_key(query, select, source, before, key, Guard::Key)?
+                    } else {
+                        key
+                    });
+                    scan_lanes.push(key_lanes[i]);
+                }
+                Step::Key(i) => {
+                    preds.push(self.scan_term(query, select, source, inner, key_terms[i], SCANNED)?)
+                }
+                Step::Term(e) => preds.push(e),
+            }
         }
         let mut lanes: Vec<u32> = Vec::new();
         for p in preds.iter_mut() {
@@ -2152,10 +2314,7 @@ impl Binder<'_> {
         lanes.extend(agg.arg);
         lanes.sort_unstable();
         lanes.dedup();
-        let filter = match filters.as_slice() {
-            [] => None,
-            _ => Some(self.static_filter(query, select, source, &filters)?),
-        };
+        let filter = filter.and_then(|f| build_part(f, &keep));
 
         // The join of the rows, and the join of the fold that reads them.
         let mut tables = self.agg_tables.borrow_mut();
@@ -2229,10 +2388,14 @@ impl Binder<'_> {
                 rows,
                 pred,
                 aggs: vec![(agg.func, arg)],
+                traps,
             }),
             scan: None,
         });
         drop(joins);
+        if traps {
+            self.trap_keys.borrow_mut().push(rows + 1);
+        }
         let read = SExpr {
             kind: SKind::StaticCol {
                 join: rows + 1,
@@ -2255,10 +2418,10 @@ impl Binder<'_> {
     /// name of the outer query is an input bound in the outer query. Each
     /// column of the table it reads comes back as a value of the join
     /// [`SCAN_ROW`], by its lane, which [`into_scan`] renumbers. A term
-    /// that can trap refuses, as do a term that calls a SQL function, a UDF
-    /// or a model, one that reads a joined table, and one that reads a
-    /// DOUBLE of the outer query through an operation that tells -0.0 from
-    /// 0.0 ([`double_taint`]).
+    /// that calls a SQL function, a UDF or a model refuses, as do one that
+    /// reads a joined table, and one that reads a DOUBLE of the outer query
+    /// through an operation that tells -0.0 from 0.0 ([`double_taint`]).
+    /// `what` says in a refusal why the scan reads the term.
     fn scan_term(
         &self,
         query: &sqlparser::ast::Query,
@@ -2266,6 +2429,7 @@ impl Binder<'_> {
         source: usize,
         inner: &Inner<'_>,
         t: &SqlExpr,
+        what: &str,
     ) -> Result<SExpr, PrepareError> {
         use super::resolve::Walk;
         // The names of the outer query that the term reads.
@@ -2275,7 +2439,7 @@ impl Binder<'_> {
         };
         self.walk_expr(t, &mut |x| {
             if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() {
-                return Err(scan_refusal(t, "the term calls a SQL function"));
+                return Err(scan_refusal(t, what, "the term calls a SQL function"));
             }
             Ok(match x {
                 SqlExpr::Subquery(_)
@@ -2341,7 +2505,7 @@ impl Binder<'_> {
         for (i, x) in names.iter().enumerate() {
             let e = self.key_side(x)?;
             if refs_join(&mut e.clone()) {
-                return Err(scan_refusal(t, &format!("{x} reads a joined table")));
+                return Err(scan_refusal(t, what, &format!("{x} reads a joined table")));
             }
             in_cols.push(Col {
                 name: format!("\u{0}outer {i}"),
@@ -2388,7 +2552,7 @@ impl Binder<'_> {
             || !stage.lets.is_empty()
             || !bound.wide_outs.is_empty()
         {
-            return Err(scan_refusal(t, "the term does not bind one value"));
+            return Err(scan_refusal(t, what, "the term does not bind one value"));
         }
         let mut e = stage.project.into_iter().next().expect("one item").1;
         if e.ty != Ty::I1 {
@@ -2398,7 +2562,7 @@ impl Binder<'_> {
             )));
         }
         if calls_extern(&mut e.clone()) {
-            return Err(scan_refusal(t, "the term calls a UDF or a model"));
+            return Err(scan_refusal(t, what, "the term calls a UDF or a model"));
         }
         // The item's regular expressions join this query's.
         let base = self.regexes.borrow().len() as u32;
@@ -2425,10 +2589,7 @@ impl Binder<'_> {
         // column that DuckDB correlates on.
         let leaf = |x: &SExpr| matches!(x.kind, SKind::Col(_) | SKind::Slot(_));
         if double_taint(&mut e.clone(), &leaf).is_none() {
-            return Err(scan_refusal(t, &zeros_refusal(t)));
-        }
-        if can_trap(&e) {
-            return Err(scan_refusal(t, "the term can trap"));
+            return Err(scan_refusal(t, what, &zeros_refusal(t)));
         }
         Ok(e)
     }
@@ -2437,11 +2598,15 @@ impl Binder<'_> {
 /// The WHERE of a subquery that confit serves by a scan
 /// ([`Binder::scan_value`]), as [`Binder::subquery_value`] split it.
 struct ScanWhere<'q> {
+    /// Each term in written order, by its place in the list of its kind.
+    written: Vec<Written>,
     /// The terms that compare the table with the outer query other than by
     /// a key, in written order.
     mixed: Vec<&'q SqlExpr>,
-    /// The terms that read only the table.
+    /// The terms that read only the table, and the same terms bound
+    /// ([`Binder::static_filter`]).
     filters: Vec<&'q SqlExpr>,
+    filter: Option<plan::AggFilter>,
     /// The keys, as [`Binder::subquery_value`] binds them for a lookup:
     /// each one's outer side, its comparison, its lane of the table and its
     /// term as written.
@@ -2449,8 +2614,77 @@ struct ScanWhere<'q> {
     key_cols: Vec<JoinKey>,
     key_lanes: Vec<u32>,
     key_terms: Vec<&'q SqlExpr>,
-    /// Whether the outer side of the first key can trap.
-    trap_key: bool,
+}
+
+/// A term of a subquery's WHERE, by its place in the list of its kind in
+/// [`ScanWhere`].
+#[derive(Clone, Copy)]
+enum Written {
+    /// A term that reads only the table.
+    Filter(usize),
+    /// An equality between a column of the table and an outer expression.
+    Key(usize),
+    /// Any other term.
+    Mixed(usize),
+}
+
+/// One step of a scan's WHERE in DuckDB's order ([`Binder::scan_value`]).
+enum Step {
+    /// A term that reads only the table, or one half of it, and whether
+    /// that can trap.
+    Filter(usize, Half, bool),
+    Key(usize),
+    /// A term that compares the table with the outer query other than by a
+    /// key, or one half of it, bound.
+    Term(SExpr),
+}
+
+/// The part of `x BETWEEN lo AND hi` that a [`Step`] evaluates: DuckDB
+/// evaluates `x >= lo` where the term is written and `x <= hi` after every
+/// other term (measured 2026-10-16). Any other term is whole.
+#[derive(Clone, Copy)]
+enum Half {
+    Whole,
+    Lower,
+    Upper,
+}
+
+/// The part of a term that reads only the table that the build of a scan's
+/// rows evaluates ([`build_part`]).
+#[derive(Clone, Copy)]
+enum Keep {
+    Drop,
+    Lower,
+    Whole,
+}
+
+impl Keep {
+    /// The part, once the build evaluates `half` of the term too.
+    fn and(self, half: Half) -> Keep {
+        match (self, half) {
+            (Keep::Drop, Half::Lower) => Keep::Lower,
+            _ => Keep::Whole,
+        }
+    }
+}
+
+/// The part of the filter `f` that the build of a scan's rows evaluates:
+/// of each term, the whole term, the lower half of BETWEEN (`x >= lo`), or
+/// nothing, as `keep` says. `None` when nothing is left.
+fn build_part(mut f: plan::AggFilter, keep: &[Keep]) -> Option<plan::AggFilter> {
+    let project = std::mem::take(&mut f.project);
+    let out_cols = std::mem::take(&mut f.out_cols);
+    for (((name, e), mut col), k) in project.into_iter().zip(out_cols).zip(keep) {
+        let e = match (k, e.kind) {
+            (Keep::Drop, _) => continue,
+            (Keep::Lower, SKind::And { a, .. }) => *a,
+            (_, kind) => SExpr { kind, ..e },
+        };
+        col.ty.nullable = e.nullable;
+        f.project.push((name, e));
+        f.out_cols.push(col);
+    }
+    (!f.project.is_empty()).then_some(f)
 }
 
 /// The join that a WHERE term of a scan reads its row through while it
