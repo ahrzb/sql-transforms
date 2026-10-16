@@ -40,46 +40,48 @@ One CASE per tree serves a row about twice as fast as the conjunctions of
 the branch tests on each leaf's path (100 trees of depth 5 at T30: 222 us
 against 459), and since confit #430 it builds about as fast, so it is the
 entry's one spelling. The entry takes a forest whose build is estimated
-within MAX_BUILD_S (`_build_estimate`), about 10,300 output fields at 8
-features, 9,400 at 32, 8,400 at 64 and 6,800 at 128, and refuses it past
-that. The estimate is fitted on warm builds of 29 forests, each the slower
-of a struct and a list return (release build, 8 features and, for five
-forests, 32 to 128; fits of 1,000 to 8,000 rows; master 318575b with confit
-#459 and #461, 2026-10-15). The struct return is the slower, by 1.5 to 4.8
-times, more as the output fields grow: confit builds each field read of a
-struct on its own (loops/native/PLANS.md, "Needs from confit"). The estimate
-keeps a term in the output fields times the features: 100 trees of depth 5
-build in 0.77 s over 8 features and 1.9 s over 128. Each of the 26 builds
-over 0.3 s (0.57 to 21.5 s) is within 0.87 to 1.28 times the estimate, and
-forests of 2 to 10 unbounded trees build 1.10 to 1.28 times it. The cap took
-on none slower than 8.3 s (2 unbounded trees over 5,000 rows) and refused
-none faster than 6.6 s (800 trees of depth 4). Fitted on master b4b8d03 with
-confit #430, the estimate reached 7 s at about 5,990 output fields at 8
-features. The table below was measured after the fit, and its builds took
-0.94 to 1.16 times the estimate (1.35 times at 2 unbounded trees over 5,000
-rows). A struct return, one instance, 8 features and fits of 2,000 rows
-unless the row says, 10,000-row batches; a refused forest shows its build
-with the cap lifted:
+within MAX_BUILD_S (`_build_estimate`), about 10,000 output fields at 8
+features, 8,600 at 32, 7,200 at 64 and 5,200 at 128, and refuses it past
+that. The estimate is fitted on 35 warm builds over 0.3 s, each the slower
+of a struct and a list return (release build, 8 features and, for nine
+forests, 32 to 128; fits of 1,000 to 8,000 rows; T46 on master 12aca98,
+2026-10-16). The struct return is the slower, by 1.7 to 5.8 times, more as
+the output fields grow: confit builds each field read of a struct on its own
+(loops/native/PLANS.md, "Needs from confit"). The estimate keeps a term in
+the output fields times the features, larger since T44's reads
+(`_registry._apart`): 100 trees of depth 5 build in 0.81 s over 8 features
+and 2.7 s over 128. Before T44's reads, in one process, they built in 2.2 s
+over 128 features, and served a row in 1.08 to 1.24 times the time over 8 to
+128. Each of the 35 builds over 0.3 s (0.61 to 25.8 s) is within 0.88 to
+1.23 times the estimate, the most at 2 unbounded trees over 5,000 rows. The
+cap took on none slower than 6.3 s (400 trees of depth 5) and refused none
+faster than 7.5 s (800 trees of depth 4). Fitted before T44's reads (master
+318575b with confit #459 and #461), the estimate reached 7 s at about 10,300
+output fields at 8 features and 6,800 at 128. The table below was measured
+on the code of the fit. A struct return, one instance, 8 features and fits
+of 2,000 rows unless the row says, 10,000-row batches; a refused forest
+shows its build with the cap lifted:
 
     forest                           output fields   build   serve a row
     30 trees, depth 5                          693   0.2 s         24 us
     100 trees, depth 5                       2,286   0.8 s        108 us
-    100 trees, depth 5, 32 features          2,242   0.9 s         99 us
-    160 trees, depth 5                       3,745   1.4 s        198 us
-    100 trees, depth 6                       3,839   1.5 s        186 us
-    250 trees, depth 5                       5,758   2.6 s        344 us
-    400 trees, depth 5                       9,210   5.8 s        800 us
-    300 trees, depth 6                      11,402   7.8 s    (refused)
-    1 tree, unbounded                        2,000   0.7 s         47 us
-    1 tree, unbounded, 4,000 rows            4,000   1.6 s        129 us
-    5 trees, unbounded, 1,000 rows           5,000   2.6 s        179 us
-    3 trees, unbounded                       6,000   3.3 s        252 us
-    2 trees, unbounded, 5,000 rows          10,000   9.0 s        693 us
+    100 trees, depth 5, 32 features          2,242   1.1 s         95 us
+    160 trees, depth 5                       3,745   1.6 s        193 us
+    100 trees, depth 6                       3,839   1.5 s        194 us
+    250 trees, depth 5                       5,758   2.9 s        379 us
+    400 trees, depth 5                       9,210   6.3 s        913 us
+    300 trees, depth 6                      11,402   8.1 s    (refused)
+    1 tree, unbounded                        2,000   0.7 s         54 us
+    1 tree, unbounded, 4,000 rows            4,000   1.6 s        159 us
+    5 trees, unbounded, 1,000 rows           5,000   2.5 s        221 us
+    3 trees, unbounded                       6,000   3.6 s        309 us
+    2 trees, unbounded, 5,000 rows          10,000   8.7 s    (refused)
 
-against the twin's 7.1 ms a row at 30 trees. A list return builds in
-0.39 to 0.63 s at 100 trees of depth 5, over 8 to 128 features, and in
-4.4 s at 800 trees (21.5 s as a struct), so the estimate may fall again
-when confit builds a struct read field by field as it builds a list.
+On master 318575b (T40), the twin served 30 trees in 7.1 ms a row. A list
+return builds in 0.44 to 1.2 s at 100 trees of depth 5, over 8 to 128
+features, and in 4.1 s at 800 trees (23.7 s as a struct, timed once), so
+the estimate may fall again when confit builds a struct read field by
+field as it builds a list.
 """
 
 from __future__ import annotations
@@ -105,7 +107,7 @@ def _build_estimate(est: Any) -> float:
     from its output fields and features (module docstring)."""
     fields = sum(len(c) for c in est.one_hot_encoder_.categories_)
     features = int(est.n_features_in_)
-    return 1.87e-4 * fields + 4.43e-8 * fields**2 + 4.29e-6 * fields * features
+    return 1.89e-4 * fields + 4.56e-8 * fields**2 + 7.19e-6 * fields * features
 
 
 def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:

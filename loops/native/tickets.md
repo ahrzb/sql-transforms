@@ -53,10 +53,26 @@ that tests both ends, so that confit computes the feature's `x - 0.0` once
 a row where it computed it again in each arm of a chain of one test per
 edge. In one process against that chain, a 1,024-row call takes 0.29 times
 the time at 32 float64 features of 31 bins and 0.04 at 8 features of 255
-bins (float32: 0.82 and 0.17). The loop runs from the "Transforms Loop"
-project thread. The Confit Loop is paused since 2026-10-16: a confit need
-waits, and the loop works around it.
+bins (float32: 0.82 and 0.17). T46 (#500) has a translator's tests for the
+input guard read each number as the guard does (`_registry._plain`): read
+by the guard, ahead of the body, T44's `x - 0.0` rode through the whole
+body. In one process, a cubic `SplineTransformer` of 128 features under
+`extrapolation="error"` built in 9.2 s with T44's reads, against 4.3 s
+before them and 3.6 s with T46; an `OrdinalEncoder` of 256 number
+features, with the test of both ends below, in 11.2 s, against 2.7 s and
+1.7 s. A number field of an ordinal encoder tests both ends of its classes
+first, so that confit computes the feature once a row: at 64 features of
+64 classes, a row of a 1,024-row call takes 37 µs, against 32 µs with
+T44's reads alone and 83 µs before them. The forest, isotonic, quantile
+and spline build estimates are fitted again on T46 (on master 12aca98, on
+the machine the session restarted on). The caps reach about 26,800
+isotonic thresholds (19,700 at T40), 15,000 quantile leaves (13,400), 170
+to 230 spline features of degree 3 and 8 knots (unchanged), and 10,000
+forest output fields at 8 features (10,300), but 5,200 at 128 (6,800):
+with T44's reads, a forest over 128 features builds in 1.22 times the
+time. The loop runs from the "Transforms Loop" project thread. The Confit
+Loop is paused since 2026-10-16: a confit need waits, and the loop works
+around it.
 
-Next: PLANS "Next" (the build estimates fitted again on T44's reads).
-Then the rest of PLANS "Ruled 2026-10-06, to build", item 1, then the
-rest of item 2.
+Next: the rest of PLANS "Ruled 2026-10-06, to build", item 1
+(`FactorAnalysis` first), then the rest of item 2.

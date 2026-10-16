@@ -2382,11 +2382,11 @@ def test_isotonic_refuses_two_features():
 def test_isotonic_takes_a_fit_by_its_estimated_build():
     from sql_transform.native.isotonic import MAX_BUILD_S, _build_estimate
 
-    # 17,588 thresholds built in 6.5 s and 21,029 in 7.5 s (isotonic.py,
+    # 24,703 thresholds built in 5.9 s and 28,524 in 7.4 s (isotonic.py,
     # `_build_estimate`), where a count of 8,000 thresholds was the cap.
-    assert _build_estimate(17_587) <= MAX_BUILD_S
-    assert _build_estimate(21_028) > MAX_BUILD_S
-    X = np.arange(24_000.0)
+    assert _build_estimate(24_702) <= MAX_BUILD_S
+    assert _build_estimate(28_523) > MAX_BUILD_S
+    X = np.arange(32_000.0)
     step = _isotonic_step(IsotonicRegression().fit(X, X))
     with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
         to_native(step, strict=True)
@@ -2623,10 +2623,10 @@ def _forest(
 def test_trees_take_a_forest_by_the_estimated_build():
     from sql_transform.native.trees import MAX_BUILD_S, _build_estimate
 
-    # Since confit #459 and #461 the entry's build is estimated within 7 s
-    # for the default forest, the default forest over 32 features, 400
-    # trees of depth 5 (9,210 output fields, built in 5.5 s) and one
-    # unbounded tree over 8,000 rows (4.2 s; master 318575b, trees.py).
+    # The entry's build is estimated within 7 s for the default forest, the
+    # default forest over 32 features, 400 trees of depth 5 (9,210 output
+    # fields, built in 6.3 s) and one unbounded tree over 8,000 rows (4.7 s;
+    # T46 on master 12aca98, trees.py).
     assert _build_estimate(_forest(100, 5, 2000)) <= MAX_BUILD_S
     assert _build_estimate(_forest(100, 5, 2000, features=32)) <= MAX_BUILD_S
     assert _build_estimate(_forest(400, 5, 2000)) <= MAX_BUILD_S
@@ -2634,8 +2634,8 @@ def test_trees_take_a_forest_by_the_estimated_build():
 
 
 def test_trees_refuse_a_build_past_the_cap():
-    # 300 trees of depth 6: 11,402 output fields, estimated at 8 s (7.7 s
+    # 300 trees of depth 6: 11,402 output fields, estimated at 9 s (8.1 s
     # measured).
     est = _forest(300, 6, 2000)
-    with pytest.raises(NotNative, match=r"an estimated 8 s build, past 7 s"):
+    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
         to_native(_tree_step(est, 8), strict=True)

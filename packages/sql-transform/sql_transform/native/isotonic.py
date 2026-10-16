@@ -96,13 +96,13 @@ def _pieces(xp: np.ndarray, fp: np.ndarray) -> list[_Piece]:
 def _build_estimate(pieces: int) -> float:
     """The seconds confit takes to build the entry (warm, release build),
     from the pieces of its one CASE tree, a little worse than linear.
-    Fitted on 16 builds of 0.3 to 9.7 s (1,743 to 24,652 thresholds,
-    `out_of_bounds` "clip" and "raise"; master 318575b with confit #459 and
-    #461, 2026-10-15): each within 0.91 to 1.09 times the estimate, which
-    reaches 7 s at about 19,700 thresholds. The cap took on none slower than
-    6.5 s and refused none faster than 7.5 s. Fitted before #459 (master
-    94d7bb1), the estimate reached 7 s at about 11,700 thresholds."""
-    return 1.92e-4 * pieces + 8.32e-9 * pieces**2
+    Fitted on 18 builds of 0.5 to 8.6 s (3,418 to 31,725 thresholds,
+    `out_of_bounds` "clip" and "raise"; T46 on master 12aca98, 2026-10-16):
+    each within 0.89 to 1.22 times the estimate, which reaches 7 s at about
+    26,800 thresholds. The cap took on none slower than 7.2 s and refused
+    none faster than 7.4 s. Fitted before T44's reads (`_registry._apart`;
+    master 318575b), the estimate reached 7 s at about 19,700 thresholds."""
+    return 1.33e-4 * pieces + 4.79e-9 * pieces**2
 
 
 def _leaf(x: S.Expr, piece: _Piece) -> S.Expr:
