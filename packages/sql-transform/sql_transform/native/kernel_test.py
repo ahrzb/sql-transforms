@@ -91,6 +91,24 @@ def test_an_interval_the_fit_rejects_stays_python():
         to_native(_step(est, [pa.float64()], pa.float64()), strict=True)
 
 
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).nmant <= 52, reason="a long double is a double here"
+)
+def test_a_long_double_interval_stays_python():
+    # The twin computes the root in long doubles, then rounds it.
+    est = _chi2(1, sample_interval=np.longdouble(0.3))
+    with pytest.raises(NotNative, match="the twin computes in float"):
+        to_native(_step(est, [pa.float64()], pa.float64()), strict=True)
+
+
+@pytest.mark.parametrize("interval", [np.float32(0.3), np.float16(0.3), np.int64(2)])
+def test_an_interval_of_another_numpy_type_is_read_as_a_double(interval):
+    est = _chi2(2, sample_interval=interval)
+    step = _step(est, [pa.float64()] * 2, pa.list_(pa.float64(), 2))
+    rows = _rows([0.3, 2.0, 7.25, 1e300], [5e-324, 0.0, 1.0, 1e-300])
+    assert check(step, to_native(step, strict=True), rows) == 4
+
+
 BITS = [True, False, None]
 
 

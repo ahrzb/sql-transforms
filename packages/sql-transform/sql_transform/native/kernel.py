@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import pyarrow as pa
 from confit import sql as S
 from sklearn.kernel_approximation import AdditiveChi2Sampler
@@ -50,6 +51,14 @@ def _additive_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[
             " (decisions/closed/additive-chi2-parity-bound.md)"
         )
     given = est.sample_interval
+    if given is not None and (np.ones(1) * given).dtype != np.float64:
+        # A long double interval makes the twin compute `X * s` and its root
+        # in long doubles, then round the root to a double: 13% of 200,000
+        # draws part from the double's root at s = 0.3.
+        raise NotNative(
+            f"AdditiveChi2Sampler(sample_interval={given!r}): the twin computes"
+            f" in {(np.ones(1) * given).dtype}"
+        )
     s = float(_INTERVAL[steps] if given is None else given)
     if not (math.isfinite(s) and s >= 0.0):
         # The fit rejects such an interval, which `transform` does not read
