@@ -17,10 +17,10 @@ place of the first count; `x op ALL` is NOT over ANY with the opposite
 comparison. The oracle evaluates the subquery's WHERE in written order over
 (distinct outer values) x (static rows), the aggregate's argument over the
 matched rows only, and the item once for each distinct outer value (the pins
-at the end). Only the outer side of a first key and the left side of IN, ANY
-or ALL can trap, and confit evaluates them for the same rows as the oracle;
-an item that traps before any request refuses; elsewhere the values are what
-compares.
+at the end). The outer side of a first key, the left side of IN, ANY or ALL
+and a WHERE term of a scan can trap, and confit evaluates them for the same
+rows as the oracle; an item that traps before any request refuses; elsewhere
+the values are what compares.
 
 Every test but the pins asserts the campaign's own verdict (`fuzz.parity`).
 """
@@ -486,20 +486,16 @@ def test_static_term_that_calls_a_sql_function_refuses():
             "computes over sum(f), a DOUBLE sum or avg",
         ),
         (_sub("count(NULL)"), "must be a column of its table"),
+        # Without a term that reads the outer query, the oracle evaluates
+        # the subquery once for each batch, an empty batch too.
         (
-            _sub("count(*)", "s.k = t.k AND s.v > t.k + 1"),
-            "the WHERE term s.v > t.k + 1",
-        ),
-        (_sub("count(*)", "s.k + 1 = t.k"), "the WHERE term s.k + 1 = t.k"),
-        (
-            _sub("sum(v)", "s.j = t.j AND s.k = t.k + 1"),
-            "can trap and follows another key",
+            _sub("count(*)", "s.v + 9223372036854775807 > 0"),
+            "and no WHERE term that reads the outer query",
         ),
         (
-            _sub("count(*)", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
-            "reads only its table and can trap",
+            _sub("count(*)", "s.j = 2 AND s.s"),
+            "and no WHERE term that reads the outer query",
         ),
-        (_sub("count(*)", "s.k = t.k AND s.s"), "reads only its table and can trap"),
         (_sub("count(*)", "s.s = t.k"), "compares VARCHAR with another type"),
         (_sub("count(*)", "s.k = (SELECT max(k) FROM s)"), "which holds a subquery"),
         (_sub("count(*)", "s.v > (SELECT min(v) FROM s)"), "which holds a subquery"),
@@ -961,6 +957,11 @@ def _ksub(where: str, agg: str = "count(*)", tail: str = "") -> str:
         ),
         # The upper bound of BETWEEN moves after the key.
         (_ksub(f"s.v BETWEEN 0 AND -1 AND s.k = {TRAP}"), TRAP_OR_OPT),
+        # A later key runs over the rows that the keys before it match, in a
+        # scan.
+        (_ksub(f"s.v = y + 100 AND s.k = {TRAP}"), ROWS_OR_OPT),
+        (_ksub(f"s.v = y + 1 AND s.k = {TRAP}"), TRAP_OR_OPT),
+        (_ksub(f"s.v = y + 100 AND s.k = {TRAP}", "sum(v)"), ROWS_OR_OPT),
         (_ksub(f"(s.v BETWEEN 0 AND -1 AND s.f = 1) AND s.k = {TRAP}"), TRAP_OR_OPT),
         # In the SELECT list the subquery runs for every row that the WHERE
         # passes, under a CASE too.
@@ -1044,11 +1045,6 @@ def test_a_first_key_whose_outer_side_can_trap_beside_a_join(sql, expect):
 @pytest.mark.parametrize(
     "sql, shape, why",
     [
-        (
-            _ksub(f"s.v = y + 100 AND s.k = {TRAP}"),
-            None,
-            "can trap and follows another key",
-        ),
         # DuckDB runs a subquery in the WHERE over every pair of a comma
         # join, before the WHERE matches the comma table's key.
         (
@@ -1804,9 +1800,9 @@ def test_exists_whose_first_key_can_trap(sql, expect):
             "GROUP BY or HAVING",
         ),
         (
-            f"SELECT id, {_exists('1', 's.k = t.k AND s.v + 9223372036854775807 > 0')} "
+            f"SELECT id, {_exists('1', 's.v + 9223372036854775807 > 0')} "
             "AS c FROM __THIS__ AS t",
-            "reads only its table and can trap",
+            "and no WHERE term that reads the outer query",
         ),
         (
             "SELECT id, EXISTS (SELECT 1 FROM __THIS__ AS r WHERE r.k = t.k) AS c "
@@ -3160,10 +3156,10 @@ def test_an_item_over_one_row_ordered_refuses_by_name(sql, statics, why):
 # that share the request's keys and pass the terms that read only the table,
 # at most 100 of them (the build checks), and folds the aggregate over the
 # rows on which every other term is TRUE. The oracle evaluates such a term
-# over each pair of a static row and a distinct outer value. No such term can
-# trap, and the aggregate does not depend on the order of the rows: count,
-# sum over an integer or BOOLEAN column, min and max over an integer, DECIMAL
-# or VARCHAR column.
+# over each pair of a static row and a distinct outer value. The aggregate
+# does not depend on the order of the rows: count, sum over an integer or
+# BOOLEAN column, min and max over an integer, DECIMAL or VARCHAR column. A
+# term that can trap runs where the oracle runs it (the tests after these).
 
 SCAN_AGGREGATES = [
     "count(*)",
@@ -3396,10 +3392,23 @@ def test_plan_facts_name_the_scan_and_its_fold():
         (_sub("sum(f)", "s.v > t.id"), [], "its SELECT item is sum(f)"),
         (_sub("min(f)", "s.v > t.id"), [], "its SELECT item is min(f)"),
         (_sub("max(b)", "s.v > t.id"), [], "its SELECT item is max(b)"),
-        # Terms that can trap.
-        (_sub("count(*)", "s.v > t.id + 1"), [], "s.v > t.id + 1"),
-        (_sub("count(*)", "s.k = t.k + 1 AND s.v > t.id"), [], "a key can trap"),
-        (_sub("count(*)", "s.v + 1 > t.id"), [], "where the term can trap"),
+        # A term that can trap where the scan does not serve.
+        (
+            _sub("max(v) + 1", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
+            [],
+            "which reads only its table and can trap, where its SELECT item",
+        ),
+        (
+            _sub("avg(v)", "s.j = t.j AND s.k = t.k + 1"),
+            [],
+            "whose outer side can trap and follows another key, where its SELECT",
+        ),
+        (
+            f"SELECT id, {_in('t.k', 's.v', 's.k = t.k AND s.v + 1 > 0')} AS c "
+            "FROM __THIS__ AS t",
+            [],
+            "which reads only its table and can trap, where the subquery is under IN",
+        ),
         # Terms that tell -0.0 from 0.0, which the oracle evaluates once for
         # both (the pin at the end).
         (_sub("count(*)", "s.f < 1.0 / t.x"), [], "can tell -0.0 from 0.0"),
@@ -3427,10 +3436,211 @@ def test_a_scan_refuses_by_name(sql, udfs, why):
     assert why in v.detail, v.detail
 
 
-# Pins: what the oracle evaluates, measured 2026-10-14. The served forms
-# cannot trap but in the outer side of a first key and in the left side of
-# IN, ANY or ALL, so these facts never change a served answer. They are why a WHERE term
-# that reads only the table and can trap refuses today.
+# A scan with a WHERE term that can trap, or with a key whose outer side can
+# trap and follows another term that reads the outer query. The oracle
+# evaluates each term over the pairs of a static row and a distinct outer
+# value on which the terms before it are TRUE: in written order, but the upper
+# half of BETWEEN after every other term (measured 2026-10-16). From the first
+# term that can trap on, confit evaluates the terms in that order, for each
+# request that reaches the subquery; the terms before it filter at build or
+# match by key. Under DIVERGE_OPT, optimizer-on DuckDB orders the terms
+# another way. t.a + 1 overflows for the requests 1 and 3, and FT for the
+# static rows whose v is 1 or more.
+
+XT = table(
+    {"id": "int64", "a": "int64", "b": "int64", "c": "int64?"},
+    [
+        {"id": 1, "a": 2**63 - 1, "b": 0, "c": None},
+        {"id": 2, "a": 5, "b": 0, "c": 1},
+        {"id": 3, "a": 2**63 - 1, "b": 100, "c": 2},
+    ],
+)
+XS = table(
+    {"k": "int32?", "v": "int64?", "w": "int64?"},
+    [
+        {"k": 1, "v": 5, "w": 1},
+        {"k": 2, "v": 7, "w": 0},
+        {"k": None, "v": 3, "w": 2},
+        {"k": 4, "v": 0, "w": 1},
+        {"k": 4, "v": -2, "w": 0},
+    ],
+)
+S3 = table({"id": "int64"}, [{"id": 2}])
+FT = "s.v + 9223372036854775807 > 0"
+
+TRAPPING_SCANS = [
+    # In written order: a term before it that passes no row stops it.
+    ("s.k = 3 AND s.v < t.a + 1", False),
+    ("s.v < t.a + 1 AND s.k = 3", True),
+    ("s.k = 1 AND s.v < t.a + 1", True),
+    # A term before it that is NULL or FALSE stops it, and so does a TRUE
+    # side of OR before it.
+    ("s.k = 1 AND s.v < t.c AND s.v < t.a + 1", False),
+    ("s.k = 1 AND s.v > t.c AND s.v < t.a + 1", True),
+    ("s.k = 1 AND s.v > t.b + 10 AND s.v < t.a + 1", False),
+    ("s.k = 1 AND s.v < t.b AND s.v < t.a + 1", True),
+    ("s.k = 1 AND (s.v > 0 OR s.v < t.a + 1)", False),
+    ("s.k = 1 AND (s.v < 0 OR s.v < t.a + 1)", True),
+    ("s.k = 1 AND (s.v = 5 OR s.v = t.a + 1)", False),
+    # An IN list evaluates every item, NOT both sides of its AND, and CASE
+    # only the branch it takes.
+    ("s.k = 1 AND s.v IN (5, t.a + 1)", True),
+    ("s.k = 1 AND NOT (s.v < 0 AND s.v < t.a + 1)", True),
+    ("s.k = 1 AND CASE WHEN s.v > 0 THEN true ELSE s.v < t.a + 1 END", False),
+    # The upper half of BETWEEN runs after every other term; NOT BETWEEN
+    # runs where it is written.
+    ("s.v BETWEEN t.b AND t.a + 1 AND s.k = 3", False),
+    ("s.v BETWEEN t.a + 1 AND 10 AND s.k = 3", True),
+    ("t.a + 1 BETWEEN s.v AND 10 AND s.k = 3", True),
+    ("s.v NOT BETWEEN t.b AND t.a + 1 AND s.k = 3", True),
+    ("t.id BETWEEN 2 AND 1 AND s.v < t.a + 1", True),
+    ("s.v BETWEEN NULL AND 2 AND s.v < t.a + 1", False),
+    ("s.v BETWEEN t.b - 5 AND t.b + 5", False),
+    # A term that reads only the table: the build keeps the rows that the
+    # terms before it pass, by the lower half of a BETWEEN only.
+    (f"s.k = t.c AND {FT}", True),
+    (f"{FT} AND s.k = t.c + 3", True),
+    (f"s.v <= 0 AND {FT} AND s.k = t.c", False),
+    (f"s.v >= 0 AND s.v <= 2 AND {FT} AND s.k = t.c", False),
+    (f"s.v BETWEEN 0 AND 2 AND {FT} AND s.k = t.c", True),
+    (f"s.v > t.b AND {FT}", True),
+    ("s.v * 2000000000000000000 > t.b", True),
+    ("s.v * 1000000000000000000 > t.b", False),
+    # A key whose outer side can trap: the first key after only terms that
+    # read only the table runs under its guard, any other in its place.
+    (f"s.k = t.c + 3 AND {FT}", False),
+    ("s.w > 0 AND s.k = t.a + 1 AND s.v > t.b", True),
+    ("s.w > 5 AND s.k = t.a + 1 AND s.v > t.b", False),
+    ("s.v > t.b AND s.k = t.a + 1", True),
+    ("s.v > t.b + 100 AND s.k = t.a + 1", False),
+    ("s.k = t.id AND s.k = t.a + 1", True),
+    ("s.k = t.id + 100 AND s.k = t.a + 1", False),
+    ("s.k IS NOT DISTINCT FROM t.a + 1 AND s.v > t.b", True),
+]
+
+
+def _trapping_scan(sql, traps, rows=XT, statics=None):
+    v = assert_parity(
+        sql,
+        rows,
+        statics={"s": XS, "s3": S3} if statics is None else statics,
+        expect=TRAP_OR_OPT if traps else ROWS_OR_OPT,
+        trap="Overflow" if traps else None,
+    )
+    if not traps and v.kind == "DIVERGE_OPT":
+        assert "confit returns rows" in v.detail, v.detail
+
+
+@pytest.mark.parametrize("agg", ["count(*)", "sum(v)", "min(v)"])
+@pytest.mark.parametrize("where, traps", TRAPPING_SCANS)
+def test_a_scan_term_that_can_trap(where, traps, agg):
+    _trapping_scan(_sub(agg, where), traps)
+
+
+XSUB = "(SELECT count(*) FROM s WHERE s.v < t.a + 1)"
+
+
+@pytest.mark.parametrize(
+    "sql, traps",
+    [
+        # In the SELECT list the subquery runs for each row that the WHERE
+        # passes, under a CASE too, and in the WHERE before the WHERE.
+        (f"SELECT id, {XSUB} AS c FROM __THIS__ AS t", True),
+        (f"SELECT id, {XSUB} AS c FROM __THIS__ AS t WHERE t.a < 100", False),
+        (
+            f"SELECT id, CASE WHEN false THEN {XSUB} ELSE 0 END AS c "
+            "FROM __THIS__ AS t",
+            True,
+        ),
+        (
+            f"SELECT id, CASE WHEN t.a < 100 THEN {XSUB} END AS c FROM __THIS__ AS t",
+            True,
+        ),
+        (f"SELECT id FROM __THIS__ AS t WHERE t.a < 100 AND {XSUB} > 0", True),
+        (f"SELECT id, {XSUB} AS c FROM __THIS__ AS t WHERE c >= 0", True),
+        (
+            f"SELECT id, {XSUB} AS c FROM (SELECT * FROM __THIS__ WHERE a < 100) AS t",
+            False,
+        ),
+        # EXISTS, and a scan beside another one.
+        (
+            "SELECT id, EXISTS (SELECT 1 FROM s WHERE s.v < t.a + 1) AS c "
+            "FROM __THIS__ AS t",
+            True,
+        ),
+        (
+            f"SELECT id, {XSUB} AS a, (SELECT max(v) FROM s WHERE s.v > t.b) AS b "
+            "FROM __THIS__ AS t",
+            True,
+        ),
+        # In the SELECT list after a comma join, over the pairs it matches.
+        (
+            f"SELECT t.id, {XSUB} AS c FROM __THIS__ AS t, s3 WHERE t.id = s3.id",
+            False,
+        ),
+    ],
+)
+def test_a_scan_term_that_can_trap_runs_where_the_oracle_runs_it(sql, traps):
+    _trapping_scan(sql, traps)
+
+
+def test_a_scan_term_that_can_trap_over_an_empty_table_and_an_empty_batch():
+    sql = f"SELECT id, {XSUB} AS c FROM __THIS__ AS t"
+    _trapping_scan(sql, False, statics={"s": XS.slice(0, 0)})
+    _trapping_scan(sql, False, rows=XT.slice(0, 0))
+
+
+@pytest.mark.parametrize(
+    "sql, expect",
+    [
+        # Terms that the scan used to refuse, over T and S.
+        (_sub("count(*)", "s.k = t.k AND s.v > t.k + 1"), "AGREE"),
+        (_sub("count(*)", "s.k + 1 = t.k"), "AGREE"),
+        (_sub("sum(v)", "s.j = t.j AND s.k = t.k + 1"), "AGREE"),
+        (_sub("count(*)", "s.v > t.id + 1"), "AGREE"),
+        (_sub("count(*)", "s.k = t.k + 1 AND s.v > t.id"), "AGREE"),
+        (_sub("count(*)", "s.v + 1 > t.id"), "AGREE"),
+        (_sub("count(*)", "s.k = t.k AND s.s"), TRAP_OR_OPT),
+        (_sub("count(*)", "s.k = t.k AND s.v + 9223372036854775807 > 0"), TRAP_OR_OPT),
+        (
+            f"SELECT id, {_exists('1', 's.k = t.k AND s.v + 9223372036854775807 > 0')} "
+            "AS c FROM __THIS__ AS t",
+            TRAP_OR_OPT,
+        ),
+    ],
+)
+def test_a_scan_serves_a_term_that_can_trap(sql, expect):
+    assert_parity(sql, T, statics={"s": S}, expect=expect)
+
+
+@pytest.mark.parametrize(
+    "sql, shape, why",
+    [
+        (f"SELECT id, {XSUB} AS c FROM __THIS__ AS t", "many", "under shape='many'"),
+        (
+            f"SELECT t.id FROM __THIS__ AS t, s3 WHERE t.id = s3.id AND {XSUB} >= 0",
+            None,
+            "beside a comma join",
+        ),
+        # The oracle evaluates the upper half of a BETWEEN after every other
+        # term, and this one binds as one constant.
+        (
+            _sub("count(*)", "5 BETWEEN 0 AND 2 AND s.v < t.a + 1"),
+            None,
+            "a BETWEEN that does not bind as two comparisons",
+        ),
+    ],
+)
+def test_a_scan_term_that_can_trap_refuses_by_name(sql, shape, why):
+    v = assert_parity(
+        sql, XT, statics={"s": XS, "s3": S3}, shape=shape, expect="REFUSED"
+    )
+    assert why in v.detail, v.detail
+
+
+# Pins: what the oracle evaluates, measured 2026-10-14. These facts decide
+# where confit evaluates what can trap: the outer side of a first key, the
+# left side of IN, ANY or ALL, and a WHERE term of a scan.
 
 BIG = 2**63 - 1
 PIN_S = pa.table(

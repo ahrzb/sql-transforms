@@ -820,7 +820,25 @@ impl Binder<'_> {
                     });
                 }
                 let chain = chain.ok_or_else(|| unsup("empty IN list"))?;
-                self.bind(&ast_not_if(*negated, chain))
+                // DuckDB evaluates the subject and every item for each row
+                // that reaches the list, also in a WHERE, where it stops an
+                // OR at its first TRUE side (measured 2026-10-16: `WHERE
+                // t.b IN (0, t.a + 1)` traps for t.b = 0 and the greatest
+                // BIGINT t.a, `WHERE t.b = 0 OR t.b = t.a + 1` does not).
+                // A WHERE lowers an OR that way (`emit_truth` in lower.rs),
+                // and an OR under a NOT as a value, both sides evaluated:
+                // so NOT over NOT keeps an item that can trap from stopping
+                // early.
+                let bound = self.bind(&ast_not_if(*negated, chain))?;
+                if !matches!(bound.kind, SKind::Or { .. }) || !can_trap(&bound) {
+                    return Ok(bound);
+                }
+                let not = |e: SExpr| SExpr {
+                    nullable: e.nullable,
+                    kind: SKind::Not(Box::new(e)),
+                    ty: Ty::I1,
+                };
+                Ok(not(not(bound)))
             }
             SqlExpr::Like {
                 negated,

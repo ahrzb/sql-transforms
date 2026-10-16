@@ -506,7 +506,8 @@ The first five are ruled, in this order; the rest follow.
   the table inside the call, 2026-10-16), over one static table, keyed by `=` or IS NOT
   DISTINCT FROM between a bare column of the table and an outer expression
   that cannot trap (the first key's may trap, see below), and filtered by
-  WHERE terms that read only the table and cannot trap. It binds as a hidden
+  WHERE terms that read only the table and cannot trap (the scan below
+  serves the other terms). It binds as a hidden
   LEFT join to a table that the build
   filters and groups (`src/specializer/frontend/subquery.rs`, `AggTable` and
   `AggFilter` in `plan.rs`; claim `scalar-subquery-as-join`;
@@ -533,12 +534,11 @@ The first five are ruled, in this order; the rest follow.
   range, an ORDER BY term inside a call that is not a column of the table,
   `count(DISTINCT *)` (DuckDB's binder error)
   and DISTINCT over a constant, an item that traps over the aggregates of a group or of no rows, holds a
-  subquery or calls a SQL function, a UDF or a model, a WHERE term that is
-  neither a key nor reads only the table, a static term that can trap (DuckDB
-  runs it over unmatched rows), holds a subquery or calls a SQL function, an
-  outer side that reads a joined table, an outer side that can trap on a
-  later key (DuckDB runs it only over the static rows that the earlier keys
-  match), in a WHERE subquery beside a comma join keyed on a WHERE term
+  subquery or calls a SQL function, a UDF or a model, a static term that can
+  trap in a WHERE that reads no outer column (DuckDB runs that subquery once
+  per batch, an empty batch too), a static term that holds a subquery or
+  calls a SQL function, an outer side that reads a joined table, a term that
+  can trap in a WHERE subquery beside a comma join keyed on a WHERE term
   (DuckDB runs that subquery over every pair of the cross product) or under
   `shape='many'` (the loops run every join before the WHERE), a VARCHAR key
   against another type, a subquery in FROM, in JOIN ON or inside the
@@ -783,7 +783,7 @@ The first five are ruled, in this order; the rest follow.
   `test_a_scan*`; the generator adds such a term to about one subquery in
   four that selects an aggregate or is EXISTS). It serves count, integer,
   BOOLEAN and DECIMAL(<=36) sum, min and max over integer, DECIMAL and
-  VARCHAR, and EXISTS, where no term can trap and no term tells -0.0 from
+  VARCHAR, and EXISTS, where no term tells -0.0 from
   0.0 (DuckDB evaluates the subquery once per distinct outer value, with the
   first request's value; pin `test_pin_the_subquery_runs_once_for_minus_zero_and_zero`).
   The same holds for the outer side of a key under every form, so a key
@@ -791,15 +791,38 @@ The first five are ruled, in this order; the rest follow.
   loop of `subquery_value`, 2026-10-16; the left side of IN, ANY and ALL
   runs for each request and needs no check).
   A program with a scan runs on the interpreter only (MultiMap statics).
-  Open for the scan, in value order: terms that can trap (`s.v BETWEEN t.a
-  - 5 AND t.a + 5`: evaluate the whole WHERE per pair in written order and
-  place the scan where DuckDB plans the subquery, as `guarded_key` does); an
-  expression over the aggregate; `bool_and`, `bool_or` and the bitwise
-  aggregates (in the 2026-10-16 campaign, 22 generated scans refused because
-  their item is one); avg and DOUBLE sum (float-reduction bound);
-  min and max over DOUBLE (refuse at build a column with equal values of
-  other bits); IN, ANY and ALL; ORDER BY with LIMIT; Cranelift code for
-  ProbeRange and ProbeRead.
+  Terms that can trap serve in the scan (2026-10-16). DuckDB evaluates the
+  WHERE over the pairs of a distinct outer value and a static row, each term
+  over the pairs on which the terms before it are TRUE: in written order,
+  but the upper half of a BETWEEN after every other term, OR's right side
+  only if its left is not TRUE, both sides under NOT, CASE lazily (measured,
+  scratch n1041/trap_order.py and trap_or.py). Any trapping term but the
+  first key's outer side sends the subquery to the scan; `scan_value` puts
+  the terms in that order (`Step`), finds the first one that can trap, and
+  from there evaluates every term in the fold's `pred`. The terms before it
+  filter at build (a BETWEEN whose upper half falls after keeps its lower
+  half, `build_part`) or key the scan, and a first key after only filter
+  terms keeps `guarded_key`. A fold that can trap (`Fold::traps`) is forced:
+  it runs where its join runs, for each request that reaches the subquery
+  (under a CASE too, as DuckDB), and counts in `trap_keys` (refused under
+  `shape='many'` and beside a comma join). A WHERE that reads no outer
+  column refuses a trapping term: DuckDB runs that subquery once per batch,
+  an empty batch included. The probes also found that DuckDB evaluates every
+  item of an IN list, where confit stopped at the first TRUE equality in a
+  WHERE or a CASE condition (master: OPT_EMULATED for `WHERE b IN (0, a +
+  1)`; the generator draws only literal items, so the campaign never saw
+  it): the binder wraps a list with an item that can trap in NOT over NOT
+  (`expr.rs`), which `emit_truth` lowers as a value. CAMPAIGN_NUMBERS
+  Open for the scan, in value order (refusals in the 2026-10-16 prepare-only
+  sweep of the 6,000 subquery seeds of 50,000,000.., scratch n1040/sweep): an
+  expression over the aggregate (66); DISTINCT (34); `bool_and`, `bool_or`
+  and the bitwise aggregates (20); avg and DOUBLE sum (26, float-reduction
+  bound); min and max over DOUBLE (about 52; refuse at build a column with
+  equal values of other bits); a trapping static term in a WHERE that reads
+  no outer column (evaluate it at build in DuckDB's order, refuse only if it
+  traps); IN, ANY and ALL; ORDER BY with LIMIT; Cranelift code for
+  ProbeRange and ProbeRead. The generator could draw IN-list items that are
+  not literals.
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
   set operations.** Refused today, except the scalar subquery, EXISTS and
   IN above; only batch-dependent forms are out of scope. Row-local derived
