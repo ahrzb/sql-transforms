@@ -486,7 +486,10 @@ def test_static_term_that_calls_a_sql_function_refuses():
             "computes over sum(f), a DOUBLE sum or avg",
         ),
         (_sub("count(NULL)"), "must be a column of its table"),
-        (_sub("count(*)", "s.k = t.k AND s.v > t.k"), "the WHERE term s.v > t.k"),
+        (
+            _sub("count(*)", "s.k = t.k AND s.v > t.k + 1"),
+            "the WHERE term s.v > t.k + 1",
+        ),
         (_sub("count(*)", "s.k + 1 = t.k"), "the WHERE term s.k + 1 = t.k"),
         (
             _sub("sum(v)", "s.j = t.j AND s.k = t.k + 1"),
@@ -2897,6 +2900,278 @@ def test_an_item_over_one_row_ordered_refuses_by_name(sql, statics, why):
     assert why in v.detail, v.detail
 
 
+# A WHERE term that compares the table with the outer query other than by a
+# key, `s.v > t.id`: confit scans, for each request, the rows of the table
+# that share the request's keys and pass the terms that read only the table,
+# at most 100 of them (the build checks), and folds the aggregate over the
+# rows on which every other term is TRUE. The oracle evaluates such a term
+# over each pair of a static row and a distinct outer value. No such term can
+# trap, and the aggregate does not depend on the order of the rows: count,
+# sum over an integer or BOOLEAN column, min and max over an integer, DECIMAL
+# or VARCHAR column.
+
+SCAN_AGGREGATES = [
+    "count(*)",
+    "count(v)",
+    "count(s)",
+    "count(1)",
+    "sum(v)",
+    "sum(b)",
+    "sum(d)",
+    "sum(u)",
+    "sum(i8)",
+    "min(v)",
+    "max(v)",
+    "min(s)",
+    "max(s)",
+    "min(d)",
+    "max(u)",
+    "max(i8)",
+]
+
+SCAN_WHERES = [
+    "s.v > t.id",
+    "s.v > t.id AND s.k = t.k",  # the key after the term
+    "s.k = t.k AND s.j <> t.j",
+    "s.v BETWEEN t.j AND t.id",
+    "s.f < t.x",  # -0.0 and 0.0 compare equal, NaN is the greatest
+    "s.f * t.x > 0",  # -0.0 and 0.0 give equal products
+    "s.d <= t.x",  # DECIMAL against DOUBLE
+    "s.s < t.name",
+    "s.u > t.u",
+    "s.v > t.id OR s.s = t.name",
+    "coalesce(s.v, 0) < t.id",
+    "t.k > 1 AND s.v > t.id",  # a term that reads only the request
+    "t.k IS NULL",
+    "s.k IS NOT DISTINCT FROM t.k AND s.v > t.id",
+    "s.v > 5 AND s.j < t.j",  # a term that reads only the table filters
+    "s.f = t.x AND s.v < t.id",  # a DOUBLE key
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", SCAN_WHERES)
+@pytest.mark.parametrize("agg", SCAN_AGGREGATES)
+def test_a_scan(agg, where, shape):
+    assert_parity(_sub(agg, where), T, statics={"s": S}, shape=shape)
+
+
+SCAN_FORMS = [
+    # EXISTS and NOT EXISTS, in the WHERE, and under CASE.
+    "SELECT id, EXISTS (SELECT 1 FROM s WHERE s.v > t.id) AS c FROM __THIS__ AS t",
+    "SELECT id, NOT EXISTS (SELECT * FROM s WHERE s.f < t.x) AS c FROM __THIS__ AS t",
+    "SELECT id FROM __THIS__ AS t WHERE (SELECT count(*) FROM s WHERE s.v > t.id) > 2",
+    "SELECT id FROM __THIS__ AS t WHERE EXISTS (SELECT 1 FROM s WHERE s.s < t.name)",
+    "SELECT id, CASE WHEN t.k > 1 THEN (SELECT sum(v) FROM s WHERE s.v > t.id) END "
+    "AS c FROM __THIS__ AS t",
+    # Two scans, the same scan twice, and a scan beside a key.
+    "SELECT id, (SELECT count(*) FROM s WHERE s.v > t.id) AS a, "
+    "(SELECT max(s) FROM s WHERE s.v < t.id) AS b, "
+    "(SELECT sum(v) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT count(*) FROM s WHERE s.v > t.id) "
+    "+ (SELECT count(*) FROM s WHERE s.v > t.id) AS c FROM __THIS__ AS t",
+    # Inside expressions, a lateral alias as the outer side, and WHERE
+    # reading the subquery's alias.
+    "SELECT id, coalesce((SELECT max(v) FROM s WHERE s.v < t.id), -1) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT min(s) FROM s WHERE s.v > t.j) || 'x' AS c FROM __THIS__ AS t",
+    "SELECT id, j AS jj, (SELECT count(*) FROM s WHERE s.j < jj) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT count(*) FROM s WHERE s.v > t.id) AS c "
+    "FROM __THIS__ AS t WHERE c > 1",
+    # The table aliased, its columns renamed, qualified by schema, and its
+    # columns unqualified.
+    "SELECT id, (SELECT count(*) FROM s AS x WHERE x.v > t.id) AS c FROM __THIS__ AS t",
+    "SELECT id, (SELECT sum(vv) FROM s AS x(kk, jj, vv) WHERE x.vv > t.id) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT count(*) FROM main.s WHERE main.s.v > t.id) AS c "
+    "FROM __THIS__ AS t",
+    "SELECT id, (SELECT count(*) FROM s WHERE v > t.id) AS c FROM __THIS__ AS t",
+    # A query of two levels (under shape='many' the subquery refuses), where
+    # DuckDB correlates on the column of the derived table: -inf and inf.
+    "SELECT id, (SELECT count(*) FROM s WHERE s.v > t.id) AS c "
+    "FROM (SELECT * FROM __THIS__) AS t",
+    "SELECT id, (SELECT count(*) FROM s WHERE s.f < t.y) AS c "
+    "FROM (SELECT id, 1.0 / x AS y FROM __THIS__) AS t",
+    # Beside a FROM join (under the default shape its duplicate keys refuse).
+    "SELECT t.id, (SELECT count(*) FROM s WHERE s.v > t.id) AS c "
+    "FROM __THIS__ AS t JOIN s AS s2 ON s2.k = t.k",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("sql", SCAN_FORMS)
+def test_a_scan_forms(sql, shape):
+    if (shape is None and "JOIN s AS s2" in sql) or (
+        shape == "many" and "FROM (SELECT " in sql
+    ):
+        assert_parity(sql, T, statics={"s": S}, shape=shape, expect="REFUSED")
+        return
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("agg", ["count(*)", "sum(v)", "max(s)"])
+def test_a_scan_over_an_empty_table_and_an_empty_batch(agg, shape):
+    sql = _sub(agg, "s.v > t.id")
+    assert_parity(sql, T, statics={"s": S.slice(0, 0)}, shape=shape)
+    assert_parity(sql, T.slice(0, 0), statics={"s": S}, shape=shape)
+
+
+def _rows(n, key=lambda i: 1):
+    return table(
+        {"k": "int64?", "v": "int64"}, [{"k": key(i), "v": i} for i in range(n)]
+    )
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize(
+    "where, statics",
+    [
+        ("s.v > t.id", _rows(100)),
+        # Two keys of 100 rows each.
+        ("s.k = t.k AND s.v > t.id", _rows(200, lambda i: i % 2)),
+        # The term that reads only the table keeps 100 rows of 150.
+        ("s.v >= 50 AND s.v > t.id", _rows(150)),
+        # A row whose key is NULL matches no request.
+        ("s.k = t.k AND s.v > t.id", _rows(300, lambda i: None if i < 200 else 1)),
+    ],
+)
+def test_a_scan_of_at_most_100_rows(where, statics, shape):
+    assert_parity(_sub("sum(v)", where), T, statics={"s": statics}, shape=shape)
+
+
+@pytest.mark.parametrize(
+    "where, statics",
+    [
+        ("s.v > t.id", _rows(101)),
+        ("s.k = t.k AND s.v > t.id", _rows(201, lambda i: i % 2)),
+        ("s.v >= 49 AND s.v > t.id", _rows(150)),
+    ],
+)
+def test_a_scan_of_more_than_100_rows_refuses_the_build(where, statics):
+    v = assert_parity(
+        _sub("sum(v)", where), T, statics={"s": statics}, expect="REFUSED"
+    )
+    assert "101 rows do here, more than the 100 that confit scans" in v.detail, v.detail
+
+
+@pytest.mark.parametrize(
+    "spec, top",
+    [
+        ("decimal(18,6)", Decimal("999999999999.999999")),
+        ("decimal(38,0)", Decimal("9" * 38)),
+    ],
+)
+def test_a_scan_sums_a_decimal_of_at_most_36_digits(spec, top):
+    # 100 values below 10^36 add up below 10^38, the bound of the result.
+    wide = table({"v": "int64", "w": spec}, [{"v": i, "w": top} for i in range(100)])
+    sql = _sub("sum(w)", "s.v > t.id")
+    if spec == "decimal(18,6)":
+        assert_parity(sql, T, statics={"s": wide})
+        return
+    v = assert_parity(sql, T, statics={"s": wide}, expect="REFUSED")
+    assert "its SELECT item is sum(w)" in v.detail, v.detail
+
+
+def test_a_scan_over_a_table_with_columns_it_does_not_serve():
+    # A struct and a timestamp column beside the plain ones: a term reads
+    # the plain columns, and a term that reads the others refuses by name.
+    w = pa.table(
+        {
+            "k": pa.array([1, 1, 2, None], pa.int64()),
+            "ts": pa.array([datetime(2020, 1, 1)] * 4, pa.timestamp("us")),
+            "st": pa.array(
+                [{"a": 1}, None, {"a": 3}, {"a": 4}], pa.struct([("a", pa.int64())])
+            ),
+            "v": pa.array([5, 6, None, 8], pa.int64()),
+        }
+    )
+    assert_parity(_sub("sum(v)", "s.k = t.k AND s.v > t.id"), T, statics={"s": w})
+    v = assert_parity(
+        _sub("sum(v)", "s.st.a > t.id"), T, statics={"s": w}, expect="REFUSED"
+    )
+    assert "a struct field" in v.detail, v.detail
+    v = assert_parity(
+        _sub("sum(v)", "s.ts IS NULL AND s.v > t.id"),
+        T,
+        statics={"s": w},
+        expect="REFUSED",
+    )
+    assert "column 'ts' has type timestamp[us]" in v.detail, v.detail
+
+
+def test_plan_facts_name_the_scan_and_its_fold():
+    fn = DuckDBInferFn(
+        _sub("sum(v)", "s.k = t.k AND s.v > t.id"),
+        row_tables={"__THIS__": T.schema},
+        static_tables={"s": S},
+    )
+    facts = [(j["kind"], j["static"], j["keys"]) for j in fn.plan_facts["joins"]]
+    assert facts == [("scan", "s", 1), ("fold", "s", 0)]
+    # The scan holds the rows whose key is not NULL.
+    assert fn.plan_facts["joins"][0]["built"] == 5
+
+
+@pytest.mark.parametrize(
+    "sql, udfs, why",
+    [
+        # Forms that the scan does not serve.
+        (
+            f"SELECT id, {_in('t.k', 's.v', 's.v > t.id')} AS c FROM __THIS__ AS t",
+            [],
+            "the subquery is under IN, ANY or ALL",
+        ),
+        (
+            "SELECT id, t.k < ANY (SELECT s.v FROM s WHERE s.v > t.id) AS c "
+            "FROM __THIS__ AS t",
+            [],
+            "the subquery is under IN, ANY or ALL",
+        ),
+        (
+            "SELECT id, (SELECT s.v FROM s WHERE s.v > t.id ORDER BY s.v LIMIT 1) AS c "
+            "FROM __THIS__ AS t",
+            [],
+            "the subquery has ORDER BY or LIMIT",
+        ),
+        (_sub("max(v) + 1", "s.v > t.id"), [], "max(v) + 1 is not one aggregate call"),
+        (_sub("s.v", "s.v > t.id"), [], "s.v is not one aggregate call"),
+        (_sub("avg(v)", "s.v > t.id"), [], "its SELECT item is avg(v)"),
+        (_sub("count(DISTINCT v)", "s.v > t.id"), [], "is count(DISTINCT v)"),
+        (_sub("sum(f)", "s.v > t.id"), [], "its SELECT item is sum(f)"),
+        (_sub("min(f)", "s.v > t.id"), [], "its SELECT item is min(f)"),
+        (_sub("max(b)", "s.v > t.id"), [], "its SELECT item is max(b)"),
+        # Terms that can trap.
+        (_sub("count(*)", "s.v > t.id + 1"), [], "s.v > t.id + 1"),
+        (_sub("count(*)", "s.k = t.k + 1 AND s.v > t.id"), [], "a key can trap"),
+        (_sub("count(*)", "s.v + 1 > t.id"), [], "where the term can trap"),
+        # Terms that tell -0.0 from 0.0, which the oracle evaluates once for
+        # both (the pin at the end).
+        (_sub("count(*)", "s.f < 1.0 / t.x"), [], "can tell -0.0 from 0.0"),
+        (_sub("count(*)", "s.s = CAST(t.x AS VARCHAR) AND s.v > t.id"), [], "-0.0"),
+        # A lateral alias reads x, on which DuckDB correlates.
+        (
+            "SELECT id, 1.0 / x AS ix, (SELECT count(*) FROM s WHERE s.f < ix) AS c "
+            "FROM __THIS__ AS t",
+            [],
+            "can tell -0.0 from 0.0",
+        ),
+        # Terms that read what the scan does not.
+        (_sub("count(*)", "g(s.v).p > t.id"), [G], "the term calls a SQL function"),
+        (_sub("count(*)", "halve(s.v) > t.id"), [Halve()], "calls a UDF or a model"),
+        (
+            "SELECT t.id, (SELECT count(*) FROM s WHERE s.v > s2.j) AS c "
+            "FROM __THIS__ AS t JOIN s AS s2 ON s2.k = t.k",
+            [],
+            "reads a joined table",
+        ),
+    ],
+)
+def test_a_scan_refuses_by_name(sql, udfs, why):
+    v = assert_parity(sql, T, statics={"s": S}, udfs=udfs, expect="REFUSED")
+    assert why in v.detail, v.detail
+
+
 # Pins: what the oracle evaluates, measured 2026-10-14. The served forms
 # cannot trap but in the outer side of a first key and in the left side of
 # IN, ANY or ALL, so these facts never change a served answer. They are why a WHERE term
@@ -3047,6 +3322,23 @@ def test_pin_the_subquery_runs_where_duckdb_plans_it(sql, traps):
         o.load("s2", S2)
         got = o.try_answer(sql)
     assert isinstance(got, Trap) == traps, got
+
+
+def test_pin_the_subquery_runs_once_for_minus_zero_and_zero():
+    # The oracle evaluates the subquery once for each distinct outer value,
+    # and -0.0 and 0.0 are one value: here the value of the first row. So a
+    # term that tells them apart answers by the order of the batch, and a
+    # scan refuses such a term (measured 2026-10-15).
+    sql = (
+        "SELECT id, (SELECT count(*) FROM s "
+        "WHERE CAST(t.x AS VARCHAR) = '-0.0') FROM t ORDER BY id"
+    )
+    for rows, n in [([(1, -0.0), (2, 0.0)], 3), ([(1, 0.0), (2, -0.0)], 0)]:
+        with Oracle() as o:
+            o.table("t", "id BIGINT, x DOUBLE", rows)
+            o.load("s", PIN_S)
+            got = o.try_answer(sql)
+        assert [tuple(r.values()) for r in got.to_pylist()] == [(1, n), (2, n)]
 
 
 # The SELECT item over the aggregates, measured 2026-10-15 over PIN_S: the

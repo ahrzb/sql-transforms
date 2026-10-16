@@ -495,6 +495,10 @@ fn bind_query<'q>(
     for spec in b.joins.iter_mut() {
         level_exprs.extend(spec.keys.iter_mut());
         level_exprs.extend(spec.residual.as_mut());
+        if let Some(f) = spec.fold.as_mut() {
+            f.rows += off;
+            level_exprs.extend(f.pred.as_mut());
+        }
     }
     for e in level_exprs {
         if over_null(e) {

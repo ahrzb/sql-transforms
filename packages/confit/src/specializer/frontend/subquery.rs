@@ -21,26 +21,32 @@
 //! with no aggregate reads the row that a request matches,
 //! `(SELECT s.v FROM s WHERE s.k = t.k)`: the build reads the one row of
 //! each group and refuses a group of more than one row, where DuckDB traps
-//! ([`plan::AggPost::row`]).
+//! ([`plan::AggPost::row`]). A WHERE term that compares `s` with the outer
+//! query other than by a key, `s.lo <= t.x`, binds as a scan for each
+//! request ([`Binder::scan_value`]): one hidden join reads the rows of `s`
+//! that pass the filter and share the request's keys, at most
+//! [`plan::SCAN_LIMIT`] of them, which the build checks
+//! ([`plan::ScanRows`]), and a second one folds the aggregate over the rows
+//! on which every other term is TRUE ([`plan::Fold`]), where the query reads
+//! its value.
 //!
-//! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15)
-//! evaluates the subquery's WHERE over (distinct correlated values) x
-//! (static rows), in written order, the aggregate's argument over the
-//! matched rows only, and the item once for each distinct correlated value,
-//! over the aggregates of its matched rows (of no rows if none matches).
-//! It plans the subquery below the operator that holds it: in the SELECT
-//! list it runs over the rows that the WHERE passes, in the WHERE over the
-//! rows that reach the WHERE, under a CASE too. Only two things served here
-//! can trap, and both run where DuckDB runs them: the outer side of the
-//! first key ([`Binder::guarded_key`]), and the left side of ANY or ALL
-//! ([`Binder::quantified_residual`]). The inner side of each key is a bare
-//! column, no key casts a VARCHAR, the outer side of a later key cannot trap
-//! (`can_trap`), no filter term can trap, and the aggregates and the item
-//! run before any request, the item over each group and over no rows, where
-//! a trap or a sum that could overflow refuses. So the filter passes the
-//! same rows in any order, and the hidden join runs after the FROM joins of
-//! its level, before the WHERE when the WHERE reads it and after it
-//! otherwise ([`plan::JoinSpec::after_where`]).
+//! DuckDB (1.5.5, optimizer off, measured 2026-10-14 and 2026-10-15) evaluates
+//! the subquery's WHERE over (distinct correlated values) x (static rows), in
+//! written order, the aggregate's argument over the matched rows only, and the
+//! item once for each distinct correlated value, over the aggregates of its
+//! matched rows (of no rows if none matches). It plans the subquery below the
+//! operator that holds it: in the SELECT list it runs over the rows that the
+//! WHERE passes, in the WHERE over the rows that reach the WHERE, under a CASE
+//! too. Only two things served here can trap, and both run where DuckDB runs
+//! them: the outer side of the first key ([`Binder::guarded_key`]), and the
+//! left side of ANY or ALL ([`Binder::quantified_residual`]). No term of a scan
+//! can trap. The inner side of each key is a bare column, no key casts a
+//! VARCHAR, the outer side of a later key cannot trap (`can_trap`), no filter
+//! term can trap, and the aggregates and the item run before any request, the
+//! item over each group and over no rows, where a trap or a sum that could
+//! overflow refuses. So the filter passes the same rows in any order, and the
+//! hidden join runs after the FROM joins of its level, before the WHERE when
+//! the WHERE reads it and after it otherwise ([`plan::JoinSpec::after_where`]).
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
@@ -243,7 +249,10 @@ fn form_refusal(what: &str) -> PrepareError {
          x [NOT] IN (SELECT a column of s FROM s WHERE ...), and x op ANY | SOME | ALL (SELECT \
          a column of s FROM s WHERE ...) with op a comparison, over one static table, each \
          WHERE term s.k = <outer expression> or a term that reads only s, and none that can \
-         trap but the outer expression of the first key, or x over a WHERE without a key"
+         trap but the outer expression of the first key, or x over a WHERE without a key; \
+         other WHERE terms that compare s with the outer query serve by a scan of at most \
+         100 rows of s for each request, in (SELECT count(*) | count(c) | sum(c) | min(c) | \
+         max(c) FROM s WHERE ...) where no term can trap"
     ))
 }
 
@@ -380,11 +389,18 @@ pub(super) fn plain_star(o: &WildcardAdditionalOptions) -> bool {
         && opt_alias.is_none()
 }
 
-/// The refusal of a WHERE term that is neither a key nor a filter.
-fn term_refusal(t: &SqlExpr) -> PrepareError {
-    form_refusal(&format!(
-        "the WHERE term {t} (each term must be an equality between a column of its table \
-         and an outer expression, or read only its table)"
+/// The refusal of a subquery whose WHERE term `t` compares its table with
+/// the outer query other than by a key, where the scan that serves such a
+/// term ([`Binder::scan_value`]) does not apply, for the reason `why`.
+fn scan_refusal(t: &SqlExpr, why: &str) -> PrepareError {
+    unsup(format!(
+        "a subquery with the WHERE term {t}, which compares its table with the outer query \
+         other than by a key, where {why} -- confit serves such a term by a scan of at most \
+         {} rows of the table for each request, in (SELECT count(*) | count(c) | sum(c) | \
+         min(c) | max(c) FROM s WHERE ...) with sum over an integer or BOOLEAN column or a \
+         DECIMAL of at most 36 digits, and min and max over an integer, DECIMAL or VARCHAR \
+         column, where no term can trap",
+        plan::SCAN_LIMIT
     ))
 }
 
@@ -560,7 +576,9 @@ impl Binder<'_> {
         // WHERE: each term reads only the table (a filter the build applies
         // to its rows), or is an equality between a column of the table and
         // an expression of the outer scope (a key). Only the outer side of
-        // the first key can trap ([`Binder::guarded_key`]).
+        // the first key can trap ([`Binder::guarded_key`]). Any other term
+        // compares the table with the outer scope: the subquery is then a
+        // scan for each request ([`Binder::scan_value`]).
         let mut terms = Vec::new();
         if let Some(w) = &select.selection {
             collect_conjuncts(w, &mut terms);
@@ -568,7 +586,9 @@ impl Binder<'_> {
         let mut keys = Vec::new();
         let mut key_cols = Vec::new();
         let mut key_lanes = Vec::new();
+        let mut key_terms = Vec::new();
         let mut filters = Vec::new();
+        let mut mixed = Vec::new();
         // When the outer side of the first key can trap: how many filter
         // terms are written before that key.
         let mut trap_key = None;
@@ -588,17 +608,22 @@ impl Binder<'_> {
                     right,
                 } => (left, right, KeyCmp::Eq),
                 SqlExpr::IsNotDistinctFrom(left, right) => (left, right, KeyCmp::NotDistinct),
-                _ => return Err(term_refusal(t)),
+                _ => {
+                    mixed.push(t);
+                    continue;
+                }
             };
             let (col, outer) = match (inner.col(left)?, inner.col(right)?) {
                 (Some(c), None) => (c, right.as_ref()),
                 (None, Some(c)) => (c, left.as_ref()),
-                _ => return Err(term_refusal(t)),
+                _ => {
+                    mixed.push(t);
+                    continue;
+                }
             };
             if inner.reads(outer)? {
-                return Err(form_refusal(&format!(
-                    "the WHERE term {t}, whose outer side reads the subquery's own table"
-                )));
+                mixed.push(t);
+                continue;
             }
             let key = self.key_side(outer)?;
             if refs_join(&mut key.clone()) {
@@ -629,7 +654,27 @@ impl Binder<'_> {
                 cmp,
             });
             key_lanes.push(col);
+            key_terms.push(t);
             keys.push(key);
+        }
+        if !mixed.is_empty() {
+            return self.scan_value(
+                query,
+                select,
+                source,
+                &inner,
+                member,
+                order.is_some(),
+                ScanWhere {
+                    mixed,
+                    filters,
+                    keys,
+                    key_cols,
+                    key_lanes,
+                    key_terms,
+                    trap_key: trap_key.is_some(),
+                },
+            );
         }
         // The IN test: DuckDB evaluates `x` once the subquery has an item
         // that is not NULL (its hash table holds no NULL), so without
@@ -819,6 +864,8 @@ impl Binder<'_> {
             val_cols,
             residual,
             after_where: false,
+            fold: None,
+            scan: None,
         });
         // A probe that evaluates an outer expression that can trap: the
         // outer side of the first key, or the left side of ANY or ALL in
@@ -862,28 +909,7 @@ impl Binder<'_> {
                 nullable: true,
             }
         } else if counts {
-            SExpr {
-                kind: SKind::Case {
-                    arms: vec![(
-                        SExpr {
-                            kind: SKind::IsNull {
-                                negated: true,
-                                inner: Box::new(read.clone()),
-                            },
-                            ty: Ty::I1,
-                            nullable: false,
-                        },
-                        read,
-                    )],
-                    default: Some(Box::new(SExpr {
-                        kind: SKind::Lit(Lit::I64(0)),
-                        ty: Ty::I64,
-                        nullable: false,
-                    })),
-                },
-                ty: Ty::I64,
-                nullable: false,
-            }
+            count_or_zero(read)
         } else {
             read
         };
@@ -1909,6 +1935,8 @@ impl Binder<'_> {
             val_cols: vec![0],
             residual: None,
             after_where: false,
+            fold: None,
+            scan: None,
         });
         drop(joins);
         let read = SExpr {
@@ -1934,6 +1962,551 @@ impl Binder<'_> {
             ty,
             nullable: true,
         })
+    }
+
+    /// [`Binder::subquery_value`] over a WHERE with a term that compares
+    /// the table with the outer query other than by a key, such as
+    /// `(SELECT sum(s.v) FROM s WHERE s.lo <= t.x AND t.x < s.hi)`: one
+    /// aggregate over the rows that a scan keeps for each request
+    /// ([`plan::Fold`]). The scan reads the rows of the table that pass the
+    /// filter and whose keys equal the request's, at most
+    /// [`plan::SCAN_LIMIT`] of them, which the build checks
+    /// ([`plan::ScanRows`]), and keeps those on which every other term is
+    /// TRUE. A key that compares with IS NOT DISTINCT FROM is such a term.
+    ///
+    /// DuckDB evaluates the WHERE over each pair of a static row and a
+    /// distinct correlated value of the batch (measured 2026-10-15). When
+    /// no term can trap, the rows that it keeps for a value do not depend on
+    /// the batch, and neither does an aggregate whose answer does not depend
+    /// on the order of the rows: a count, a sum over integers, and min and
+    /// max over a type where two equal values are one value. A term must
+    /// not tell apart two DOUBLE values that DuckDB counts as one
+    /// correlated value ([`double_taint`]).
+    #[allow(clippy::too_many_arguments)]
+    fn scan_value(
+        &self,
+        query: &sqlparser::ast::Query,
+        select: &sqlparser::ast::Select,
+        source: usize,
+        inner: &Inner<'_>,
+        member: Member<'_>,
+        ordered: bool,
+        w: ScanWhere<'_>,
+    ) -> Result<SExpr, PrepareError> {
+        let ScanWhere {
+            mut mixed,
+            filters,
+            keys,
+            key_cols,
+            key_lanes,
+            key_terms,
+            trap_key,
+        } = w;
+        let first = mixed[0];
+        if !matches!(member, Member::Value) {
+            return Err(scan_refusal(first, "the subquery is under IN, ANY or ALL"));
+        }
+        if ordered {
+            return Err(scan_refusal(first, "the subquery has ORDER BY or LIMIT"));
+        }
+        if trap_key {
+            return Err(scan_refusal(first, "the outer side of a key can trap"));
+        }
+        let outer = |x: &SExpr| matches!(x.kind, SKind::Col(_) | SKind::Slot(_));
+        let mut scan_keys = Vec::new();
+        let mut scan_lanes = Vec::new();
+        for (((key, kc), lane), t) in keys.into_iter().zip(&key_cols).zip(key_lanes).zip(key_terms) {
+            if kc.cmp == KeyCmp::NotDistinct {
+                mixed.push(t);
+                continue;
+            }
+            if double_taint(&mut key.clone(), &outer).is_none() {
+                return Err(scan_refusal(first, &zeros_refusal(t)));
+            }
+            scan_keys.push(key);
+            scan_lanes.push(lane);
+        }
+
+        // SELECT: one aggregate call over the kept rows.
+        let item = match select.projection.as_slice() {
+            [SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }] => e,
+            [_] => return Err(form_refusal("a star in its SELECT")),
+            _ => return Err(form_refusal("more than one SELECT item")),
+        };
+        let mut e = item;
+        while let SqlExpr::Nested(x) = e {
+            e = x;
+        }
+        let call = match e {
+            SqlExpr::Function(f) => agg_func(f).map(|func| (f, func)),
+            _ => None,
+        };
+        let Some((f, func)) = call else {
+            return Err(scan_refusal(
+                first,
+                &format!("its SELECT item {e} is not one aggregate call"),
+            ));
+        };
+        let (agg, ty) = self.agg_call(inner, f, func)?;
+        let arg_ty = agg.arg.map(|c| inner.st.cols[c as usize].ty.ty);
+        let served = !agg.distinct
+            && match (agg.func, arg_ty) {
+                (AggFunc::CountStar | AggFunc::Count, _) => true,
+                // At most SCAN_LIMIT values below 10^p add up below 10^38.
+                (AggFunc::Sum, Some(Ty::Dec(p, _))) => 10u128
+                    .pow(p as u32)
+                    .checked_mul(plan::SCAN_LIMIT as u128)
+                    .is_some_and(|m| m <= 10u128.pow(38)),
+                (AggFunc::Sum, Some(t)) => t.lane() == Ty::I64 || matches!(t, Ty::U64 | Ty::I1),
+                (AggFunc::Min | AggFunc::Max, Some(t)) => {
+                    matches!(t.lane(), Ty::I64 | Ty::I128 | Ty::Str | Ty::Dec(..))
+                }
+                _ => false,
+            };
+        if !served {
+            return Err(scan_refusal(first, &format!("its SELECT item is {f}")));
+        }
+
+        // The terms, over the row of the scan and the outer query.
+        let mut preds = Vec::new();
+        for t in &mixed {
+            preds.push(self.scan_term(query, select, source, inner, t)?);
+        }
+        let mut lanes: Vec<u32> = Vec::new();
+        for p in preds.iter_mut() {
+            scan_reads(p, &mut lanes);
+        }
+        lanes.extend(agg.arg);
+        lanes.sort_unstable();
+        lanes.dedup();
+        let filter = match filters.as_slice() {
+            [] => None,
+            _ => Some(self.static_filter(query, select, source, &filters)?),
+        };
+
+        // The join of the rows, and the join of the fold that reads them.
+        let mut tables = self.agg_tables.borrow_mut();
+        let table = self.statics.len() + tables.len();
+        let counts = counts_rows(agg.func);
+        tables.push(AggTable {
+            table: StaticTable::all_scalar(
+                self.statics[source].name.clone(),
+                vec![Col {
+                    name: e.to_string(),
+                    ty: super::super::ir::ColTy {
+                        ty,
+                        nullable: !counts,
+                    },
+                }],
+            ),
+            source,
+            keys: Vec::new(),
+            aggs: vec![agg],
+            filter: None,
+            post: None,
+        });
+        drop(tables);
+        let mut joins = self.agg_joins.borrow_mut();
+        let rows = (self.joins.len() + joins.len()) as u32;
+        for p in preds.iter_mut() {
+            into_scan(p, rows, &lanes);
+        }
+        let pred = preds.into_iter().reduce(|a, b| {
+            let nullable = a.nullable || b.nullable;
+            SExpr {
+                kind: SKind::And {
+                    a: Box::new(a),
+                    b: Box::new(b),
+                },
+                ty: Ty::I1,
+                nullable,
+            }
+        });
+        let arg = agg
+            .arg
+            .map(|l| lanes.iter().position(|&x| x == l).expect("the argument's lane is read") as u32);
+        joins.push(JoinSpec {
+            table: source,
+            batch: false,
+            kind: JoinKind::Left,
+            keys: scan_keys,
+            key_cols: scan_lanes
+                .iter()
+                .map(|&l| JoinKey {
+                    src: KeySrc::Lane(l),
+                    cmp: KeyCmp::Eq,
+                })
+                .collect(),
+            val_cols: lanes,
+            residual: None,
+            after_where: false,
+            fold: None,
+            scan: Some(plan::ScanRows { filter }),
+        });
+        joins.push(JoinSpec {
+            table,
+            batch: false,
+            kind: JoinKind::Left,
+            keys: Vec::new(),
+            key_cols: Vec::new(),
+            val_cols: vec![0],
+            residual: None,
+            after_where: false,
+            fold: Some(plan::Fold {
+                rows,
+                pred,
+                aggs: vec![(agg.func, arg)],
+            }),
+            scan: None,
+        });
+        drop(joins);
+        let read = SExpr {
+            kind: SKind::StaticCol {
+                join: rows + 1,
+                col: 0,
+            },
+            ty,
+            nullable: true,
+        };
+        let value = if counts { count_or_zero(read) } else { read };
+        self.agg_reads
+            .borrow_mut()
+            .push((query.clone(), member.key(), value.clone()));
+        Ok(value)
+    }
+
+    /// One WHERE term `t` of a scan ([`Binder::scan_value`]), bound as a
+    /// BOOLEAN over the row of the scan and the outer query. It binds as
+    /// the item of a query of its own over the table, as DuckDB binds a
+    /// name of the subquery in the table before the outer query, where each
+    /// name of the outer query is an input bound in the outer query. Each
+    /// column of the table it reads comes back as a value of the join
+    /// [`SCAN_ROW`], by its lane, which [`into_scan`] renumbers. A term
+    /// that can trap refuses, as do a term that calls a SQL function, a UDF
+    /// or a model, one that reads a joined table, and one that reads a
+    /// DOUBLE of the outer query through an operation that tells -0.0 from
+    /// 0.0 ([`double_taint`]).
+    fn scan_term(
+        &self,
+        query: &sqlparser::ast::Query,
+        select: &sqlparser::ast::Select,
+        source: usize,
+        inner: &Inner<'_>,
+        t: &SqlExpr,
+    ) -> Result<SExpr, PrepareError> {
+        use super::resolve::Walk;
+        // The names of the outer query that the term reads.
+        let mut names: Vec<SqlExpr> = Vec::new();
+        let is_row = |x: &SqlExpr| {
+            matches!(x, SqlExpr::Identifier(id) if id.value.eq_ignore_ascii_case(&inner.name))
+        };
+        self.walk_expr(t, &mut |x| {
+            if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() {
+                return Err(scan_refusal(t, "the term calls a SQL function"));
+            }
+            Ok(match x {
+                SqlExpr::Subquery(_)
+                | SqlExpr::Exists { .. }
+                | SqlExpr::InSubquery { .. }
+                | SqlExpr::AnyOp { .. }
+                | SqlExpr::AllOp { .. } => {
+                    return Err(form_refusal(&format!("the WHERE term {t}, which holds a subquery")))
+                }
+                SqlExpr::CompoundFieldAccess { root, .. }
+                    if matches!(**root, SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)) =>
+                {
+                    if is_row(root) || inner.reads(root)? {
+                        return Err(form_refusal(&format!(
+                            "the WHERE term {t}, which reads a field or an element of a column of {}",
+                            inner.name
+                        )));
+                    }
+                    if !names.contains(x) {
+                        names.push(x.clone());
+                    }
+                    Walk::Over
+                }
+                SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => match inner.col(x)? {
+                    Some(_) => Walk::Over,
+                    None if is_row(x) => {
+                        return Err(form_refusal(&format!(
+                            "the WHERE term {t}, which reads the whole row of {}",
+                            inner.name
+                        )))
+                    }
+                    None => {
+                        if !names.contains(x) {
+                            names.push(x.clone());
+                        }
+                        Walk::Over
+                    }
+                },
+                _ => Walk::Into,
+            })
+        })?;
+        // The query's input: the table's scalar columns in declared order,
+        // each nullable as in [`Binder::static_filter`], then one input per
+        // name of the outer query.
+        let st = &self.statics[source];
+        let mut in_cols = Vec::new();
+        let mut lanes = Vec::new();
+        let mut opaque = Vec::new();
+        for (pos, c) in st.star.iter().enumerate() {
+            match c {
+                plan::StarCol::Real(i) => {
+                    let mut col = st.cols[*i as usize].clone();
+                    col.ty.nullable = true;
+                    in_cols.push(col);
+                    lanes.push(*i);
+                }
+                plan::StarCol::Opaque(name) => opaque.push((pos, name.clone())),
+            }
+        }
+        let n = in_cols.len() as u32;
+        let mut inputs = Vec::new();
+        let mut outer = Vec::new();
+        for (i, x) in names.iter().enumerate() {
+            let e = self.key_side(x)?;
+            if refs_join(&mut e.clone()) {
+                return Err(scan_refusal(t, &format!("{x} reads a joined table")));
+            }
+            in_cols.push(Col {
+                name: format!("\u{0}outer {i}"),
+                ty: super::super::ir::ColTy {
+                    ty: e.ty,
+                    nullable: e.nullable,
+                },
+            });
+            inputs.push((x.clone(), n + i as u32));
+            outer.push(e);
+        }
+        let mut sel = select.clone();
+        sel.selection = None;
+        sel.projection = vec![SelectItem::UnnamedExpr(SqlExpr::Cast {
+            kind: CastKind::Cast,
+            expr: Box::new(t.clone()),
+            data_type: sqlparser::ast::DataType::Boolean,
+            array: false,
+            format: None,
+        })];
+        let mut q = query.clone();
+        q.body = Box::new(SetExpr::Select(Box::new(sel)));
+        q.order_by = None;
+        q.limit_clause = None;
+        let env = Env {
+            this_name: &st.name,
+            in_cols: &in_cols,
+            opaque: &opaque,
+            structs: &[],
+            statics: &[],
+            many: false,
+            udfs: self.udfs,
+            models: self.models,
+            bind_eval: self.bind_eval,
+            agg_inputs: &inputs,
+        };
+        let bound = bind_query(&q, None, &env, &[])?;
+        let [stage] = <[Stage; 1]>::try_from(bound.stages).map_err(|_| {
+            PrepareError::Internal("a scan's WHERE term bound to more than one stage".into())
+        })?;
+        if stage.project.len() != 1
+            || !bound.joins.is_empty()
+            || stage.pred.is_some()
+            || !stage.lets.is_empty()
+            || !bound.wide_outs.is_empty()
+        {
+            return Err(scan_refusal(t, "the term does not bind one value"));
+        }
+        let mut e = stage.project.into_iter().next().expect("one item").1;
+        if e.ty != Ty::I1 {
+            return Err(PrepareError::Internal(format!(
+                "the WHERE term {t} bound to {}, not BOOLEAN",
+                e.ty.name()
+            )));
+        }
+        if calls_extern(&mut e.clone()) {
+            return Err(scan_refusal(t, "the term calls a UDF or a model"));
+        }
+        // The item's regular expressions join this query's.
+        let base = self.regexes.borrow().len() as u32;
+        self.regexes.borrow_mut().extend(bound.ctx.regexes);
+        shift_regexes(&mut e, base);
+        fn splice(e: &mut SExpr, n: u32, lanes: &[u32], outer: &[SExpr]) {
+            if let SKind::Col(i) = e.kind {
+                if i < n {
+                    e.kind = SKind::StaticCol {
+                        join: SCAN_ROW,
+                        col: lanes[i as usize],
+                    };
+                } else {
+                    *e = outer[(i - n) as usize].clone();
+                }
+                return;
+            }
+            for c in e.children_mut() {
+                splice(c, n, lanes, outer);
+            }
+        }
+        splice(&mut e, n, &lanes, &outer);
+        // After the splice, so that it sees through a lateral alias to the
+        // column that DuckDB correlates on.
+        let leaf = |x: &SExpr| matches!(x.kind, SKind::Col(_) | SKind::Slot(_));
+        if double_taint(&mut e.clone(), &leaf).is_none() {
+            return Err(scan_refusal(t, &zeros_refusal(t)));
+        }
+        if can_trap(&e) {
+            return Err(scan_refusal(t, "the term can trap"));
+        }
+        Ok(e)
+    }
+}
+
+/// The WHERE of a subquery that confit serves by a scan
+/// ([`Binder::scan_value`]), as [`Binder::subquery_value`] split it.
+struct ScanWhere<'q> {
+    /// The terms that compare the table with the outer query other than by
+    /// a key, in written order.
+    mixed: Vec<&'q SqlExpr>,
+    /// The terms that read only the table.
+    filters: Vec<&'q SqlExpr>,
+    /// The keys, as [`Binder::subquery_value`] binds them for a lookup:
+    /// each one's outer side, its comparison, its lane of the table and its
+    /// term as written.
+    keys: Vec<SExpr>,
+    key_cols: Vec<JoinKey>,
+    key_lanes: Vec<u32>,
+    key_terms: Vec<&'q SqlExpr>,
+    /// Whether the outer side of the first key can trap.
+    trap_key: bool,
+}
+
+/// The join that a WHERE term of a scan reads its row through while it
+/// binds ([`Binder::scan_term`]): the join of the rows has no index yet.
+const SCAN_ROW: u32 = u32::MAX;
+
+/// The lanes of the table that a WHERE term of a scan reads, added to
+/// `out` ([`Binder::scan_term`]).
+fn scan_reads(e: &mut SExpr, out: &mut Vec<u32>) {
+    if let SKind::StaticCol {
+        join: SCAN_ROW,
+        col,
+    } = e.kind
+    {
+        out.push(col);
+        return;
+    }
+    for c in e.children_mut() {
+        scan_reads(c, out);
+    }
+}
+
+/// A WHERE term of a scan as the program reads it: each column of the row
+/// as value lane `lanes.index(lane)` of the join `rows`.
+fn into_scan(e: &mut SExpr, rows: u32, lanes: &[u32]) {
+    if let SKind::StaticCol {
+        join: SCAN_ROW,
+        col,
+    } = e.kind
+    {
+        let pos = lanes.iter().position(|&l| l == col).expect("a read lane is a value");
+        e.kind = SKind::StaticCol {
+            join: rows,
+            col: pos as u32,
+        };
+        return;
+    }
+    for c in e.children_mut() {
+        into_scan(c, rows, lanes);
+    }
+}
+
+/// `e` with each regular expression it uses `base` places later in the
+/// list: the list of a query of its own joins the end of another's.
+fn shift_regexes(e: &mut SExpr, base: u32) {
+    match &mut e.kind {
+        SKind::ReMatch { re, .. } | SKind::ReExtract { re, .. } | SKind::ReReplace { re, .. } => {
+            *re += base
+        }
+        _ => {}
+    }
+    for c in e.children_mut() {
+        shift_regexes(c, base);
+    }
+}
+
+/// Whether `e` is a DOUBLE that reads a value of the outer query (`outer`
+/// tells which leaves are one), or `None` when `e` reads such a value
+/// through an operation that can answer differently for two values that
+/// DuckDB counts as one: -0.0 and 0.0, or two NaNs. DuckDB evaluates a
+/// correlated subquery once for each distinct correlated value of the
+/// batch, over the first such value it meets (measured 2026-10-15:
+/// `t.x::VARCHAR = '-0.0'` holds for the 0.0 of a batch whose -0.0 comes
+/// first, and fails for both when 0.0 comes first). So an operation that
+/// tells -0.0 from 0.0, such as `1 / x` or a cast to VARCHAR, answers for
+/// one request what another request's value gives. A comparison, IS NULL,
+/// `+`, `-` and `*`, a dividend, a negation, abs, CASE, and greatest and
+/// least answer alike for equal values.
+fn double_taint(e: &mut SExpr, outer: &dyn Fn(&SExpr) -> bool) -> Option<bool> {
+    let double = e.ty == Ty::F64;
+    if outer(e) {
+        return Some(double);
+    }
+    if let SKind::Arith { op, a, b } = &mut e.kind {
+        let op = *op;
+        let (ta, tb) = (double_taint(a, outer)?, double_taint(b, outer)?);
+        return match op {
+            ArithOp::Add | ArithOp::Sub | ArithOp::Mul => Some(double && (ta || tb)),
+            ArithOp::Div | ArithOp::Rem if !tb => Some(double && ta),
+            _ if !ta && !tb => Some(false),
+            _ => None,
+        };
+    }
+    let mut taint = false;
+    for c in e.children_mut() {
+        taint |= double_taint(c, outer)?;
+    }
+    if !taint {
+        return Some(false);
+    }
+    match &e.kind {
+        SKind::Cmp { .. } | SKind::IsNull { .. } => Some(false),
+        SKind::MathF1 {
+            op: NumOp1::Fneg | NumOp1::Fabs,
+            ..
+        }
+        | SKind::Case { .. }
+        | SKind::Extreme { .. } => Some(double),
+        _ => None,
+    }
+}
+
+/// Why a scan refuses the term `t` that [`double_taint`] refuses.
+fn zeros_refusal(t: &SqlExpr) -> String {
+    format!(
+        "{t} reads a DOUBLE of the outer query through an operation that can tell -0.0 from \
+         0.0, and DuckDB evaluates the subquery once for both"
+    )
+}
+
+/// A count read through a hidden join: 0 when the join misses.
+fn count_or_zero(read: SExpr) -> SExpr {
+    SExpr {
+        kind: SKind::Case {
+            arms: vec![(
+                SExpr {
+                    kind: SKind::IsNull {
+                        negated: true,
+                        inner: Box::new(read.clone()),
+                    },
+                    ty: Ty::I1,
+                    nullable: false,
+                },
+                read,
+            )],
+            default: Some(Box::new(lit_i64(0))),
+        },
+        ty: Ty::I64,
+        nullable: false,
     }
 }
 

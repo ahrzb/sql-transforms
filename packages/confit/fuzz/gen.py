@@ -1677,8 +1677,10 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     side that can trap after another key or under shape='many', a term over
     the table that can trap, an expression over the aggregates that traps at
     build or over the aggregates of no rows, a left side of IN, ANY or ALL
-    that can trap over a WHERE with a key. An avg over a BOOLEAN or VARCHAR
-    column is DuckDB's binder error."""
+    that can trap over a WHERE with a key. About one subquery in four that
+    selects an aggregate or is EXISTS gets a term that compares the table
+    with the request other than by a key, which confit serves by a scan. An
+    avg over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1835,8 +1837,37 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     for s, one in rowed:
         if one and s.order is None:
             _one_row_per_key(srows, [kc for kc, _, _ in s.keys])
+    # A term that compares the table with the request other than by a key,
+    # in about one subquery in four that selects an aggregate or is EXISTS,
+    # drawn last too: a comparison of a column of the table with a column of
+    # the request, or the request's column BETWEEN two columns of the table.
+    # Confit serves it by a scan of the rows of the table for each request,
+    # and refuses by name the forms that the scan does not serve.
+    for s in made:
+        if s.in_ is not None or s.row is not None or qrng.random() >= 0.25:
+            continue
+        oc, ot = qrng.choice(outer) if outer else (None, None)
+        near = [c for c in tenv.cols if _comparable(c[2], ot)]
+        if not near:
+            continue
+        o: Node = Col(oc, "__THIS__" if b.joins else None, ot)
+        cols = [Col(n, t, ty) for t, n, ty in (qrng.choice(near) for _ in range(2))]
+        if qrng.random() < 0.3:
+            term: Node = Between(o, cols[0], cols[1], neg=qrng.random() < 0.3)
+        else:
+            term = Bin(qrng.choice(CMP[1:]), *qrng.sample([cols[0], o], 2))
+        s.preds.append((qrng.randrange(len(s.keys) + 1), term))
+        if "subquery-scan" not in tags:
+            tags.append("subquery-scan")
     tags.append("scalar-subquery")
     return True
+
+
+def _comparable(a: str | None, b: str | None) -> bool:
+    """Whether DuckDB compares values of the semantic types `a` and `b`
+    without a cast that can fail: two numbers, or two values of one type."""
+    num = ("int", "float")
+    return a is not None and (a == b or (a in num and b in num))
 
 
 def _row_order(qrng, cols: list[str]):

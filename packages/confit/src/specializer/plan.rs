@@ -623,6 +623,51 @@ pub struct JoinSpec {
     /// the WHERE passes (`frontend/subquery.rs`). Every other join probes
     /// before the WHERE.
     pub after_where: bool,
+    /// Set for the hidden join of a scalar subquery that the program
+    /// computes for each request by a scan ([`Fold`]). Its static holds no
+    /// row.
+    pub fold: Option<Fold>,
+    /// Set for the join whose rows a [`Fold`] scans ([`ScanRows`]): no stage
+    /// probes it.
+    pub scan: Option<ScanRows>,
+}
+
+/// The most static rows that the scan of a [`Fold`] reads for one request:
+/// the rows of one key, or of the whole table when the subquery has no key.
+/// The build refuses a table where more rows share one key. The owner gave
+/// the number (decisions thread, 2026-10-15: "iterate on small lists if the
+/// subquery can't be turned into a lookup, say 100 or so items").
+pub const SCAN_LIMIT: usize = 100;
+
+/// The value of a scalar subquery whose WHERE compares its static table
+/// with the request other than by key equality, `(SELECT sum(s.v) FROM s
+/// WHERE s.lo <= t.x AND t.x < s.hi)` (`frontend/subquery.rs`). The program
+/// computes it for each request by a scan: it reads the rows of the join
+/// `rows` whose keys equal the request's, keeps each row on which `pred`
+/// is TRUE, and folds each aggregate of `aggs` over the rows it keeps, into
+/// one value lane of the join that holds this fold. That join matches when
+/// the scan keeps a row.
+#[derive(Clone)]
+pub struct Fold {
+    /// The join whose rows the scan reads ([`JoinSpec::scan`]).
+    pub rows: u32,
+    /// The WHERE terms that are not equality keys and do not read only the
+    /// table, ANDed: a BOOLEAN that cannot trap. It reads the row through
+    /// [`SKind::StaticCol`] of the join `rows`.
+    pub pred: Option<SExpr>,
+    /// Per value lane of the join that holds the fold: the aggregate, and
+    /// the value lane of `rows` that it reads (`None` for `count(*)`).
+    pub aggs: Vec<(AggFunc, Option<u32>)>,
+}
+
+/// The rows of a static table that a [`Fold`] scans, as the join that reads
+/// them holds them: its static is a multimap of the rows, keyed by the
+/// subquery's equality keys.
+#[derive(Clone)]
+pub struct ScanRows {
+    /// The subquery's WHERE terms that read only the table: the build keeps
+    /// only the rows on which each one is TRUE.
+    pub filter: Option<AggFilter>,
 }
 
 /// A bound, typed scalar expression. `nullable` is the frontend's
