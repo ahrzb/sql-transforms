@@ -481,6 +481,10 @@ FIXTURES[Pipeline] = [
     lambda: make_pipeline(
         KBinsDiscretizer(n_bins=3, strategy="uniform"), Binarizer(), Normalizer()
     ),
+    # A step within a bound above 0 serves last (compose.py): an error scale,
+    # a function's own bound (Box-Cox's, after `positive`, below).
+    lambda: make_pipeline(StandardScaler(), PCA(n_components=1)),
+    lambda: make_pipeline(MinMaxScaler(), FunctionTransformer(np.exp)),
 ]
 
 
@@ -579,6 +583,14 @@ FIXTURES[ColumnTransformer] = [
         ],
         transformer_weights={"enc": -2.0},
     ),
+    # A part within a bound above 0 beside bit-exact parts (compose.py).
+    lambda: ColumnTransformer(
+        [("enc", _onehot(), _string_cols), ("pca", PCA(n_components=1), _number_cols)]
+    ),
+    lambda: ColumnTransformer(
+        [("exp", FunctionTransformer(np.exp, validate=True), _evens)],
+        remainder="passthrough",
+    ),
 ]
 
 FIXTURES[FeatureUnion] = [
@@ -616,6 +628,13 @@ FIXTURES[FeatureUnion] = [
             ("neg", FunctionTransformer(np.negative)),
         ],
         transformer_weights={"bins": -1.0},
+    ),
+    lambda: FeatureUnion([("pca", PCA(n_components=1)), ("std", StandardScaler())]),
+    lambda: FeatureUnion(
+        [
+            ("pipe", make_pipeline(StandardScaler(), PCA(n_components=1))),
+            ("pass", "passthrough"),
+        ]
     ),
 ]
 
@@ -690,6 +709,14 @@ FIXTURES[PowerTransformer] = [
     positive(lambda: PowerTransformer("box-cox", standardize=False)),
     positive(_pinned_box_cox),
 ]
+# Box-Cox as a pipeline's last step, within its own 4 ulps (compose.py).
+FIXTURES[Pipeline].append(
+    positive(
+        lambda: make_pipeline(
+            MaxAbsScaler(), PowerTransformer("box-cox", standardize=False)
+        )
+    )
+)
 
 # RandomTreesEmbedding: both outputs (trees.py). One tree to 30, depth
 # 1 to 5 (the default) and unbounded, min_samples_leaf above 1, and

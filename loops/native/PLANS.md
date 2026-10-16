@@ -8,8 +8,8 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-None queued: the next work is "Ruled 2026-10-06, to build", item 2, then
-the rest of item 1.
+None queued: the next work is the rest of "Ruled 2026-10-06, to build",
+item 1, then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -42,14 +42,15 @@ that request, `to_native(step, allow_bound=True)`. In order:
      not served until a normwise S is derived.
 2. **A bounded step inside a composition** (ruled 2026-10-15,
    [decisions/closed/bounded-steps-in-compositions.md](decisions/closed/bounded-steps-in-compositions.md)).
-   Next, before the rest of item 1: until it is built, a `Pipeline` of a
-   scaler and a `PCA` keeps its twin.
-   With `allow_bound=True`, `compose.py` accepts a bounded step in any
-   position. First serve it as the last step, or as one part of a
-   ColumnTransformer or a FeatureUnion: the step's own bound holds there.
-   Then pass the error scale through affine steps (|A|·S plus their own
-   rounding). After a discontinuous step, `native.check` reports the flip
-   rate in place of a bound.
+   T42 served option 1: with `allow_bound=True`, a step whose bound is
+   above 0 serves as the last step of a `Pipeline`, or as an unweighted
+   part of a `ColumnTransformer` or `FeatureUnion`, and `native.check`
+   holds each output field to the bound of the step or part that gives it,
+   at the input its twin reads (`compose._pipeline_bounds`,
+   `_parts_bounds`). Left: pass the error scale through affine steps
+   (|A|·S plus their own rounding) and through a part's weight; a map `g`
+   (a distance's square) through a composition; after a discontinuous
+   step, `native.check` reports the flip rate in place of a bound.
 
 ## Needs from confit
 
@@ -245,15 +246,17 @@ Configurations a translator declines (`NotNative`), each with its ground:
   and `expm1` have no DuckDB function. `sin` and `cos`,
   and the bounded functions, only where `kernel_distance` finds numpy's
   kernel within the function's bound of confit's (numpy picks its kernel
-  by CPU). A bounded function does not compose: a `Pipeline`,
-  `ColumnTransformer` or `FeatureUnion` refuses it, naming its bound.
-- A `Pipeline` with a step that is not a catalog entry, or one
-  registered with a bound (a later step does not keep it bounded:
-  `x - mean_` near `mean_`); with `transform_input` (which only transforms
-  fit metadata, so the refusal is conservative); a step before the last
-  whose output is not float64 (`MissingIndicator`'s booleans, an encoder's
-  or discretizer's `dtype`: exact 0/1 or small integers either way, not
-  yet shown to read the same downstream); passthrough steps only, over a
+  by CPU). A bounded function composes only as the last step or an
+  unweighted part, as any bounded step (item 2 above).
+- A `Pipeline` with a step that is not a catalog entry, or a step whose
+  bound is above 0 before the last (no bound is derived through a later
+  step: `x - mean_` near `mean_`); a `ColumnTransformer` or `FeatureUnion`
+  with a weighted part whose bound is above 0, or one whose error scale
+  compares through a map; a `Pipeline` with `transform_input` (which only
+  transforms fit metadata, so the refusal is conservative); a step before
+  the last whose output is not float64 (`MissingIndicator`'s booleans, an
+  encoder's or discretizer's `dtype`: exact 0/1 or small integers either
+  way, not yet shown to read the same downstream); passthrough steps only, over a
   string feature (the step's `float()` raises); over boolean features
   only, a step before the last that hands on a dtype other than bool or
   float64 (`FunctionTransformer(np.sqrt)`'s float16; a selector's,

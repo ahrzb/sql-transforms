@@ -27,13 +27,25 @@ operations in the twin's order, or where a kernel probe reads 0.
   training values.
 - A parity bound is K·eps·S + τ for each output field. S is the error
   scale that the family declares, and K is derived, not measured.
+- In a composition, each output field has the parity bound of the step or
+  part that gives it. With `allow_bound=True`, a step with a parity bound
+  above 0 can be the last step of a `Pipeline`. It can also be a part of a
+  `ColumnTransformer` or a `FeatureUnion`, if `transformer_weights` gives
+  the part no weight. In these places, the step's catalog entry reads the
+  same input as the step inside the twin. The steps before the last step of
+  a `Pipeline` are bit-exact, and a part reads the columns that the twin
+  gives it. If a later step reads the output of a step with a bound above 0,
+  `to_native` returns the `PythonTransform` unchanged. It does the same if
+  `transformer_weights` gives a weight, even 1.0, to a part with a bound
+  above 0. The owner ruled this in
+  [bounded-steps-in-compositions.md](../../../../loops/native/decisions/closed/bounded-steps-in-compositions.md).
 - The owner ruled this in
   [native-transform-parity-bounds.md](../../../../loops/confit/decisions/closed/native-transform-parity-bounds.md)
   and [matvec-parity-bound.md](../../../../loops/native/decisions/closed/matvec-parity-bound.md).
 - NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
   are different answers.
 
-*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`.
+*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`, `native/compose_test.py::test_a_bounded_step_serves_last_or_as_a_part_on_request`, `native/compose_test.py::test_a_pipeline_names_the_step_it_refuses`, `native/check_test.py::test_a_composition_holds_its_last_step_to_its_error_scale`, `native/check_test.py::test_a_composition_holds_a_bit_exact_part_bit_exactly`.
 
 **claim: entry-same-inputs.** **The same inputs.** A feature reaches the
 translation as `PythonTransform` hands it to `transform`. A number or a

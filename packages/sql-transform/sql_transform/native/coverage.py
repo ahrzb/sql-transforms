@@ -38,6 +38,14 @@ COMPOSITIONS = {
     "VotingRegressor": "averages parts' predictions",
 }
 
+# Where a served composition holds an entry with a parity bound above 0
+# (compose.py).
+BOUNDED_IN = {
+    "ColumnTransformer": "an unweighted part",
+    "FeatureUnion": "an unweighted part",
+    "Pipeline": "the last step",
+}
+
 # Outside the catalog by claim: catalog-scope, each with its reason.
 OUT_OF_SCOPE = {
     "DictVectorizer": "input is dicts, not a row of columns",
@@ -92,11 +100,14 @@ def rows() -> list[tuple[str, str, str]]:
     out = []
     for name in sorted(_classes()):
         # A composition stays one, served or not (claim: catalog-scope); served,
-        # it composes bit-exact entries only (compose.py).
+        # it composes entries (compose.py).
         if name in COMPOSITIONS:
             note = COMPOSITIONS[name]
             if name in native:
-                note += "; served over bit-exact entries"
+                note += (
+                    "; served over entries, one with a parity bound above 0 only"
+                    f" as {BOUNDED_IN[name]}, with `allow_bound=True`"
+                )
             out.append((name, "composition", note))
         elif name in native:
             out.append((name, "native", _exactness(native[name])))
