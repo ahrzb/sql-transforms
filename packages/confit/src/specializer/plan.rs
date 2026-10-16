@@ -654,7 +654,8 @@ pub const SCAN_LIMIT: usize = 100;
 /// `rows` whose keys equal the request's, keeps each row on which `pred`
 /// is TRUE, and folds each aggregate of `aggs` over the rows it keeps, into
 /// one value lane of the join that holds this fold. That join matches when
-/// the scan keeps a row.
+/// the scan keeps a row. With `post`, the join holds one more value, the
+/// item over the aggregates, and it always matches.
 #[derive(Clone)]
 pub struct Fold {
     /// The join whose rows the scan reads ([`JoinSpec::scan`]).
@@ -668,8 +669,17 @@ pub struct Fold {
     /// Per value lane of the join that holds the fold: the aggregate, and
     /// the value lane of `rows` that it reads (`None` for `count(*)`).
     pub aggs: Vec<(AggFunc, Option<u32>)>,
-    /// Whether `pred` or a key of `rows` can trap. Such a fold runs where
-    /// its join runs, for every request that reaches the subquery, as
+    /// The SELECT item when it is an expression over the aggregates,
+    /// `(SELECT max(s.v) + 1 FROM s WHERE ...)`: it reads each aggregate as
+    /// [`SKind::StaticCol`] of the join that holds this fold, a count as 0
+    /// and any other aggregate as NULL over no row, and its value is the
+    /// value lane after the aggregates'. DuckDB evaluates the item once for
+    /// each request that reaches the subquery, over the aggregates of the
+    /// rows that the request keeps, also when it keeps none (measured
+    /// 2026-10-16).
+    pub post: Option<SExpr>,
+    /// Whether `pred`, `post` or a key of `rows` can trap. Such a fold runs
+    /// where its join runs, for every request that reaches the subquery, as
     /// DuckDB evaluates the subquery for each of them; any other fold runs
     /// where a value reads it.
     pub traps: bool,

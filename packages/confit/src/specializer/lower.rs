@@ -2827,7 +2827,12 @@ impl<'a> FB<'a> {
 
         let ctx_tys = Self::live_types(live);
         let w = ctx_tys.len();
-        let acc_tys = self.val_flat_tys(j);
+        // The accumulators: the value lanes of the aggregates, before the
+        // item's ([`plan::Fold::post`]).
+        let acc_tys: Vec<Ty> = self.map_vals(j)[..fold.aggs.len()]
+            .iter()
+            .flat_map(|v| v.slots())
+            .collect();
         let na = acc_tys.len();
         let row_tys = self.val_flat_tys(r);
         let nr = row_tys.len();
@@ -3039,9 +3044,46 @@ impl<'a> FB<'a> {
         self.switch(after);
         self.enter_block(live, &ap[..w]);
         let any = ap[w];
-        let outs = ap[w + 1..].to_vec();
-        self.blocks[self.cur].probes.insert(j, (any, outs.clone()));
-        Ok((any, outs))
+        let accs = ap[w + 1..].to_vec();
+        let Some(post) = &fold.post else {
+            self.blocks[self.cur].probes.insert(j, (any, accs.clone()));
+            return Ok((any, accs));
+        };
+        let maps = self.map_vals(j);
+        if maps.len() != fold.aggs.len() + 1 || !maps[fold.aggs.len()].nullable {
+            return Err(PrepareError::Internal(format!(
+                "the item of the fold @{j} is not one nullable value after its aggregates"
+            )));
+        }
+        // The item over the aggregates, which it reads through this join.
+        // Over no row, a count's lane is 0 and every other aggregate's
+        // validity FALSE, so the hit is TRUE: for these reads, and for the
+        // item's own value, which is not NULL over no row in general
+        // (`count(*) + 1`). The accumulators ride the live stack, and the
+        // cache entry is re-created in each block that the item splits.
+        let at = live.len();
+        for (&v, &ty) in accs.iter().zip(&acc_tys) {
+            live.push((Lane { flag: None, val: v }, ty));
+        }
+        let t = self.const_i1(true);
+        self.blocks[self.cur].probes.insert(j, (t, accs));
+        self.probe_seeds.push(ProbeSeed {
+            join: j,
+            base: at,
+            nd: na,
+        });
+        let lane = self.emit(post, live);
+        self.probe_seeds.pop();
+        let lane = lane?;
+        let mut outs: Vec<Value> = live.drain(at..).map(|(l, _)| l.val).collect();
+        let valid = match lane.flag {
+            None => self.const_i1(true),
+            Some(f) => f,
+        };
+        outs.extend([valid, lane.val]);
+        let t = self.const_i1(true);
+        self.blocks[self.cur].probes.insert(j, (t, outs.clone()));
+        Ok((t, outs))
     }
 
     /// Emit (or reuse, per block, keyed by call site) one extern call:
