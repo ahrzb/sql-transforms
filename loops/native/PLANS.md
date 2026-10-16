@@ -8,8 +8,48 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-None queued: the next work is the rest of "Ruled 2026-10-06, to build",
-item 1, then the rest of item 2.
+1. **The twin's sign of a zero at one feature, and a fixture that
+   repeats** (reading 7, findings 81 and 82).
+   - `FastICA` and the PLS family multiply with `np.dot`. At one feature
+     the twin's row and matrix are 1×1, and numpy answers the product
+     itself: -0.0 where d is 0.0 and the coefficient negative (or d is
+     -0.0 and it is positive). The entry's `+ 0.0` (T38) answers 0.0
+     there: 54 output fields of `FastICA` in reading 7's parity run, each
+     with S = 0. Drop the `+ 0.0` where the twin's `np.dot` multiplies one
+     feature, keep it for `LinearDiscriminantAnalysis` (its `@` answers
+     0.0), measure the signed zeros of the parity run again, and correct
+     `_project_centered`'s docstring ("The entry gave no zero of the twin
+     the other sign").
+   - Give `TruncatedSVD(n_components=2, algorithm="arpack")` in
+     `catalog_test.FIXTURES` a `random_state`: ARPACK starts from numpy's
+     global random state, so each process fits another step from the same
+     seed, and a failure there may not repeat. It is the only one of the
+     222 configurations whose twin answers differ between two processes
+     (seeds 0 to 3).
+   - `_refuse_a_degenerate_ica` prints the norm with `.3g`, so a norm
+     within 5e-4 of 1 reads "a norm of 1, not 1" (4 steps of the parity
+     run): print enough digits to show the difference.
+
+2. **The input guard slows the reads of the values it reads** (reading
+   7, finding 85). The guard of the first output field reads each
+   feature's shared value `coalesce(x, NaN)` in a CASE. Where the sums
+   read the same shared values, as in `PCA`, a call takes about twice as
+   long: with confit alone (reading 7's `pca_reads2.py`), 64 sums of 256
+   products serve a row in 32 to 38 µs with such a guard, 17 to 20 µs
+   without it, and 18 to 19 µs where the sums read shared differences
+   `coalesce(x, NaN) - m` that the guard does not read, as in
+   `_project_centered`. So `PCA` at 256 features of 64 components serves
+   a row in about 40 µs, `FastICA` in 19 to 24 µs. Try sums that read a
+   value the guard does not read, and keep the guard's test as it is.
+   Check that confit does not fold an identity such as `v - 0.0` back to
+   `v`, and that the entry stays bit-exact (−0.0 − 0.0 is −0.0). Then
+   measure the widest steps of the bench again: `PolynomialFeatures`,
+   `KBinsDiscretizer`, `SplineTransformer` and the forests also read each
+   feature many times under a guard. If the catalog cannot avoid it, it
+   is a need from confit when the Confit Loop runs again.
+
+Then the rest of "Ruled 2026-10-06, to build", item 1, then the rest of
+item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -355,6 +395,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - In the dev shell, `maturin develop --release` stops, because Nix marks
   its CPython as externally managed. Use `--skip-install`, and write this
   in the build steps of the worker brief.
+- The input guard's probe calls the twin's `transform` once per feature
+  and special value (`_registry._probed`): 3n calls of a row of n
+  features. `QuantileTransformer` transforms each feature in a Python
+  loop and lets NaN through, so each NaN probe transforms every feature:
+  at 800 features of 10 quantiles, the probe takes 8.0 to 9.1 s of
+  `to_native`'s 19.7 to 20.4 s (reading 7, finding 84; the trial build
+  takes 9.4 to 10.9 s, and the cap estimates only that). Probe a special
+  value over all features in one call of n rows first, and probe the
+  features one at a time only where that call raises.
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
