@@ -1,8 +1,9 @@
-"""KBinsDiscretizer(dtype=np.float32) beyond the catalog's generated fits:
-the moved cutpoints against numpy's own rounding, and the entry against
-its twin at, and on both sides of, every edge and every cutpoint, over the
-edges where float32 rounding decides (ties, equal edges, ±0, subnormals,
-FLT_MAX and past it)."""
+"""KBinsDiscretizer beyond the catalog's generated fits. With
+`dtype=np.float32`: the moved cutpoints against numpy's own rounding, and
+the entry against its twin at, and on both sides of, every edge and every
+cutpoint, over the edges where float32 rounding decides (ties, equal edges,
+±0, subnormals, FLT_MAX and past it). In float64: the entry's bisection
+against its twin beside runs of equal edges."""
 
 from __future__ import annotations
 
@@ -157,16 +158,18 @@ def test_past_float32s_range():
 # ------------------------------------------------------------ against the twin
 
 
-def _fitted(edges: list[list[float]], encode: str) -> KBinsDiscretizer:
-    """A float32 discretizer whose features have these inner edges: fitted
-    with as many bins on spread data, then given the edges, which are all
-    `transform` reads (the one-hot encoder's categories are the bin
-    numbers). A shorter feature is padded with edges at +inf, whose bins
-    stay empty."""
+def _fitted(
+    edges: list[list[float]], encode: str, dtype: type = F32
+) -> KBinsDiscretizer:
+    """A discretizer (float32 unless `dtype` says otherwise) whose features
+    have these inner edges: fitted with as many bins on spread data, then
+    given the edges, which are all `transform` reads (the one-hot encoder's
+    categories are the bin numbers). A shorter feature is padded with edges
+    at +inf, whose bins stay empty."""
     n = max(len(e) for e in edges) + 1
     X = np.tile(np.arange(n + 1, dtype=np.float64)[:, None], (1, len(edges)))
     est = KBinsDiscretizer(
-        n_bins=n, encode=encode, strategy="uniform", dtype=np.float32
+        n_bins=n, encode=encode, strategy="uniform", dtype=dtype
     ).fit(X)
     assert (est.n_bins_ == n).all()
     est.bin_edges_ = np.array(
@@ -266,5 +269,26 @@ def test_fitted_edges_are_answered_at_their_cutpoints(cfg, seed):
     cols = [
         [x for e in est.bin_edges_[j][1:-1] for x in _probes(float(e))]
         for j in range(3)
+    ]
+    assert _served(_step(est, width), cols) == max(len(c) for c in cols)
+
+
+# Runs of equal edges where the ordinal bisection (`discretize._count`)
+# tests them: at both ends, at its middle, across the whole feature, at ±0
+# and, padded by `_fitted`, at +inf.
+RUNS = [
+    [0.5, 0.5, 0.5, 1.0, 2.0, 2.0, 3.0, 4.0, 4.0, 4.0, 5.0, 6.0, 6.0],
+    [-1.0] * 6 + [0.0, 7.0],
+    [-0.0, 0.0, 0.0, 1e-300, 1e300, 1e300],
+    [2.0] * 9,
+]
+
+
+@pytest.mark.parametrize("encode", ["ordinal", "onehot-dense"])
+def test_float64_bins_answer_their_twin_beside_runs_of_equal_edges(encode):
+    est = _fitted(RUNS, encode, dtype=np.float64)
+    width = np.asarray(_dense(est.transform(np.zeros((1, len(RUNS)))))).shape[1]
+    cols = [
+        [x for e in sorted(set(r)) for x in _near(e)] + [-1e308, 1e308] for r in RUNS
     ]
     assert _served(_step(est, width), cols) == max(len(c) for c in cols)
