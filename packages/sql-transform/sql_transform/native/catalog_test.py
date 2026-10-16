@@ -781,7 +781,7 @@ FIXTURES[IncrementalPCA] = [
 ]
 FIXTURES[TruncatedSVD] = [
     lambda: TruncatedSVD(n_components=1, random_state=0),
-    lambda: TruncatedSVD(n_components=2, algorithm="arpack"),
+    lambda: TruncatedSVD(n_components=2, algorithm="arpack", random_state=0),
 ]
 FIXTURES[GaussianRandomProjection] = [
     lambda: GaussianRandomProjection(n_components=1, random_state=0),
@@ -1149,6 +1149,36 @@ def test_an_entry_matches_its_twin(cls, j, seed):
             raise
         pytest.skip(f"stays Python: {e}")
     check(step, native, _rows(step, seed, getattr(make, "positive", False)))
+
+
+def test_a_seed_draws_the_same_step_under_any_global_random_state():
+    # A fit that reads numpy's global random state, as ARPACK's start does
+    # without `random_state`, draws another step from the same seed in each
+    # process, so a failure of that step may not repeat (finding 82).
+    saved = np.random.get_state()
+    try:
+        for cls, makes in FIXTURES.items():
+            for j, make in enumerate(makes):
+                answers = []
+                for state in (1, 2):
+                    np.random.seed(state)
+                    step = _step(make, 0, j)
+                    answers.append(_answers(step, make))
+                assert answers[0] == answers[1], f"{cls.__name__}, configuration {j}"
+    finally:
+        np.random.set_state(saved)
+
+
+def _answers(step: PythonTransform, make) -> list[str]:
+    """The twin's answer to each of seed 0's rows, or the error it raises."""
+    out = []
+    for row in _rows(step, 0, getattr(make, "positive", False)).to_pylist():
+        iid = row.pop("__iid")
+        try:
+            out.append(repr(step(iid, *row.values())))
+        except Exception as e:  # noqa: BLE001 - the twin's error is its answer
+            out.append(type(e).__name__)
+    return out
 
 
 # ------------------------------------------------------------------ framework
