@@ -105,12 +105,13 @@ and 0.3 us, against the twin's 135 us (2026-10-15). The entry refuses a step
 whose estimated build passes MAX_BUILD_S (`_build_estimate`), as quantile.py
 and isotonic.py cap theirs. Up to 64 features it takes on every configuration
 measured (degrees 1, 3 and 5, 5 and 8 knots, the five extrapolations). Of 128
-features it refuses 4, which build in 7.7 to 9.4 s (degree 5 at 8 knots), and
-of 192 and 256 features 11 of the 12 measured, which build in 6.3 to 16.3 s,
-before confit is asked. confit builds every configuration measured but the
-struct return of 256 features of degree 5 at 8 knots, past 4,000,000 tokens;
-before #430 it refused four past Cranelift's size limit (128 features of
-degree 3 to 5 at 8 knots, `error`).
+features it refuses 2, which build in 7.2 and 8.5 s (degree 5 at 8 knots,
+`linear` and `continue`), of 192 features 4 of the 6 measured, which build in
+8.0 to 14.4 s, and all 9 of 256 and 320 features, before confit is asked (T46
+on master 12aca98). confit builds every configuration measured but the struct
+return of 256 features of degree 5 at 8 knots and of 320 features of degree 3
+under `continue`, past 4,000,000 tokens; before #430 it refused four past
+Cranelift's size limit (128 features of degree 3 to 5 at 8 knots, `error`).
 
 Comparisons, constants and DOUBLE arithmetic in scipy's order, so the
 entry is bit-exact: 8 seeds in the gate, and 200 seeds of each of the 16
@@ -147,23 +148,23 @@ def _build_estimate(fields: list[S.Expr], est: Any) -> float:
     build) into the query that reads each output field. confit binds once a
     value that the body reads more than once (#412), so the build follows
     the distinct nodes the output fields read, not the text they spell, plus
-    a term in the nodes times the output fields. The input guard adds a term
-    in the output fields times the features, a tenth to a fifth of what it
-    added before confit #430 stopped building the guard's tests again at
-    each field read. The guard has a test a feature on NaN and ±inf under
-    `handle_missing="error"`; under `extrapolation="error"`, a test on the
-    knots, whose term is about 1.6 times as large, with or without the
-    first. Fitted on the slower of a struct and a list return over 114 warm
-    builds of one instance over 0.3 s (8 to 256 features, degrees 1, 3 and
-    5, 5 and 8 knots, the five extrapolations, up to 2,560 output fields;
-    15 of them again under `handle_missing="zeros"`; 0.3 to 16.3 s): each
-    within 0.79 to 1.20 times the estimate (master 318575b with confit #459
-    and #461, 2026-10-15). The cap took on none slower than 6.32 s and
-    refused none faster than 6.25 s, and it reaches 7 s at about 170 to 230
-    features of degree 3 and 8 knots, or 100 to 140 of degree 5, by the
-    extrapolation (150 to 200, and 86 to 120, fitted on master b4b8d03 with
-    confit #430). Past the estimate, confit refuses the struct return of
-    256 features of degree 5 and 8 knots (past 4,000,000 tokens). The
+    a term in the nodes times the output fields and one in the output fields
+    times the features. Since the input guard's tests read each number as it
+    is (T46, `_registry._plain`), a guard adds no term of its own: fitted
+    with one, the test on the knots under `extrapolation="error"` added a
+    fifth of the last term, and the test on NaN and ±inf under
+    `handle_missing="error"` none. Fitted on the slower of a struct and a
+    list return over 113 warm builds of one instance over 0.3 s (8 to 320
+    features, degrees 1, 3 and 5, 5 and 8 knots, the five extrapolations, up
+    to 3,200 output fields; 15 of them again under `handle_missing="zeros"`;
+    0.3 to 15.8 s): each within 0.80 to 1.29 times the estimate (T46 on
+    master 12aca98, 2026-10-16). The cap took on none slower than 7.05 s and
+    refused none faster than 7.15 s, and it reaches 7 s at about 170 to 230
+    features of degree 3 and 8 knots, or 110 to 160 of degree 5, by the
+    extrapolation (170 to 230, and 100 to 140, fitted before T44's reads on
+    master 318575b). Past the estimate, confit refuses the struct return of
+    256 features of degree 5 and 8 knots, and of 320 features of degree 3
+    under `continue` (past 4,000,000 tokens); the fit leaves them out. The
     estimate is one estimator's: a step's instances compound it linearly."""
     seen: set[int] = set()
     stack = list(fields)
@@ -173,15 +174,8 @@ def _build_estimate(fields: list[S.Expr], est: Any) -> float:
             seen.add(id(e))
             stack.extend(e.children)
     nodes, width = len(seen), len(fields)
-    if est.extrapolation == "error":
-        guard = 5.66e-6
-    elif est.handle_missing == "error":
-        guard = 3.64e-6
-    else:
-        guard = 0.0
-    return (
-        2.94e-5 * nodes + 9.12e-9 * nodes * width + guard * width * est.n_features_in_
-    )
+    features = est.n_features_in_
+    return 2.37e-5 * nodes + 7.53e-9 * nodes * width + 6.48e-6 * width * features
 
 
 # A knot gap under this, but not zero, could overflow `1 / gap` in the

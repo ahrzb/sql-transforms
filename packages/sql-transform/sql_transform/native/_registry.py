@@ -51,6 +51,7 @@ any field, as they fire the unknown-id trap.
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import math
 import sys
 import warnings
@@ -350,7 +351,9 @@ def translate_part(
         if entry.composes:
             return list(entry.translate(est, x, types))
         reads = _apart(x, types) if entry.apart(est) else x
+        start = len(g.tests)
         out = list(entry.translate(est, reads, types))
+        g.tests[start:] = _plain(g.tests[start:], reads, x)
         g.tests += _probed(est, x, types, entry, g)
     finally:
         g.hand = outer
@@ -372,11 +375,81 @@ def _apart(x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     build, master 9f74bc0, 2026-10-16). Confit folds only constant
     subtrees, so it keeps the `- 0.0`. A translator whose reads of a
     feature each sit in a different CASE arm (a search tree) reads it
-    twice in one arm, so that confit shares it (isotonic.py)."""
+    twice in one arm, so that confit shares it (isotonic.py). A
+    translator's own tests for the guard read each number as the guard
+    does (`_plain`)."""
     return [
         xi if t == pa.string() else xi - f64(0.0)
         for xi, t in zip(x, types, strict=True)
     ]
+
+
+def _plain(tests: list[S.Expr], reads: list[S.Expr], x: list[S.Expr]) -> list[S.Expr]:
+    """`tests`, a translator's tests for its input guard (`rejects`), with
+    each of its reads of a number (`_apart`) back as the guard reads it:
+    the same double. confit computes a value it shares once a row, where
+    the function first reads it, and carries it to its last reader. Read
+    by the guard, ahead of the body, each feature's value rode through
+    the whole body. A cubic spline of 128 features of 8 knots under
+    `extrapolation="error"` built in 9.2 s, against 3.6 s with the
+    guard's tests plain and 4.3 s where each number read `coalesce(x,
+    NaN)` (master 9f74bc0's reads); a Box-Cox `PowerTransformer` of 128
+    features in 0.70 s, against 0.26 s and 0.53 s (the trial build,
+    `_builds`, warm; release build, master 12aca98, 2026-10-16). A row
+    took about the same time either way, except in an ordinal encoder,
+    whose chains then read the value the guard's test computed: it now
+    tests its ends first (`encode._field`)."""
+    swap = {id(r): xi for r, xi in zip(reads, x, strict=True) if r is not xi}
+    if not swap:
+        return tests
+    new: dict[int, S.Expr] = {}
+    for node in _post_order(tests):
+        new[id(node)] = (
+            swap[id(node)] if id(node) in swap else _with_children(node, new)
+        )
+    return [new[id(t)] for t in tests]
+
+
+def _post_order(roots: list[S.Expr]) -> list[S.Expr]:
+    """Every node under `roots` once, each after its children (no
+    recursion: a test can be deep)."""
+    seen: set[int] = set()
+    out: list[S.Expr] = []
+    for r in roots:
+        if id(r) in seen:
+            continue
+        seen.add(id(r))
+        stack = [(r, iter(r.children))]
+        while stack:
+            node, it = stack[-1]
+            for c in it:
+                if id(c) not in seen:
+                    seen.add(id(c))
+                    stack.append((c, iter(c.children)))
+                    break
+            else:
+                stack.pop()
+                out.append(node)
+    return out
+
+
+def _with_children(node: S.Expr, new: dict[int, S.Expr]) -> S.Expr:
+    """`node` with each child `c` replaced by `new[id(c)]`, or `node`
+    itself where no child changes."""
+    changed = False
+
+    def put(v: Any) -> Any:
+        nonlocal changed
+        if isinstance(v, S.Expr):
+            w = new.get(id(v), v)
+            changed |= w is not v
+            return w
+        if isinstance(v, tuple):
+            return tuple(put(u) for u in v)
+        return v
+
+    fields = {f.name: put(getattr(node, f.name)) for f in dataclasses.fields(node)}
+    return dataclasses.replace(node, **fields) if changed else node
 
 
 def _base(types: list[pa.DataType]) -> list[Any]:

@@ -6,16 +6,8 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-Easiest first; each is one PR.
-
-1. **Fit the build estimates again on T44's reads.** Where a step reads
-   each feature as a value confit shares, `to_native` of the quantile,
-   spline, forest and isotonic entries takes 0.64 to 0.94 times its time
-   on master 9f74bc0 (the width curves, one process), so their caps refuse
-   some steps that build within 7 s. Fit them as T40 did.
-
-Then the rest of "Ruled 2026-10-06, to build", item 1, then the rest of
-item 2.
+The rest of "Ruled 2026-10-06, to build", item 1 (`FactorAnalysis`
+first), one PR each; then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -246,9 +238,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
 - `QuantileTransformer(output_distribution="normal")`: scipy's
   `norm.ppf` has no SQL twin. A fit whose build is estimated past 7 s
   (`quantile._build_estimate`, from the leaves and the features): 10
-  quantiles over 800 features build in 7.9 s (11.4 s before #456), and
-  2,000 over 8 features in 8.7 s. 8,000 quantiles over one feature build
-  in 3.7 s and are served (master 318575b, T40).
+  quantiles over 800 features build in 9.0 s, 2,000 over 8 features in
+  8.3 s, and 16,000 over one feature in 7.4 s. 12,000 quantiles over one
+  feature build in 4.8 s and are served (T46 on master 12aca98).
   Quantiles unsorted or partly NaN (never seen in 3,000 fits; a
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
@@ -315,12 +307,13 @@ Configurations a translator declines (`NotNative`), each with its ground:
   Knots that are not sorted, partly NaN, or span past a double, and a
   spline whose `c` is not sklearn's shape (no fit makes these). A step
   past an estimated 7 s build, per estimator (`spline._build_estimate`),
-  at about 170 to 230 features of degree 3 and 8 knots, or 100 to 140 of
-  degree 5: of the 172 configurations measured (T40, master 318575b),
-  none up to 64 features, 4 of 128 features (degree 5, 8 knots: 7.7 to
-  9.4 s) and 11 of the 12 of 192 and 256 features (6.3 to 16.3 s; confit
-  refuses the struct return of the three of 256 features at degree 5,
-  past 4,000,000 tokens); and any
+  at about 170 to 230 features of degree 3 and 8 knots, or 110 to 160 of
+  degree 5: of the 175 configurations measured (T46 on master 12aca98),
+  none up to 64 features, 2 of 128 features (degree 5, 8 knots: 7.2 and
+  8.5 s), 4 of the 6 of 192 features (8.0 to 14.4 s) and all 9 of 256 and
+  320 features (confit refuses the struct return of the three of 256
+  features at degree 5 and of 320 under `continue`, past 4,000,000
+  tokens); and any
   step where scipy's `BSpline` does not round as the unfused recurrence
   (`spline.bspline_is_scipys`, an FMA build). `extrapolation="error"`
   with a feature whose knots are NaN: the twin raises on every number
@@ -348,7 +341,8 @@ Configurations a translator declines (`NotNative`), each with its ground:
   `Pipeline` (its object output, as for the `Pipeline` rule above).
 - `IsotonicRegression` with float32 thresholds (the twin casts its input
   to float32), past an estimated 7 s build (`isotonic._build_estimate`,
-  at about 19,700 thresholds: 21,029 build in 7.5 s on master 318575b),
+  at about 26,800 thresholds: 28,524 build in 7.4 s, T46 on master
+  12aca98),
   with thresholds further apart than a double spans, or on a platform
   whose `np.interp` fuses its multiply-add (`quantile.interp_is_numpys`).
 - `FeatureAgglomeration` with a `pooling_func` other than `np.mean`.
@@ -358,12 +352,12 @@ Configurations a translator declines (`NotNative`), each with its ground:
   it. Spelling numpy's reduction lanes (CPU-dependent, with a probe as
   `row_sumsq_is_numpys` has) would serve them.
 - `RandomTreesEmbedding`: a forest whose build is estimated past 7 s
-  (`trees._build_estimate`): over 8 features, past about 10,300 output
-  fields, such as 300 trees of depth 6 (11,402 fields, 7.7 s), and over 64
-  features past about 8,400, such as 400 trees of depth 5 (9,100 fields,
-  8.3 s). Since T40, 300 trees of depth 5, 400 over 8 features (9,210
-  fields, 5.5 s) and 3 unbounded trees over 2,000 rows (3.2 s) are
-  served.
+  (`trees._build_estimate`): over 8 features, past about 10,000 output
+  fields, such as 300 trees of depth 6 (11,402 fields, 8.1 s) and 2
+  unbounded trees over 5,000 rows (10,000 fields, 8.7 s), and over 128
+  features past about 5,200, such as 250 trees of depth 5 (5,751 fields,
+  8.4 s; T46 on master 12aca98). 400 trees of depth 5 over 8 features
+  (9,210 fields, 6.3 s) are served.
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
@@ -387,6 +381,21 @@ Configurations a translator declines (`NotNative`), each with its ground:
   takes 9.4 to 10.9 s, and the cap estimates only that). Probe a special
   value over all features in one call of n rows first, and probe the
   features one at a time only where that call raises.
+
+- Since T44's reads, a forest over many features builds in up to 1.22
+  times the time (100 trees of depth 5 over 128 features: 2.7 s, against
+  2.2 s in one process) and serves a row in 0.80 to 0.93 times it. A
+  forest whose estimate passes the cap could read each number as it is,
+  as a projection does (`project._reads_apart`): the cap reaches about
+  5,200 output fields at 128 features since T46, and reached 6,800 before
+  T44's reads (master 318575b).
+
+- An ordinal output field over a number feature's classes is a chain of
+  one arm a class, after a test of both ends (`encode._field`, T46). A
+  bisection over the sorted classes, as `KBinsDiscretizer`'s ordinal bins
+  do (T45), would test about log2(k) of k classes: at 64 features of 64
+  classes, a row of a 1,024-row call takes 37 µs with the chain (release
+  build, master 12aca98 with T46).
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,

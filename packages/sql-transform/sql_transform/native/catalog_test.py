@@ -1326,6 +1326,51 @@ def test_an_encoder_reads_a_string_feature_missing_at_fit(make):
     assert check(step, to_native(step, strict=True), rows) == 5
 
 
+@pytest.mark.parametrize(
+    "make, answered",
+    [
+        (
+            lambda: OrdinalEncoder(
+                handle_unknown="use_encoded_value", unknown_value=-1
+            ),
+            10,
+        ),
+        (
+            lambda: OrdinalEncoder(
+                handle_unknown="use_encoded_value",
+                unknown_value=-1,
+                encoded_missing_value=-2,
+            ),
+            10,
+        ),
+        (OrdinalEncoder, 4),
+    ],
+    ids=["unknown", "missing", "raises"],
+)
+def test_an_ordinal_number_field_answers_past_its_ends_as_its_else(make, answered):
+    # Over a number feature, an ordinal field of more than one arm first
+    # tests the ends of the classes (`encode._field`): a number past them
+    # answers as the ELSE does, and NaN, which DuckDB orders above every
+    # number, goes on to the arms. Where the twin raises (on an infinity,
+    # or on an unknown number by default), the input guard traps.
+    est = make().fit(np.array([[1.0], [2.0], [3.0], [np.nan], [-1.0], [2.0]]))
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([("x0", pa.float64())]),
+        pa.struct([("f0", pa.float64())]),
+    )
+    values = [-1.0, 3.0, 2.5, -1.5, 3.5, -math.inf, math.inf, math.nan, None]
+    values += [0.0, -0.0, 1e300]
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * len(values), pa.int64()),
+            "x0": pa.array(values, pa.float64()),
+        }
+    )
+    assert check(step, to_native(step, strict=True), rows) == answered
+
+
 def _encoder_fit(beside: str | None, hole: bool) -> tuple[np.ndarray, list]:
     """Two boolean columns (the first constant True), and a third beside
     them: none, a number or a string; with a hole (NaN) in the second."""
@@ -2337,11 +2382,11 @@ def test_isotonic_refuses_two_features():
 def test_isotonic_takes_a_fit_by_its_estimated_build():
     from sql_transform.native.isotonic import MAX_BUILD_S, _build_estimate
 
-    # 17,588 thresholds built in 6.5 s and 21,029 in 7.5 s (isotonic.py,
+    # 24,703 thresholds built in 5.9 s and 28,524 in 7.4 s (isotonic.py,
     # `_build_estimate`), where a count of 8,000 thresholds was the cap.
-    assert _build_estimate(17_587) <= MAX_BUILD_S
-    assert _build_estimate(21_028) > MAX_BUILD_S
-    X = np.arange(24_000.0)
+    assert _build_estimate(24_702) <= MAX_BUILD_S
+    assert _build_estimate(28_523) > MAX_BUILD_S
+    X = np.arange(32_000.0)
     step = _isotonic_step(IsotonicRegression().fit(X, X))
     with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
         to_native(step, strict=True)
@@ -2578,10 +2623,10 @@ def _forest(
 def test_trees_take_a_forest_by_the_estimated_build():
     from sql_transform.native.trees import MAX_BUILD_S, _build_estimate
 
-    # Since confit #459 and #461 the entry's build is estimated within 7 s
-    # for the default forest, the default forest over 32 features, 400
-    # trees of depth 5 (9,210 output fields, built in 5.5 s) and one
-    # unbounded tree over 8,000 rows (4.2 s; master 318575b, trees.py).
+    # The entry's build is estimated within 7 s for the default forest, the
+    # default forest over 32 features, 400 trees of depth 5 (9,210 output
+    # fields, built in 6.3 s) and one unbounded tree over 8,000 rows (4.7 s;
+    # T46 on master 12aca98, trees.py).
     assert _build_estimate(_forest(100, 5, 2000)) <= MAX_BUILD_S
     assert _build_estimate(_forest(100, 5, 2000, features=32)) <= MAX_BUILD_S
     assert _build_estimate(_forest(400, 5, 2000)) <= MAX_BUILD_S
@@ -2589,8 +2634,8 @@ def test_trees_take_a_forest_by_the_estimated_build():
 
 
 def test_trees_refuse_a_build_past_the_cap():
-    # 300 trees of depth 6: 11,402 output fields, estimated at 8 s (7.7 s
+    # 300 trees of depth 6: 11,402 output fields, estimated at 9 s (8.1 s
     # measured).
     est = _forest(300, 6, 2000)
-    with pytest.raises(NotNative, match=r"an estimated 8 s build, past 7 s"):
+    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
         to_native(_tree_step(est, 8), strict=True)

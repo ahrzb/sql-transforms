@@ -221,20 +221,20 @@ def _build_estimate(leaves: int, arms: int, features: int) -> float:
     the features. The build is about linear in `n`, however the features
     split it (16,000 leaves as 2, 4, 8, 16 or 32 trees: 8.2 to 9.0 s), with
     a term in `n` squared past that, and a term in the features squared from
-    the struct return (800 features of one leaf: 4.6 s as a struct, 0.5 s
-    as a list). Fitted on the slower of the two returns over 56 builds of
-    0.3 to 10.3 s (1 to 800 features, 10 to 8,000 quantiles, fits of
+    the struct return (800 features of one leaf: 5.6 s as a struct, 0.6 s
+    as a list). Fitted on the slower of the two returns over 66 builds of
+    0.3 to 13.0 s (1 to 800 features, 10 to 24,000 quantiles, fits of
     continuous values and of integers, whose runs of equal quantiles leave
-    fewer leaves with more arms; master 318575b with confit #459 and #461,
-    2026-10-15): each within 0.84 to 1.31 times the estimate. The cap took
-    on none slower than 6.1 s and refused none faster than 7.9 s, and it
-    reaches 7 s at about 13,400 leaves over 1 to 64 features, or 7,000 over
-    800. Past the estimate, confit refused 50 quantiles over 512 features
-    as a struct and over 800 features as either return (past 4,000,000
-    tokens). Fitted before #456 (master 94d7bb1), the estimate reached 7 s
-    at about 8,200 leaves."""
+    fewer leaves with more arms; T46 on master 12aca98, 2026-10-16): each
+    within 0.88 to 1.22 times the estimate. The cap took on none slower
+    than 5.6 s and refused none faster than 7.4 s, and it reaches 7 s at
+    about 15,000 leaves over 1 to 64 features, or 5,400 over 800. Past the
+    estimate, confit refused 50 quantiles over 512 features as a struct and
+    over 800 features as either return (past 4,000,000 tokens), and the fit
+    leaves them out. Fitted before T44's reads (`_registry._apart`; master
+    318575b), the estimate reached 7 s at about 13,400 leaves."""
     n = leaves + 0.4 * arms
-    return 3.52e-4 * n + 1.25e-8 * n**2 + 6.14e-6 * features**2
+    return 3.04e-4 * n + 1.07e-8 * n**2 + 7.91e-6 * features**2
 
 
 def _feature(x: S.Expr, q: np.ndarray, leaves: list[_Leaf]) -> S.Expr:
