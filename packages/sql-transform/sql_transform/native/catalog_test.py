@@ -1247,6 +1247,23 @@ def test_a_step_without_a_translation_comes_back_unchanged():
         to_native(step, strict=True)
 
 
+def test_a_step_nested_past_the_recursion_limit_stays_python():
+    # `Normalizer(l2)` sums its squares in numpy's order, a chain of 1,024
+    # additions over 2,048 features, and confit writes it by recursion
+    # (finding 86).
+    n = 2048
+    est = Normalizer().fit(np.random.default_rng(0).normal(size=(4, n)))
+    step = PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{i}", pa.float64()) for i in range(n)]),
+        pa.list_(pa.float64(), n),
+    )
+    assert to_native(step) is step
+    with pytest.raises(NotNative, match="nested past Python's recursion limit"):
+        to_native(step, strict=True)
+
+
 def test_to_native_is_idempotent():
     native = to_native(_scaler_step(), strict=True)
     assert to_native(native) is native

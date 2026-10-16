@@ -6,20 +6,7 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. T47's two findings, one PR. `to_native` raises `RecursionError`, not
-   `NotNative`, for `Normalizer(norm="l2")` over 2,048 features (finding
-   86, master c06a15a): its sum of squares follows numpy's order, a chain
-   1,024 additions deep, and confit's `SqlFunction` writes each bound
-   value's SQL by recursion (`sql.shared_texts`), outside the catch of
-   `_registry._builds`. Refuse it by name in `_translate`. And the
-   projections' build estimates miss a term in n² at wide rows (finding
-   87): `PCA` of 2 components over 4,096 features builds in 12.1 s as a
-   list (6.9 s as a struct), against 5.9 s by
-   `_centered_build_estimate`, which the cap takes; of 4 over 2,048, in
-   4.5 s against 3.2 s (`to_native`, release build, master c06a15a). Fit
-   them again over few components at wide rows, as
-   `distance._build_estimate` is.
-2. The rest of "Ruled 2026-10-06, to build", item 1 (`AdditiveChi2Sampler`
+1. The rest of "Ruled 2026-10-06, to build", item 1 (`AdditiveChi2Sampler`
    first, `FactorAnalysis` last), one PR each; then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
@@ -102,10 +89,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   nests about 512 additions deep ("a let: sql parser error":
   `Normalizer(norm="l2")` over 1,024 features, whose sum of squares
   follows numpy's order), and `SqlFunction` writes a bound value's SQL by
-  recursion, so a chain 1,024 deep raises `RecursionError` (finding 86).
-  A family within an error scale sums as a balanced tree, log2(n) deep;
-  of the entries measured, only `Normalizer(norm="l2")`, bit-exact in
-  numpy's order, meets it. Low priority for confit.
+  recursion, so a chain 1,024 deep raises `RecursionError` (finding 86),
+  which `_registry._translate` refuses by name since T48: the step stays
+  Python. A family within an error scale sums as a balanced tree, log2(n)
+  deep; of the entries measured, only `Normalizer(norm="l2")`, bit-exact
+  in numpy's order, meets it. Low priority for confit.
 - **A named refusal, not a Cranelift verifier error.** `OneHotEncoder`
   over 16 string features of 125 categories (2,000 fields) stopped after
   31 s with `cranelift define: verifier error`, an internal error, where
@@ -160,9 +148,15 @@ that request, `to_native(step, allow_bound=True)`. In order:
   grows with them: `PCA` at 1,024 features of 48 components builds in
   6.2 s reading `x - 0.0`, and in 3.9 to 5.0 s reading `coalesce(x, NaN)`,
   so a projection reads `x - 0.0` only within its cap's reach
-  (`project._reads_apart`). Low priority for confit. A confit-only
-  reproduction is `/mnt/project-files/transforms-loop/t44/reads3.py`:
-  send it to the Confit Loop when it runs again.
+  (`project._reads_apart`). A list return of two fields or more over
+  shared values builds about as their number squared, where a struct
+  read field by field and a single field do not: `PCA` of 2 components
+  over 4,096 features, read `x - 0.0`, builds in 11.3 s as a list and
+  5.9 s as a struct (T48, finding 87; release build, master af89dae), so
+  `project._centered_build_estimate` has a term in n² for a list. Low
+  priority for confit. A confit-only reproduction is
+  `/mnt/project-files/transforms-loop/t44/reads3.py`: send it to the
+  Confit Loop when it runs again.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
@@ -243,7 +237,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
   as numpy's x86-64 baseline einsum kernel, which `_helpers.row_sumsq`
   follows; `_helpers.row_sumsq_is_numpys` probes it. On aarch64 numpy's
   `npyv_muladd_f64` is a fused `vfmaq_f64`, which SQL cannot spell
-  (inferred from numpy's source; no aarch64 run yet).
+  (inferred from numpy's source; no aarch64 run yet). At 1,024 features
+  or more, where numpy's order nests its sum of squares too deep for
+  confit ("Deep expressions" above): confit's parser refuses it at 1,024
+  features, and at 2,048 `SqlFunction` recurses past Python's limit,
+  which `to_native` refuses by name since T48 (finding 86).
 - The linear projections (project.py), each only with `allow_bound=True`:
   a `PCA` or `IncrementalPCA` fitted in float32 (it projects its mean in
   float32); a whitened `PCA` component of rounding noise; a step past an

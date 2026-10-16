@@ -85,9 +85,25 @@ features and raised `RecursionError` at 2,048, which `Normalizer(l2)`
 still meets (finding 86). The build cap reads its own estimate, fitted
 on 66 shapes (0.85 to 1.27 times it): a struct of 2,000 centres over 2
 features builds in 73 s, and `PCA`'s estimate misses a term in n² at wide
-rows (finding 87). The loop runs from the "Transforms Loop" project
-thread. The Confit Loop is paused since 2026-10-16: a confit need waits,
-and the loop works around it.
+rows (finding 87). T48 (#502) fixes both findings. A step whose SQL nests
+past Python's recursion limit stays Python with a reason
+(`_registry._translate`), where `to_native` raised `RecursionError`:
+`Normalizer(l2)` over 2,048 features. The projections' two build estimates
+are fitted again with a term in n², on 512 builds of 2 to 6,144 features
+and 1 to 2,000 components (master af89dae). A list over shared values
+builds about as their number squared, where a struct and a single
+component do not: `PCA` of 2 components over 4,096 features, read
+`x - 0.0`, built in 11.3 s as a list, 5.9 s as a struct, against 5.9 s by
+the old `_centered_build_estimate`, which took it. That estimate now has a
+term in n² for a list, and each of 177 shapes built within 0.74 to 1.27
+times it (0.96 to 2.04 times the old one); `_build_estimate`, for the
+reading `coalesce(x, NaN)`, within 0.90 to 1.18 times (1.09 to 1.89).
+Neither cap took a build past 7.11 s. So a `PCA` of 2 components reads
+`x - 0.0` up to about 3,000 features (4,600 before), and the cap takes it
+up to about 4,600 (6,500); of one component, up to about 5,000 (8,000).
+The loop runs from the "Transforms Loop" project thread. The Confit Loop
+is paused since 2026-10-16: a confit need waits, and the loop works around
+it.
 
-Next: PLANS "Next" (findings 86 and 87 in one PR, then the rest of
-"Ruled 2026-10-06, to build", item 1, `AdditiveChi2Sampler` first).
+Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
+`AdditiveChi2Sampler` first, one PR each).

@@ -119,8 +119,8 @@ def _build_estimate(n: int, k: int) -> float:
     against 1.1 s as a list, and confit refused one of 4,000 after 475 s,
     as past its code generator's size limit.
     The estimate of a centered projection (`project._centered_build_estimate`),
-    whose products also read shared values, takes any number of centres
-    over 2 features, and one centre over 4,096 features (14.8 s)."""
+    whose products also read shared values, takes about 6,500 centres over
+    2 features, and one centre over 4,096 features (14.8 s)."""
     return (
         1.14e-3 * n
         + 8.11e-4 * k
