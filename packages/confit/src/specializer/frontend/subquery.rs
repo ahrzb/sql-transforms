@@ -258,7 +258,8 @@ fn form_refusal(what: &str) -> PrepareError {
          trap but the outer expression of the first key, or x over a WHERE without a key; a \
          WHERE with another term, or with another term that can trap and a term that reads the \
          outer query, serves by a scan of at most 100 rows of s for each request, in (SELECT \
-         count(*) | count(c) | sum(c) | count_if(c) | min(c) | max(c) FROM s WHERE ...)"
+         count(*) | count(c) | sum(c) | count_if(c) | min(c) | max(c) | bool_and(c) | \
+         bool_or(c) | bit_and(c) | bit_or(c) | bit_xor(c) FROM s WHERE ...)"
     ))
 }
 
@@ -402,10 +403,11 @@ fn scan_refusal(t: &SqlExpr, what: &str, why: &str) -> PrepareError {
     unsup(format!(
         "a subquery with the WHERE term {t}, {what}, where {why} -- confit serves such a WHERE \
          by a scan of at most {} rows of the table for each request, in (SELECT count(*) | \
-         count(c) | sum(c) | count_if(c) | min(c) | max(c) FROM s WHERE ...) with sum over an \
-         integer or BOOLEAN column or a DECIMAL of at most 36 digits, and min and max over an \
-         integer, DECIMAL or VARCHAR column, and in a subquery whose SELECT item is an \
-         expression over such aggregates",
+         count(c) | sum(c) | count_if(c) | min(c) | max(c) | bool_and(c) | bool_or(c) | \
+         bit_and(c) | bit_or(c) | bit_xor(c) FROM s WHERE ...) with sum over an integer or \
+         BOOLEAN column or a DECIMAL of at most 36 digits, min and max over an integer, \
+         DECIMAL, VARCHAR, DOUBLE or BOOLEAN column, and bit_xor not over DISTINCT values, \
+         and in a subquery whose SELECT item is an expression over such aggregates",
         plan::SCAN_LIMIT
     ))
 }
@@ -2102,9 +2104,12 @@ impl Binder<'_> {
     /// reaches the subquery, where its join runs ([`plan::Fold::traps`]).
     /// The rows that the scan keeps for a value do not depend on the batch,
     /// and neither does an aggregate whose answer does not depend on the
-    /// order of the rows: a count, a sum over integers, and min and max over
-    /// a type where two equal values are one value. A term must not tell apart two DOUBLE
-    /// values that DuckDB counts as one correlated value ([`double_taint`]).
+    /// order of the rows: a count, a sum over integers, min and max, and the
+    /// boolean and bitwise ones. A DOUBLE min or max qualifies only where
+    /// the rows of a key hold no two equal values of other bits, which the
+    /// build checks ([`plan::ScanRows::ties`]). A term must not tell apart
+    /// two DOUBLE values that DuckDB counts as one correlated value
+    /// ([`double_taint`]).
     #[allow(clippy::too_many_arguments)]
     fn scan_value(
         &self,
@@ -2401,7 +2406,7 @@ impl Binder<'_> {
                 nullable,
             }
         });
-        let fold_aggs = aggs
+        let fold_aggs: Vec<(AggFunc, Option<u32>)> = aggs
             .iter()
             .map(|a| {
                 let arg = a.arg.map(|l| {
@@ -2410,6 +2415,16 @@ impl Binder<'_> {
                 (a.func, arg)
             })
             .collect();
+        // The lanes of the DOUBLE columns that a min or max reads, whose
+        // ties the build checks.
+        let mut ties: Vec<u32> = fold_aggs
+            .iter()
+            .filter(|(func, _)| matches!(func, AggFunc::Min | AggFunc::Max))
+            .filter_map(|&(_, arg)| arg)
+            .filter(|&p| inner.st.cols[lanes[p as usize] as usize].ty.ty == Ty::F64)
+            .collect();
+        ties.sort_unstable();
+        ties.dedup();
         // The item reads each aggregate through the join of the fold.
         let post = post.map(|mut item| {
             agg_reads_of(&mut item, rows + 1, &agg_cols);
@@ -2432,7 +2447,7 @@ impl Binder<'_> {
             residual: None,
             after_where: false,
             fold: None,
-            scan: Some(plan::ScanRows { filter }),
+            scan: Some(plan::ScanRows { filter, ties }),
         });
         let with_post = post.is_some();
         joins.push(JoinSpec {
@@ -2879,9 +2894,16 @@ fn scan_serves(agg: &Agg, st: &StaticTable) -> bool {
                 .checked_mul(plan::SCAN_LIMIT as u128)
                 .is_some_and(|m| m <= 10u128.pow(38)),
             (AggFunc::Sum, Some(t)) => t.lane() == Ty::I64 || matches!(t, Ty::U64 | Ty::I1),
-            (AggFunc::Min | AggFunc::Max, Some(t)) => {
-                matches!(t.lane(), Ty::I64 | Ty::I128 | Ty::Str | Ty::Dec(..))
+            // A DOUBLE's ties with other bits refuse at build
+            // ([`plan::ScanRows::ties`]).
+            (AggFunc::Min | AggFunc::Max, Some(t)) => matches!(
+                t.lane(),
+                Ty::I64 | Ty::I128 | Ty::Str | Ty::Dec(..) | Ty::F64 | Ty::I1
+            ),
+            (AggFunc::BitAnd | AggFunc::BitOr | AggFunc::BitXor, Some(t)) => {
+                matches!(t.lane(), Ty::I64 | Ty::I128)
             }
+            (AggFunc::BoolAnd | AggFunc::BoolOr, Some(t)) => t == Ty::I1,
             _ => false,
         }
 }

@@ -447,20 +447,28 @@ expression over them, and EXISTS and NOT EXISTS:
 - `count_if` of a BOOLEAN column;
 - `sum` of an integer or BOOLEAN column, or of a DECIMAL column with at most
   36 digits;
-- `min` and `max` of an integer, DECIMAL or VARCHAR column.
+- `min` and `max` of an integer, DECIMAL, VARCHAR, DOUBLE or BOOLEAN column;
+- `bool_and` and `bool_or` of a BOOLEAN column;
+- `bit_and`, `bit_or` and `bit_xor` of an integer column.
 
 The answer of each of these aggregates does not depend on the order of the
-rows. So an ORDER BY inside the call does not change it. In the scan, a
-`sum` cannot overflow. 100 integer values add up to much less than the range
-of the HUGEINT answer, and 100 DECIMAL values with at most 36 digits add up
-to less than 10^38. Confit refuses the scan in these cases:
+rows, so an ORDER BY inside the call does not change it. A DOUBLE `min` or
+`max` is the one exception. Two DOUBLE values can compare as equal but have
+different bits: `-0.0` and `0.0`, or two NaN values. If the answer is one of
+two such values, the oracle answers the one that it reads first. So confit
+refuses the scan at build if a column that a `min` or `max` reads has two
+such values in the rows that one request can read.
+
+In the scan, a `sum` cannot overflow. 100 integer values add up to much less
+than the range of the HUGEINT answer, and 100 DECIMAL values with at most 36
+digits add up to less than 10^38. Confit refuses the scan in these cases:
 
 - a term of the scan can give different answers for the outer values `-0.0`
   and `0.0` (see above), such as `s.f < 1.0 / t.x`, where `1.0 / -0.0` is
   `-inf` and `1.0 / 0.0` is `inf`;
 - the subquery is under IN, ANY or ALL, or it has ORDER BY or LIMIT;
-- the SELECT item is another aggregate or an aggregate over DISTINCT
-  values, or an expression over such an aggregate;
+- the SELECT item is another aggregate, or `count`, `count_if`, `sum` or
+  `bit_xor` over DISTINCT values, or an expression over such an aggregate;
 - the SELECT item is an expression with no aggregate.
 
 A term of a scan can trap. The oracle evaluates each term for the pairs of a
@@ -658,7 +666,9 @@ cases that depend on the rows of `s`:
 - A DOUBLE `min` or `max` finds two values that compare as equal but have
   different bits, such as `-0.0` and `0.0`, or two NaN values. Then the answer
   of the oracle depends on the order of the rows. This refusal does not apply
-  to the least and the greatest item of ANY and ALL.
+  to the least and the greatest item of ANY and ALL. In a scan, confit
+  refuses the build if a column that a `min` or `max` reads has two such
+  values in the rows that one request can read (see "The scan").
 - At build, an expression item raises an error over the aggregates of a
   group, or an item with no aggregate raises an error over a row of a group.
 - The subquery of an item with no aggregate keeps more than one row of a

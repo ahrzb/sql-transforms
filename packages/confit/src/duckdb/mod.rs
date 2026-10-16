@@ -1454,10 +1454,23 @@ fn materialize_map(
         }
         entries.push((keys, vals));
     }
-    if let Some(ScanSpec::Rows { limit }) = spec.scan {
-        scan_limit(&entries, limit, &spec.table)?;
+    if let Some(ScanSpec::Rows { limit, ties }) = &spec.scan {
+        scan_limit(&entries, *limit, &spec.table)?;
+        scan_ties(&entries, ties, spec)?;
     }
     Ok(StaticData::Map(entries))
+}
+
+/// The keys of an entry as the probe compares them: -0.0 equal to 0.0 and
+/// every NaN equal.
+fn probe_keys(keys: &[KeyBits]) -> Vec<KeyBits> {
+    let mut keys = keys.to_vec();
+    for kb in keys.iter_mut() {
+        if let KeyBits::F64(bits) = kb {
+            *bits = exec::canon_f64_bits(f64::from_bits(*bits));
+        }
+    }
+    keys
 }
 
 /// Refuse the rows of a scan ([`ScanSpec::Rows`]) where more than `limit`
@@ -1467,13 +1480,7 @@ fn scan_limit(entries: &[(Vec<KeyBits>, Vec<ScalarVal>)], limit: usize, table: &
     let mut counts: std::collections::BTreeMap<Vec<KeyBits>, usize> = Default::default();
     let mut most = 0;
     for (keys, _) in entries {
-        let mut keys = keys.clone();
-        for kb in keys.iter_mut() {
-            if let KeyBits::F64(bits) = kb {
-                *bits = exec::canon_f64_bits(f64::from_bits(*bits));
-            }
-        }
-        let n = counts.entry(keys).or_default();
+        let n = counts.entry(probe_keys(keys)).or_default();
         *n += 1;
         most = most.max(*n);
     }
@@ -1484,6 +1491,58 @@ fn scan_limit(entries: &[(Vec<KeyBits>, Vec<ScalarVal>)], limit: usize, table: &
              share its keys and pass the WHERE terms that read only the table, and {most} rows \
              do here, more than the {limit} that confit scans"
         )));
+    }
+    Ok(())
+}
+
+/// Refuse the rows of a scan ([`ScanSpec::Rows`]) where the rows of one key
+/// hold two values of a value column of `ties` that compare as equal but
+/// have other bits, -0.0 and 0.0 or two NaNs: a `min` or `max` of the scan
+/// reads the column, and DuckDB answers the first of the two in the order
+/// of the rows. A request scans some of these rows, so the check over all
+/// of them covers each request.
+fn scan_ties(
+    entries: &[(Vec<KeyBits>, Vec<ScalarVal>)],
+    ties: &[usize],
+    spec: &StaticSpec,
+) -> PyResult<()> {
+    if ties.is_empty() {
+        return Ok(());
+    }
+    // The slot of each value column's payload: a nullable column's validity
+    // comes before it.
+    let mut payload = Vec::with_capacity(spec.vals.len());
+    let mut at = 0;
+    for vc in &spec.vals {
+        at += usize::from(vc.map.nullable);
+        payload.push(at);
+        at += 1;
+    }
+    // The bits of the first value of each class, per key and column.
+    let mut first: std::collections::BTreeMap<(Vec<KeyBits>, usize, u64), u64> = Default::default();
+    for (keys, vals) in entries {
+        let keys = probe_keys(keys);
+        for &c in ties {
+            let at = payload[c];
+            if spec.vals[c].map.nullable && matches!(vals[at - 1], ScalarVal::I1(false)) {
+                continue;
+            }
+            let ScalarVal::F64(x) = vals[at] else {
+                return Err(build_err("internal: a DOUBLE tie check over another type"));
+            };
+            let bits = x.to_bits();
+            let class = exec::canon_f64_bits(x);
+            if *first.entry((keys.clone(), c, class)).or_insert(bits) != bits {
+                return Err(build_err(format!(
+                    "unsupported: static table '{}': a scalar subquery computes min or max of \
+                     the DOUBLE column '{}' by a scan for each request, and the rows of one key \
+                     hold DOUBLE values with other bits that compare as equal (-0.0 and 0.0, or \
+                     two NaNs): which one DuckDB answers depends on the order of the rows",
+                    spec.table,
+                    spec.vals[c].path.join(".")
+                )));
+            }
+        }
     }
     Ok(())
 }

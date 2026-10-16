@@ -2998,6 +2998,50 @@ impl<'a> FB<'a> {
                     next.push(seen_v);
                     next.push(added);
                 }
+                // The first value starts the accumulator, and the operator
+                // joins each later one to it. `min` and `max` of a BOOLEAN
+                // are its AND and its OR.
+                (
+                    AggFunc::BitAnd
+                    | AggFunc::BitOr
+                    | AggFunc::BitXor
+                    | AggFunc::BoolAnd
+                    | AggFunc::BoolOr,
+                    Some((flag, x, ty)),
+                )
+                | (AggFunc::Min | AggFunc::Max, Some((flag, x, ty @ Ty::I1))) => {
+                    let Some(seen) = seen else {
+                        return Err(PrepareError::Internal(format!(
+                            "a fold of {func:?} without its flag"
+                        )));
+                    };
+                    let op = match (func, ty) {
+                        (AggFunc::BitAnd, Ty::I64) => BinOp::Iand,
+                        (AggFunc::BitOr, Ty::I64) => BinOp::Ior,
+                        (AggFunc::BitXor, Ty::I64) => BinOp::Ixor,
+                        (AggFunc::BitAnd, Ty::I128) => BinOp::Hand,
+                        (AggFunc::BitOr, Ty::I128) => BinOp::Hor,
+                        (AggFunc::BitXor, Ty::I128) => BinOp::Hxor,
+                        (AggFunc::BoolAnd | AggFunc::Min, Ty::I1) => BinOp::And,
+                        (AggFunc::BoolOr | AggFunc::Max, Ty::I1) => BinOp::Or,
+                        _ => {
+                            return Err(PrepareError::Internal(format!(
+                                "a fold of {func:?} over {ty:?}"
+                            )))
+                        }
+                    };
+                    let joined = self.bin(op, acc_v, x);
+                    let joined = self.select_of(accs[seen], joined, x);
+                    let (seen_v, val) = match flag {
+                        None => (self.const_i1(true), joined),
+                        Some(f) => (
+                            self.bin(BinOp::Or, accs[seen], f),
+                            self.select_of(f, joined, acc_v),
+                        ),
+                    };
+                    next.push(seen_v);
+                    next.push(val);
+                }
                 (AggFunc::Min | AggFunc::Max, Some((flag, x, ty))) => {
                     let Some(seen) = seen else {
                         return Err(PrepareError::Internal("an extreme without its flag".into()));
