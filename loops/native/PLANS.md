@@ -8,7 +8,8 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-None queued: the next work is "Ruled 2026-10-06, to build", item 1.
+None queued: the next work is "Ruled 2026-10-06, to build", item 2, then
+the rest of item 1.
 
 ## Ruled 2026-10-06, to build
 
@@ -24,13 +25,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
    each operand is). T37 served the first family, `PCA`, `IncrementalPCA`,
    `TruncatedSVD` and `GaussianRandomProjection` (project.py: S_full,
    K = n + 3, summed pairwise), and `report-format.md` lists error scales.
-   - The rest of the linear projections, each with its own S: `FastICA`
-     subtracts the mean before the product (S over |x_i - m_i|·|c_ki|);
-     the PLS family and `LinearDiscriminantAnalysis` center and scale, then
-     project; `FactorAnalysis` chains two products, so the first one's
-     error passes through the second; `SparseRandomProjection` sums in
-     scipy's CSR order, which SQL may follow bit-exactly behind a kernel
-     probe.
+   - The rest of the linear projections, each with its own S. T41 served
+     the centered ones (`FastICA`, the PLS family and
+     `LinearDiscriminantAnalysis`: project.py, `_project_centered`).
+     `FactorAnalysis` chains two products, so the first one's error passes
+     through the second; `SparseRandomProjection` sums in scipy's CSR
+     order, which SQL may follow bit-exactly behind a kernel probe.
    - `PowerTransformer` Yeo-Johnson and `standardize=True`: K 10 / 12 / 7;
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - `AdditiveChi2Sampler`: K = 4 (3 with the twin's own cosh), 0 where the
@@ -42,6 +42,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
      not served until a normwise S is derived.
 2. **A bounded step inside a composition** (ruled 2026-10-15,
    [decisions/closed/bounded-steps-in-compositions.md](decisions/closed/bounded-steps-in-compositions.md)).
+   Next, before the rest of item 1: until it is built, a `Pipeline` of a
+   scaler and a `PCA` keeps its twin.
    With `allow_bound=True`, `compose.py` accepts a bounded step in any
    position. First serve it as the last step, or as one part of a
    ColumnTransformer or a FeatureUnion: the step's own bound holds there.
@@ -192,6 +194,19 @@ Configurations a translator declines (`NotNative`), each with its ground:
   follows; `_helpers.row_sumsq_is_numpys` probes it. On aarch64 numpy's
   `npyv_muladd_f64` is a fused `vfmaq_f64`, which SQL cannot spell
   (inferred from numpy's source; no aarch64 run yet).
+- The linear projections (project.py), each only with `allow_bound=True`:
+  a `PCA` or `IncrementalPCA` fitted in float32 (it projects its mean in
+  float32); a whitened `PCA` component of rounding noise; a step past an
+  estimated 7 s build (`project._build_estimate`, and
+  `_centered_build_estimate` where the twin subtracts a mean, since each
+  product then reads that difference); a fitted mean, scale or
+  matrix not all finite. `LinearDiscriminantAnalysis(solver="lsqr")`, whose
+  twin raises. A `FastICA` that whitens rounding noise (a singular value
+  of 0, at most sqrt(eps) of the largest, or raised to the "eigh" solver's
+  floor), or whose fit broke down: unwhitened, rows of the unmixing matrix
+  that are not unit vectors (on data that is not white); under
+  "unit-variance", a row of `components_` that is not finite (a source of
+  no spread).
 - `MinMaxScaler(clip=True)` with a NaN `feature_range` bound.
 - `SimpleImputer` fitted on object data (strings), whose output is not a
   float the step can return; a `missing_values` that is neither NaN nor a

@@ -1,13 +1,16 @@
 """Linear projections within the matvec parity bound (project.py): the
 twin's BLAS sum and the entry's balanced tree part by rounding alone, on
-rows near the mean where the two products cancel."""
+rows near the mean where the two products cancel, and the centered
+projections, which subtract the mean before the product."""
 
 from __future__ import annotations
 
 import numpy as np
 import pyarrow as pa
 import pytest
-from sklearn.decomposition import PCA, IncrementalPCA, TruncatedSVD
+from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
+from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection
 
 from sql_transform._udf import PythonTransform
@@ -18,6 +21,10 @@ from sql_transform.native import (
     explain_native,
     to_native,
 )
+
+# A FastICA fit may stop at `max_iter` on these data: its transform does the
+# same arithmetic either way.
+pytestmark = pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 
 
 def _data(seed: int, n: int, rank: int | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -41,7 +48,8 @@ def _near(seed: int, x: np.ndarray, means: np.ndarray) -> np.ndarray:
 
 
 def _step(est) -> PythonTransform:
-    n, k = est.n_features_in_, len(est.components_)
+    n = est.n_features_in_
+    k = np.asarray(est.transform(np.zeros((1, n)))).shape[1]
     return PythonTransform(
         "tf",
         {0: est},
@@ -160,3 +168,154 @@ def test_a_projection_takes_a_fit_by_its_estimated_build():
         match=r"an estimated \d+ s build, past 7 s \(32 components over 2,048",
     ):
         to_native(_step(est), strict=True, allow_bound=True)
+
+
+def _fit(make, x: np.ndarray, seed: int = 0):
+    """`make()` fitted on `x`: on 4 classes for a discriminant analysis, on
+    2 targets of `x` with noise for the PLS family, on `x` standardized for
+    an unwhitened FastICA (which takes its data as white), else on `x`."""
+    est = make()
+    rng = np.random.default_rng(seed)
+    if isinstance(est, FastICA) and not est.whiten:
+        return est.fit((x - x.mean(axis=0)) / x.std(axis=0))
+    if isinstance(est, LinearDiscriminantAnalysis):
+        return est.fit(x, np.arange(len(x)) % 4)
+    if isinstance(est, PLSRegression | PLSCanonical | CCA | PLSSVD):
+        y = x @ rng.normal(size=(x.shape[1], 2))
+        return est.fit(x, y + rng.normal(size=y.shape) * y.std())
+    return est.fit(x)
+
+
+CENTERED = [
+    lambda: FastICA(n_components=3, random_state=0),
+    lambda: FastICA(whiten=False, random_state=0),
+    LinearDiscriminantAnalysis,
+    lambda: LinearDiscriminantAnalysis(solver="eigen"),
+    lambda: PLSRegression(n_components=3),
+    lambda: PLSCanonical(n_components=2, scale=False),
+    lambda: CCA(n_components=2),
+    lambda: PLSSVD(n_components=2),
+]
+
+
+def _id(make) -> str:
+    est = make()
+    if isinstance(est, FastICA) and not est.whiten:
+        return "FastICA-unwhitened"
+    if isinstance(est, LinearDiscriminantAnalysis):
+        return f"LinearDiscriminantAnalysis-{est.solver}"
+    return type(est).__name__
+
+
+@pytest.mark.parametrize("make", CENTERED, ids=_id)
+def test_a_centered_projection_parts_from_its_twin_within_its_error_scale(make):
+    x, means = _data(0, 12)
+    est = _fit(make, x)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_near(1, x, means))
+    with pytest.raises(ParityError, match="ulps, bound 0"):
+        check(step, native, rows, ulps=0)
+    assert check(step, native, rows) == rows.num_rows
+    assert explain_native(step, allow_bound=True).endswith(
+        "-> SqlFunction, within 13·eps·S + τ (S its error scale)"
+    )
+
+
+@pytest.mark.parametrize("make", CENTERED, ids=_id)
+def test_a_centered_projection_answers_0_where_every_product_is_a_zero(make):
+    # At the mean the twin multiplies a row of 0.0. Without a mean, rows of
+    # zeros signed against each output field's matrix row make every product
+    # of that field -0.0 (finding 77). The twin answers 0.0 in both.
+    from sql_transform.native.project import _centered
+
+    x, _ = _data(8, 12)
+    est = _fit(make, x)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    m, _, c = _centered(est)
+    zeros = [np.zeros(12)] if m is None else [m]
+    if m is None:
+        zeros += [np.copysign(0.0, -cj) for cj in c]
+    rows = _rows(np.array(zeros))
+    assert check(step, native, rows, ulps=0) == rows.num_rows
+
+
+def _step_of(est, k: int) -> PythonTransform:
+    n = est.n_features_in_
+    return PythonTransform(
+        "tf",
+        {0: est},
+        pa.schema([(f"x{i}", pa.float64()) for i in range(n)]),
+        pa.struct([(f"f{j}", pa.float64()) for j in range(k)]),
+    )
+
+
+def test_a_discriminant_analysis_by_least_squares_stays_python():
+    x, _ = _data(9, 6)
+    est = _fit(lambda: LinearDiscriminantAnalysis(solver="lsqr"), x)
+    with pytest.raises(NotNative, match=r"solver='lsqr'\) has no transform"):
+        to_native(_step_of(est, 3), strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("solver", ["svd", "eigh"])
+def test_a_fastica_whitened_over_rounding_noise_stays_python(solver):
+    # Rank 3 over 6 features: three singular values of the centered fit are
+    # rounding noise, which the whitening divides by.
+    x, _ = _data(4, 6, rank=3)
+    est = FastICA(whiten_solver=solver, random_state=0).fit(x)
+    with pytest.raises(NotNative, match="a whitened component of rounding noise"):
+        to_native(_step(est), strict=True, allow_bound=True)
+    # Over the three components that are not noise, the same data serves.
+    est = FastICA(n_components=3, whiten_solver=solver, random_state=0).fit(x)
+    to_native(_step(est), strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("make", CENTERED[::2], ids=_id)
+def test_a_centered_projection_fitted_in_float32_serves(make):
+    # numpy widens the float32 mean, scale and matrix to float64 before it
+    # subtracts, divides and multiplies.
+    x, means = _data(5, 6)
+    est = _fit(make, x.astype(np.float32))
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_near(6, x, means))
+    assert check(step, native, rows) == rows.num_rows
+
+
+@pytest.mark.filterwarnings("ignore:divide by zero encountered:RuntimeWarning")
+def test_a_fastica_fit_that_broke_down_stays_python():
+    # Unwhitened, FastICA takes its data as white. On data far from white,
+    # its unmixing matrix collapses to rows of norm 1/sqrt(3), not 1.
+    x = np.random.default_rng(0).normal(size=(50, 3)) * 1e3 + 1e4
+    est = FastICA(whiten=False, random_state=0).fit(x)
+    with pytest.raises(NotNative, match=r"a norm of 0\.577, not 1: its fit broke down"):
+        to_native(_step(est), strict=True, allow_bound=True)
+    # A constant column whose mean rounds: the source has no spread, and
+    # "unit-variance" divides its row by 0.
+    est = FastICA(random_state=0).fit(np.full((9, 1), 3.6))
+    with pytest.raises(
+        NotNative, match="components_ is not finite: its fit broke down"
+    ):
+        to_native(_step(est), strict=True, allow_bound=True)
+
+
+def test_a_centered_projection_takes_a_fit_by_its_estimated_build():
+    from sql_transform.native.project import (
+        MAX_BUILD_S,
+        _build_estimate,
+        _centered_build_estimate,
+    )
+
+    # Centered, 96 components over 512 features built in 5.3 to 6.5 s, 48
+    # over 1,024 in 7.8 to 8.4 s: past the cap, though a PCA of 48 over
+    # 1,024 is within it (project.py, `_centered_build_estimate`).
+    assert _centered_build_estimate(512, 96) <= MAX_BUILD_S
+    assert _build_estimate(1024, 48) <= MAX_BUILD_S < _centered_build_estimate(1024, 48)
+    x = np.random.default_rng(7).normal(size=(98, 1024))
+    est = LinearDiscriminantAnalysis().fit(x, np.arange(98) % 49)
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated \d+ s build, past 7 s \(48 components over 1,024",
+    ):
+        to_native(_step_of(est, 48), strict=True, allow_bound=True)
