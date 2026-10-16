@@ -1616,8 +1616,7 @@ def test_a_boolean_bitwise_or_ordered_aggregate_forms(sql):
         (_sub("count_if(*)"), "the aggregate call count_if(*)"),
         (_sub("count_if(TRUE)"), "its argument must be a column of its table"),
         (_sub("bool_and(b) FILTER (WHERE v > 5)"), "the aggregate call bool_and(b)"),
-        (_sub("bool_or(b)", "s.v > t.id"), "its SELECT item is bool_or(b)"),
-        (_sub("bit_xor(v)", "s.v > t.id"), "its SELECT item is bit_xor(v)"),
+        (_sub("bit_xor(DISTINCT v)", "s.v > t.id"), "is bit_xor(DISTINCT v)"),
     ],
 )
 def test_a_boolean_bitwise_or_ordered_aggregate_refuses_by_name(sql, why):
@@ -3158,8 +3157,10 @@ def test_an_item_over_one_row_ordered_refuses_by_name(sql, statics, why):
 # rows on which every other term is TRUE. The oracle evaluates such a term
 # over each pair of a static row and a distinct outer value. The aggregate
 # does not depend on the order of the rows: count, sum over an integer or
-# BOOLEAN column, min and max over an integer, DECIMAL or VARCHAR column. A
-# term that can trap runs where the oracle runs it (the tests after these).
+# BOOLEAN column, min and max, bool_and and bool_or, and bit_and, bit_or and
+# bit_xor. A DOUBLE min or max refuses the build where the rows of one key tie
+# two values of other bits. A term that can trap runs where the oracle runs it
+# (the tests after these).
 
 SCAN_AGGREGATES = [
     "count(*)",
@@ -3178,6 +3179,18 @@ SCAN_AGGREGATES = [
     "min(d)",
     "max(u)",
     "max(i8)",
+    "min(f)",  # NaN is the greatest, -0.0 has no 0.0 beside it
+    "max(f)",
+    "min(b)",
+    "max(b)",
+    "min(DISTINCT f)",
+    "bool_and(b)",
+    "bool_or(b)",
+    "bit_and(v)",
+    "bit_or(i8)",
+    "bit_or(DISTINCT v)",
+    "bit_xor(j)",
+    "bit_xor(u)",  # UBIGINT, of the i128 lane
 ]
 
 SCAN_WHERES = [
@@ -3325,6 +3338,66 @@ def test_a_scan_sums_a_decimal_of_at_most_36_digits(spec, top):
     assert "its SELECT item is sum(w)" in v.detail, v.detail
 
 
+# DOUBLE values that compare as equal but have other bits: -0.0 and 0.0 in
+# key 1, two NaNs in key 2, and 0.0 and -0.0 apart in keys 3 and 4.
+SCAN_TIES = table(
+    {"k": "int64", "v": "int64", "f": "double"},
+    [
+        {"k": 1, "v": 1, "f": 0.0},
+        {"k": 1, "v": 2, "f": -0.0},
+        {"k": 2, "v": 3, "f": NAN},
+        {"k": 2, "v": 4, "f": NAN2},
+        {"k": 3, "v": 5, "f": 0.0},
+        {"k": 4, "v": 6, "f": -0.0},
+    ],
+)
+
+
+@pytest.mark.parametrize("agg", ["min(f)", "max(f)", "coalesce(max(f), 1.0)"])
+@pytest.mark.parametrize(
+    "where, ties",
+    [
+        ("s.v > t.id", True),
+        ("s.k = t.k AND s.v > t.id", True),
+        ("s.k = 2 AND s.v > t.id", True),
+        ("s.k > 2 AND s.v > t.id", True),  # one group of keys 3 and 4
+        ("s.k = t.k AND s.k > 2 AND s.v > t.id", False),
+        ("s.k = t.k AND s.k <> 1 AND s.k <> 2 AND s.v < t.id", False),
+    ],
+)
+def test_a_scan_of_a_double_extreme_refuses_ties_of_other_bits(agg, where, ties):
+    # Which of the tied values the oracle answers depends on the order of
+    # the rows. The build checks the rows of each key after the filter.
+    sql = _sub(agg, where)
+    if not ties:
+        assert_parity(sql, T, statics={"s": SCAN_TIES})
+        return
+    v = assert_parity(sql, T, statics={"s": SCAN_TIES}, expect="REFUSED")
+    assert "DOUBLE values with other bits" in v.detail, v.detail
+
+
+@pytest.mark.parametrize("agg", ["min(f)", "max(f)"])
+def test_a_scan_of_a_double_extreme_skips_nulls_in_the_check_of_ties(agg):
+    # A NULL is no value, so -0.0 beside NULLs ties nothing. The build holds
+    # a NULL DOUBLE as 0.0 beside a FALSE validity.
+    rows = table(
+        {"k": "int64?", "v": "int64?", "f": "double?"},
+        [
+            {"k": 1, "v": 1, "f": None},
+            {"k": 1, "v": 2, "f": -0.0},
+            {"k": None, "v": 3, "f": None},
+            {"k": 1, "v": None, "f": 0.5},
+        ],
+    )
+    assert_parity(_sub(agg, "s.v > t.id"), T, statics={"s": rows})
+    assert_parity(_sub(agg, "s.k = t.k AND s.v < t.id"), T, statics={"s": rows})
+
+
+@pytest.mark.parametrize("agg", ["count(f)", "min(v)", "max(k)"])
+def test_a_scan_that_reads_ties_of_other_bits_without_an_extreme(agg):
+    assert_parity(_sub(agg, "s.v > t.id AND s.f >= 0.0"), T, statics={"s": SCAN_TIES})
+
+
 def test_a_scan_over_a_table_with_columns_it_does_not_serve():
     # A struct and a timestamp column beside the plain ones: a term reads
     # the plain columns, and a term that reads the others refuses by name.
@@ -3390,8 +3463,8 @@ def test_plan_facts_name_the_scan_and_its_fold():
         (_sub("avg(v)", "s.v > t.id"), [], "its SELECT item is avg(v)"),
         (_sub("count(DISTINCT v)", "s.v > t.id"), [], "is count(DISTINCT v)"),
         (_sub("sum(f)", "s.v > t.id"), [], "its SELECT item is sum(f)"),
-        (_sub("min(f)", "s.v > t.id"), [], "its SELECT item is min(f)"),
-        (_sub("max(b)", "s.v > t.id"), [], "its SELECT item is max(b)"),
+        (_sub("sum(DISTINCT v)", "s.v > t.id"), [], "is sum(DISTINCT v)"),
+        (_sub("bit_xor(DISTINCT v)", "s.v > t.id"), [], "is bit_xor(DISTINCT v)"),
         # A term that can trap where the scan does not serve.
         (
             _sub("avg(v) + 1", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
@@ -3674,6 +3747,10 @@ SCAN_ITEMS = [
     ("CASE WHEN count(*) > 1 THEN max(s) ELSE min(s) END", False),
     ("nullif(count(*), 0)", False),
     ("greatest(max(v), count(*))", False),
+    ("bit_or(i8) + 1", True),
+    ("CASE WHEN bool_or(b) THEN bit_xor(v) END", False),
+    ("coalesce(min(f), max(f))", False),
+    ("bool_and(b) AND min(b)", False),
 ]
 
 

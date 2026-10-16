@@ -146,12 +146,14 @@ pub struct StaticSpec {
 }
 
 /// The part a static plays in a scan for each request ([`plan::Fold`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanSpec {
     /// The rows that the scan reads ([`plan::ScanRows`]): one entry per
     /// row of the table that the filter keeps. The build refuses a table
-    /// where more than `limit` of these rows share one key.
-    Rows { limit: usize },
+    /// where more than `limit` of these rows share one key, or where the
+    /// rows of one key tie two values of other bits in a value column of
+    /// `ties` ([`plan::ScanRows::ties`]).
+    Rows { limit: usize, ties: Vec<usize> },
     /// The fold's values, which the program computes: no entry.
     Fold,
 }
@@ -542,8 +544,9 @@ pub fn prepare_full(
                     .map(filter_spec)
                     .transpose()?,
                 post: None,
-                scan: j.scan.as_ref().map(|_| ScanSpec::Rows {
+                scan: j.scan.as_ref().map(|r| ScanSpec::Rows {
                     limit: plan::SCAN_LIMIT,
+                    ties: r.ties.iter().map(|&t| t as usize).collect(),
                 }),
             })
         })

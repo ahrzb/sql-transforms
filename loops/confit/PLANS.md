@@ -830,18 +830,26 @@ The first five are ruled, in this order; the rest follow.
   the 6,000 subquery seeds (scratch n1044/camp, same SQL as master): 3,458
   AGREE, 2,373 REFUSED, 128 AGREE_TRAP, 34 DIVERGE_OPT, 7 EXCLUDED; of the 81
   seeds master refused for the item, 44 serve.
-  Open for the scan, in value order (refusals in the 2026-10-16 prepare-only
-  sweep of the 6,000 subquery seeds of 50,000,000.., scratch n1040/sweep):
-  DISTINCT (34); `bool_and`, `bool_or` and the bitwise aggregates (20); avg
-  and DOUBLE sum (26, float-reduction bound); min and max over DOUBLE (about
-  52; refuse at build a column with equal values of other bits); an item
-  with no aggregate (DuckDB traps when a request keeps more than one row); a
-  trapping static term in a WHERE that reads no outer column (evaluate it at
-  build in DuckDB's order, refuse only if it traps); IN, ANY and ALL; ORDER
-  BY with LIMIT; Cranelift code for ProbeRange and ProbeRead. Outside the
-  scan, an item that traps over one group refuses at build; with at most 100
-  rows per key it could serve by the scan, which traps per request. The
-  generator could draw IN-list items that are not literals.
+  The scan also computes `bool_and`, `bool_or`, `bit_and`, `bit_or`,
+  `bit_xor`, and `min` and `max` over DOUBLE and BOOLEAN (2026-10-16): the
+  first value that is not NULL starts the lane and an operator joins each
+  later one (`emit_fold`); a DOUBLE min or max refuses at build when the rows
+  of one key hold two equal values of other bits (`ScanRows::ties`,
+  `scan_ties` in duckdb/mod.rs). Campaign (scratch n1045/camp): 3,527 AGREE,
+  2,300 REFUSED, 131 AGREE_TRAP, 35 DIVERGE_OPT, 7 EXCLUDED; 73 more seeds
+  serve, none lost; item refusals of a scan 178 -> 89.
+  Open for the scan, in value order (item refusals in the n1045 campaign):
+  avg (28) and DOUBLE sum (15, float-reduction bound); count, sum and avg
+  over DISTINCT values (41: sort each key's rows by value at build and skip
+  a kept value equal to the last kept one); bit_xor over DISTINCT values
+  (2); an item with no aggregate (DuckDB traps when a request keeps more
+  than one row); a trapping static term in a WHERE that reads no outer
+  column (evaluate it at build in DuckDB's order, refuse only if it traps);
+  IN, ANY and ALL; ORDER BY with LIMIT; Cranelift code for ProbeRange and
+  ProbeRead. Outside the scan, an item that traps over one group refuses at
+  build; with at most 100 rows per key it could serve by the scan, which
+  traps per request. The generator could draw IN-list items that are not
+  literals.
 - **Other scalar, correlated and `IN` subqueries, a CTE referenced twice,
   set operations.** Refused today, except the scalar subquery, EXISTS and
   IN above; only batch-dependent forms are out of scope. Row-local derived

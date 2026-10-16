@@ -693,6 +693,11 @@ pub struct ScanRows {
     /// The subquery's WHERE terms that read only the table: the build keeps
     /// only the rows on which each one is TRUE.
     pub filter: Option<AggFilter>,
+    /// The value lanes of the DOUBLE columns that a `min` or `max` of the
+    /// fold reads. The build refuses the rows of a key where two values of
+    /// such a column compare as equal but have other bits, -0.0 and 0.0 or
+    /// two NaNs: DuckDB answers the first of them in the order of the rows.
+    pub ties: Vec<u32>,
 }
 
 /// A bound, typed scalar expression. `nullable` is the frontend's
