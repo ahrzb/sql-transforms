@@ -8,15 +8,7 @@ on the board: [tickets.md](tickets.md).
 
 Easiest first; each is one PR.
 
-1. **`KBinsDiscretizer`'s float64 ordinal bins read each feature once
-   in each arm** of a CASE chain, so confit computes its `x - 0.0` again
-   in each arm (`_registry._apart`, T44). The float32 bins, whose input
-   guard reads the feature twice, serve a row in 0.36 times the time since
-   T44 (32 features of 31 bins: 7.2 to 9.6 µs, against 21 to 24 µs), the
-   float64 ones in 0.97 times. Read the feature twice in one arm, as
-   `isotonic.py` does, or count the edges at or below it, and measure
-   both.
-2. **Fit the build estimates again on T44's reads.** Where a step reads
+1. **Fit the build estimates again on T44's reads.** Where a step reads
    each feature as a value confit shares, `to_native` of the quantile,
    spline, forest and isotonic entries takes 0.64 to 0.94 times its time
    on master 9f74bc0 (the width curves, one process), so their caps refuse

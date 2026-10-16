@@ -47,10 +47,16 @@ of `QuantileTransformer` over one feature 0.45 to 0.61, of
 condition), of `PCA` up to 256 features 0.59 to 0.81 and of a number
 `OrdinalEncoder` 0.34; no other step measured is slower in every round. A
 projection reads `x - 0.0` only where its build stays within the cap
-(`project._reads_apart`). The loop runs from the "Transforms Loop" project
-thread. The Confit Loop is paused since 2026-10-16: a confit need waits,
-and the loop works around it.
+(`project._reads_apart`). T45 (#499) counts the edges of
+`KBinsDiscretizer`'s ordinal bins by bisection, inside a first condition
+that tests both ends, so that confit computes the feature's `x - 0.0` once
+a row where it computed it again in each arm of a chain of one test per
+edge. In one process against that chain, a 1,024-row call takes 0.29 times
+the time at 32 float64 features of 31 bins and 0.04 at 8 features of 255
+bins (float32: 0.82 and 0.17). The loop runs from the "Transforms Loop"
+project thread. The Confit Loop is paused since 2026-10-16: a confit need
+waits, and the loop works around it.
 
-Next: PLANS "Next" (the float64 bins of `KBinsDiscretizer`, then the
-build estimates on T44's reads). Then the rest of PLANS "Ruled
-2026-10-06, to build", item 1, then the rest of item 2.
+Next: PLANS "Next" (the build estimates fitted again on T44's reads).
+Then the rest of PLANS "Ruled 2026-10-06, to build", item 1, then the
+rest of item 2.

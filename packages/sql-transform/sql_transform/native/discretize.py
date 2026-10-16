@@ -27,6 +27,18 @@ test is one comparison of the double `x` against a moved cutpoint
 the moved edges, and the codes and 0/1 output fields, float32 in the twin,
 are exact as doubles. Where float32 makes a value infinite the twin raises,
 and the input guard traps (`_registry.rejects`).
+
+The ordinal output field is a bisection over the edges, inside a first
+condition that tests both ends, which reads the feature twice in one CASE
+arm. confit computes a value once a row only where a function reads it
+twice or more outside any CASE arm, or twice in one arm (its shared values,
+`share.rs`). A chain of one test per edge read the translator's `x - 0.0`
+(`_registry._apart`) once in each arm, so confit computed it again in each
+(float64; float32's input guard reads it twice). At 32 features of 31 bins
+a row of a 1,024-row call took 4.5 µs, against 15.7 µs with the chain
+(float32: 4.9 against 6.0 µs), and at 8 features of 255 bins 1.4 µs,
+against 36 µs (float32: 1.9 against 11 µs) (release build, master eeefa31,
+2026-10-16).
 """
 
 from __future__ import annotations
@@ -82,15 +94,32 @@ def _f32_cut(edges: np.ndarray) -> np.ndarray:
 
 def _bin(x: S.Expr, edges: list[float]) -> S.Expr:
     """The ordinal output field, `searchsorted(edges, x, side="right")` over
-    sorted edges: the first `k` with `x < edges[k]`, else `len(edges)`. A
-    repeated edge's arm is never reached, as numpy never lands between equal
-    edges."""
-    if not edges:
+    sorted edges: the number of edges at or below `x`. The first condition
+    tests both ends, which reads `x` twice in one arm (the module
+    docstring); between them a bisection counts the inner edges."""
+    m = len(edges)
+    if not m:
         return f64(0.0)  # a constant feature: edges [-inf, inf], one bin
-    e = S.case(x < f64(edges[0]), f64(0.0))
-    for k, v in enumerate(edges[1:], 1):
-        e = e.when(x < f64(v), f64(float(k)))
-    return e.otherwise(f64(float(len(edges))))
+    first = x < f64(edges[0])
+    ends = S.case(first, f64(0.0)).otherwise(f64(float(m)))
+    if m == 1:
+        return ends
+    return S.case(first | (x >= f64(edges[-1])), ends).otherwise(
+        _count(x, edges[1:-1], 1)
+    )
+
+
+def _count(x: S.Expr, edges: list[float], below: int) -> S.Expr:
+    """`below` plus the number of `edges` at or below `x`, by bisection:
+    where `x < edges[mid]`, no edge from `mid` on counts, and elsewhere
+    every edge up to `mid` does. A run of equal edges counts whole, as in
+    numpy."""
+    if not edges:
+        return f64(float(below))
+    mid = len(edges) // 2
+    return S.case(x < f64(edges[mid]), _count(x, edges[:mid], below)).otherwise(
+        _count(x, edges[mid + 1 :], below + mid + 1)
+    )
 
 
 def _onehot(x: S.Expr, edges: list[float]) -> list[S.Expr]:
