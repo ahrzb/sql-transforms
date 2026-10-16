@@ -440,8 +440,8 @@ it refuses `s` if more than 100 of these rows have the same key, or if the
 subquery has no key and more than 100 rows pass. The limit of 100 rows
 follows the owner's suggestion of 2026-10-15.
 
-The scan serves a subquery that selects one of these aggregates, and EXISTS
-and NOT EXISTS:
+The scan serves a subquery that selects one of these aggregates or an
+expression over them, and EXISTS and NOT EXISTS:
 
 - `count(*)`, and `count` of a column or of a constant;
 - `count_if` of a BOOLEAN column;
@@ -459,8 +459,9 @@ to less than 10^38. Confit refuses the scan in these cases:
   and `0.0` (see above), such as `s.f < 1.0 / t.x`, where `1.0 / -0.0` is
   `-inf` and `1.0 / 0.0` is `inf`;
 - the subquery is under IN, ANY or ALL, or it has ORDER BY or LIMIT;
-- the SELECT item is another aggregate, an aggregate over DISTINCT values,
-  or an expression.
+- the SELECT item is another aggregate or an aggregate over DISTINCT
+  values, or an expression over such an aggregate;
+- the SELECT item is an expression with no aggregate.
 
 A term of a scan can trap. The oracle evaluates each term for the pairs of a
 distinct outer value and a row of `s` on which the terms before it are TRUE.
@@ -476,6 +477,15 @@ term on, the scan evaluates each term in the order of the oracle, for the
 same pairs. If only terms that read only `s` come before the first key,
 confit skips the outer expression of this key in this search. It evaluates
 this expression as for a subquery without a scan (see below).
+
+If the item is an expression, the scan computes the aggregates and then the
+expression over them. Over no rows, `count` is 0 and the other aggregates
+are NULL. The expression can trap, for example `max(s.v) + 1`. The oracle
+evaluates the expression once for each request that reaches the subquery,
+over the aggregates of the rows that the request keeps. It also evaluates
+the expression for a request that keeps no row. So `ln(count(*))` raises an
+error for such a request. Measurements on the oracle on 2026-10-16 gave these
+facts. Confit evaluates the expression for the same requests.
 
 Confit binds most terms `x BETWEEN lo AND hi` as these two comparisons, so it
 can evaluate `x <= hi` at the end. A few such terms do not bind as two
@@ -514,15 +524,15 @@ raise an error over a row that LIMIT does not keep. The pins at the end of
 `tests/test_scalar_subquery.py` record these facts. The order of evaluation
 matters only where an evaluation can trap. In a served subquery, only these
 parts can trap: the outer expression of the first key, the left side `x` of
-IN, ANY or ALL over a WHERE without a key, and a term of a scan. The argument
-of the aggregate, if it has one, is a column or a constant. Without a scan,
-only the running total of a `sum` or an `avg` can overflow. Confit computes
-it at build, and it refuses the build if the total can overflow (the build
-refusals at the end of this section list this case). An expression item can
-also raise an error, for example `max(s.v) + 1` if `s.v` is a TINYINT column
-with the value 127.
-Confit evaluates the expression at build, so a served subquery does not trap
-in it. Confit refuses the build if the expression raises an error:
+IN, ANY or ALL over a WHERE without a key, and a term or the item of a scan.
+The argument of the aggregate, if it has one, is a column or a constant.
+Without a scan, only the running total of a `sum` or an `avg` can overflow.
+Confit computes it at build, and it refuses the build if the total can
+overflow (the build refusals at the end of this section list this case). An
+expression item can also raise an error, for example `max(s.v) + 1` if `s.v`
+is a TINYINT column with the value 127. Without a scan, confit evaluates the
+expression at build, so a served subquery does not trap in it. Confit
+refuses the build if the expression raises an error:
 
 - If the expression raises an error over the aggregates of no rows, for
   example `ln(count(*))`, confit refuses the build, whatever the rows of `s`
@@ -545,8 +555,9 @@ runs a subquery in the SELECT list for each row that the outer WHERE passes,
 and a subquery in the WHERE for each row that reaches the WHERE. The oracle
 does this also for a subquery inside a CASE, whatever the condition of the
 CASE is. Confit evaluates the outer expression of the first key, the left
-side `x` of IN, ANY or ALL, and the terms of a scan for the same rows as the
-oracle. If one of them can trap, confit refuses the subquery in two cases:
+side `x` of IN, ANY or ALL, and the terms and the item of a scan for the same
+rows as the oracle. If one of them can trap, confit refuses the subquery in
+two cases:
 
 - The subquery is in the WHERE, and the outer query has a comma join whose
   key is a term of the WHERE. The oracle runs the subquery for every pair of

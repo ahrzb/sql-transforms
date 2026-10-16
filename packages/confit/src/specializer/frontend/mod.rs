@@ -498,6 +498,7 @@ fn bind_query<'q>(
         if let Some(f) = spec.fold.as_mut() {
             f.rows += off;
             level_exprs.extend(f.pred.as_mut());
+            level_exprs.extend(f.post.as_mut());
         }
     }
     for e in level_exprs {
@@ -1000,17 +1001,17 @@ fn bind_select(
         if env.many {
             return Err(unsup(
                 "a subquery with a term that can trap (the outer side of its first key, a \
-                 WHERE term of a scan, or the left side of IN, ANY or ALL), under \
-                 shape='many' -- each join runs before the WHERE there, and DuckDB runs the \
-                 subquery of a SELECT item after it",
+                 WHERE term or the SELECT item of a scan, or the left side of IN, ANY or ALL), \
+                 under shape='many' -- each join runs before the WHERE there, and DuckDB runs \
+                 the subquery of a SELECT item after it",
             ));
         }
         if in_where && !comma_terms.is_empty() {
             return Err(unsup(
                 "a subquery in the WHERE with a term that can trap (the outer side of its \
-                 first key, a WHERE term of a scan, or the left side of IN, ANY or ALL), \
-                 beside a comma join -- DuckDB evaluates it for every row pair of the comma \
-                 join, confit for the pairs that its keys match; use JOIN ... ON",
+                 first key, a WHERE term or the SELECT item of a scan, or the left side of IN, \
+                 ANY or ALL), beside a comma join -- DuckDB evaluates it for every row pair of \
+                 the comma join, confit for the pairs that its keys match; use JOIN ... ON",
             ));
         }
     }
@@ -1211,9 +1212,10 @@ struct Binder<'a> {
     /// (`subquery.rs`).
     agg_joins: std::cell::RefCell<Vec<JoinSpec>>,
     /// The hidden joins (numbered at this level) whose probe evaluates a
-    /// term that can trap: the outer side of the first key, a WHERE term of
-    /// a scan, or the left side of ANY or ALL. `bind_select` checks them
-    /// against the level's shape and comma tables once the WHERE has bound.
+    /// term that can trap: the outer side of the first key, a WHERE term or
+    /// the SELECT item of a scan, or the left side of ANY or ALL.
+    /// `bind_select` checks them against the level's shape and comma tables
+    /// once the WHERE has bound.
     trap_keys: std::cell::RefCell<Vec<u32>>,
     /// Each scalar subquery bound at this level, with the test of IN, ANY
     /// or ALL it may add (`subquery.rs`: the item, the left side, and the

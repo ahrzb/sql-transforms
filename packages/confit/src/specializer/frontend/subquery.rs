@@ -27,8 +27,9 @@
 //! trap other than the outer side of the first key: one hidden join reads
 //! the rows of `s` that pass the filter and share the request's keys, at
 //! most [`plan::SCAN_LIMIT`] of them, which the build checks
-//! ([`plan::ScanRows`]), and a second one folds the aggregate over the rows
-//! on which every other term is TRUE ([`plan::Fold`]).
+//! ([`plan::ScanRows`]), and a second one folds the aggregates over the rows
+//! on which every other term is TRUE, then computes the item over them
+//! ([`plan::Fold`]).
 //!
 //! DuckDB (1.5.5, optimizer off, measured 2026-10-14 to 2026-10-16) evaluates
 //! the subquery's WHERE over (distinct correlated values) x (static rows), in
@@ -42,14 +43,14 @@
 //! any request. Three things served here can trap, and each runs where DuckDB
 //! runs it: the outer side of the first key ([`Binder::guarded_key`]), the
 //! left side of ANY or ALL ([`Binder::quantified_residual`]), and a WHERE term
-//! of a scan ([`plan::Fold::traps`]). Outside a scan, the inner side of each
-//! key is a bare column, no key casts a VARCHAR, the outer side of a later key
-//! cannot trap (`can_trap`), no filter term can trap, and the aggregates and
-//! the item run before any request, the item over each group and over no
-//! rows, where a trap or a sum that could overflow refuses. So the filter
-//! passes the same rows in any order, and the hidden join runs after the FROM
-//! joins of its level, before the WHERE when the WHERE reads it and after it
-//! otherwise ([`plan::JoinSpec::after_where`]).
+//! or the item of a scan ([`plan::Fold::traps`]). Outside a scan, the inner
+//! side of each key is a bare column, no key casts a VARCHAR, the outer side
+//! of a later key cannot trap (`can_trap`), no filter term can trap, and the
+//! aggregates and the item run before any request, the item over each group
+//! and over no rows, where a trap or a sum that could overflow refuses. So
+//! the filter passes the same rows in any order, and the hidden join runs
+//! after the FROM joins of its level, before the WHERE when the WHERE reads
+//! it and after it otherwise ([`plan::JoinSpec::after_where`]).
 
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
@@ -403,7 +404,8 @@ fn scan_refusal(t: &SqlExpr, what: &str, why: &str) -> PrepareError {
          by a scan of at most {} rows of the table for each request, in (SELECT count(*) | \
          count(c) | sum(c) | count_if(c) | min(c) | max(c) FROM s WHERE ...) with sum over an \
          integer or BOOLEAN column or a DECIMAL of at most 36 digits, and min and max over an \
-         integer, DECIMAL or VARCHAR column",
+         integer, DECIMAL or VARCHAR column, and in a subquery whose SELECT item is an \
+         expression over such aggregates",
         plan::SCAN_LIMIT
     ))
 }
@@ -2077,11 +2079,13 @@ impl Binder<'_> {
     /// outer query other than by a key, such as `(SELECT sum(s.v) FROM s
     /// WHERE s.lo <= t.x AND t.x < s.hi)`, or with a term that can trap,
     /// other than the outer side of the first key. Its value is one
-    /// aggregate over the rows that the scan keeps ([`plan::Fold`]). The
-    /// scan reads the rows of the table that pass the filter and whose keys
-    /// equal the request's, at most [`plan::SCAN_LIMIT`] of them, which the
-    /// build checks ([`plan::ScanRows`]), and keeps those on which every
-    /// other term is TRUE. A key that compares with IS NOT DISTINCT FROM is
+    /// aggregate over the rows that the scan keeps, or an expression over
+    /// such aggregates, which the scan computes after them
+    /// ([`plan::Fold::post`]). The scan reads the rows of the table that
+    /// pass the filter and whose keys equal the request's, at most
+    /// [`plan::SCAN_LIMIT`] of them, which the build checks
+    /// ([`plan::ScanRows`]), and keeps those on which every other term is
+    /// TRUE. A key that compares with IS NOT DISTINCT FROM is
     /// such a term.
     ///
     /// DuckDB evaluates the WHERE over each pair of a static row and a
@@ -2094,12 +2098,12 @@ impl Binder<'_> {
     /// DuckDB evaluates it over. The outer side of the first key is not such
     /// a term when only filter terms come before it: it runs for each
     /// request that a row of them reaches ([`Binder::guarded_key`]). A fold
-    /// that can trap runs for each request that reaches the subquery, where
-    /// its join runs ([`plan::Fold::traps`]). The rows that the scan keeps
-    /// for a value do not depend on the batch, and neither does an
-    /// aggregate whose answer does not depend on the order of the rows: a
-    /// count, a sum over integers, and min and max over a type where two
-    /// equal values are one value. A term must not tell apart two DOUBLE
+    /// that can trap, in a term or in the item, runs for each request that
+    /// reaches the subquery, where its join runs ([`plan::Fold::traps`]).
+    /// The rows that the scan keeps for a value do not depend on the batch,
+    /// and neither does an aggregate whose answer does not depend on the
+    /// order of the rows: a count, a sum over integers, and min and max over
+    /// a type where two equal values are one value. A term must not tell apart two DOUBLE
     /// values that DuckDB counts as one correlated value ([`double_taint`]).
     #[allow(clippy::too_many_arguments)]
     fn scan_value(
@@ -2149,7 +2153,8 @@ impl Binder<'_> {
             return Err(scan_refusal(cause, what, "the subquery has ORDER BY or LIMIT"));
         }
 
-        // SELECT: one aggregate call over the kept rows.
+        // SELECT: one aggregate call over the kept rows, or an expression
+        // over such calls ([`plan::Fold::post`]).
         let item = match select.projection.as_slice() {
             [SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }] => e,
             [_] => return Err(form_refusal("a star in its SELECT")),
@@ -2159,36 +2164,78 @@ impl Binder<'_> {
         while let SqlExpr::Nested(x) = e {
             e = x;
         }
-        let call = match e {
+        let single = match e {
             SqlExpr::Function(f) => agg_func(f).map(|func| (f, func)),
             _ => None,
         };
-        let Some((f, func)) = call else {
-            return Err(scan_refusal(
-                cause,
-                what,
-                &format!("its SELECT item {e} is not one aggregate call"),
-            ));
-        };
-        let (agg, ty) = self.agg_call(inner, f, func)?;
-        let arg_ty = agg.arg.map(|c| inner.st.cols[c as usize].ty.ty);
-        let served = !agg.distinct
-            && match (agg.func, arg_ty) {
-                (AggFunc::CountStar | AggFunc::Count, _) => true,
-                // At most SCAN_LIMIT values below 10^p add up below 10^38.
-                (AggFunc::Sum, Some(Ty::Dec(p, _))) => 10u128
-                    .pow(p as u32)
-                    .checked_mul(plan::SCAN_LIMIT as u128)
-                    .is_some_and(|m| m <= 10u128.pow(38)),
-                (AggFunc::Sum, Some(t)) => t.lane() == Ty::I64 || matches!(t, Ty::U64 | Ty::I1),
-                (AggFunc::Min | AggFunc::Max, Some(t)) => {
-                    matches!(t.lane(), Ty::I64 | Ty::I128 | Ty::Str | Ty::Dec(..))
-                }
-                _ => false,
-            };
-        if !served {
-            return Err(scan_refusal(cause, what, &format!("its SELECT item is {f}")));
+        // Each aggregate call of the item, which the scan must compute.
+        let mut found = Vec::new();
+        self.walk_expr(e, &mut |x| {
+            use super::resolve::Walk;
+            if calls::marker_call(x).is_some() || lets::marker_let(x).is_some() {
+                return Ok(Walk::Over);
+            }
+            Ok(match x {
+                SqlExpr::Subquery(_)
+                | SqlExpr::Exists { .. }
+                | SqlExpr::InSubquery { .. }
+                | SqlExpr::AnyOp { .. }
+                | SqlExpr::AllOp { .. } => Walk::Over,
+                SqlExpr::Function(f) => match agg_func(f) {
+                    Some(func) => {
+                        found.push((f.clone(), func));
+                        Walk::Over
+                    }
+                    None => Walk::Into,
+                },
+                _ => Walk::Into,
+            })
+        })?;
+        for (f, func) in &found {
+            let (agg, _) = self.agg_call(inner, f, *func)?;
+            if !scan_serves(&agg, inner.st) {
+                let why = match single {
+                    Some(_) => format!("its SELECT item is {f}"),
+                    None => format!("its SELECT item {e} computes over {f}"),
+                };
+                return Err(scan_refusal(cause, what, &why));
+            }
         }
+        // The aggregates, as the join of the fold holds them, and the item
+        // over them.
+        let (aggs, agg_cols, post, ty) = match single {
+            Some((f, func)) => {
+                let (agg, ty) = self.agg_call(inner, f, func)?;
+                let col = Col {
+                    name: e.to_string(),
+                    ty: super::super::ir::ColTy {
+                        ty,
+                        nullable: !counts_rows(agg.func),
+                    },
+                };
+                (vec![agg], vec![col], None, ty)
+            }
+            None => {
+                let (aggs, post) = self.agg_post(query, select, source, inner, e)?;
+                if post.row {
+                    return Err(scan_refusal(
+                        cause,
+                        what,
+                        &format!("its SELECT item {e} has no aggregate call"),
+                    ));
+                }
+                let [(_, item)] = <[(String, SExpr); 1]>::try_from(post.project).map_err(|_| {
+                    PrepareError::Internal("a scan's SELECT item bound to more than one".into())
+                })?;
+                // The item's regular expressions join this query's.
+                let mut item = item;
+                let base = self.regexes.borrow().len() as u32;
+                self.regexes.borrow_mut().extend(post.regexes);
+                shift_regexes(&mut item, base);
+                let ty = item.ty;
+                (aggs, post.in_cols, Some(item), ty)
+            }
+        };
 
         // The terms in DuckDB's order: as written, but the upper half of
         // each BETWEEN after every other term.
@@ -2311,29 +2358,29 @@ impl Binder<'_> {
         for p in preds.iter_mut() {
             scan_reads(p, &mut lanes);
         }
-        lanes.extend(agg.arg);
+        lanes.extend(aggs.iter().filter_map(|a| a.arg));
         lanes.sort_unstable();
         lanes.dedup();
         let filter = filter.and_then(|f| build_part(f, &keep));
 
-        // The join of the rows, and the join of the fold that reads them.
+        // The join of the rows, and the join of the fold that reads them:
+        // a value per aggregate, then the item's.
+        let n_aggs = agg_cols.len() as u32;
+        let mut cols = agg_cols.clone();
+        if post.is_some() {
+            cols.push(Col {
+                name: e.to_string(),
+                ty: super::super::ir::ColTy { ty, nullable: true },
+            });
+        }
+        let n_cols = cols.len() as u32;
         let mut tables = self.agg_tables.borrow_mut();
         let table = self.statics.len() + tables.len();
-        let counts = counts_rows(agg.func);
         tables.push(AggTable {
-            table: StaticTable::all_scalar(
-                self.statics[source].name.clone(),
-                vec![Col {
-                    name: e.to_string(),
-                    ty: super::super::ir::ColTy {
-                        ty,
-                        nullable: !counts,
-                    },
-                }],
-            ),
+            table: StaticTable::all_scalar(self.statics[source].name.clone(), cols),
             source,
             keys: Vec::new(),
-            aggs: vec![agg],
+            aggs: aggs.clone(),
             filter: None,
             post: None,
         });
@@ -2354,9 +2401,21 @@ impl Binder<'_> {
                 nullable,
             }
         });
-        let arg = agg
-            .arg
-            .map(|l| lanes.iter().position(|&x| x == l).expect("the argument's lane is read") as u32);
+        let fold_aggs = aggs
+            .iter()
+            .map(|a| {
+                let arg = a.arg.map(|l| {
+                    lanes.iter().position(|&x| x == l).expect("the argument's lane is read") as u32
+                });
+                (a.func, arg)
+            })
+            .collect();
+        // The item reads each aggregate through the join of the fold.
+        let post = post.map(|mut item| {
+            agg_reads_of(&mut item, rows + 1, &agg_cols);
+            item
+        });
+        let traps = traps || post.as_ref().is_some_and(can_trap);
         joins.push(JoinSpec {
             table: source,
             batch: false,
@@ -2375,19 +2434,21 @@ impl Binder<'_> {
             fold: None,
             scan: Some(plan::ScanRows { filter }),
         });
+        let with_post = post.is_some();
         joins.push(JoinSpec {
             table,
             batch: false,
             kind: JoinKind::Left,
             keys: Vec::new(),
             key_cols: Vec::new(),
-            val_cols: vec![0],
+            val_cols: (0..n_cols).collect(),
             residual: None,
             after_where: false,
             fold: Some(plan::Fold {
                 rows,
                 pred,
-                aggs: vec![(agg.func, arg)],
+                aggs: fold_aggs,
+                post,
                 traps,
             }),
             scan: None,
@@ -2399,12 +2460,16 @@ impl Binder<'_> {
         let read = SExpr {
             kind: SKind::StaticCol {
                 join: rows + 1,
-                col: 0,
+                col: if with_post { n_aggs } else { 0 },
             },
             ty,
             nullable: true,
         };
-        let value = if counts { count_or_zero(read) } else { read };
+        let value = if !with_post && counts_rows(aggs[0].func) {
+            count_or_zero(read)
+        } else {
+            read
+        };
         self.agg_reads
             .borrow_mut()
             .push((query.clone(), member.key(), value.clone()));
@@ -2799,6 +2864,46 @@ fn zeros_refusal(t: &SqlExpr) -> String {
         "{t} reads a DOUBLE of the outer query through an operation that can tell -0.0 from \
          0.0, and DuckDB evaluates the subquery once for both"
     )
+}
+
+/// Whether the scan of a subquery computes the aggregate `agg` over a
+/// column of `st` ([`plan::Fold::aggs`]).
+fn scan_serves(agg: &Agg, st: &StaticTable) -> bool {
+    let arg_ty = agg.arg.map(|c| st.cols[c as usize].ty.ty);
+    !agg.distinct
+        && match (agg.func, arg_ty) {
+            (AggFunc::CountStar | AggFunc::Count, _) => true,
+            // At most SCAN_LIMIT values below 10^p add up below 10^38.
+            (AggFunc::Sum, Some(Ty::Dec(p, _))) => 10u128
+                .pow(p as u32)
+                .checked_mul(plan::SCAN_LIMIT as u128)
+                .is_some_and(|m| m <= 10u128.pow(38)),
+            (AggFunc::Sum, Some(t)) => t.lane() == Ty::I64 || matches!(t, Ty::U64 | Ty::I1),
+            (AggFunc::Min | AggFunc::Max, Some(t)) => {
+                matches!(t.lane(), Ty::I64 | Ty::I128 | Ty::Str | Ty::Dec(..))
+            }
+            _ => false,
+        }
+}
+
+/// The item of a scan over its aggregates ([`plan::Fold::post`]): each
+/// input `i`, the aggregate of `cols[i]`, becomes its value in the join
+/// `fold`, and a count, which a column that is never NULL holds, 0 over no
+/// row.
+fn agg_reads_of(e: &mut SExpr, fold: u32, cols: &[Col]) {
+    if let SKind::Col(i) = e.kind {
+        let c = &cols[i as usize];
+        let read = SExpr {
+            kind: SKind::StaticCol { join: fold, col: i },
+            ty: c.ty.ty,
+            nullable: true,
+        };
+        *e = if c.ty.nullable { read } else { count_or_zero(read) };
+        return;
+    }
+    for c in e.children_mut() {
+        agg_reads_of(c, fold, cols);
+    }
 }
 
 /// A count read through a hidden join: 0 when the join misses.

@@ -3385,8 +3385,8 @@ def test_plan_facts_name_the_scan_and_its_fold():
             [],
             "the subquery has ORDER BY or LIMIT",
         ),
-        (_sub("max(v) + 1", "s.v > t.id"), [], "max(v) + 1 is not one aggregate call"),
-        (_sub("s.v", "s.v > t.id"), [], "s.v is not one aggregate call"),
+        (_sub("s.v", "s.v > t.id"), [], "its SELECT item s.v has no aggregate call"),
+        (_sub("sum(f) + 1", "s.v > t.id"), [], "item sum(f) + 1 computes over sum(f)"),
         (_sub("avg(v)", "s.v > t.id"), [], "its SELECT item is avg(v)"),
         (_sub("count(DISTINCT v)", "s.v > t.id"), [], "is count(DISTINCT v)"),
         (_sub("sum(f)", "s.v > t.id"), [], "its SELECT item is sum(f)"),
@@ -3394,9 +3394,9 @@ def test_plan_facts_name_the_scan_and_its_fold():
         (_sub("max(b)", "s.v > t.id"), [], "its SELECT item is max(b)"),
         # A term that can trap where the scan does not serve.
         (
-            _sub("max(v) + 1", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
+            _sub("avg(v) + 1", "s.k = t.k AND s.v + 9223372036854775807 > 0"),
             [],
-            "which reads only its table and can trap, where its SELECT item",
+            "which reads only its table and can trap, where its SELECT item avg(v) + 1",
         ),
         (
             _sub("avg(v)", "s.j = t.j AND s.k = t.k + 1"),
@@ -3602,6 +3602,7 @@ def test_a_scan_term_that_can_trap_over_an_empty_table_and_an_empty_batch():
         (_sub("count(*)", "s.v + 1 > t.id"), "AGREE"),
         (_sub("count(*)", "s.k = t.k AND s.s"), TRAP_OR_OPT),
         (_sub("count(*)", "s.k = t.k AND s.v + 9223372036854775807 > 0"), TRAP_OR_OPT),
+        (_sub("max(v) + 1", f"s.k = t.k AND {FT}"), TRAP_OR_OPT),
         (
             f"SELECT id, {_exists('1', 's.k = t.k AND s.v + 9223372036854775807 > 0')} "
             "AS c FROM __THIS__ AS t",
@@ -3634,6 +3635,154 @@ def test_a_scan_serves_a_term_that_can_trap(sql, expect):
 def test_a_scan_term_that_can_trap_refuses_by_name(sql, shape, why):
     v = assert_parity(
         sql, XT, statics={"s": XS, "s3": S3}, shape=shape, expect="REFUSED"
+    )
+    assert why in v.detail, v.detail
+
+
+# A scan whose SELECT item is an expression over its aggregates, `max(v) + 1`:
+# the scan computes the aggregates, and then the item over them, where a count
+# is 0 and each other aggregate NULL over no row. The oracle evaluates the item
+# once for each request that reaches the subquery, over the aggregates of the
+# rows that the request keeps, also when it keeps none (measured 2026-10-16).
+# So an item that can trap runs where a WHERE term of a scan that can trap
+# runs, and refuses under shape='many'. Inside the item, CASE and coalesce
+# evaluate only the branch that they take. The flag says whether confit counts
+# the item as one that can trap.
+
+SCAN_ITEMS = [
+    ("count(*) + 1", True),
+    ("count(v) * 10 + count(*)", True),
+    ("max(v) - min(v)", True),
+    ("sum(v) * 2", True),
+    ("coalesce(max(v), 0) + count(*)", True),
+    ("-min(i8)", True),  # -(-128) overflows TINYINT
+    ("sum(b) + count_if(b)", True),
+    ("10 // count(*)", True),  # NULL over no row
+    ("10 % count(v)", True),
+    ("max(u) - min(u)", True),
+    ("max(u) + 1", True),  # overflows UBIGINT
+    ("min(d) * 2", True),
+    ("ln(count(*) + 1)", True),
+    ("regexp_matches(max(s), '^[ab]$')", True),
+    ("coalesce(max(v), min(v))", False),
+    ("max(v) > 3", False),
+    ("count(*) = 0", False),
+    ("max(v) IS NULL", False),
+    ("sum(d) / count(*)", False),  # inf over no row
+    ("max(s) || min(s)", False),
+    ("upper(max(s))", False),
+    ("CASE WHEN count(*) > 1 THEN max(s) ELSE min(s) END", False),
+    ("nullif(count(*), 0)", False),
+    ("greatest(max(v), count(*))", False),
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", SCAN_WHERES)
+@pytest.mark.parametrize("item, traps", SCAN_ITEMS)
+def test_a_scan_item(item, traps, where, shape):
+    sql = _sub(item, where)
+    if shape == "many" and traps:
+        v = assert_parity(sql, T, statics={"s": S}, shape=shape, expect="REFUSED")
+        assert "the SELECT item of a scan" in v.detail, v.detail
+        return
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+# The item that can trap, over IS: the static row lo = 10 holds the greatest
+# BIGINT, which max(v) + 1 overflows for each request whose x is 10 or more.
+
+IS = table(
+    {"lo": "int64", "v": "int64?", "k": "int64?"},
+    [
+        {"lo": 0, "v": 5, "k": 1},
+        {"lo": 10, "v": 2**63 - 1, "k": 1},
+        {"lo": 20, "v": 3, "k": 2},
+    ],
+)
+IT = table(
+    {"id": "int64", "x": "int64?", "k": "int64?"},
+    [
+        {"id": 1, "x": 5, "k": 1},
+        {"id": 2, "x": 15, "k": 1},
+        {"id": 3, "x": None, "k": None},
+    ],
+)
+ISUB = "(SELECT max(v) + 1 FROM s WHERE s.lo <= t.x)"
+
+
+def _item_sub(item, where="s.lo <= t.x"):
+    return f"SELECT id, (SELECT {item} FROM s WHERE {where}) AS c FROM __THIS__ AS t"
+
+
+@pytest.mark.parametrize(
+    "sql, trap",
+    [
+        # In the SELECT list the item runs for each row that the WHERE passes,
+        # under a CASE too, and in the WHERE before the WHERE, beside a TRUE
+        # side of OR too.
+        (f"SELECT id, {ISUB} AS c FROM __THIS__ AS t", "Overflow"),
+        (f"SELECT id, {ISUB} AS c FROM __THIS__ AS t WHERE t.x < 10", None),
+        (f"SELECT id, CASE WHEN false THEN {ISUB} END FROM __THIS__ AS t", "Overflow"),
+        (f"SELECT id FROM __THIS__ AS t WHERE t.id > 100 AND {ISUB} > 0", "Overflow"),
+        (f"SELECT id FROM __THIS__ AS t WHERE TRUE OR {ISUB} > 0", "Overflow"),
+        # Inside the item, CASE and coalesce evaluate the branch they take.
+        (_item_sub("CASE WHEN count(*) > 5 THEN max(v) + 1 END"), None),
+        (_item_sub("CASE WHEN count(*) > 1 THEN max(v) + 1 END"), "Overflow"),
+        (_item_sub("coalesce(min(v), max(v) + 1)"), None),
+        # Over no row: the request whose x is NULL, and the one whose key is
+        # NULL, keep no row, and the item still runs.
+        (_item_sub("ln(count(*))"), "logarithm of zero"),
+        (_item_sub("ln(count(*))", "s.k = t.k AND s.lo <= t.x"), "logarithm of zero"),
+        (_item_sub("count(*) + 1", "s.k = t.k AND s.lo <= t.x"), None),
+        (_item_sub("coalesce(max(v), 0) + 1", "s.lo <= t.x - 10"), None),
+        # A WHERE term that can trap stops the request before the item.
+        (_item_sub("ln(count(*))", "s.lo <= t.x AND s.v + 1 > 0"), "Overflow"),
+        # The same subquery twice, and beside another one.
+        (f"SELECT id, {ISUB} AS a, {ISUB} AS b FROM __THIS__ AS t WHERE t.x < 9", None),
+        (
+            f"SELECT id, (SELECT count(*) + 1 FROM s WHERE s.lo > t.x) AS a, {ISUB} "
+            "AS b FROM __THIS__ AS t",
+            "Overflow",
+        ),
+    ],
+)
+def test_a_scan_item_that_can_trap_runs_where_the_oracle_runs_it(sql, trap):
+    v = assert_parity(
+        sql,
+        IT,
+        statics={"s": IS},
+        expect=TRAP_OR_OPT if trap else ROWS_OR_OPT,
+        trap=trap,
+    )
+    if not trap and v.kind == "DIVERGE_OPT":
+        assert "confit returns rows" in v.detail, v.detail
+
+
+def test_a_scan_item_over_an_empty_table_and_an_empty_batch():
+    sql = _item_sub("ln(count(*))")
+    assert_parity(sql, IT, statics={"s": IS.slice(0, 0)}, trap="logarithm of zero")
+    assert_parity(sql, IT.slice(0, 0), statics={"s": IS})
+
+
+@pytest.mark.parametrize(
+    "sql, shape, why",
+    [
+        (f"SELECT id, {ISUB} AS c FROM __THIS__ AS t", "many", "under shape='many'"),
+        (
+            f"SELECT t.id FROM __THIS__ AS t, s3 WHERE t.id = s3.id AND {ISUB} >= 0",
+            None,
+            "beside a comma join",
+        ),
+        (_item_sub("s.v + 1"), None, "its SELECT item s.v + 1 has no aggregate call"),
+        (_item_sub("avg(v) + 1"), None, "SELECT item avg(v) + 1 computes over avg(v)"),
+        (_item_sub("count(DISTINCT v) + 1"), None, "computes over count(DISTINCT v)"),
+        (_item_sub("max(v) + t.x"), None, "which reads t.x outside an aggregate call"),
+    ],
+)
+def test_a_scan_item_refuses_by_name(sql, shape, why):
+    v = assert_parity(
+        sql, IT, statics={"s": IS, "s3": S3}, shape=shape, expect="REFUSED"
     )
     assert why in v.detail, v.detail
 

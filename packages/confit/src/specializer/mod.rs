@@ -845,11 +845,13 @@ fn float_bounds(
         for &j in &stage.joins {
             let spec = &joins[j as usize];
             let fold_pred = spec.fold.as_ref().and_then(|f| f.pred.as_ref());
+            let fold_post = spec.fold.as_ref().and_then(|f| f.post.as_ref());
             if spec
                 .keys
                 .iter()
                 .chain(&spec.residual)
                 .chain(fold_pred)
+                .chain(fold_post)
                 .any(|k| reads(&mut k.clone(), &leaf))
             {
                 return Err(refusal("a join condition"));
