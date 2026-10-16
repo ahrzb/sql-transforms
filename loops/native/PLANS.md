@@ -6,8 +6,8 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. The rest of "Ruled 2026-10-06, to build", item 1 (`RBFSampler` and
-   `SkewedChi2Sampler` next, in kernel.py, `FactorAnalysis` last), one PR
+1. The rest of "Ruled 2026-10-06, to build", item 1 (`SkewedChi2Sampler`
+   next, in kernel.py, then `Nystroem`; `FactorAnalysis` last), one PR
    each; then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
@@ -39,11 +39,13 @@ that request, `to_native(step, allow_bound=True)`. In order:
      restate served Box-Cox as K = 5. Needs NaN and `isinf` arms.
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
-     compare squares (`ErrorScale.g`), K = n + 5. `RBFSampler` n + 3,
-     `SkewedChi2Sampler` n + 4, `Nystroem` max(n + 5, m + 3): an RBF
-     kernel of `Nystroem` reads the same expansion of ‖x - c‖² as
-     distance.py. `PolynomialCountSketch` is an FFT, not a matvec: not
-     served until a normwise S is derived.
+     compare squares (`ErrorScale.g`), K = n + 5. T51 served
+     `RBFSampler`, K = n + 3 (kernel.py, its own build estimates). Left:
+     `SkewedChi2Sampler` n + 4 (the RBF entry over ln(x + s), numpy's
+     `log` within 1 ulp), `Nystroem` max(n + 5, m + 3): an RBF kernel of
+     `Nystroem` reads the same expansion of ‖x - c‖² as distance.py.
+     `PolynomialCountSketch` is an FFT, not a matvec: not served until a
+     normwise S is derived.
 2. **A bounded step inside a composition** (ruled 2026-10-15,
    [decisions/closed/bounded-steps-in-compositions.md](decisions/closed/bounded-steps-in-compositions.md)).
    T42 served option 1: with `allow_bound=True`, a step whose bound is
