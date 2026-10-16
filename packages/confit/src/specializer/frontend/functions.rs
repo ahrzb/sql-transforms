@@ -29,8 +29,9 @@ pub(super) enum SigArgs {
 /// itself, so a new arm cannot silently escape the guard.
 pub const BUILTIN_NAMES: &[&str] = &[
     "abs", "add", "any_value", "array_extract", "array_slice", "ascii", "avg",
-    "bit_length", "cbrt", "ceil", "ceiling", "char_length", "character_length",
-    "coalesce", "concat", "concat_ws", "contains", "cos", "count",
+    "bit_and", "bit_length", "bit_or", "bit_xor", "bool_and", "bool_or", "cbrt",
+    "ceil", "ceiling", "char_length", "character_length", "coalesce", "concat",
+    "concat_ws", "contains", "cos", "count", "count_if", "countif",
     "damerau_levenshtein", "divide", "editdist3", "ends_with", "error", "exp", "fdiv",
     "first", "floor", "fmod", "geomean", "greatest", "hamming", "if",
     "ifnull", "instr",
@@ -52,7 +53,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
 /// may not take one.
 pub const NAMED_AGGREGATES: &[&str] = &[
     "sum", "count", "avg", "min", "max", "geomean", "product", "string_agg", "first", "last",
-    "any_value",
+    "any_value", "bool_and", "bool_or", "bit_and", "bit_or", "bit_xor", "count_if", "countif",
 ];
 
 /// Whether a call-site name is claimed by the builtin catalogue. Matching is

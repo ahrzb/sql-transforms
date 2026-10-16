@@ -487,7 +487,9 @@ class ScalarSub(Node):
     request matches. Its kids are the outer sides of the keys, then those
     terms, then x."""
 
-    func: str  # count | min | max | sum | avg
+    # count | min | max | sum | avg | bool_and | bool_or | bit_and | bit_or |
+    # bit_xor | count_if | countif
+    func: str
     arg: str | None  # a column of `table`; None is `*`
     table: str
     keys: list[tuple[str, str, Node]]  # (column of `table`, operator, outer side)
@@ -496,6 +498,10 @@ class ScalarSub(Node):
     post: Node | None = None
     more: list[tuple[str, str | None]] = field(default_factory=list)  # (func, arg)
     distinct: set[int] = field(default_factory=set)  # 0 is func(arg), i more[i - 1]
+    # The ORDER BY inside a call, keyed by the call's index as in `distinct`:
+    # each term a column of `table`, with "", ASC or DESC and "", NULLS FIRST
+    # or NULLS LAST
+    call_order: dict[int, list[tuple[str, str, str]]] = field(default_factory=dict)
     # (NOT, the SELECT item: "*", "1" or a column of `table`)
     exists: tuple[bool, str] | None = None
     # (NOT, x, the SELECT item: a column of `table`)
@@ -1038,7 +1044,8 @@ def rexpr(e: Node) -> str:
         frm = _ident(e.table) + (f" AS {_ident(e.alias)}" if e.alias else "")
         calls = [
             f"{f}({'DISTINCT ' if i in e.distinct else ''}"
-            f"{'*' if a is None else f'{scope}.{_ident(a)}'})"
+            f"{'*' if a is None else f'{scope}.{_ident(a)}'}"
+            f"{_call_order(scope, e.call_order.get(i, []))})"
             for i, (f, a) in enumerate([(e.func, e.arg), *e.more])
         ]
         _AGG_CALLS.append(calls)
@@ -1680,7 +1687,10 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
     that can trap over a WHERE with a key. About one subquery in four that
     selects an aggregate or is EXISTS gets a term that compares the table
     with the request other than by a key, which confit serves by a scan. An
-    avg over a BOOLEAN or VARCHAR column is DuckDB's binder error."""
+    avg over a BOOLEAN or VARCHAR column is DuckDB's binder error. About one
+    min, max or sum in five over a BOOLEAN or integer column is bool_and,
+    bool_or, count_if, bit_and, bit_or or bit_xor instead, and about one
+    aggregate call over a column in eight has an ORDER BY inside it."""
     b = query.body
     if b.frm != "__THIS__" or b.sub is not None or b.group_by:
         return False
@@ -1859,8 +1869,49 @@ def _scalar_subqueries(qrng, query, row_schema, rows, statics, tags) -> bool:
         s.preds.append((qrng.randrange(len(s.keys) + 1), term))
         if "subquery-scan" not in tags:
             tags.append("subquery-scan")
+    # A boolean or bitwise aggregate, or count_if, in place of about one
+    # min, max or sum in five over a BOOLEAN or integer column, with the
+    # same semantic type, so that an expression over it reads as it did; and
+    # an ORDER BY inside about one aggregate call over a column in eight, by
+    # up to two columns of the table (by the call's own column where it
+    # reads DISTINCT values), drawn last too.
+    for s in made:
+        if s.exists is not None or s.in_ is not None or s.row is not None:
+            continue
+        calls = [(s.func, s.arg), *s.more]
+        for i, (f, a) in enumerate(calls):
+            if a is None:
+                continue
+            t = SEMANTIC.get(sch[a].rstrip("?"))
+            if qrng.random() < 0.2:
+                if t == "bool" and f in ("min", "max"):
+                    calls[i] = (qrng.choice(["bool_and", "bool_or"]), a)
+                elif t == "bool" and f == "sum":
+                    calls[i] = (qrng.choice(["count_if", "countif"]), a)
+                elif t == "int" and f in ("min", "max", "sum"):
+                    calls[i] = (qrng.choice(["bit_and", "bit_or", "bit_xor"]), a)
+            if qrng.random() < 0.125:
+                cols = list(sch)
+                by = [a] if i in s.distinct else qrng.sample(cols, min(2, len(cols)))
+                s.call_order[i] = [
+                    (
+                        c,
+                        qrng.choice(["", "", "ASC", "DESC"]),
+                        qrng.choice(["", "", "", "NULLS FIRST", "NULLS LAST"]),
+                    )
+                    for c in by[: qrng.choice([1, 1, 2])]
+                ]
+        (s.func, s.arg), s.more = calls[0], calls[1:]
     tags.append("scalar-subquery")
     return True
+
+
+def _call_order(scope: str, by: list[tuple[str, str, str]]) -> str:
+    """The ORDER BY inside an aggregate call (`ScalarSub.call_order`)."""
+    if not by:
+        return ""
+    terms = [" ".join(x for x in (f"{scope}.{_ident(c)}", d, n) if x) for c, d, n in by]
+    return f" ORDER BY {', '.join(terms)}"
 
 
 def _comparable(a: str | None, b: str | None) -> bool:

@@ -325,8 +325,33 @@ fn args_of(f: &sqlparser::ast::Function) -> Option<String> {
             _ => None,
         };
     };
-    if !l.clauses.is_empty() {
-        return None;
+    // DuckDB prints an ORDER BY inside the call after the arguments, with
+    // ASC or DESC and NULLS FIRST or LAST only where they are written
+    // (measured 2026-10-16).
+    let mut order = String::new();
+    for clause in &l.clauses {
+        let sqlparser::ast::FunctionArgumentClause::OrderBy(terms) = clause else {
+            return None;
+        };
+        let mut parts = Vec::with_capacity(terms.len());
+        for t in terms {
+            if t.with_fill.is_some() {
+                return None;
+            }
+            let mut p = print(&t.expr)?;
+            match t.options.asc {
+                Some(true) => p.push_str(" ASC"),
+                Some(false) => p.push_str(" DESC"),
+                None => {}
+            }
+            match t.options.nulls_first {
+                Some(true) => p.push_str(" NULLS FIRST"),
+                Some(false) => p.push_str(" NULLS LAST"),
+                None => {}
+            }
+            parts.push(p);
+        }
+        order = format!(" ORDER BY {}", parts.join(", "));
     }
     // DuckDB prints `sum(DISTINCT v)`, and `sum(ALL v)` as `sum(v)`
     // (measured 2026-10-15).
@@ -351,7 +376,7 @@ fn args_of(f: &sqlparser::ast::Function) -> Option<String> {
             _ => return None,
         });
     }
-    Some(format!("{distinct}{}", out.join(", ")))
+    Some(format!("{distinct}{}{order}", out.join(", ")))
 }
 
 fn function(f: &sqlparser::ast::Function) -> Option<String> {

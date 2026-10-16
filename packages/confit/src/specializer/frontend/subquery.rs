@@ -51,7 +51,8 @@
 use super::*;
 use super::super::plan::{self, Agg, AggFunc, AggTable};
 use sqlparser::ast::{
-    DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArguments, LimitClause, OrderByKind,
+    DuplicateTreatment, FunctionArg, FunctionArgExpr, FunctionArgumentClause, FunctionArguments,
+    LimitClause, OrderByKind,
     WildcardAdditionalOptions,
 };
 
@@ -241,8 +242,9 @@ pub(super) fn has_subquery(b: &Binder<'_>, e: &SqlExpr) -> Result<bool, PrepareE
 /// The refusal of a subquery form outside what this module serves.
 fn form_refusal(what: &str) -> PrepareError {
     unsup(format!(
-        "a subquery with {what} -- served: (SELECT count(*) | f(c) | f(DISTINCT c) FROM s \
-         WHERE ...) with f one of count, min, max, sum and avg, or an expression over such \
+        "a subquery with {what} -- served: (SELECT count(*) | f(c [ORDER BY columns of s]) | \
+         f(DISTINCT c [ORDER BY c]) FROM s WHERE ...) with f one of count, min, max, sum, avg, \
+         count_if, bool_and, bool_or, bit_and, bit_or and bit_xor, or an expression over such \
          aggregates, (SELECT an expression over the columns of s FROM s WHERE ... [ORDER BY \
          columns of s] [LIMIT n] [OFFSET m]) where a request reads at most one row, [NOT] \
          EXISTS (SELECT * | constants | columns of s FROM s WHERE ...), \
@@ -251,8 +253,8 @@ fn form_refusal(what: &str) -> PrepareError {
          WHERE term s.k = <outer expression> or a term that reads only s, and none that can \
          trap but the outer expression of the first key, or x over a WHERE without a key; \
          other WHERE terms that compare s with the outer query serve by a scan of at most \
-         100 rows of s for each request, in (SELECT count(*) | count(c) | sum(c) | min(c) | \
-         max(c) FROM s WHERE ...) where no term can trap"
+         100 rows of s for each request, in (SELECT count(*) | count(c) | sum(c) | count_if(c) \
+         | min(c) | max(c) FROM s WHERE ...) where no term can trap"
     ))
 }
 
@@ -1289,11 +1291,12 @@ impl Binder<'_> {
         f(&inner).map(Some)
     }
 
-    /// One served aggregate call, `count(*)`, `count`, `min`, `max`, `sum`
-    /// or `avg` over a column of the subquery's table (`func` names it), and
-    /// the type of its answer. A call over a column may read each distinct
-    /// value once, `count(DISTINCT v)`, and the answer keeps its type
-    /// (measured 2026-10-15).
+    /// One served aggregate call, `count(*)`, `count`, `min`, `max`, `sum`,
+    /// `avg`, `count_if`, `bool_and`, `bool_or`, `bit_and`, `bit_or` or
+    /// `bit_xor` over a column of the subquery's table (`func` names it),
+    /// and the type of its answer. A call over a column may read each
+    /// distinct value once, `count(DISTINCT v)`, and the answer keeps its
+    /// type (measured 2026-10-15).
     fn agg_call(
         &self,
         inner: &Inner<'_>,
@@ -1313,14 +1316,44 @@ impl Binder<'_> {
         let FunctionArguments::List(list) = &f.args else {
             return Err(form_refusal(&format!("the aggregate call {f}")));
         };
-        if !list.clauses.is_empty() {
-            return Err(form_refusal(&format!("the aggregate call {f} (ORDER BY or another clause)")));
+        // An ORDER BY inside the call: DuckDB evaluates its terms over the
+        // rows of the group (measured 2026-10-16), so each term must be a
+        // column of the table, which cannot trap. Its order changes no answer
+        // that the build serves: the build refuses a sum that can overflow in
+        // some order and a DOUBLE min or max that ties other bits, and the
+        // bound of a DOUBLE sum or avg holds for each order of its additions.
+        let mut order_cols = Vec::new();
+        for clause in &list.clauses {
+            let FunctionArgumentClause::OrderBy(terms) = clause else {
+                return Err(form_refusal(&format!(
+                    "the aggregate call {f} (a clause other than ORDER BY)"
+                )));
+            };
+            for term in terms {
+                match inner.col(&term.expr)? {
+                    Some(c) if term.with_fill.is_none() => order_cols.push(c),
+                    _ => {
+                        return Err(form_refusal(&format!(
+                            "the aggregate call {f}, whose ORDER BY term {} is not a column of \
+                             its table",
+                            term.expr
+                        )))
+                    }
+                }
+            }
         }
         let distinct = list.duplicate_treatment == Some(DuplicateTreatment::Distinct);
         let [arg] = list.args.as_slice() else {
             return Err(form_refusal(&format!("the aggregate call {f}")));
         };
         let (func, arg) = match (func, arg) {
+            (AggFunc::Count, FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+                if !order_cols.is_empty() =>
+            {
+                return Err(PrepareError::Bind(
+                    "STAR expression is only allowed as the root element of an expression".into(),
+                ))
+            }
             (AggFunc::Count, FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) if !distinct => {
                 (AggFunc::CountStar, None)
             }
@@ -1346,7 +1379,27 @@ impl Binder<'_> {
             _ => return Err(form_refusal(&format!("the aggregate call {f}"))),
         };
         let arg_ty = arg.map(|c| st.cols[c as usize].ty.ty);
+        let name = f.name.to_string().to_ascii_lowercase();
+        let no_match = |t: Ty| {
+            PrepareError::Bind(format!(
+                "No function matches the given name and argument types '{name}({})'",
+                duck_ty_name(t)
+            ))
+        };
         let ty = match (func, arg_ty) {
+            (AggFunc::Sum, Some(t)) if name.starts_with("count") && t != Ty::I1 => {
+                return Err(no_match(t))
+            }
+            (AggFunc::BoolAnd | AggFunc::BoolOr, Some(Ty::I1)) => Ty::I1,
+            (AggFunc::BitAnd | AggFunc::BitOr | AggFunc::BitXor, Some(t)) if t.is_integer() => t,
+            (
+                AggFunc::BoolAnd
+                | AggFunc::BoolOr
+                | AggFunc::BitAnd
+                | AggFunc::BitOr
+                | AggFunc::BitXor,
+                Some(t),
+            ) => return Err(no_match(t)),
             (AggFunc::CountStar | AggFunc::Count, _) => Ty::I64,
             (AggFunc::Min | AggFunc::Max, Some(t))
                 if t.is_integer() || matches!(t, Ty::I1 | Ty::F64 | Ty::Str | Ty::Dec(..)) =>
@@ -1391,9 +1444,24 @@ impl Binder<'_> {
                 )))
             }
         };
-        // The least or greatest of the distinct values is the least or
-        // greatest of all of them.
-        let distinct = distinct && !matches!(func, AggFunc::Min | AggFunc::Max);
+        if distinct && order_cols.iter().any(|&c| Some(c) != arg) {
+            return Err(PrepareError::Bind(
+                "In a DISTINCT aggregate, ORDER BY expressions must appear in the argument list"
+                    .into(),
+            ));
+        }
+        // Over the distinct values, the least, the greatest, an AND and an OR
+        // are the ones over all values.
+        let distinct = distinct
+            && !matches!(
+                func,
+                AggFunc::Min
+                    | AggFunc::Max
+                    | AggFunc::BoolAnd
+                    | AggFunc::BoolOr
+                    | AggFunc::BitAnd
+                    | AggFunc::BitOr
+            );
         Ok((
             Agg {
                 func,
@@ -2543,6 +2611,15 @@ fn agg_func(f: &sqlparser::ast::Function) -> Option<AggFunc> {
         "max" => AggFunc::Max,
         "sum" => AggFunc::Sum,
         "avg" => AggFunc::Avg,
+        // count_if counts the TRUE values: a sum over a BOOLEAN, NULL over
+        // no value and HUGEINT, as DuckDB's is (measured 2026-10-16).
+        // [`Binder::agg_call`] refuses another type.
+        "count_if" | "countif" => AggFunc::Sum,
+        "bool_and" => AggFunc::BoolAnd,
+        "bool_or" => AggFunc::BoolOr,
+        "bit_and" => AggFunc::BitAnd,
+        "bit_or" => AggFunc::BitOr,
+        "bit_xor" => AggFunc::BitXor,
         _ => return None,
     })
 }

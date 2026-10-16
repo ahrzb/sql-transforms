@@ -661,7 +661,17 @@ FS = table(
     ],
 )
 
-DOUBLE_SUMS = ["sum(f)", "avg(f)", "sum(DISTINCT f)", "avg(DISTINCT f)", "sum(ALL f)"]
+DOUBLE_SUMS = [
+    "sum(f)",
+    "avg(f)",
+    "sum(DISTINCT f)",
+    "avg(DISTINCT f)",
+    "sum(ALL f)",
+    # In another order: in group 1 sorted by f, the sum is 0.0.
+    "sum(f ORDER BY f)",
+    "avg(f ORDER BY k DESC, f)",
+    "sum(DISTINCT f ORDER BY f DESC)",
+]
 
 
 @pytest.mark.parametrize("shape", [None, "many"])
@@ -1340,7 +1350,10 @@ def test_an_aggregate_over_distinct_values(agg, where, shape):
         (_sub("count(DISTINCT 1)"), "must be a column of its table"),
         # DS holds a NaN, and confit adds only finite DOUBLE values.
         (_sub("sum(DISTINCT f)"), "a DOUBLE sum or avg only over finite values"),
-        (_sub("sum(v ORDER BY v)"), "ORDER BY or another clause"),
+        (
+            _sub("max(DISTINCT v ORDER BY k)"),
+            "In a DISTINCT aggregate, ORDER BY expressions must appear",
+        ),
         # The class -0.0 = 0.0 of the group k = 1: which value DuckDB keeps
         # depends on the order of the rows.
         (_sub("min(DISTINCT f)"), "ties DOUBLE values with other bits"),
@@ -1372,6 +1385,248 @@ def test_a_sum_over_distinct_values_adds_each_value_once():
     )
     v = assert_parity(_sub("sum(DISTINCT w)"), T, statics={"s": two}, expect="REFUSED")
     assert "sum(DISTINCT w) over the rows of one key" in v.detail, v.detail
+
+
+# bool_and and bool_or over a BOOLEAN, bit_and, bit_or and bit_xor over an
+# integer of each width, of the integer's type, and count_if (or countif), the
+# HUGEINT count of the TRUE values. Each is NULL over no value, count_if too
+# (measured 2026-10-16). The oracle's binder refuses another argument type.
+
+BS = table(
+    {
+        "k": "int64?",
+        "j": "int32",
+        "b": "bool?",
+        "i16": "int16?",
+        "u8": "uint8?",
+        "u32": "uint32?",
+        "u64": "uint64?",
+        "v": "int64?",
+    },
+    [
+        # Group 1: the extremes of each width, and a NULL in each column.
+        {
+            "k": 1,
+            "j": 2,
+            "b": True,
+            "i16": -32768,
+            "u8": 255,
+            "u32": 2**32 - 1,
+            "u64": U64,
+            "v": -1,
+        },
+        {
+            "k": 1,
+            "j": 1,
+            "b": False,
+            "i16": 32767,
+            "u8": 6,
+            "u32": 12,
+            "u64": 5,
+            "v": 6,
+        },
+        {
+            "k": 1,
+            "j": 3,
+            "b": None,
+            "i16": None,
+            "u8": None,
+            "u32": None,
+            "u64": None,
+            "v": None,
+        },
+        # Group 2: one value twice, so that bit_xor over all the values is 0.
+        {
+            "k": 2,
+            "j": 1,
+            "b": True,
+            "i16": -2,
+            "u8": 3,
+            "u32": 3,
+            "u64": 2**63,
+            "v": -(2**63),
+        },
+        {
+            "k": 2,
+            "j": 2,
+            "b": True,
+            "i16": -2,
+            "u8": 3,
+            "u32": 3,
+            "u64": 2**63,
+            "v": -(2**63),
+        },
+        {
+            "k": 2,
+            "j": 3,
+            "b": True,
+            "i16": 7,
+            "u8": 0,
+            "u32": 0,
+            "u64": 0,
+            "v": 2**63 - 1,
+        },
+        # Group 3: NULL only.
+        {
+            "k": 3,
+            "j": 1,
+            "b": None,
+            "i16": None,
+            "u8": None,
+            "u32": None,
+            "u64": None,
+            "v": None,
+        },
+        {
+            "k": None,
+            "j": 1,
+            "b": False,
+            "i16": 1,
+            "u8": 1,
+            "u32": 1,
+            "u64": 1,
+            "v": 1,
+        },
+    ],
+)
+
+BIT_AGGREGATES = [
+    "bool_and(b)",
+    "bool_or(b)",
+    "bool_and(DISTINCT b)",
+    "bool_or(ALL b)",
+    "Bool_And(b)",
+    "bit_and(i16)",
+    "bit_or(i16)",
+    "bit_xor(i16)",
+    "bit_and(u8)",
+    "bit_or(u8)",
+    "bit_xor(u32)",
+    "bit_and(u64)",
+    "bit_or(u64)",
+    "bit_xor(u64)",
+    "bit_and(v)",
+    "bit_or(v)",
+    "bit_xor(v)",
+    "BIT_XOR(DISTINCT v)",
+    "bit_xor(DISTINCT u64)",
+    "bit_and(DISTINCT i16)",
+    "count_if(b)",
+    "countif(b)",
+    "COUNT_IF(DISTINCT b)",
+    # Expressions over them.
+    "bool_and(b) AND count(*) > 1",
+    "bool_or(b) IS NULL",
+    "bit_or(i16) + 1",
+    "bit_xor(v) = bit_xor(DISTINCT v)",
+    "coalesce(count_if(b), -1)",
+    "count_if(b) * 2 + count(b)",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", "s.k = t.k AND s.j < 3", None])
+@pytest.mark.parametrize("agg", BIT_AGGREGATES)
+def test_a_boolean_bitwise_or_count_if_aggregate(agg, where, shape):
+    if where is None:
+        sql = f"SELECT id, (SELECT {agg} FROM s) AS c FROM __THIS__ AS t"
+    else:
+        sql = _sub(agg, where)
+    assert_parity(sql, T, statics={"s": BS}, shape=shape)
+
+
+# An ORDER BY inside an aggregate call sorts the values of the group, over
+# terms that must be columns of the table. Its order changes no answer that
+# confit serves: a sum that can overflow in some order refuses the build, as
+# does a DOUBLE min or max that ties other bits, and the bound of a DOUBLE sum
+# or avg holds for each order (`test_a_double_sum_or_avg`).
+
+ORDERED_AGGREGATES = [
+    "count(v ORDER BY j)",
+    "count(1 ORDER BY j DESC)",
+    "sum(v ORDER BY j)",
+    "sum(d ORDER BY s DESC NULLS FIRST)",
+    "sum(b ORDER BY v)",
+    "avg(v ORDER BY j)",
+    "avg(d ORDER BY v DESC)",
+    "avg(u ORDER BY i8)",
+    "min(v ORDER BY j)",
+    "max(s ORDER BY v NULLS FIRST)",
+    "max(d ORDER BY j, v DESC)",
+    "min(f ORDER BY s)",
+    "max(b ORDER BY j ASC NULLS LAST)",
+    "min(DISTINCT v ORDER BY v)",
+    "count(DISTINCT s ORDER BY s DESC)",
+    "sum(DISTINCT v ORDER BY v)",
+    "bool_and(b ORDER BY j)",
+    "bit_xor(v ORDER BY s)",
+    "count_if(b ORDER BY v DESC)",
+    "max(v ORDER BY j) - min(v ORDER BY j DESC)",
+]
+
+
+@pytest.mark.parametrize("shape", [None, "many"])
+@pytest.mark.parametrize("where", ["s.k = t.k", None])
+@pytest.mark.parametrize("agg", ORDERED_AGGREGATES)
+def test_an_aggregate_with_order_by(agg, where, shape):
+    if where is None:
+        sql = f"SELECT id, (SELECT {agg} FROM s) AS c FROM __THIS__ AS t"
+    else:
+        sql = _sub(agg, where)
+    assert_parity(sql, T, statics={"s": S}, shape=shape)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # DuckDB's names of unaliased items: ASC, DESC and NULLS only where
+        # they are written.
+        "SELECT (SELECT bool_and(s.b) FROM s WHERE s.k = t.k), "
+        "(SELECT BIT_XOR(DISTINCT x.v) FROM s AS x WHERE x.k = t.k), "
+        "(SELECT CountIf(b) FROM s) FROM __THIS__ AS t",
+        "SELECT (SELECT max(s.v ORDER BY s.j DESC NULLS LAST, s.k) FROM s "
+        "WHERE s.k = t.k), (SELECT count(v ORDER BY j ASC) FROM s), "
+        "(SELECT min(DISTINCT v ORDER BY v NULLS FIRST) FROM s WHERE s.k = t.k) "
+        "FROM __THIS__ AS t",
+        # In the WHERE, and beside a count.
+        "SELECT id FROM __THIS__ AS t WHERE (SELECT bool_or(b) FROM s WHERE s.k = t.k)",
+        "SELECT id, (SELECT bit_or(v) FROM s WHERE s.k = t.k) "
+        "+ (SELECT count(*) FROM s WHERE s.k = t.k) AS c FROM __THIS__ AS t",
+    ],
+)
+def test_a_boolean_bitwise_or_ordered_aggregate_forms(sql):
+    assert_parity(sql, T, statics={"s": S})
+
+
+@pytest.mark.parametrize(
+    "sql, why",
+    [
+        # The oracle's binder errors.
+        (_sub("bool_and(v)"), "argument types 'bool_and(BIGINT)'"),
+        (_sub("Bool_Or(s)"), "argument types 'bool_or(VARCHAR)'"),
+        (_sub("bit_and(f)"), "argument types 'bit_and(DOUBLE)'"),
+        (_sub("bit_or(d)"), "argument types 'bit_or(DECIMAL(9,4))'"),
+        (_sub("bit_xor(b)"), "argument types 'bit_xor(BOOLEAN)'"),
+        (_sub("count_if(v)"), "argument types 'count_if(BIGINT)'"),
+        (_sub("COUNTIF(s)"), "argument types 'countif(VARCHAR)'"),
+        (_sub("count(* ORDER BY j)"), "STAR expression is only allowed"),
+        (
+            _sub("bit_or(DISTINCT v ORDER BY j)"),
+            "In a DISTINCT aggregate, ORDER BY expressions must appear",
+        ),
+        # What confit refuses.
+        (_sub("max(v ORDER BY j + 1)"), "whose ORDER BY term j + 1 is not a column"),
+        (_sub("max(v ORDER BY t.k)"), "whose ORDER BY term t.k is not a column"),
+        (_sub("count_if(*)"), "the aggregate call count_if(*)"),
+        (_sub("count_if(TRUE)"), "its argument must be a column of its table"),
+        (_sub("bool_and(b) FILTER (WHERE v > 5)"), "the aggregate call bool_and(b)"),
+        (_sub("bool_or(b)", "s.v > t.id"), "its SELECT item is bool_or(b)"),
+        (_sub("bit_xor(v)", "s.v > t.id"), "its SELECT item is bit_xor(v)"),
+    ],
+)
+def test_a_boolean_bitwise_or_ordered_aggregate_refuses_by_name(sql, why):
+    v = assert_parity(sql, T, statics={"s": S}, expect="REFUSED")
+    assert why in v.detail, v.detail
 
 
 # EXISTS and NOT EXISTS: the count of the rows that the WHERE matches, above

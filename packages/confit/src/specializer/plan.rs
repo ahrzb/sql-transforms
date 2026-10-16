@@ -249,6 +249,14 @@ pub enum AggFunc {
     /// finalizes it for the argument's type ([`avg_in_long_double`],
     /// `duckdb/avg.rs`).
     Avg,
+    /// `bool_and` and `bool_or` over a BOOLEAN: NULL over no value.
+    BoolAnd,
+    BoolOr,
+    /// `bit_and`, `bit_or` and `bit_xor` over an integer, of its own type:
+    /// NULL over no value.
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 
 /// Whether DuckDB finalizes `avg` over a column of `src` in C `long double`

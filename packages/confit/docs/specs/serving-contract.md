@@ -144,19 +144,55 @@ static table `s` that selects an aggregate:
 SELECT t.id, (SELECT sum(s.v) FROM s WHERE s.k = t.k) AS total FROM __THIS__ AS t
 ```
 
-The aggregate is `count(*)`, `count` of a column or of a constant that is not
-NULL, `min` or `max` of a column, `sum` of an integer, BOOLEAN, DECIMAL or
-DOUBLE column, or `avg` of an integer, DECIMAL or DOUBLE column. On a platform
-other than x86_64 Linux, confit serves `avg` only for SMALLINT, for a DECIMAL
-with a precision of 4 or less, and for DOUBLE. The oracle divides these in
-`double`, which is the same on each platform (see below). A DOUBLE `sum` or
-`avg` must be the whole SELECT item of a subquery that is a whole output column
-(see below).
+The aggregate is one of these:
+
+- `count(*)`, and `count` of a column or of a constant that is not NULL;
+- `min` or `max` of a column;
+- `sum` of an integer, BOOLEAN, DECIMAL or DOUBLE column;
+- `avg` of an integer, DECIMAL or DOUBLE column;
+- `count_if` or `countif` of a BOOLEAN column, which counts the TRUE values;
+- `bool_and` or `bool_or` of a BOOLEAN column;
+- `bit_and`, `bit_or` or `bit_xor` of an integer column.
+
+On a platform other than x86_64 Linux, confit serves `avg` only for SMALLINT,
+for a DECIMAL with a precision of 4 or less, and for DOUBLE. The oracle divides
+these in `double`, which is the same on each platform (see below). A DOUBLE
+`sum` or `avg` must be the whole SELECT item of a subquery that is a whole
+output column (see below).
+
+The answer of `count_if` is a HUGEINT. The answer of `bit_and`, `bit_or` and
+`bit_xor` has the type of the column. If no value of a group is other than
+NULL, `count_if` is NULL and not 0, as `sum` is. The boolean and bitwise
+aggregates are NULL too. If one of these aggregates reads a column of another
+type, the oracle stops with a binder error, for example `No function matches
+the given name and argument types 'bool_and(BIGINT)'`. Confit stops the build
+with the same error message. These facts come from measurements on the oracle
+on 2026-10-16.
 
 An aggregate of a column can read each distinct value of the column once, for
 example `count(DISTINCT s.v)`. Two values are one distinct value if the oracle
 compares them as equal. So `-0.0` and `0.0` are one DOUBLE value, and all NaN
 values are one value. The keyword `ALL`, as in `sum(ALL s.v)`, changes nothing.
+
+An aggregate call can also sort its values with an ORDER BY inside the call,
+for example `max(s.v ORDER BY s.j DESC)`. The oracle evaluates the ORDER BY
+terms over the rows that pass the WHERE, and a term can trap there. So confit
+accepts a term only if it is a column of `s`, because a column cannot trap.
+For an aggregate over DISTINCT values, each
+term must be the argument of the call. Else the oracle stops with the binder
+error `In a DISTINCT aggregate, ORDER BY expressions must appear in the argument
+list`, and confit gives the same error. If `count(*)` has an ORDER BY, the
+oracle also stops with a binder error, and confit gives the same error.
+
+The order of the values can change the answer of three kinds of aggregate.
+Confit handles each kind in a way that does not depend on the order:
+
+- A DOUBLE `sum` or `avg` can change in its last bits. The bound B of the
+  comparison contract holds for each order of the additions (see below).
+- A `sum` or `avg` can overflow in one order and not in another. Confit
+  refuses the build if a partial sum can overflow in some order (see below).
+- A DOUBLE `min` or `max` can give `-0.0` or `0.0`, or one of two NaN values.
+  Confit refuses the build in this case (see below).
 
 The SELECT item can also be an expression over such aggregates, for example
 `max(s.v) + 1` or `coalesce(sum(s.v), 0) + count(*)`. Then the expression reads
@@ -404,12 +440,13 @@ The scan serves a subquery that selects one of these aggregates, and EXISTS
 and NOT EXISTS:
 
 - `count(*)`, and `count` of a column or of a constant;
+- `count_if` of a BOOLEAN column;
 - `sum` of an integer or BOOLEAN column, or of a DECIMAL column with at most
   36 digits;
 - `min` and `max` of an integer, DECIMAL or VARCHAR column.
 
 The answer of each of these aggregates does not depend on the order of the
-rows. A `sum` cannot overflow. 100 integer values add up to much less than
+rows. So an ORDER BY inside the call does not change it. A `sum` cannot overflow. 100 integer values add up to much less than
 the range of the HUGEINT answer, and 100 DECIMAL values with at most 36
 digits add up to less than 10^38. Confit refuses the scan in these cases:
 
@@ -616,7 +653,11 @@ If it adds the form, it tags the case `scalar-subquery`. About one subquery in
 ten that it adds selects an expression over aggregates. It adds up to three
 subqueries to a case, so about one case in six of those tagged
 `scalar-subquery` has such an expression. About one aggregate of a column in
-five reads DISTINCT values. About one subquery in five that is an item of the
+five reads DISTINCT values. The generator replaces about one in five of the
+aggregates `min`, `max` and `sum` of a BOOLEAN or integer column with
+`bool_and`, `bool_or`, `count_if`, `countif`, `bit_and`, `bit_or` or
+`bit_xor`. About one aggregate of a column in eight has an ORDER BY inside
+the call, with one or two columns of `s`. About one subquery in five that is an item of the
 outer query, or the operand of IS NULL, is `EXISTS` or `NOT EXISTS` instead.
 About one in five of the other subqueries that are an item or the operand of
 IS NULL is `x IN (...)` or `x NOT IN (...)` instead. About one IN in two is

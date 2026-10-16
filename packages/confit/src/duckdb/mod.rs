@@ -1580,6 +1580,12 @@ enum Acc {
     /// starts at +0.0 as DuckDB's does, the exact sum of the absolute
     /// values ([`ExactSum`]), and the count of the values that are not NULL.
     Float(f64, ExactSum, u64),
+    /// `bool_and` or `bool_or` so far; `None` before the first value.
+    Bool(Option<bool>),
+    /// `bit_and`, `bit_or` or `bit_xor` so far, over the integers as i128:
+    /// sign extension commutes with each of them, so the answer stays in
+    /// the range of the argument's type.
+    Bits(Option<i128>),
 }
 
 impl Acc {
@@ -1592,6 +1598,8 @@ impl Acc {
             plan::AggFunc::Min | plan::AggFunc::Max => Acc::Extreme(None, false),
             plan::AggFunc::Sum => Acc::Sum(0, 0, false),
             plan::AggFunc::Avg => Acc::Avg(0, 0, 0),
+            plan::AggFunc::BoolAnd | plan::AggFunc::BoolOr => Acc::Bool(None),
+            plan::AggFunc::BitAnd | plan::AggFunc::BitOr | plan::AggFunc::BitXor => Acc::Bits(None),
         }
     }
 }
@@ -1852,6 +1860,11 @@ fn materialize_aggs(
             AggFunc::Max => "max",
             AggFunc::Sum => "sum",
             AggFunc::Avg => "avg",
+            AggFunc::BoolAnd => "bool_and",
+            AggFunc::BoolOr => "bool_or",
+            AggFunc::BitAnd => "bit_and",
+            AggFunc::BitOr => "bit_or",
+            AggFunc::BitXor => "bit_xor",
         };
         let distinct = if agg.distinct { "DISTINCT " } else { "" };
         format!("{f}({distinct}{arg})")
@@ -1957,6 +1970,31 @@ fn materialize_aggs(
                     abs.add(x.abs());
                     *n += 1;
                 }
+                Acc::Bool(cur) => {
+                    let AggIn::Bool(b) = v else {
+                        return Err(build_err(
+                            "internal: bool_and or bool_or over a non-BOOLEAN",
+                        ));
+                    };
+                    *cur = Some(match (*cur, agg.func) {
+                        (None, _) => b,
+                        (Some(c), AggFunc::BoolAnd) => c && b,
+                        (Some(c), _) => c || b,
+                    });
+                }
+                Acc::Bits(cur) => {
+                    let AggIn::Int(x) = v else {
+                        return Err(build_err(
+                            "internal: a bitwise aggregate over a non-integer",
+                        ));
+                    };
+                    *cur = Some(match (*cur, agg.func) {
+                        (None, _) => x,
+                        (Some(c), AggFunc::BitAnd) => c & x,
+                        (Some(c), AggFunc::BitOr) => c | x,
+                        (Some(c), _) => c ^ x,
+                    });
+                }
             }
         }
     }
@@ -2044,6 +2082,9 @@ fn materialize_aggs(
                         (true, true) => bound / n as f64,
                     }))
                 }
+                Acc::Bool(b) => b.map(ScalarVal::I1),
+                Acc::Bits(None) => None,
+                Acc::Bits(Some(x)) => Some(AggIn::Int(x).into_val(ty)?),
             };
             vals.push(val);
         }
