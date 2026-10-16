@@ -10,50 +10,31 @@ the reports ([`reports/`](reports/)). A worker's prompt is
 | id | ticket | branch | depends on | overlaps | worker | PR | state |
 |---|---|---|---|---|---|---|---|
 
-Reading 6 merged on 2026-10-15
-([`reports/2026-10-15-reading-6.md`](reports/2026-10-15-reading-6.md)), on
-master 98033e8, after T30 to T37: coverage 35 of 68, past half. Since
-confit #456, a struct read field by field builds in about the square of
-its fields: forests build up to 7 times as long as at reading 5, past
-their estimates (finding 76; confit #461, merged after the reading,
-addresses it). `TruncatedSVD` and `GaussianRandomProjection` answer -0.0
-where the twin answers 0.0 in 403 output fields of the parity run, within
-their bound (finding 77). Reading 5's search for finding 69 ran 8 of its
-commits on reading 4's confit (finding 74): with each commit's own confit,
-the widest `Pipeline` never served more slowly than its twin. T38 (#462)
-adds 0.0 to each sum of the projections, because the twin answers 0.0
-where every product is a zero: over seeds 0 to 199 of the parity run, no
-output field then differs from the twin in its sign alone, against 403
-before. T39 (#463) fits the projections' build estimate again on confit
-#459 and #461: `PCA` over 256 features of 64 components builds in 1.1 to
-1.5 s (5.2 to 5.9 s before) and serves 64 rows in 3.7 to 4.3 ms, 8 times
-as fast as its twin (77 to 83 ms before, twice the twin's time). The cap
-now takes about 280 components over 256 features, against 80. T40
-(#466) fits the build estimates of the forests, `IsotonicRegression`,
-`QuantileTransformer` and the splines again on confit #461: the caps now
-take about 10,300 output fields of a forest over 8 features (5,990
-before), 19,700 isotonic thresholds (11,700), 13,400 quantile leaves
-(8,200) and 170 to 230 spline features of degree 3 and 8 knots (150 to
-200). The loop ran from the "Transforms Loop" project thread. On
-2026-10-15 the owner asked the loops to wind down: finish the work in
-flight and pick no new ticket. After T40 and a short reading
-([`reports/2026-10-15-short-reading.md`](reports/2026-10-15-short-reading.md)),
-the loop stopped. On 2026-10-16 the owner paused the Confit Loop and
-started this loop again. T41 (#494) serves the centered projections,
-`FastICA`, `LinearDiscriminantAnalysis` and the PLS family
-(`PLSRegression`, `PLSCanonical`, `CCA` and `PLSSVD`), within
-(n + 1)·eps·S + τ under `allow_bound=True`: over 200 seeds of each class
-the largest |entry - twin| was 4.09·eps·S, at 64 features against K = 65.
-`sklearn.cross_decomposition` and `sklearn.discriminant_analysis` are now
-wholly native, and coverage is 41 of 68. T42 (#495) serves option 1 of
-the ruling on bounded steps in compositions
-(`decisions/closed/bounded-steps-in-compositions.md`): with
-`allow_bound=True`, a step with a parity bound above 0 serves as the last
-step of a `Pipeline`, or as a part of a `ColumnTransformer` or
+Reading 7 merged on 2026-10-16
+([`reports/2026-10-16-reading-7.md`](reports/2026-10-16-reading-7.md)), on
+master f54ddab, after T38 to T41: coverage 41 of 68, with
+`sklearn.cross_decomposition` and `sklearn.discriminant_analysis` wholly
+native. On one machine, master serves a native call of the bench in a
+median of 0.85 times the time of reading 6's commit (confit #459), and the
+widest `Pipeline` builds in 0.49 s, against 0.93 s at reading 6 (confit
+#459 and #461). This session's machine started on 2026-10-16 and is a
+little slower than reading 6's: a twin call takes a median of 1.11 times
+as long at the same commit, and T40's builds near the caps take 1.05 to
+1.36 times T40's own times, so a build that a cap takes can take up to
+about 9 s. In the parity run, 236 `FastICA` steps stay Python: 133 fits
+broke down (finding 78), and 103 whiten a component of rounding noise.
+Open: at one feature, `FastICA` answers 0.0 where its twin answers -0.0,
+in 54 output fields (finding 81), and the ARPACK configuration of
+`TruncatedSVD` in FIXTURES has no `random_state`, so the same seed can
+give a different step in each process (finding 82). T42 (#495), merged
+after reading 7's commit, serves option 1 of the ruling on bounded steps
+in compositions (`decisions/closed/bounded-steps-in-compositions.md`):
+with `allow_bound=True`, a step with a parity bound above 0 serves as the
+last step of a `Pipeline`, or as a part of a `ColumnTransformer` or
 `FeatureUnion` that has no weight, and `native.check` holds each output
-field to the bound of the step that gives it.
+field to the bound of the step that gives it. The loop runs from the
+"Transforms Loop" project thread. The Confit Loop is paused since
+2026-10-16: a confit need waits, and the loop works around it.
 
-Next: reading 7, a milestone report (two whole sklearn modules went
-native), measured on master f54ddab, before T42. Then the rest of PLANS
-"Ruled 2026-10-06, to build", item 1, then the rest of item 2. While the
-Confit Loop is paused, a confit need waits: the loop works around it.
+Next: T43, PLANS "Next" (findings 81 and 82). Then the rest of PLANS
+"Ruled 2026-10-06, to build", item 1, then the rest of item 2.
