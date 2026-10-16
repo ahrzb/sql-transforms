@@ -3327,8 +3327,8 @@ def test_pin_the_subquery_runs_where_duckdb_plans_it(sql, traps):
 def test_pin_the_subquery_runs_once_for_minus_zero_and_zero():
     # The oracle evaluates the subquery once for each distinct outer value,
     # and -0.0 and 0.0 are one value: here the value of the first row. So a
-    # term that tells them apart answers by the order of the batch, and a
-    # scan refuses such a term (measured 2026-10-15).
+    # term that tells them apart answers by the order of the batch, and
+    # confit refuses such a term, a key too (measured 2026-10-15).
     sql = (
         "SELECT id, (SELECT count(*) FROM s "
         "WHERE CAST(t.x AS VARCHAR) = '-0.0') FROM t ORDER BY id"
@@ -3339,6 +3339,101 @@ def test_pin_the_subquery_runs_once_for_minus_zero_and_zero():
             o.load("s", PIN_S)
             got = o.try_answer(sql)
         assert [tuple(r.values()) for r in got.to_pylist()] == [(1, n), (2, n)]
+
+
+# A key's outer side, measured 2026-10-16: the oracle evaluates it once for
+# -0.0 and 0.0 too, under every form of the subquery. The left side of IN,
+# ANY and ALL runs for each request.
+ZS = table(
+    {"k": "int64", "f": "double", "s": "string"},
+    [{"k": 0, "f": -0.0, "s": "-0.0"}, {"k": 1, "f": 1.0, "s": "1.0"}],
+)
+ZEROS = [
+    table({"id": "int64", "x": "double"}, [{"id": 1, "x": a}, {"id": 2, "x": b}])
+    for a, b in [(-0.0, 0.0), (0.0, -0.0)]
+]
+Z_FORMS = [
+    "(SELECT count(*) FROM s WHERE {})",
+    "(SELECT min(s.s) FROM s WHERE {})",
+    "EXISTS (SELECT 1 FROM s WHERE {})",
+    "(SELECT s.s FROM s WHERE {} ORDER BY s.s LIMIT 1)",
+    "1 IN (SELECT s.k FROM s WHERE {})",
+]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "s.f = t.x",
+        "s.f = -t.x",
+        "s.f = t.x * 2",
+        "s.f = abs(t.x)",
+        "s.f = round(t.x)",
+        "s.f = round(t.x, 1)",
+        "s.f = sqrt(t.x)",
+        "s.f = trunc(t.x)",
+        "s.f = cos(t.x) - 1",
+        "s.f = greatest(t.x, -1.0)",
+        "s.f = CASE WHEN t.x = 0 THEN t.x END",
+        "s.k = CAST(t.x AS BIGINT)",
+        "s.k = TRY_CAST(t.x AS INTEGER)",
+    ],
+)
+@pytest.mark.parametrize("form", Z_FORMS)
+@pytest.mark.parametrize("rows", ZEROS, ids=["minus_first", "zero_first"])
+def test_a_key_that_answers_alike_for_minus_zero_and_zero(key, form, rows):
+    sql = f"SELECT id, {form.format(key)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, rows, statics={"s": ZS})
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "s.f <= round(t.x)",
+        "s.f < abs(t.x) + 1",
+        "s.f >= trunc(t.x) AND s.k = 0",
+    ],
+)
+@pytest.mark.parametrize("form", Z_FORMS[:3])
+@pytest.mark.parametrize("rows", ZEROS, ids=["minus_first", "zero_first"])
+def test_a_scan_term_that_answers_alike_for_minus_zero_and_zero(term, form, rows):
+    sql = f"SELECT id, {form.format(term)} AS c FROM __THIS__ AS t"
+    assert_parity(sql, rows, statics={"s": ZS})
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT id, {f.format('s.s = CAST(t.x AS VARCHAR)')} AS c FROM __THIS__ AS t"
+        for f in Z_FORMS
+    ]
+    + [
+        _sub("count(*)", "s.f = 1.0 / t.x"),
+        _sub("count(*)", "s.f = pow(t.x, -1)"),
+        _sub("count(*)", "s.k = 0 AND s.s = upper(CAST(t.x AS VARCHAR))"),
+        _sub("count(*)", "s.s = CAST(t.x AS VARCHAR) AND s.f < t.x"),
+        # A lateral alias reads x, on which DuckDB correlates.
+        "SELECT id, 1.0 / x AS ix, (SELECT count(*) FROM s WHERE s.f = ix) AS c "
+        "FROM __THIS__ AS t",
+        # A column of a derived table is the correlated value itself.
+        "SELECT id, (SELECT count(*) FROM s WHERE s.s = CAST(y AS VARCHAR)) AS c "
+        "FROM (SELECT id, x AS y FROM __THIS__) AS t",
+    ],
+)
+def test_a_key_that_tells_minus_zero_from_zero_refuses(sql):
+    for rows in ZEROS:
+        v = assert_parity(sql, rows, statics={"s": ZS}, expect="REFUSED")
+        assert "can tell -0.0 from 0.0" in v.detail, v.detail
+
+
+def test_the_left_side_of_in_runs_for_each_request():
+    # The oracle does not merge -0.0 and 0.0 here, so confit serves it.
+    sql = (
+        "SELECT id, CAST(t.x AS VARCHAR) IN (SELECT s.s FROM s WHERE s.k = 0) AS c "
+        "FROM __THIS__ AS t"
+    )
+    for rows in ZEROS:
+        assert_parity(sql, rows, statics={"s": ZS})
 
 
 # The SELECT item over the aggregates, measured 2026-10-15 over PIN_S: the
