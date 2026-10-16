@@ -399,11 +399,11 @@ for each request (see "The scan" below). The WHERE can also be absent. The
 outer expression of the first key in the written order can trap (see below).
 If another term can trap, for example the outer expression of a later key or
 a term that reads only `s`, confit serves the subquery by the scan. If no
-term of the WHERE reads the outer query, confit refuses a term that can trap.
-The oracle runs such a subquery once for each batch, also for a batch with no
-requests. Confit also refuses an outer expression that reads a table that the
-outer query joins, and a term that reads only `s` but holds a subquery or
-calls a SQL function.
+term of the WHERE reads the outer query and a term can trap, confit refuses
+the subquery. The oracle runs such a subquery once for each batch, also for a
+batch with no requests. Confit also refuses an outer expression that reads a
+table that the outer query joins, and a term that reads only `s` but holds a
+subquery or calls a SQL function.
 
 The oracle evaluates the subquery once for each distinct outer value. It counts
 `-0.0` and `0.0` as one value, because `=` finds them equal. In two measured
@@ -474,18 +474,22 @@ Measurements on the oracle on 2026-10-16 gave these facts.
 Confit finds the first term that can trap, in the order of the oracle. The
 terms before it cannot trap, so confit evaluates them in any order. From this
 term on, the scan evaluates each term in the order of the oracle, for the
-same pairs. If only terms that read only `s` come before the first key,
-confit skips the outer expression of this key in this search. It evaluates
+same pairs. If only terms that read only `s` come before the first key, the
+search does not include the outer expression of this key. Confit evaluates
 this expression as for a subquery without a scan (see below).
 
 If the item is an expression, the scan computes the aggregates and then the
 expression over them. Over no rows, `count` is 0 and the other aggregates
-are NULL. The expression can trap, for example `max(s.v) + 1`. The oracle
-evaluates the expression once for each request that reaches the subquery,
-over the aggregates of the rows that the request keeps. It also evaluates
-the expression for a request that keeps no row. So `ln(count(*))` raises an
-error for such a request. Measurements on the oracle on 2026-10-16 gave these
-facts. Confit evaluates the expression for the same requests.
+are NULL. The expression can trap, for example `max(s.v) + 1`. Confit
+evaluates the expression for each request that reaches the subquery, also if
+the request keeps no row. So `ln(count(*))` raises an error for a request
+that keeps no row.
+
+The oracle evaluates the expression once for each distinct outer value of the
+requests that reach the subquery. It does so also if these requests keep no
+row. Measurements on the oracle on 2026-10-16 gave these facts. The requests
+with the same outer value keep the same rows. So confit gives each of them
+the same answer or the same error as the oracle.
 
 Confit binds most terms `x BETWEEN lo AND hi` as these two comparisons, so it
 can evaluate `x <= hi` at the end. A few such terms do not bind as two
