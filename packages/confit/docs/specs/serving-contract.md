@@ -366,6 +366,27 @@ can trap, or if a term that reads only `s` can trap. It also refuses an outer
 expression that reads a table that the outer query joins, and a term that
 reads only `s` but holds a subquery or calls a SQL function.
 
+The oracle evaluates the subquery once for each distinct outer value. It counts
+`-0.0` and `0.0` as one value, because `=` finds them equal. In two measured
+batches with one request of each, the oracle used the value of the first request
+for both requests. So if an outer expression gives different answers for `-0.0`
+and `0.0`, the answer for a request can depend on the other requests of the
+batch. An example is `CAST(t.x AS VARCHAR)`, which gives `'-0.0'` for `-0.0`.
+The pin `test_pin_the_subquery_runs_once_for_minus_zero_and_zero` in
+`tests/test_scalar_subquery.py` records this.
+
+So confit refuses a key or a term of the third form if its part that reads the
+outer query can give different answers for `-0.0` and `0.0`. Confit accepts this
+part if it reads each DOUBLE value of the outer query only through these
+operations: a comparison, IS NULL, `+`, `-`, `*`, the dividend of `/` or `%`,
+CASE, `greatest`, `least`, a cast to a type other than VARCHAR, and a math
+function of one argument, such as `round`, `abs` or `sqrt`. For `-0.0` and
+`0.0`, each of these operations gives two answers that `=` finds equal, or it
+stops with an error for both. For example, `sqrt` gives `-0.0` and `0.0`. A
+measurement on the oracle on 2026-10-16 gave these answers. The left side `x`
+of IN, ANY and ALL is not part of this rule, because the oracle evaluates `x`
+for each request.
+
 **The scan.** If the WHERE has a term of the third form, confit computes the
 value for each request by a scan of `s`. An example is
 `(SELECT sum(s.v) FROM s WHERE s.lo <= t.x AND t.x < s.hi)`. The scan reads
@@ -395,18 +416,11 @@ digits add up to less than 10^38. Confit refuses the scan in these cases:
 - a term of the scan can trap, or the outer expression of any key can trap,
   the first key included;
 - a term of the scan can give different answers for the outer values `-0.0`
-  and `0.0`, such as `s.f < 1.0 / t.x`, where `1.0 / -0.0` is `-inf` and
-  `1.0 / 0.0` is `inf`;
+  and `0.0` (see above), such as `s.f < 1.0 / t.x`, where `1.0 / -0.0` is
+  `-inf` and `1.0 / 0.0` is `inf`;
 - the subquery is under IN, ANY or ALL, or it has ORDER BY or LIMIT;
 - the SELECT item is another aggregate, an aggregate over DISTINCT values,
   or an expression.
-
-The oracle evaluates the subquery once for each distinct value of the outer
-query, and `-0.0` and `0.0` are one value. In two measured batches, it used the
-value of the first request with one of the two. So for a request with `-0.0`,
-the answer of such a term depends on the other requests of the batch.
-The pin `test_pin_the_subquery_runs_once_for_minus_zero_and_zero` in
-`tests/test_scalar_subquery.py` records this.
 
 At build, confit keeps the rows of `s` on which each term that reads only `s`
 is TRUE. It puts these rows into groups with equal keys and computes the

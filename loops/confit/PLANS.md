@@ -114,21 +114,13 @@ lands. How the loop runs: [README.md](README.md); the live tickets:
    ceiling of a string builder, and the case takes more than the 20 s
    limit (one confit run 5 to 12 s on each of its two backends, DuckDB
    3.6 s, the rows as Python values about 10 s).
-2. **A key whose outer side tells -0.0 from 0.0** (correctness, found
-   2026-10-15 while building the scan). The build-time join of a scalar
-   subquery evaluates a key's outer side for each request, and DuckDB once
-   for each distinct outer value, where -0.0 and 0.0 are one value. So for
-   `s.s = CAST(t.x AS VARCHAR)`, if an earlier request of the batch has x =
-   -0.0, DuckDB answers a request with x = 0.0 from the rows of '-0.0';
-   confit answers it from the rows of '0.0'. Fix: refuse such a key by
-   name, with the scan's `double_taint` check.
-3. **Subquery design, PR 4** (static-only subqueries computed at
+2. **Subquery design, PR 4** (static-only subqueries computed at
    construction) waits on the owner: its 48 measured candidates turned out to
    be unread CTEs, which now serve, so the class has no generated case yet
    (`docs/specs/2026-09-26-row-local-subqueries-design.md`, "Measured
    recovery").
 
-4. **Owner docs in simple English.** The docs the owner reviews or maintains
+3. **Owner docs in simple English.** The docs the owner reviews or maintains
    follow the `simple-english` skill. Next: `packages/confit/README.md`, then the oracle
    and spec docs, one file at a time. Closed and postponed decision records stay as
    ruled. `loops/native/` is the native loop's to rewrite.
@@ -791,6 +783,10 @@ The first five are ruled, in this order; the rest follow.
   VARCHAR, and EXISTS, where no term can trap and no term tells -0.0 from
   0.0 (DuckDB evaluates the subquery once per distinct outer value, with the
   first request's value; pin `test_pin_the_subquery_runs_once_for_minus_zero_and_zero`).
+  The same holds for the outer side of a key under every form, so a key
+  whose outer side tells them apart refuses too (`double_taint` in the key
+  loop of `subquery_value`, 2026-10-16; the left side of IN, ANY and ALL
+  runs for each request and needs no check).
   A program with a scan runs on the interpreter only (MultiMap statics).
   Open for the scan, in value order: terms that can trap (`s.v BETWEEN t.a
   - 5 AND t.a + 5`: evaluate the whole WHERE per pair in written order and

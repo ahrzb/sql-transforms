@@ -631,6 +631,15 @@ impl Binder<'_> {
                     "the WHERE term {t}, whose outer side reads a joined table"
                 )));
             }
+            // DuckDB evaluates the outer side once for each distinct
+            // correlated value, where -0.0 and 0.0 are one ([`double_taint`]).
+            let leaf = |x: &SExpr| matches!(x.kind, SKind::Col(_) | SKind::Slot(_));
+            if double_taint(&mut key.clone(), &leaf).is_none() {
+                return Err(form_refusal(&format!(
+                    "the WHERE term {}",
+                    zeros_refusal(t)
+                )));
+            }
             let col_ty = st.cols[col as usize].ty.ty;
             if (key.ty == Ty::Str) != (col_ty == Ty::Str) {
                 return Err(form_refusal(&format!(
@@ -2012,16 +2021,12 @@ impl Binder<'_> {
         if trap_key {
             return Err(scan_refusal(first, "the outer side of a key can trap"));
         }
-        let outer = |x: &SExpr| matches!(x.kind, SKind::Col(_) | SKind::Slot(_));
         let mut scan_keys = Vec::new();
         let mut scan_lanes = Vec::new();
         for (((key, kc), lane), t) in keys.into_iter().zip(&key_cols).zip(key_lanes).zip(key_terms) {
             if kc.cmp == KeyCmp::NotDistinct {
                 mixed.push(t);
                 continue;
-            }
-            if double_taint(&mut key.clone(), &outer).is_none() {
-                return Err(scan_refusal(first, &zeros_refusal(t)));
             }
             scan_keys.push(key);
             scan_lanes.push(lane);
@@ -2444,8 +2449,11 @@ fn shift_regexes(e: &mut SExpr, base: u32) {
 /// first, and fails for both when 0.0 comes first). So an operation that
 /// tells -0.0 from 0.0, such as `1 / x` or a cast to VARCHAR, answers for
 /// one request what another request's value gives. A comparison, IS NULL,
-/// `+`, `-` and `*`, a dividend, a negation, abs, CASE, and greatest and
-/// least answer alike for equal values.
+/// `+`, `-` and `*`, a dividend, CASE, greatest and least, a cast to a type
+/// other than VARCHAR, and the math functions of one argument, such as
+/// round, abs and sqrt, answer alike for equal values (measured
+/// 2026-10-16: each answers -0.0 and 0.0 with equal values, or traps on
+/// both).
 fn double_taint(e: &mut SExpr, outer: &dyn Fn(&SExpr) -> bool) -> Option<bool> {
     let double = e.ty == Ty::F64;
     if outer(e) {
@@ -2470,10 +2478,13 @@ fn double_taint(e: &mut SExpr, outer: &dyn Fn(&SExpr) -> bool) -> Option<bool> {
     }
     match &e.kind {
         SKind::Cmp { .. } | SKind::IsNull { .. } => Some(false),
-        SKind::MathF1 {
-            op: NumOp1::Fneg | NumOp1::Fabs,
-            ..
-        }
+        // The text of -0.0 is '-0.0'.
+        SKind::Cast { .. } if e.ty == Ty::Str => None,
+        SKind::Cast { .. }
+        | SKind::MathF1 { .. }
+        | SKind::Abs(_)
+        | SKind::Round(_)
+        | SKind::Round2 { .. }
         | SKind::Case { .. }
         | SKind::Extreme { .. } => Some(double),
         _ => None,
