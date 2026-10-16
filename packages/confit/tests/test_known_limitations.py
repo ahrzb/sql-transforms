@@ -162,7 +162,7 @@ def test_an_unserved_aggregate_over_static_rows_names_the_served_ones():
             {"s": s},
         )
     assert "calls the aggregate function first" in str(e.value)
-    assert "f one of count, min, max, sum and avg" in str(e.value)
+    assert "f one of count, min, max, sum, avg, count_if, bool_and" in str(e.value)
     assert "not row-local" not in str(e.value)
 
 

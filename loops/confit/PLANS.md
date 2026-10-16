@@ -501,7 +501,9 @@ The first five are ruled, in this order; the rest follow.
   [decisions/closed/join-group-by-per-request.md](decisions/closed/join-group-by-per-request.md)). Served: a scalar
   subquery with one `count`, `min`, `max`, integer, BOOLEAN, DECIMAL or
   DOUBLE `sum`, or integer, DECIMAL or DOUBLE `avg`, over all the values of a column or its
-  DISTINCT ones, over one static table, keyed by `=` or IS NOT
+  DISTINCT ones (also `bool_and`/`bool_or` and `count_if` over BOOLEAN,
+  `bit_and`/`bit_or`/`bit_xor` over integers, and an ORDER BY of columns of
+  the table inside the call, 2026-10-16), over one static table, keyed by `=` or IS NOT
   DISTINCT FROM between a bare column of the table and an outer expression
   that cannot trap (the first key's may trap, see below), and filtered by
   WHERE terms that read only the table and cannot trap. It binds as a hidden
@@ -528,7 +530,8 @@ The first five are ruled, in this order; the rest follow.
   B (`confit.compare.within_float_bound`, AGREE klass `float-reduction-bound`).
   Still refused by name: a DOUBLE `sum`/`avg` that is not a whole output
   column, reads a NaN or an infinity, or whose group has sum|v| + B past the
-  range, an aggregate call with ORDER BY, `count(DISTINCT *)` (DuckDB's binder error)
+  range, an ORDER BY term inside a call that is not a column of the table,
+  `count(DISTINCT *)` (DuckDB's binder error)
   and DISTINCT over a constant, an item that traps over the aggregates of a group or of no rows, holds a
   subquery or calls a SQL function, a UDF or a model, a WHERE term that is
   neither a key nor reads only the table, a static term that can trap (DuckDB
@@ -791,7 +794,9 @@ The first five are ruled, in this order; the rest follow.
   Open for the scan, in value order: terms that can trap (`s.v BETWEEN t.a
   - 5 AND t.a + 5`: evaluate the whole WHERE per pair in written order and
   place the scan where DuckDB plans the subquery, as `guarded_key` does); an
-  expression over the aggregate; avg and DOUBLE sum (float-reduction bound);
+  expression over the aggregate; `bool_and`, `bool_or` and the bitwise
+  aggregates (in the 2026-10-16 campaign, 22 generated scans refused because
+  their item is one); avg and DOUBLE sum (float-reduction bound);
   min and max over DOUBLE (refuse at build a column with equal values of
   other bits); IN, ANY and ALL; ORDER BY with LIMIT; Cranelift code for
   ProbeRange and ProbeRead.

@@ -193,7 +193,8 @@ pub const CUSTOM_NAMES: &[&str] = &[
     // unconditional named refusals
     "regexp_split_to_array", "regexp_extract_all",
     "sum", "count", "avg", "min", "max", "geomean", "product", "string_agg",
-    "first", "last", "any_value",
+    "first", "last", "any_value", "bool_and", "bool_or", "bit_and", "bit_or", "bit_xor",
+    "count_if", "countif",
     // AST-shape gate over a declared extern
     "struct_extract",
     // served only as a CASE result (`Binder::case_result`), refused elsewhere
