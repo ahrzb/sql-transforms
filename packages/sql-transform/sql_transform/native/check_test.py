@@ -306,7 +306,7 @@ def test_a_composition_refuses_an_error_scale_a_later_step_reads(dot):
 def test_a_composition_refuses_an_error_scale_through_a_map(monkeypatch):
     from sql_transform.native import _registry
 
-    scale = dataclasses.replace(SCALE, g=np.square)
+    scale = dataclasses.replace(SCALE, g=np.square, on="on the squares")
     monkeypatch.setitem(_registry._CATALOG, _Dot, Entry(_left_to_right, 0, None, scale))
     step = _composed(Pipeline([("s", StandardScaler()), ("dot", _dots())]), 8)
     with pytest.raises(
@@ -328,3 +328,15 @@ def test_coverage_reads_an_error_scale():
         == "within K·eps·S + τ (S its error scale), served only with"
         " `allow_bound=True`"
     )
+
+
+def test_an_error_scale_names_what_its_map_compares():
+    scale = dataclasses.replace(SCALE, g=np.square, on="on the squares")
+    assert (
+        coverage._exactness(Entry(_left_to_right, 0, None, scale))
+        == "within K·eps·S + τ on the squares (S its error scale), served only"
+        " with `allow_bound=True`"
+    )
+    for g, on in ((np.square, ""), (None, "on the squares")):
+        with pytest.raises(ValueError, match="names its map with `on`"):
+            dataclasses.replace(SCALE, g=g, on=on)

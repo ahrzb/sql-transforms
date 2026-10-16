@@ -365,9 +365,10 @@ def check(
                 x_in = _features(rows, i, list(step.takes.names))
                 bounds = scale.at(est, x_in, len(la))
             if not near(x, y, bounds[j], scale.g):
+                on = f" {scale.on}" if scale.on else ""
                 raise ParityError(
                     f"row {i} output field {name!r}: step {x!r}, native {y!r}, past"
-                    f" its bound K*eps*S + tau = {float(bounds[j]):.6g}"
+                    f" its bound K*eps*S + tau = {float(bounds[j]):.6g}{on}"
                     f" ({_apart(x, y, scale.g)} apart); input {_input(rows, i)}"
                 )
     if not compared:

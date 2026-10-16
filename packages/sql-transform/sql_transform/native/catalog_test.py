@@ -19,7 +19,13 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pytest
-from sklearn.cluster import FeatureAgglomeration
+from sklearn.cluster import (
+    Birch,
+    BisectingKMeans,
+    FeatureAgglomeration,
+    KMeans,
+    MiniBatchKMeans,
+)
 from sklearn.compose import ColumnTransformer
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
 from sklearn.decomposition import (
@@ -815,6 +821,27 @@ FIXTURES[CCA] = [lambda: CCA(n_components=1)]
 FIXTURES[PLSSVD] = [
     lambda: PLSSVD(n_components=1),
     lambda: PLSSVD(n_components=1, scale=False),
+]
+# Distances to fitted centres, within their error scale on the squares
+# (distance.py). A fit of fewer rows than its clusters raises, and is drawn
+# again. Birch's subclusters are its output fields: under the default
+# threshold of 0.5, about one a fit row.
+FIXTURES[KMeans] = [
+    lambda: KMeans(n_clusters=3, n_init=1, random_state=0),
+    lambda: KMeans(n_clusters=1, n_init=1, algorithm="elkan", random_state=1),
+]
+FIXTURES[MiniBatchKMeans] = [
+    lambda: MiniBatchKMeans(n_clusters=4, n_init=1, random_state=0),
+]
+FIXTURES[BisectingKMeans] = [
+    lambda: BisectingKMeans(n_clusters=3, random_state=0),
+    lambda: BisectingKMeans(
+        n_clusters=4, bisecting_strategy="largest_cluster", random_state=1
+    ),
+]
+FIXTURES[Birch] = [
+    Birch,
+    lambda: Birch(threshold=100.0, n_clusters=None, branching_factor=5),
 ]
 
 # A string feature's fitted values, and the unseen ones serving adds.

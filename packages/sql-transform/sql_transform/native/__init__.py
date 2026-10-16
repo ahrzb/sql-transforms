@@ -31,6 +31,7 @@ from __future__ import annotations
 from sql_transform.native import agglomerate as _agglomerate  # noqa: F401  (registers)
 from sql_transform.native import compose as _compose  # noqa: F401  (registers)
 from sql_transform.native import discretize as _discretize  # noqa: F401  (registers)
+from sql_transform.native import distance as _distance  # noqa: F401  (registers)
 from sql_transform.native import encode as _encode  # noqa: F401  (registers)
 from sql_transform.native import function as _function  # noqa: F401  (registers)
 from sql_transform.native import impute as _impute  # noqa: F401  (registers)
