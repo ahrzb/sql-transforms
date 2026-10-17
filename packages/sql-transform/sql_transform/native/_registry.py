@@ -53,6 +53,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import math
+import re
 import sys
 import warnings
 from collections.abc import Callable
@@ -671,6 +672,66 @@ def _output_fields(step: PythonTransform) -> list[tuple[str | None, pa.DataType]
     return [(None, r)]
 
 
+# The calls that confit's pass of shared values (`share.rs`) counts as able
+# to trap wherever they stand. It judges each node of a definition alone,
+# without the CASE above it, so a call that a CASE guards counts too (ln,
+# log2, log10 and sqrt under `x <= 0` passed, sin, cos and tan under
+# `abs(x) = inf` passed: function.py, kernel.py), and so does each value
+# that reads one. confit shares none of them: its build computes each at
+# every read, so the build of a composition after such a step grows with
+# its definition spelled out (loops/native/PLANS.md, "Needs from confit").
+_TRAPS = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|"
+    r"\b(ln|log|log2|log10|sqrt|sin|cos|tan|pow|power|error)\s*\(",
+    re.IGNORECASE,
+)
+_LET_READ = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|" + S.LET_MARKER + r"\((\d+)\)",
+    re.IGNORECASE,
+)
+
+# The longest definition of a composition, as `unshared` writes it, that
+# `to_native` builds. T59's parity run gave 41 compositions of 1,426 to
+# 40,142,437 characters so (one build at a time, T59's branch at e3f21e2):
+# the 33 up to 500,000 built in at most 1.32 s and 445 MB; the 7 past it
+# in 0.51 to 47 s and 330 MB to 5.0 GB, from 1 million characters on at
+# 1.4 to 12 µs and 0.5 to 1.5 KB a character; the longest ran out of
+# memory under a limit of 12 GB.
+MAX_UNSHARED = 500_000
+
+
+def unshared(fn: SqlFunction) -> int:
+    """The length of `fn`'s definition as confit's build computes it: each
+    let that confit cannot share written at each read, every other let
+    once. A let cannot be shared where it calls one of `_TRAPS` or reads a
+    let that cannot."""
+    lets = getattr(fn, "sql_lets", None)
+    if lets is None:
+        return len(fn.sql_body)
+
+    def reads(text: str) -> list[tuple[int, int]]:
+        # Each let read: the let's number, and the length of the read.
+        return [
+            (int(m.group(1)), len(m.group(0)))
+            for m in _LET_READ.finditer(text)
+            if m.group(1) is not None
+        ]
+
+    traps: list[bool] = []
+    size: list[int] = []  # each let, with the lets it reads that trap written out
+    for text in lets:
+        r = reads(text)
+        calls = any(m.group(1) for m in _TRAPS.finditer(text))
+        traps.append(calls or any(traps[j] for j, _ in r))
+        size.append(len(text) + sum(size[j] - n for j, n in r if traps[j]))
+    body = fn.sql_let_body
+    return (
+        len(body)
+        + sum(size[j] - n for j, n in reads(body) if traps[j])
+        + sum(s for s, t in zip(size, traps, strict=True) if not t)
+    )
+
+
 def _translate(step: Any, allow_bound: bool) -> SqlFunction:
     if not isinstance(step, PythonTransform):
         raise NotNative(f"{type(step).__name__} is not a PythonTransform")
@@ -778,6 +839,14 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
             "confit does not build it: an expression nested past Python's"
             " recursion limit"
         ) from None
+    if any(_CATALOG[type(e)].composes for e in step.instances.values()):
+        size = unshared(fn)
+        if size > MAX_UNSHARED:
+            raise NotNative(
+                "confit does not build it: with each value that confit cannot"
+                f" share written at each read, its definition is {size:,}"
+                f" characters, past {MAX_UNSHARED:,}"
+            )
     _builds(step, fn)
     return fn
 

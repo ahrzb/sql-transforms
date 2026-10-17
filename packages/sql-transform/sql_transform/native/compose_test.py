@@ -30,7 +30,7 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-from sklearn.random_projection import SparseRandomProjection
+from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
 from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native import (
@@ -1026,3 +1026,60 @@ def test_a_weight_carries_its_part_s_bound_times_the_weight(monkeypatch):
     monkeypatch.setattr(compose, "weighted", lambda e, y, w: e)
     with pytest.raises(ParityError, match="past its part's bound"):
         check(step, native, rows)
+
+
+def _unshared_fn(name: str):
+    """A function whose let `v` calls `name` under a CASE that rules its
+    trap out, and whose let `w` reads `v` three times."""
+    import math
+
+    from confit import SqlFunction
+    from confit import sql as S
+
+    from sql_transform.native._helpers import f64
+
+    def body(x):
+        v = S.case(x <= f64(0.0), f64(math.nan)).otherwise(S.fn(name, x))
+        w = v * v + v
+        return [w + w, w - w]
+
+    return SqlFunction(
+        "f", pa.schema([("x", pa.float64())]), pa.list_(pa.float64(), 2), body
+    )
+
+
+def test_unshared_writes_each_value_that_confit_cannot_share_at_each_read():
+    # confit counts `ln` as able to trap, though a CASE rules its trap out,
+    # and so each value that reads it: those are written at each read. It
+    # shares `exp`'s, which are written once.
+    from sql_transform.native._registry import unshared
+
+    ln, exp = _unshared_fn("ln"), _unshared_fn("exp")
+    assert len(ln.sql_lets) == len(exp.sql_lets) == 2
+    assert unshared(ln) == len(ln.sql_body)
+    assert unshared(exp) == sum(map(len, exp.sql_lets)) + len(exp.sql_let_body)
+    assert unshared(exp) < len(exp.sql_body)
+
+
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+def test_a_composition_that_confit_cannot_share_stays_python():
+    # After np.log2, under the CASE that rules its trap out, confit shares
+    # no value of the steps after it: their build took 33 s and 3.8 GB
+    # (T59). After np.exp, the same steps build in 0.06 s.
+    def make(func):
+        return make_pipeline(
+            MinMaxScaler(feature_range=(1, 2)),
+            FunctionTransformer(func),
+            FactorAnalysis(8, random_state=0),
+            GaussianRandomProjection(8, random_state=0),
+            FeatureAgglomeration(4),
+        )
+
+    X = np.random.default_rng(0).normal(size=(300, 16)) * 3
+    with pytest.raises(
+        NotNative,
+        match=r"confit does not build it: with each value that confit cannot share"
+        r" written at each read, its definition is [\d,]+ characters, past 500,000",
+    ):
+        to_native(_composed(make(np.log2), X), strict=True, allow_bound=True)
+    to_native(_composed(make(np.exp), X), strict=True, allow_bound=True)

@@ -111,7 +111,18 @@ DuckDB answers for the entry's own definition.
 with no translation comes back unchanged, and that step is always correct
 to serve. `to_native(step, strict=True)` raises an error instead.
 
-*Evidence:* `native/catalog_test.py::test_a_step_without_a_translation_comes_back_unchanged`, `native/catalog_test.py::test_to_native_is_idempotent`.
+- confit computes a value once for each row only if the value cannot
+  raise an error. It counts a call of `ln`, `log2`, `log10`, `sqrt`,
+  `sin`, `cos` or `tan` as one that can raise, also where a CASE rules
+  the error out, and each value that reads such a call too. confit
+  computes each of these values again at each read. So in a composition
+  after a step that calls one of these functions, the build of confit
+  can take minutes or use all the memory. `to_native` returns such a
+  composition unchanged if its definition passes 500,000 characters, with
+  each of these values written out at each read (`MAX_UNSHARED` in
+  `native/_registry.py`).
+
+*Evidence:* `native/catalog_test.py::test_a_step_without_a_translation_comes_back_unchanged`, `native/catalog_test.py::test_to_native_is_idempotent`, `native/compose_test.py::test_a_composition_that_confit_cannot_share_stays_python`, `native/compose_test.py::test_unshared_writes_each_value_that_confit_cannot_share_at_each_read`.
 
 **claim: explicit-native-selection.** Native selection is explicit and has
 no automatic cache. The native contract and parity bounds apply

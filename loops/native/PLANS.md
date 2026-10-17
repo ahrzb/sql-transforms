@@ -195,10 +195,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
   priority for confit. A confit-only reproduction is
   `/mnt/project-files/transforms-loop/t44/reads3.py`: send it to the
   Confit Loop when it runs again.
-- **A logarithm computed once a row.** confit's pass that computes a
-  repeated value once a row (`share.rs`) shares only a value that cannot
-  raise, judged node by node without the facts of its CASE, so it never
-  shares `ln`, bare or under a CASE that rules its raise out.
+- **A logarithm, a root or a trig value computed once a row.** confit's
+  pass that computes a repeated value once a row (`share.rs`) shares only
+  a value that cannot raise, judged node by node without the facts of its
+  CASE, so it never shares `ln`, bare or under a CASE that rules its raise
+  out, nor `log2`, `log10`, `sqrt`, `sin`, `cos` and `tan`, nor any value
+  that reads one.
   `SkewedChi2Sampler` (T52, kernel.py) reads ln(x_i + s) in each of the m
   products of x_i, so confit computes n·m logarithms a row, not n. At 32
   features of 64 components a call of 64 rows serves in 5.9 ms as a list
@@ -208,11 +210,24 @@ that request, `to_native(step, allow_bound=True)`. In order:
   field by field also carries every field's logarithms (the first need
   above), so it builds about as n·m²: 2,048 components over one feature
   ran out of 16 GB of memory. So T52 stays Python past 2,048 products,
-  where a call can take longer than the twin's. When it lands, measure
-  again, lift that cap (`kernel._SKEWED_PRODUCTS`) and refit
-  `kernel._skewed_build_estimate`. Low priority for confit: no other entry
-  reads a logarithm in many products. Send it to the Confit Loop when it
-  runs again.
+  where a call can take longer than the twin's. Since T59 a composition
+  multiplies it: confit computes each value of the steps after such a
+  call at every read, so their build grows with the definition spelled
+  out. `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
+  `np.log2`, `FactorAnalysis(8)`, `GaussianRandomProjection(8)` and
+  `FeatureAgglomeration(4)` over 16 features build in 33 s and 3.8 GB as
+  a list, 21 s after `np.tan`, and 0.06 s after `np.exp` or `np.cbrt`
+  (T59's branch at e3f21e2). The steps that call them are
+  `PowerTransformer`, the kernel samplers and these functions of
+  `FunctionTransformer`. One composition of T59's parity run ran out of
+  memory in confit's check of its IR (`ir::verify`) under a limit of
+  12 GB. So `to_native` refuses a composition past 500,000 characters with
+  each such value written at each read (`_registry.unshared`,
+  `MAX_UNSHARED`). When it lands, measure again, lift those caps
+  (`kernel._SKEWED_PRODUCTS`, `_registry.MAX_UNSHARED`) and refit
+  `kernel._skewed_build_estimate`. Medium priority for confit now: it
+  limits the compositions after these steps that T59 serves. Send it to
+  the Confit Loop when it runs again.
 - **A definition that DuckDB runs with each bound value written once.**
   confit's `SqlFunction.register` spells each bound value out at each of
   its reads (`sql_body`), so a value that many output fields read is
