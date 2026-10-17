@@ -70,7 +70,7 @@ owner's ruling).
 | `Pipeline` | composition | chains steps; served over entries, one with a parity bound above 0 only as the last step, with `allow_bound=True` |
 | `PolynomialCountSketch` | not yet |  |
 | `PolynomialFeatures` | native | bit-exact |
-| `PowerTransformer` | native | within 4 ulps, served only with `allow_bound=True` |
+| `PowerTransformer` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `QuantileTransformer` | native | bit-exact |
 | `RBFSampler` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `RFE` | native | bit-exact |

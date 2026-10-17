@@ -51,10 +51,28 @@ room is 1.99 against K = 11. The entry refuses a step whose build
 within 0.86 to 1.13 times the estimate). `check` runs a definition that
 grows as m²·n, so the tests keep to few components (a new need in PLANS).
 Scripts and data are in `/mnt/project-files/transforms-loop/t54/`.
+T55 serves `PowerTransformer(standardize=False)` on the error scales that
+the owner ruled (power.py): Box-Cox within K = 5, S = |t|, and Yeo-Johnson,
+newly served, within K = 10, S = (1 + max(w, 0))·|t|, with t the twin's
+output and w the argument of its `expm1`. DuckDB has neither `log1p` nor
+`expm1`, so the entry spells them from `ln` and `exp`. It serves only where
+the kernel probe finds confit's `ln` and `exp` the C library's and, for
+Yeo-Johnson, numpy's `log1p` and `expm1` within 1 ulp of it. The twin's
+Yeo-Johnson overflows in `expm1` before it divides, so the entry answers
+±inf from the twin's own overflow edges (`power._edges`). Over 153.6
+million fields of 32 seeds (numpy's kernels of AVX-512 and glibc's), no
+field is past K: the largest |entry - twin| / (eps·S) is 3.38 against
+K = 10 and 2.50 against K = 5. The entry refuses a step whose build
+`power._build_estimate` estimates past 7 s (32 widths, each within 0.88 to
+1.14 times the estimate): it takes about 347 features of Yeo-Johnson and
+702 of Box-Cox. `standardize=True` stays Python, as the twin's scaler
+raises on an infinite t (PLANS). Coverage stays 49 of 68. Scripts and data
+are in `/mnt/project-files/transforms-loop/t55/`.
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
-it.
+it. The owner paused this loop after T55 (2026-10-17): it takes no new
+ticket until the owner resumes it.
 
-Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`PowerTransformer` Yeo-Johnson and `standardize=True` next, one PR each).
+Next, when the loop resumes: PLANS "Next" (the rest of "Ruled 2026-10-06,
+to build", item 1, `PowerTransformer(standardize=True)` next, one PR each).

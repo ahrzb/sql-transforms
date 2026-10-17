@@ -208,18 +208,14 @@ def _random_doubles(rng: np.random.Generator, n: int) -> np.ndarray:
     return (sign | exponent | significand).view(np.float64)
 
 
-@functools.cache
-def kernel_distance(func: Any) -> int | None:
-    """The largest distance, in doubles, between numpy's float64 `func` and
-    the entry's spelling of it as confit, the engine that serves the entry,
-    computes it, on probe values: 40,000 draws (uniform in +-1e3 and +-50,
+def probe_values() -> np.ndarray:
+    """The kernel probe's values: 40,000 draws (uniform in +-1e3 and +-50,
     normal, and `_random_doubles` over the magnitudes a double spans, whose
     huge arguments exercise the range reduction), and the signed zeros,
-    subnormals, infinities and NaN. NaN against a number counts as 2**64.
-    None when the probe fails to run."""
+    subnormals, infinities and NaN."""
     rng = np.random.default_rng(20261005)
     n = 10_000
-    x = np.concatenate(
+    return np.concatenate(
         [
             rng.uniform(-1e3, 1e3, n),
             rng.normal(0.0, 1.0, n),
@@ -229,6 +225,28 @@ def kernel_distance(func: Any) -> int | None:
             [math.inf, -math.inf, math.nan, 1e308, -1e308, 709.78, 710.0],
         ]
     )
+
+
+def doubles_apart(want: np.ndarray, got: np.ndarray) -> int:
+    """The largest distance, in doubles, between `want` and `got`, element
+    by element: NaN against a number counts as 2**64."""
+    nan_w, nan_g = np.isnan(want), np.isnan(got)
+    if np.any(nan_w != nan_g):
+        return 1 << 64
+    both = ~nan_w
+    # Python ints: positions of opposite sign can differ past int64.
+    a = _ordered(want[both]).tolist()
+    b = _ordered(got[both]).tolist()
+    return max((abs(p - q) for p, q in zip(a, b, strict=True)), default=0)
+
+
+@functools.cache
+def kernel_distance(func: Any) -> int | None:
+    """The largest distance, in doubles, between numpy's float64 `func` and
+    the entry's spelling of it as confit, the engine that serves the entry,
+    computes it, on the probe values (`probe_values`). NaN against a number
+    counts as 2**64. None when the probe fails to run."""
+    x = probe_values()
     rows = pa.table({"x": x})
     y = _SERVED[func](S.col("x"))
     sql = f"SELECT {y.sql()} AS y FROM __THIS__"  # noqa: S608 — a fixed spelling
@@ -241,14 +259,7 @@ def kernel_distance(func: Any) -> int | None:
         return None
     with np.errstate(all="ignore"):
         want = func(x)
-    nan_w, nan_g = np.isnan(want), np.isnan(got)
-    if np.any(nan_w != nan_g):
-        return 1 << 64
-    both = ~nan_w
-    # Python ints: positions of opposite sign can differ past int64.
-    a = _ordered(want[both]).tolist()
-    b = _ordered(got[both]).tolist()
-    return max((abs(p - q) for p, q in zip(a, b, strict=True)), default=0)
+    return doubles_apart(want, got)
 
 
 def _bound(est: Any) -> int:
