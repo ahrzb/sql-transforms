@@ -245,6 +245,10 @@ def _bounds_of(where: str, part: Any) -> PartBounds | None:
         return bounds
     scale = entry.scale_for(part)
     if scale is None:
+        # A zero ceiling is already exact. Calling bound() would discover
+        # part_bounds again, doubling the work at every exact nesting level.
+        if entry.ulps == 0:
+            return None
         u = entry.bound(part)
         if u == 0:
             return None

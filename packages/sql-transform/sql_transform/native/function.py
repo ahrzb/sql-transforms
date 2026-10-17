@@ -234,7 +234,9 @@ def probe_values() -> np.ndarray:
 
 def doubles_apart(want: np.ndarray, got: np.ndarray) -> int:
     """The largest distance, in doubles, between `want` and `got`, element
-    by element: NaN against a number counts as 2**64."""
+    by element: NaN against a number counts as 2**64. Opposite zero signs
+    count as at least one, so a zero-only difference cannot authorize
+    bit-exact serving."""
     nan_w, nan_g = np.isnan(want), np.isnan(got)
     if np.any(nan_w != nan_g):
         return 1 << 64
@@ -242,7 +244,9 @@ def doubles_apart(want: np.ndarray, got: np.ndarray) -> int:
     # Python ints: positions of opposite sign can differ past int64.
     a = _ordered(want[both]).tolist()
     b = _ordered(got[both]).tolist()
-    return max((abs(p - q) for p, q in zip(a, b, strict=True)), default=0)
+    distance = max((abs(p - q) for p, q in zip(a, b, strict=True)), default=0)
+    zero_signs = (want == 0) & (got == 0) & (np.signbit(want) != np.signbit(got))
+    return max(distance, int(np.any(zero_signs)))
 
 
 @functools.cache

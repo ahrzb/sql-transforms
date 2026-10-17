@@ -14,11 +14,11 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+import duckdb
 import numpy as np
 import pyarrow as pa
 from confit import DuckDBInferFn, compare
 from confit import sql as S
-from confit.oracle import Oracle
 from sklearn.preprocessing import SplineTransformer
 
 from sql_transform._udf import PythonTransform, _as_feature
@@ -65,13 +65,23 @@ def near(a: float, b: float, bound: Any, g: Callable[[Any], Any] | None = None) 
     only near NaN; where one side is infinite, the other passes if it is
     finite, has the same sign and lies within `bound` of DBL_MAX, since
     overflow on one side can be rounding alone; else `|g(a) - g(b)| <=
-    bound`. In long doubles, so that neither the map nor the difference
-    overflows (on x86-64)."""
+    bound`. Arithmetic that overflows the checker's long double is
+    inconclusive, not evidence of parity (Windows and arm64 may use a
+    double for long double)."""
+    if not np.isfinite(bound):
+        raise ParityError(f"checker overflow: non-finite bound {bound!r}")
     if math.isnan(a) or math.isnan(b):
         return math.isnan(a) and math.isnan(b)
     ga, gb = np.longdouble(a), np.longdouble(b)
     if g is not None:
-        ga, gb = g(ga), g(gb)
+        with np.errstate(over="ignore", invalid="ignore"):
+            ga, gb = g(ga), g(gb)
+        if (math.isfinite(a) and not np.isfinite(ga)) or (
+            math.isfinite(b) and not np.isfinite(gb)
+        ):
+            raise ParityError(
+                "checker overflow: non-finite comparison map of a finite input"
+            )
     if ga == gb:
         return True
     if np.isinf(ga) and np.isinf(gb):
@@ -79,7 +89,10 @@ def near(a: float, b: float, bound: Any, g: Callable[[Any], Any] | None = None) 
     if np.isinf(ga) or np.isinf(gb):
         big, fin = (ga, gb) if np.isinf(ga) else (gb, ga)
         return bool(np.sign(fin) == np.sign(big) and _DBL_MAX - abs(fin) <= bound)
-    return bool(abs(ga - gb) <= bound)
+    # An overflowing difference exceeds every finite bound; do not halve
+    # operands, which would erase a difference between subnormal doubles.
+    with np.errstate(over="ignore"):
+        return bool(abs(ga - gb) <= bound)
 
 
 def _features(rows: pa.Table, i: int, names: list[str]) -> np.ndarray:
@@ -191,9 +204,17 @@ def _definition(
     query, which DuckDB must trap on."""
     answered = [i for i, g in enumerate(got) if not isinstance(g, Exception)]
     trapped = [i for i, g in enumerate(got) if isinstance(g, Exception)]
-    with Oracle() as o:
+    # The public check supports the package's allowed DuckDB versions, not
+    # confit's test-only Oracle pin. Keep its optimizer-off/native-table
+    # semantics: filtering a registered Arrow scan treats NaN differently.
+    with duckdb.connect() as o:
+        o.execute("PRAGMA disable_optimizer")
         native.register(o)
-        o.load("__ALL__", rows.append_column("__row", pa.array(range(rows.num_rows))))
+        o.register(
+            "__arrow_rows", rows.append_column("__row", pa.array(range(rows.num_rows)))
+        )
+        o.execute("CREATE TABLE __ALL__ AS SELECT * FROM __arrow_rows")
+        o.unregister("__arrow_rows")
         cols = ", ".join(S.col(n).sql() for n in rows.column_names)
 
         def answer(ids: list[int]) -> Any:
@@ -201,7 +222,10 @@ def _definition(
                 f"CREATE OR REPLACE VIEW __THIS__ AS SELECT {cols} FROM __ALL__"  # noqa: S608
                 f" WHERE __row IN ({', '.join(map(str, ids))})"
             )
-            return o.try_answer(_once(step, id_col))
+            try:
+                return o.execute(_once(step, id_col)).to_arrow_table()
+            except (duckdb.Error, UnicodeDecodeError) as e:
+                return e
 
         if answered:
             want = answer(answered)
@@ -279,9 +303,9 @@ def check(
     guard (spec/native/catalog-contract.md, claim: entry-traps-where-twin-raises).
     The one twin error that is not validation the ruling lists is let through
     (`_tolerated`). A native error must be one of its traps, the guard's
-    or an unknown id's (`is_trap`). Where both trap on every row, nothing
-    is compared and `check` raises: such rows prove nothing. Returns the
-    number of rows compared, at least 1."""
+    or an unknown id's (`is_trap`). NULL-id rows and matching traps are
+    checked separately, but supply no answered-value evidence. Raises if
+    no answered non-NULL-id row was compared; returns that count."""
     sql = query(step, id_col)
 
     # The native twin against its own definition, exactly.
@@ -296,7 +320,7 @@ def check(
         raise ParityError(f"the step does not serve: {twin}")
     entries = catalog()
     ids = rows.column(id_col).to_pylist()
-    compared = 0
+    compared = null_ids = traps = 0
     for i, (a, b) in enumerate(zip(twin, got, strict=True)):
         # The row's instance, and its bound. A NULL id answers NULL on both
         # sides, compared exactly.
@@ -312,13 +336,19 @@ def check(
                 f" {a!r}; input {_input(rows, i)}"
             )
         if isinstance(a, Exception):
-            if isinstance(b, Exception) or (est is not None and _tolerated(est, a)):
+            if isinstance(b, Exception):
+                traps += 1
+                continue
+            if est is not None and _tolerated(est, a):
                 continue
             raise ParityError(
                 f"row {i}: the step raises ({a}) where the native twin answers"
                 f" {b!r}; input {_input(rows, i)}"
             )
-        compared += 1
+        if ids[i] is None:
+            null_ids += 1
+        else:
+            compared += 1
         entry = None if est is None else entries.get(type(est))
         scale = parts = None
         if ulps is None and entry is not None:
@@ -340,7 +370,14 @@ def check(
             if parts is not None and floats and repr(x) != repr(y):
                 if fields is None:
                     fields = parts.at(_twin_input(step, rows, i))
-                why = _past_part(fields, j, x, y)
+                try:
+                    why = _past_part(fields, j, x, y)
+                except ParityError as e:
+                    raise ParityError(
+                        f"{e}; step {step.name!r}, configuration {est!r}"
+                        f" (instance {ids[i]!r}), row {i} output field {name!r}:"
+                        f" step {x!r}, native {y!r}; input {_input(rows, i)}"
+                    ) from e
                 if why:
                     raise ParityError(
                         f"row {i} output field {name!r}: step {x!r}, native {y!r}"
@@ -364,7 +401,15 @@ def check(
             if bounds is None:
                 x_in = _features(rows, i, list(step.takes.names))
                 bounds = scale.at(est, x_in, len(la))
-            if not near(x, y, bounds[j], scale.g):
+            try:
+                close = near(x, y, bounds[j], scale.g)
+            except ParityError as e:
+                raise ParityError(
+                    f"{e}; step {step.name!r}, configuration {est!r}"
+                    f" (instance {ids[i]!r}), row {i} output field {name!r}:"
+                    f" step {x!r}, native {y!r}; input {_input(rows, i)}"
+                ) from e
+            if not close:
                 on = f" {scale.on}" if scale.on else ""
                 raise ParityError(
                     f"row {i} output field {name!r}: step {x!r}, native {y!r}, past"
@@ -373,7 +418,8 @@ def check(
                 )
     if not compared:
         raise ParityError(
-            f"check compares no row: the step raises on each of {rows.num_rows} rows"
+            "check compares no row: no answered non-NULL-id row;"
+            f" {null_ids} NULL-id rows, {traps} matching traps"
         )
     return compared
 

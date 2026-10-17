@@ -26,6 +26,10 @@ pytestmark = pytest.mark.filterwarnings("ignore::RuntimeWarning")
 
 E = float(np.finfo(np.float64).eps)
 MAX = float(np.finfo(np.float64).max)
+_NEEDS_WIDE_LONGDOUBLE = pytest.mark.skipif(
+    np.finfo(np.longdouble).maxexp == 1024,
+    reason="64-bit long double overflows Yeo-Johnson's S_t before K*eps*S",
+)
 # Doubles where the entry can part from the twin: signed zeros, subnormals,
 # values near 0 and 1, large ones up to the largest double, and the
 # infinities, which the twin rejects; NaN and NULL pass.
@@ -169,7 +173,13 @@ def test_box_cox_matches_its_twin_on_special_values():
     assert check(step, native, rows) == len(answered)
 
 
-@pytest.mark.parametrize("lam", [3.0, 1.5, 1 + 1e-9, 1.0, 50.0, -1.0, 0.0, 1 - 1e-9])
+@pytest.mark.parametrize(
+    "lam",
+    [
+        pytest.param(lam, marks=_NEEDS_WIDE_LONGDOUBLE if lam != 1.0 else ())
+        for lam in (3.0, 1.5, 1 + 1e-9, 1.0, 50.0, -1.0, 0.0, 1 - 1e-9)
+    ],
+)
 def test_the_entry_overflows_where_the_twin_does(lam):
     # The twin computes expm1(w) before it divides by c (lambda, or 2 -
     # lambda below 0), so with c > 1 it is infinite where t is about
@@ -260,8 +270,19 @@ def test_a_box_cox_of_a_boolean_probes_at_true(standardize):
 
 @pytest.mark.parametrize(
     "method, lam",
-    [("yeo-johnson", v) for v in (3.0, 1.5, 1 + 1e-9, 0.5, 0.0, -1.0, 50.0)]
-    + [("box-cox", v) for v in (3.0, 1.5, -0.98, -1.0, -50.0)],
+    [
+        pytest.param(
+            method,
+            lam,
+            marks=_NEEDS_WIDE_LONGDOUBLE
+            if method == "yeo-johnson" and lam in (3.0, 1.5, 50.0)
+            else (),
+        )
+        for method, lam in (
+            [("yeo-johnson", v) for v in (3.0, 1.5, 1 + 1e-9, 0.5, 0.0, -1.0, 50.0)]
+            + [("box-cox", v) for v in (3.0, 1.5, -0.98, -1.0, -50.0)]
+        )
+    ],
 )
 def test_a_standardized_step_traps_from_the_twins_edges_on(method, lam):
     # The twin's scaler raises where t is infinite: past the twin's own
