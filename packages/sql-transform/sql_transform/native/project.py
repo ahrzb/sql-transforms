@@ -125,8 +125,9 @@ from sklearn.decomposition import (
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
+from sql_transform.native._carry import SLACK, TINY, carried, gamma, shifted
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import ErrorScale, NotNative, translates
+from sql_transform.native._registry import Carry, ErrorScale, NotNative, translates
 
 _EPS = float(np.finfo(np.float64).eps)
 _TINY = 2.0**-1074
@@ -165,6 +166,33 @@ def _tau(est: Any) -> np.ndarray:
 
 
 MATVEC = ErrorScale(k=_k, s=_s, tau=_tau)
+
+_KEPS = np.longdouble(_EPS)
+
+
+def _project_carry(est: Any) -> Carry:
+    """How a projection carries a bound e on its input to its output
+    fields (_carry.py). Its exact map is affine, with |A| = |c|/s, and each
+    side is within half the bound of the exact value, at that side's input
+    (the module's derivation): K·eps·S/2 + tau/2, which grows by at most
+    K·eps·|A|·e/2 over |x| + e. So with x the reference,
+
+        |y_e - y_t| <= |A|·e + (K·eps·S(x) + tau)/2 + (K·eps·S(x + 2e) + tau)/2
+                     <= (1 + 2K·eps)·|A|·e + K·eps·S(x) + tau,
+
+    where 2K·eps also covers the rounding of |A|·e in long doubles."""
+    a = np.abs(np.asarray(est.components_, np.longdouble)) / np.asarray(
+        _scale(est), np.longdouble
+    ).reshape(-1, 1)
+    grow = 1 + 2 * _k(est) * _KEPS
+
+    def carry(x: np.ndarray, e: np.ndarray) -> np.ndarray:
+        with np.errstate(all="ignore"):
+            out = grow * (a @ np.asarray(e, np.longdouble)) + MATVEC.at(est, x, len(a))
+        return carried(out, np.ones(len(a), bool))
+
+    return carry
+
 
 # The longest build the entry takes on for one estimator, in seconds, by
 # `_build_estimate` (as quantile.py's, spline.py's and trees.py's caps).
@@ -282,6 +310,7 @@ def _tree(terms: list[S.Expr]) -> S.Expr:
     GaussianRandomProjection,
     scale=MATVEC,
     apart=_reads_apart,
+    carry=_project_carry,
 )
 def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     name = type(est).__name__
@@ -436,11 +465,43 @@ def _sparse_build_estimate(c: Any) -> float:
     )
 
 
+def _sparse_carry(est: Any) -> Carry:
+    """How `SparseRandomProjection` carries a bound e on its input to its
+    output fields (_carry.py): of dense components, as the projections
+    above (`_project_carry`). Over CSR components, each side sums the p
+    stored products of output field j, each rounded, from 0.0: within
+    γ_p·Σ_i |c_ji·v_i| + p·2**-1075 of the exact sum (Higham, §3.1), so with
+    x the reference,
+
+        |y_e - y_t| <= (1 + 4γ_p)·Σ_i |c_ji|·e_i + 2γ_p·Σ_i |c_ji·x_i| + p·2**-1074,
+
+    and 0 where each feature that field j stores is bit-exact."""
+    c = est.components_
+    if not sparse.issparse(c):
+        return _project_carry(est)
+    a = abs(c).astype(np.longdouble)
+    stored = sparse.csr_matrix(
+        (np.ones(c.nnz), c.indices, c.indptr), shape=c.shape, dtype=np.float64
+    )
+    p = np.diff(c.indptr).astype(np.longdouble)
+    g = gamma(p)
+
+    def carry(x: np.ndarray, e: np.ndarray) -> np.ndarray:
+        e = np.asarray(e, np.longdouble)
+        with np.errstate(all="ignore"):
+            ax = np.abs(np.asarray(x, np.longdouble))
+            out = (1 + 4 * g) * (a @ e) + 2 * g * (a @ ax) + p * TINY
+        return carried(out * SLACK, stored @ (e > 0).astype(np.float64) > 0)
+
+    return carry
+
+
 @translates(
     SparseRandomProjection,
     scale=MATVEC,
     scaled=lambda est: not sparse.issparse(est.components_),
     apart=lambda est: sparse.issparse(est.components_) or _reads_apart(est),
+    carry=_sparse_carry,
 )
 def _sparse_project(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
@@ -553,6 +614,26 @@ CENTERED = ErrorScale(
 )
 
 
+def _centered_carry(est: Any) -> Carry:
+    """How a centered projection carries a bound e on its input to its
+    output fields (_carry.py): its subtraction and division carry e to a
+    bound e_d on the row d it multiplies (`_carry.shifted`), and the sums
+    carry e_d as the projections' do (`_project_carry`), with |A| = |c|:
+
+        |y_e - y_t| <= (1 + 2K·eps)·|c|·e_d + K·eps·S(x) + tau."""
+    m, sd, c = _centered(est)
+    a = np.abs(np.asarray(c, np.longdouble))
+    grow = 1 + 2 * CENTERED.k(est) * _KEPS
+
+    def carry(x: np.ndarray, e: np.ndarray) -> np.ndarray:
+        d = shifted(e, x, m, sd)
+        with np.errstate(all="ignore"):
+            out = grow * (a @ d) + CENTERED.at(est, x, len(a))
+        return carried(out, np.ones(len(a), bool))
+
+    return carry
+
+
 def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
     """A `FastICA` fit whose output fields mix in rounding noise of size
     O(1), or that broke down, stays Python, as a whitened `PCA` component
@@ -598,7 +679,7 @@ def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
         )
 
 
-@translates(*_CENTERED, scale=CENTERED, apart=_reads_apart)
+@translates(*_CENTERED, scale=CENTERED, apart=_reads_apart, carry=_centered_carry)
 def _project_centered(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:
@@ -921,6 +1002,38 @@ def _factor_tau(est: Any) -> np.ndarray:
 FACTOR = ErrorScale(k=_factor_k, s=_factor_s, tau=_factor_tau)
 
 
+def _factor_carry(est: Any) -> Carry:
+    """How `FactorAnalysis` carries a bound e on its input to its output
+    fields (_carry.py). The difference d = x - mean_ carries e to e_d
+    (`_carry.shifted`). Each side's two products are within the bound of
+    `_factor_analysis` of (d·Wpsi^T)·C at that side's d, and its terms
+    grow with S1 and |t|: over the box |d| + 2e_d they are at most
+    S1' = |Wpsi|·(|d| + 2e_d) and |t| + 2|Wpsi|·e_d. The exact map moves by
+    at most (|Wpsi|·e_d)·|C|, so
+
+        |y_e - y_t| <= (1 + 2K·eps)·(|Wpsi|·e_d)·|C| + K·eps·S' + tau,
+
+    S' the error scale at S1' and |t| + 2|Wpsi|·e_d."""
+    m = est.mean_
+    k, n = np.shape(est.components_)
+    keps = np.longdouble(_factor_k(est)) * _KEPS
+    gn = gamma(n + k)
+
+    def carry(x: np.ndarray, e: np.ndarray) -> np.ndarray:
+        f = _factor(est)
+        ed = shifted(e, x, m)
+        with np.errstate(all="ignore"):
+            d = np.asarray(np.asarray(x, np.float64) - m, np.longdouble)
+            spread = f.abs_v @ ed
+            s1 = f.abs_v @ np.abs(d) + 2 * spread
+            t = np.abs(f.v_ld @ d) + 2 * spread
+            own = keps * (s1 @ f.abs_c) + (t + gn * s1) @ f.d + _factor_tau(est)
+            out = (1 + 2 * keps) * (spread @ f.abs_c) + own
+        return carried(out, np.ones(k, bool))
+
+    return carry
+
+
 def _factor_build_estimate(n: int, k: int) -> float:
     """The seconds of the whole warm `to_native` (release build) of a
     `FactorAnalysis` of n features and k components: the translation,
@@ -954,7 +1067,7 @@ def _factor_build_estimate(n: int, k: int) -> float:
     )
 
 
-@translates(FactorAnalysis, scale=FACTOR)
+@translates(FactorAnalysis, scale=FACTOR, carry=_factor_carry)
 def _factor_analysis(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:

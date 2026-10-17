@@ -14,22 +14,31 @@ DOUBLE, or boolean then. A nested `Pipeline` is one more catalog entry, and
 composes the same way.
 
 A step whose parity bound is above 0, in ulps or in an error scale,
-composes in two places, and serves only with `to_native(step,
-allow_bound=True)`: as the last step that runs, or as an unweighted part
-of a `ColumnTransformer` or `FeatureUnion` (option 1 of the owner's
-ruling, loops/native/decisions/closed/bounded-steps-in-compositions.md).
-What it reads there is bit-exact, the input its twin reads, so its own
-bound holds: `check` holds each output field to the bound of the step or
-part that gives it, at that input, and the rest bit-exact
-(`_pipeline_bounds`, `_parts_bounds`). An output field within k ulps of
-its twin that a later step reads is not within k ulps after it
-(`x - mean_` near `mean_` turns a 4-ulp difference into any number of
-ulps), and no bound is derived for that yet (options 2 and 3): such a
-pipeline stays Python, as does a weighted part whose bound is above 0 (the
-weight's product rounds on each side). The bound read is the step's, not
-its class's: `FunctionTransformer()` composes anywhere,
-`FunctionTransformer(np.exp)` last or as a part (anywhere where this
-platform's numpy kernel reads 0, `function.py`).
+serves in a composition only with `to_native(step, allow_bound=True)` (the
+owner's ruling, loops/native/decisions/closed/bounded-steps-in-compositions.md).
+Where it reads bit-exact input, the input its twin reads, its own bound
+holds (option 1): as a part of a `ColumnTransformer` or `FeatureUnion`,
+times its weight where it has one, or as the first such step of a
+pipeline. A step that reads the output of such a step carries the bound to
+its own output fields (option 2, _carry.py). An output field within k ulps
+of its twin is not within k ulps after `x - mean_` where `x` is near
+`mean_`, but it is within 2k·spacing(x) plus the subtraction's rounding.
+The affine steps carry a bound, each by its module's derivation: the
+scalers but `Normalizer`, the selectors, the mean of `FeatureAgglomeration`
+and the linear projections; and so do the identity and the functions of
+`FunctionTransformer` that move two values no further apart (function.py),
+and a weight. `check` holds each output
+field to the bound of the step or part that gives it, carried by the steps
+after it, and the rest bit-exact (`_pipeline_bounds`, `_parts_bounds`). A
+step that tests a threshold, such as a discretizer, can answer otherwise
+where the bound moves a value across it (option 3), and a step that is not
+affine has no derivation yet: where either reads the output of a step whose
+bound is above 0, the composition stays Python, as it does where an
+infinite weight multiplies such an output. The bound read is the step's,
+not its class's: `FunctionTransformer()` composes anywhere, and
+`FunctionTransformer(np.exp)` where only steps that carry its bound read
+its output (anywhere where this platform's numpy kernel reads 0,
+`function.py`).
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ from __future__ import annotations
 import math
 import numbers
 import warnings
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -65,6 +75,7 @@ from sklearn.preprocessing import (
 from sklearn.utils._indexing import _determine_key_type, _safe_indexing
 
 from sql_transform._udf import _dense
+from sql_transform.native._carry import absolute, as_fields, weighted
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import (
     FieldBounds,
@@ -258,43 +269,147 @@ def _bounds_of(where: str, part: Any) -> PartBounds | None:
     return PartBounds(near, entry.within(part))
 
 
+def _named(names: list[str]) -> str:
+    """`names` quoted, as a message lists them: 'a', 'b' and 'c'."""
+    *rest, last = names
+    return f"{', '.join(rest)} and {last}" if rest else last
+
+
 def _pipeline_bounds(est: Any) -> PartBounds | None:
-    """A pipeline's bound: its last step's, at the input the steps before
-    it hand on, which are bit-exact, so that the twin's last step reads
-    what the entry's reads (option 1 of the ruling,
-    decisions/closed/bounded-steps-in-compositions.md). Where a later step
-    reads the output of a step whose bound is above 0, no bound is derived
-    yet (options 2 and 3): `NotNative`."""
+    """A pipeline's bound, from its first step whose bound is above 0: that
+    step's own, at the input the steps before it hand on, which are
+    bit-exact, so that the twin's step reads what the entry's reads
+    (option 1 of the ruling, decisions/closed/bounded-steps-in-compositions.md).
+    Each later step carries it to its output fields (option 2, `_carry_of`),
+    or refuses where no bound is derived through it: `NotNative`."""
     steps = list(est._iter(with_final=True, filter_passthrough=True))
-    bounds = [_bounds_of(f"Pipeline step {name!r}", step) for _, name, step in steps]
-    for (_, name, step), b in zip(steps[:-1], bounds, strict=False):
+    for first, (_, name, step) in enumerate(steps):  # noqa: B007 — read below
+        b = _bounds_of(f"Pipeline step {name!r}", step)
         if b is not None:
-            raise NotNative(
-                f"Pipeline step {name!r}: {type(step).__name__} is {b.within}, and"
-                " a later step reads its output, for which no bound is derived yet"
-            )
-    if not steps or bounds[-1] is None:
+            break
+    else:
         return None
-    before, last = [step for _, _, step in steps[:-1]], bounds[-1]
+    source = f"step {name!r}, which is {b.within}"
+    later = []
+    for _, name_after, after in steps[first + 1 :]:
+        try:
+            later.append((after, _carry_of(after, source)))
+        except NotNative as e:
+            raise NotNative(f"Pipeline step {name_after!r}: {e}") from None
+    before = [prior for _, _, prior in steps[:first]]
 
     def at(X: Any) -> FieldBounds:
-        for step in before:
-            X = step.transform(X)
-        return last.at(X)
+        for prior in before:
+            X = prior.transform(X)
+        fields = b.at(X)
+        if not later:
+            return fields
+        X = step.transform(X)
+        e = absolute(fields, _numbers(X))
+        for after, carry in later:
+            e = carry(X, e)
+            X = after.transform(X)
+        return as_fields(e)
 
-    return PartBounds(at, f"within the bound of its step {steps[-1][1]!r}")
+    names = [repr(n) for _, n, _ in steps[first:]]
+    s = "s" * (len(names) > 1)
+    return PartBounds(at, f"within the bound of its step{s} {_named(names)}")
+
+
+def _carry_of(est: Any, source: str) -> Callable[[Any, np.ndarray], np.ndarray]:
+    """How `est` carries a bound on its input to its output fields, where
+    it reads the output of `source`, a step whose bound is above 0: a
+    function of the one-row input `X` as the twin hands it and of each
+    input field's bound `e` (`_registry.Carry`, at the twin's `X`), which
+    answers each output field's bound. `NotNative` where no bound is
+    derived through `est` or one of its steps or parts: a step that is not
+    affine, or that tests a threshold."""
+    if isinstance(est, Pipeline):
+        return _pipeline_carry(est, source)
+    if isinstance(est, ColumnTransformer | FeatureUnion):
+        return _parts_carry(est, source)
+    entry = catalog().get(type(est))
+    carry = None if entry is None else entry.carry(est)
+    if carry is None:
+        raise NotNative(
+            f"{type(est).__name__} follows {source}, and no bound is derived"
+            " through it yet"
+        )
+    return lambda X, e: carry(_numbers(X), e)
+
+
+def _pipeline_carry(est: Any, source: str) -> Callable[[Any, np.ndarray], np.ndarray]:
+    """A pipeline's carry: each step's in turn, at the input the twin's
+    steps before it hand on."""
+    steps = []
+    for _, name, step in est._iter(with_final=True, filter_passthrough=True):
+        try:
+            steps.append((step, _carry_of(step, source)))
+        except NotNative as e:
+            raise NotNative(f"Pipeline step {name!r}: {e}") from None
+
+    def carry(X: Any, e: np.ndarray) -> np.ndarray:
+        for step, c in steps:
+            e = c(X, e)
+            X = step.transform(X)
+        return e
+
+    return carry
+
+
+def _parts_carry(est: Any, source: str) -> Callable[[Any, np.ndarray], np.ndarray]:
+    """A `ColumnTransformer`'s or `FeatureUnion`'s carry: each part's, from
+    the bounds of the columns the twin hands it, times its weight
+    (`_carry.weighted`), in the parts' order."""
+    owner = type(est).__name__
+    weights = est.transformer_weights or {}
+    parts = []
+    for name, part, columns in _parts(est):
+        try:
+            c = _carry_of(part, source)
+            w = weights.get(name)
+            if isinstance(w, numbers.Real) and math.isinf(w):
+                raise NotNative(
+                    f"its weight {w!r} multiplies an output that follows {source}"
+                )
+        except NotNative as e:
+            raise NotNative(f"{owner} part {name!r}: {e}") from None
+        parts.append((part, columns, w, c))
+    ct = isinstance(est, ColumnTransformer)
+    n = est.n_features_in_ if ct else 0
+
+    def carry(X: Any, e: np.ndarray) -> np.ndarray:
+        X = _check_X(X) if ct else X
+        out = []
+        for part, columns, w, c in parts:
+            if ct:
+                cols = _columns(columns, n)
+                if _is_empty_column_selection(cols):
+                    continue  # as `_column_transformer` skips it
+                Xp, ep = _safe_indexing(X, columns, axis=1), e[cols]
+            else:
+                Xp, ep = X, e
+            o = c(Xp, ep)
+            if w is not None:
+                o = weighted(o, _numbers(part.transform(Xp)), float(w))
+            out.append(o)
+        return np.concatenate(out) if out else np.zeros(0, np.longdouble)
+
+    return carry
 
 
 def _parts_bounds(est: Any) -> PartBounds | None:
     """A `ColumnTransformer`'s or `FeatureUnion`'s bound: each part's own,
-    at the input the twin hands that part, which is the entry's (an
-    unweighted part: `_part` refuses a weight on a part whose bound is
-    above 0)."""
+    at the input the twin hands that part, which is the entry's, times the
+    part's weight where it has one (`_carry.weighted`)."""
     owner = type(est).__name__
     parts = _parts(est)
+    weights = est.transformer_weights or {}
     bounds = [_bounds_of(f"{owner} part {name!r}", part) for name, part, _ in parts]
     names = [
-        name for (name, _, _), b in zip(parts, bounds, strict=True) if b is not None
+        repr(name) + " (weighted)" * (weights.get(name) is not None)
+        for (name, _, _), b in zip(parts, bounds, strict=True)
+        if b is not None
     ]
     if not names:
         return None
@@ -304,22 +419,26 @@ def _parts_bounds(est: Any) -> PartBounds | None:
     def at(X: Any) -> FieldBounds:
         X = _check_X(X) if ct else X
         ulps, near = [], []
-        for (_, part, columns), b in zip(parts, bounds, strict=True):
+        for (name, part, columns), b in zip(parts, bounds, strict=True):
             if ct:
                 if _is_empty_column_selection(_columns(columns, n)):
                     continue  # as `_column_transformer` skips it
                 Xp = _safe_indexing(X, columns, axis=1)
             else:
                 Xp = X
-            f = _exact_at(part, Xp) if b is None else b.at(Xp)
+            if b is None:
+                f = _exact_at(part, Xp)
+            else:
+                f, w = b.at(Xp), weights.get(name)
+                if w is not None:
+                    y = _numbers(part.transform(Xp))
+                    f = as_fields(weighted(absolute(f, y), y, float(w)))
             ulps.append(f.ulps)
             near.append(f.near)
         return FieldBounds(np.concatenate(ulps), np.concatenate(near))
 
-    *rest, last = [repr(name) for name in names]
-    named = f"{', '.join(rest)} and {last}" if rest else last
-    s = "s" * bool(rest)
-    return PartBounds(at, f"within the bound{s} of its part{s} {named}")
+    s = "s" * (len(names) > 1)
+    return PartBounds(at, f"within the bound{s} of its part{s} {_named(names)}")
 
 
 @translates(Pipeline, composes=True, part_bounds=_pipeline_bounds)
@@ -578,18 +697,20 @@ def _part(
     entry = catalog().get(type(part))
     if entry is None:
         raise NotNative(f"{where}: no translation for {type(part).__name__}")
-    b = None if weight is None else _bounds_of(where, part)
-    if b is not None:
-        raise NotNative(
-            f"{where}: {type(part).__name__} is {b.within}, and a weight"
-            " multiplies its output, for which no bound is derived yet"
-        )
     if _passes(part) and pa.string() in types:
         raise NotNative(
             f"{where} passes a string column through; the step reads output"
             " fields with float()"
         )
     w = None if weight is None else _weight(owner, name, part, weight, types)
+    b = None if w is None or not math.isinf(w) else _bounds_of(where, part)
+    if b is not None:
+        # inf times the two sides' zeros, or values of either sign about
+        # zero, is NaN or an infinity of either sign.
+        raise NotNative(
+            f"{where}: {type(part).__name__} is {b.within}, and its weight"
+            f" {weight!r} is infinite"
+        )
     try:
         out = translate_part(part, x, types, hand)
     except NotNative as e:

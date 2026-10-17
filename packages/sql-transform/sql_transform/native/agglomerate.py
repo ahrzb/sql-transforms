@@ -1,7 +1,16 @@
 """Feature agglomeration: each output field pools the features of one fitted
 cluster, in sklearn's own operation order (sklearn 1.9,
 `AgglomerationTransform.transform` in
-`sklearn/cluster/_feature_agglomeration.py`)."""
+`sklearn/cluster/_feature_agglomeration.py`).
+
+The mean of a cluster carries a bound on its input to its output fields
+(_carry.py): with c the cluster's size, its sum from 0.0 of c values,
+then the quotient, are within γ_c·Σ|v_i|/c + 2**-1075 of the exact mean
+on one side (Higham, §4.2), so with a_i = |x_i|,
+
+    |y_e - y_t| <= ((1 + 4γ_c)·Σ e_i + 2γ_c·Σ a_i)/c + 2**-1074,
+
+summed over the cluster's features."""
 
 from __future__ import annotations
 
@@ -12,8 +21,9 @@ import pyarrow as pa
 from confit import sql as S
 from sklearn.cluster import FeatureAgglomeration
 
+from sql_transform.native._carry import SLACK, TINY, carried, gamma
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import Carry, NotNative, translates
 
 
 def _name(func: Any) -> str:
@@ -21,7 +31,29 @@ def _name(func: Any) -> str:
     return f"np.{name}" if getattr(np, str(name), None) is func else name
 
 
-@translates(FeatureAgglomeration)
+def _carry(est: Any) -> Carry | None:
+    if not est.pooling_func == np.mean:
+        return None
+    labels = np.asarray(est.labels_)
+    size = np.bincount(labels)
+    if not size.all():
+        return None
+    c = size.astype(np.longdouble)
+    g = gamma(c)
+
+    def carry(x: np.ndarray, e: np.ndarray) -> np.ndarray:
+        se = np.zeros(len(size), np.longdouble)
+        sa = np.zeros(len(size), np.longdouble)
+        with np.errstate(all="ignore"):
+            np.add.at(se, labels, np.asarray(e, np.longdouble))
+            np.add.at(sa, labels, np.abs(np.asarray(x, np.longdouble)))
+            out = ((1 + 4 * g) * se + 2 * g * sa) / c + TINY
+        return carried(out * SLACK, se > 0)
+
+    return carry
+
+
+@translates(FeatureAgglomeration, carry=_carry)
 def _agglomeration(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate (NaN and infinity raise), then, for
     # `pooling_func == np.mean` over dense X, each row is

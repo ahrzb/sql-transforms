@@ -145,6 +145,12 @@ family states it in units in the last place (ulps). A bound of 0 is
 bit-exact.
 _Avoid_: tolerance
 
+**Carried bound**:
+The parity bound of an output field of a step that reads the output of a
+step with a parity bound above 0, in a composition. The later step derives
+it from the bound of each field that it reads and from its own rounding.
+_Avoid_: propagated tolerance
+
 **Input guard**:
 A test on the input row that a catalog entry runs, so that the entry traps
 where the validation of its twin raises an error.

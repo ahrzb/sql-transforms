@@ -57,10 +57,22 @@ that request, `to_native(step, allow_bound=True)`. In order:
    part of a `ColumnTransformer` or `FeatureUnion`, and `native.check`
    holds each output field to the bound of the step or part that gives it,
    at the input its twin reads (`compose._pipeline_bounds`,
-   `_parts_bounds`). Left: pass the error scale through affine steps
-   (|A|·S plus their own rounding) and through a part's weight; a map `g`
-   (a distance's square) through a composition; after a discontinuous
-   step, `native.check` reports the flip rate in place of a bound.
+   `_parts_bounds`). T59 served option 2 for the affine steps and a part's
+   weight: each step after a bounded one gives its output fields a carried
+   bound (`_registry.Entry.carry`, `_carry.py`), from the bound of each
+   field it reads at the twin's value and its own rounding. The affine
+   scalers carry one, as do the linear projections (project.py),
+   `FeatureAgglomeration`'s mean, the selectors and `FunctionTransformer`
+   of None, `np.negative`, `np.abs` and the like. Any other step after a
+   bounded one refuses by name. Left: carries for continuous steps that
+   are not affine (`Normalizer`, `PowerTransformer`, the kernel maps, the
+   functions within a bound of their own); a map `g` (a distance's square)
+   through a composition; after a discontinuous step, `native.check`
+   reports the flip rate in place of a bound. Open with the owner: the
+   rows where a projection's sum overflows on one side only, where an
+   output field is infinite or NaN on that side alone, and a later step's
+   validation raises on that side alone
+   ([decisions/open/where-a-sum-overflows.md](decisions/open/where-a-sum-overflows.md)).
 
 ## Needs from confit
 
@@ -184,10 +196,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
   priority for confit. A confit-only reproduction is
   `/mnt/project-files/transforms-loop/t44/reads3.py`: send it to the
   Confit Loop when it runs again.
-- **A logarithm computed once a row.** confit's pass that computes a
-  repeated value once a row (`share.rs`) shares only a value that cannot
-  raise, judged node by node without the facts of its CASE, so it never
-  shares `ln`, bare or under a CASE that rules its raise out.
+- **A logarithm, a root or a trig value computed once a row.** confit's
+  pass that computes a repeated value once a row (`share.rs`) shares only
+  a value that cannot raise, judged node by node without the facts of its
+  CASE, so it never shares `ln`, bare or under a CASE that rules its raise
+  out, nor `log2`, `log10`, `sqrt`, `sin`, `cos` and `tan`, nor any value
+  that reads one.
   `SkewedChi2Sampler` (T52, kernel.py) reads ln(x_i + s) in each of the m
   products of x_i, so confit computes n·m logarithms a row, not n. At 32
   features of 64 components a call of 64 rows serves in 5.9 ms as a list
@@ -197,11 +211,25 @@ that request, `to_native(step, allow_bound=True)`. In order:
   field by field also carries every field's logarithms (the first need
   above), so it builds about as n·m²: 2,048 components over one feature
   ran out of 16 GB of memory. So T52 stays Python past 2,048 products,
-  where a call can take longer than the twin's. When it lands, measure
-  again, lift that cap (`kernel._SKEWED_PRODUCTS`) and refit
-  `kernel._skewed_build_estimate`. Low priority for confit: no other entry
-  reads a logarithm in many products. Send it to the Confit Loop when it
-  runs again.
+  where a call can take longer than the twin's. Since T59 a composition
+  multiplies it: confit computes each value of the steps after such a
+  call at every read, so their build grows with what writing each such
+  value at each read adds to the definition.
+  `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
+  `np.log2`, `FactorAnalysis(8)`, `GaussianRandomProjection(8)` and
+  `FeatureAgglomeration(4)` over 16 features build in 31 s and 3.8 GB as
+  a list, 21 s after `np.tan`, and 0.05 and 0.06 s after `np.exp` and
+  `np.cbrt` (T59's branch at 7d23086). The steps that call them are
+  `PowerTransformer`, the kernel samplers and these functions of
+  `FunctionTransformer`. One composition of T59's parity run ran out of
+  memory in confit's check of its IR (`ir::verify`) under a limit of
+  12 GB. So `to_native` refuses a composition where writing each such
+  value at each read adds more than 500,000 characters to its definition
+  (`_registry.unshared`, `MAX_UNSHARED`). When it lands, measure again,
+  lift those caps (`kernel._SKEWED_PRODUCTS`, `_registry.MAX_UNSHARED`)
+  and refit `kernel._skewed_build_estimate`. Medium priority for confit
+  now: it limits the compositions after these steps that T59 serves. Send
+  it to the Confit Loop when it runs again.
 - **A definition that DuckDB runs with each bound value written once.**
   confit's `SqlFunction.register` spells each bound value out at each of
   its reads (`sql_body`), so a value that many output fields read is
@@ -210,7 +238,19 @@ that request, `to_native(step, allow_bound=True)`. In order:
   of SQL at 8 features of 100 components, and at 64 of 100 DuckDB ran out
   of 16 GB of memory as `native.check` registered it. confit itself builds
   that step in 1.2 s. So `check` holds `Nystroem` to its definition only
-  at few components, and the tests keep to them. Low priority for confit.
+  at few components, and the tests keep to them. Since T59 a composition
+  multiplies it: a step that reads each output field of the step before
+  writes each of them again in each of its own. A `StandardScaler` and four
+  `PCA`s of 8 components over 8 features spell out to 9.6 million
+  characters, from 21,554 in the let form (`sql_lets`, `sql_let_body`).
+  T59's parity run met 120 million characters (`StandardScaler`,
+  `Nystroem`, `IncrementalPCA` and `FastICA`, 86,824 in the let form), and
+  its processes ran out of memory where `check` ran such a definition in
+  DuckDB, so the run skips `check` past 4 million (calib.py, in T59's
+  scripts: DuckDB took 5.75 s and 1.4 GB at 3.2 million). The longest
+  definition that `check` runs in the tests is 6.05 million characters, a
+  `Pipeline` of `catalog_test.py`. Medium priority for confit now: it
+  limits what `check` can hold of the compositions that T59 serves.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
