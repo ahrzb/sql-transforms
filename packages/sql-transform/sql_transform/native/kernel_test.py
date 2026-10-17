@@ -262,6 +262,28 @@ def test_a_negative_output_of_a_scaler_traps():
     assert check(step, to_native(step, strict=True), rows) == 3
 
 
+def test_the_build_estimate_takes_what_builds_within_the_cap():
+    # Measured (`kernel._additive_chi2_build_estimate`): with one sample
+    # step, a struct of 768 features built in 4.5 s and of 1,024 in 8.3 to
+    # 9.6 s; with three, of 128 features in 5.1 s and of 192 in 12.6 s;
+    # with eight, of 128 features in 28.6 s; with 400, of 3 features in
+    # 3.4 s. confit refused the struct of one step over 1,536 features,
+    # past its token limit.
+    for n, steps in [(768, 1), (128, 3), (3, 400)]:
+        assert K._additive_chi2_build_estimate(n, steps) <= K.MAX_BUILD_S
+    for n, steps in [(1024, 1), (1536, 1), (192, 3), (128, 8)]:
+        assert K._additive_chi2_build_estimate(n, steps) > K.MAX_BUILD_S
+
+
+def test_a_step_past_its_estimated_build_stays_python():
+    step = _step(_steps(3, 256), [pa.float64()] * 256, pa.list_(pa.float64(), 1280))
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated \d+ s build, past 7 s \(3 sample steps over 256 features",
+    ):
+        to_native(step, strict=True, allow_bound=True)
+
+
 def _rbf(n: int, m: int = 20, dtype: Any = np.float64, **kw) -> RBFSampler:
     est = RBFSampler(n_components=m, random_state=0, **kw)
     return est.fit(np.random.default_rng(n).normal(size=(8, n)).astype(dtype))

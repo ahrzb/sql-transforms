@@ -42,10 +42,13 @@ and the largest |entry - twin| / (eps·S) is 1.96, at 5 steps of s = 0.3,
 against K = 4. The first field equals the twin's in every row. The
 measured value is evidence for K, not K.
 
-Each output field reads its own feature, so a step builds about as fast as
-a `StandardScaler` of its width: at 1,024 features, in 1.1 s as a list and
-13.2 s as a struct, against 1.0 s and 12.6 s (warm `to_native`, release
-build, master 5edd450, 2026-10-16).
+Each output field reads its own feature. With one sample step, a list
+builds about linearly in the features, and a struct, which `query` reads
+field by field, about as their square: at 1,024 features, in 0.85 to 0.92 s
+and 8.3 to 9.6 s (warm `to_native`, release build, master 6b7e7f1,
+2026-10-17). With more steps, both grow faster: at 3 steps over 256
+features, in 19.5 s and 26.5 s. The entry refuses a step whose build
+`_additive_chi2_build_estimate` estimates past MAX_BUILD_S.
 """
 
 from __future__ import annotations
@@ -185,6 +188,33 @@ def _root(w: S.Expr) -> S.Expr:
     return S.case(w < _ZERO, _NAN).otherwise(S.fn("sqrt", w))
 
 
+def _additive_chi2_build_estimate(n: int, steps: int) -> float:
+    """The seconds of the whole warm `to_native` of the entry, as
+    `_rbf_build_estimate`, from its n features and s sample steps: its F =
+    n·(2s - 1) output fields and its p = n·(s - 1) pairs of a cos and a sin
+    field, by terms in F, n·F, n·p, n²·F and n·p². The struct return is the
+    slower: over 1 s, it builds in 1.2 to 2.3 times the time of the list
+    with 2 steps or more, and 4.2 to 10.7 times with one step, where the
+    list grows about linearly in n. Fitted on the slower return of each
+    shape over 117 shapes (1 to 1,024 features, 1 to 400 steps; builds of
+    0.003 to 51 s; the median of three builds at one step over 896, 960 and
+    1,024 features; master 6b7e7f1, 2026-10-17): over 0.3 s, each within
+    0.84 to 1.22 times the estimate. The cap took on none slower than 7.39 s
+    and refused none faster than 7.07 s. It takes about 900 features of one
+    step, 220 of two, 148 of three, 68 of eight, 32 of 24 or 12 of 100.
+    confit refused the struct of one step over 1,536 features after 2.8 s,
+    past 4,000,000 tokens, and the cap refuses it at an estimated 26 s."""
+    f = n * (2 * steps - 1)
+    p = n * (steps - 1)
+    return (
+        9.06e-4 * f
+        + 3.80e-6 * n * f
+        + 6.92e-5 * n * p
+        + 4.28e-9 * n * n * f
+        + 2.16e-7 * n * p * p
+    )
+
+
 @translates(AdditiveChi2Sampler, scale=_SCALE, scaled=lambda est: not _exact(est))
 def _additive_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `validate_data(..., ensure_non_negative=True)`, where NaN,
@@ -204,6 +234,14 @@ def _additive_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[
         raise NotNative(
             "AdditiveChi2Sampler over boolean features only: the twin answers"
             f" True as 1.0, not sqrt({s!r})"
+        )
+    n = len(x)
+    estimate = _additive_chi2_build_estimate(n, steps)
+    if estimate > MAX_BUILD_S:
+        raise NotNative(
+            f"AdditiveChi2Sampler: an estimated {estimate:.0f} s build, past"
+            f" {MAX_BUILD_S:.0f} s ({steps:,} sample step{'s' * (steps != 1)}"
+            f" over {n:,} features)"
         )
     # NaN, above every number in DuckDB, is the least only where every
     # feature is NaN, which the probe's test traps.
@@ -268,22 +306,23 @@ RBF = ErrorScale(
 
 
 def _rbf_build_estimate(n: int, m: int, apart: bool) -> float:
-    """The seconds confit takes to build the entry (warm, release build)
-    from its n features and m components, where each product reads `x -
-    0.0` (`apart`) or `coalesce(x, NaN)`. Each is about linear in the
-    products n·m, with a term in n²·m. Over 1 s, a struct return builds in
-    0.62 to 1.44 times the time of a list read `x - 0.0` (the list is the
-    slower at 3,072 features or more), and 1.15 to 2.1 times read `coalesce(x,
-    NaN)`. Fitted on the slower return of each shape over 61
-    shapes of each reading (2 to 4,096 features, 1 to 2,000 components;
-    builds of 0.01 to 18.7 s; master 7f96c17, 2026-10-16): over 0.3 s, each
-    within 0.77 to 1.33 times the estimate read `x - 0.0`, and 0.77 to
-    1.28 read `coalesce(x, NaN)`. The cap took on none slower than 6.78 s
-    and 7.54 s, and refused none faster than 7.03 s and 7.01 s. The
-    projections' estimates (project.py) took a struct of 512 features of
-    100 components read `x - 0.0` at 6.9 s, which built in 9.2 s, and one
-    of 1,024 features of 50 read `coalesce(x, NaN)` at 6.8 s, which built
-    in 15.4 s."""
+    """The seconds of the whole warm `to_native` of the entry, release
+    build: the translation, the probe (`_registry._probed`) and confit's
+    trial build (`_registry._builds`). It grows with the n features and m
+    components, where each product reads `x - 0.0` (`apart`) or
+    `coalesce(x, NaN)`. Each is about linear in the products n·m, with a
+    term in n²·m. Over 1 s, a struct return builds in 0.62 to 1.44 times the
+    time of a list read `x - 0.0` (the list is the slower at 3,072 features
+    or more), and 1.15 to 2.1 times read `coalesce(x, NaN)`. Fitted on the
+    slower return of each shape over 61 shapes of each reading (2 to 4,096
+    features, 1 to 2,000 components; builds of 0.01 to 18.7 s; master
+    7f96c17, 2026-10-16): over 0.3 s, each within 0.77 to 1.33 times the
+    estimate read `x - 0.0`, and 0.77 to 1.28 read `coalesce(x, NaN)`. The
+    cap took on none slower than 6.78 s and 7.54 s, and refused none faster
+    than 7.03 s and 7.01 s. The projections' estimates (project.py) took a
+    struct of 512 features of 100 components read `x - 0.0` at 6.9 s, which
+    built in 9.2 s, and one of 1,024 features of 50 read `coalesce(x, NaN)`
+    at 6.8 s, which built in 15.4 s."""
     if apart:
         return (
             7.61e-4 * n
@@ -458,17 +497,17 @@ _SKEWED_PRODUCTS = 2048
 
 
 def _skewed_build_estimate(n: int, m: int) -> float:
-    """The seconds confit takes to build the entry (warm, release build)
-    from its n features and m components, where n·m is at most
-    `_SKEWED_PRODUCTS`. confit computes the logarithm in each product, and
-    a struct read field by field carries every field's logarithms, so a
-    struct grows about as n·m²: one of 1,024 components over one feature
-    builds in 12.8 s, against 0.61 s as a list, and one of 2,048 ran out of
-    16 GB of memory. Fitted on the slower return of each shape over 53
-    shapes (1 to 2,048 features, 1 to 1,024 components; builds of 0.004
-    to 26.1 s; master 220a5e8, 2026-10-16): over 0.3 s, each within 0.75
-    to 1.41 times the estimate. The cap took none slower than 5.18 s and
-    refused none faster than 8.91 s, and it refuses the struct that ran
+    """The seconds of the whole warm `to_native` of the entry, as
+    `_rbf_build_estimate`, from its n features and m components, where n·m
+    is at most `_SKEWED_PRODUCTS`. confit computes the logarithm in each
+    product, and a struct read field by field carries every field's
+    logarithms, so a struct grows about as n·m²: one of 1,024 components
+    over one feature builds in 12.8 s, against 0.61 s as a list, and one of
+    2,048 ran out of 16 GB of memory. Fitted on the slower return of each
+    shape over 53 shapes (1 to 2,048 features, 1 to 1,024 components; builds
+    of 0.004 to 26.1 s; master 220a5e8, 2026-10-16): over 0.3 s, each within
+    0.75 to 1.41 times the estimate. The cap took none slower than 5.18 s
+    and refused none faster than 8.91 s, and it refuses the struct that ran
     out of memory, at an estimated 37 s."""
     return (
         7.40e-4 * n

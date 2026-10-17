@@ -155,22 +155,23 @@ MAX_BUILD_S = 7.0
 
 
 def _build_estimate(n: int, k: int) -> float:
-    """The seconds confit takes to build the entry (warm, release build)
-    of a step whose products read `coalesce(x, NaN)`, past the reach of
+    """The seconds of the whole warm `to_native` (release build) of a step
+    whose products read `coalesce(x, NaN)`, past the reach of
     `_centered_build_estimate` (`_reads_apart`), from its n features and k
-    components. The build is about linear in the products n·k, with terms
-    in n²·k and n·k² past that, and terms in the features and their
-    square. Fitted on the slower return of each shape (a list and a struct;
-    of one component, a scalar and a struct of one field) over 41 shapes of
-    `PCA` (64 to 6,144 features, 1 to 256 components; builds of 0.34 to
-    9.5 s; master af89dae, 2026-10-16): each within 0.90 to 1.18 times the
-    estimate. The cap took on none slower than 7.11 s and refused none
-    faster than 7.12 s. A Gaussian random projection of more components
-    than features (2 to 128 features, 125 to 2,000 components) took 0.76
-    to 1.09 times it over 1 s. Before T48 the estimate had no term in n²
-    (master bea1372): these builds took 1.09 to 1.89 times it, and one
-    component over 6,144 features built in 9.5 s against an estimate of
-    5.0 s (finding 87)."""
+    components: the translation, the probe (`_registry._probed`) and
+    confit's trial build (`_registry._builds`). The build is about linear in
+    the products n·k, with terms in n²·k and n·k² past that, and terms in
+    the features and their square. Fitted on the slower return of each shape
+    (a list and a struct; of one component, a scalar and a struct of one
+    field) over 41 shapes of `PCA` (64 to 6,144 features, 1 to 256
+    components; builds of 0.34 to 9.5 s; master af89dae, 2026-10-16): each
+    within 0.90 to 1.18 times the estimate. The cap took on none slower than
+    7.11 s and refused none faster than 7.12 s. A Gaussian random projection
+    of more components than features (2 to 128 features, 125 to 2,000
+    components) took 0.76 to 1.09 times it over 1 s. Before T48 the estimate
+    had no term in n² (master bea1372): these builds took 1.09 to 1.89 times
+    it, and one component over 6,144 features built in 9.5 s against an
+    estimate of 5.0 s (finding 87)."""
     p = n * k
     return (
         6.10e-4 * n + 9.28e-5 * p + 2.14e-8 * p * n + 6.82e-8 * p * k + 1.14e-7 * n * n
@@ -178,31 +179,31 @@ def _build_estimate(n: int, k: int) -> float:
 
 
 def _centered_build_estimate(n: int, k: int) -> float:
-    """The seconds confit takes to build the entry where each product reads
-    a value that confit shares: the feature's difference from the mean of
-    a centered projection that subtracts one (`_project_centered`), or,
-    since T44, the feature as `x - 0.0` (`_reads_apart`). It is
-    `_build_estimate`, a term in n²·k, and a term in n² where the return
-    can be a list, of two components or more. A list over shared values
-    builds about as their number squared, where a struct, which `query`
-    reads field by field, and a single component do not: `PCA` of 2
-    components over 4,096 features, read `x - 0.0`, built in 11.3 s as a
-    list and 5.9 s as a struct (PLANS.md, "Needs from confit"). Fitted on
-    the slower return of each shape over 177 shapes (64 to 6,144 features,
-    1 to 256 components; builds of 0.29 to 17 s; `PCA` read `x - 0.0`,
+    """The seconds of the whole warm `to_native`, as `_build_estimate`,
+    where each product reads a value that confit shares: the feature's
+    difference from the mean of a centered projection that subtracts one
+    (`_project_centered`), or, since T44, the feature as `x - 0.0`
+    (`_reads_apart`). It is `_build_estimate`, a term in n²·k, and a term in
+    n² where the return can be a list, of two components or more. A list
+    over shared values builds about as their number squared, where a struct,
+    which `query` reads field by field, and a single component do not: `PCA`
+    of 2 components over 4,096 features, read `x - 0.0`, built in 11.3 s as
+    a list and 5.9 s as a struct (PLANS.md, "Needs from confit"). Fitted on
+    the slower return of each shape over 177 shapes (64 to 6,144 features, 1
+    to 256 components; builds of 0.29 to 17 s; `PCA` read `x - 0.0`,
     `FastICA` in both readings, `PLSRegression` and
-    `LinearDiscriminantAnalysis` by "svd"; master af89dae, 2026-10-16):
-    each within 0.74 to 1.27 times the estimate, and 0.86 to 1.21 over
-    1 s. The cap took on none slower than 6.85 s and refused none faster
-    than 6.88 s. It takes about 220 components over 256 features, 101 over
-    512, 39 over 1,024, 9 over 2,048, or one over 4,700, against 233, 116,
-    51, 18 and 5,000 for `_build_estimate`. A Gaussian random projection of
-    more components than features, read `x - 0.0`, took 0.70 to 0.93 times
-    it over 1 s. On the builds of T41 (master 9186b3d), each centered
-    projection that subtracts a mean took 0.75 to 1.06 times it. Before
-    T48 the estimate had no term in n²: these builds took 0.96 to 2.04
-    times it, and `FastICA` of 2 components over 4,096 features built in
-    11.7 s as a list against an estimate of 5.9 s (finding 87)."""
+    `LinearDiscriminantAnalysis` by "svd"; master af89dae, 2026-10-16): each
+    within 0.74 to 1.27 times the estimate, and 0.86 to 1.21 over 1 s. The
+    cap took on none slower than 6.85 s and refused none faster than 6.88 s.
+    It takes about 220 components over 256 features, 101 over 512, 39 over
+    1,024, 9 over 2,048, or one over 4,700, against 233, 116, 51, 18 and
+    5,000 for `_build_estimate`. A Gaussian random projection of more
+    components than features, read `x - 0.0`, took 0.70 to 0.93 times it
+    over 1 s. On the builds of T41 (master 9186b3d), each centered
+    projection that subtracts a mean took 0.75 to 1.06 times it. Before T48
+    the estimate had no term in n²: these builds took 0.96 to 2.04 times it,
+    and `FastICA` of 2 components over 4,096 features built in 11.7 s as a
+    list against an estimate of 5.9 s (finding 87)."""
     return (
         _build_estimate(n, k)
         + 3.01e-8 * n * n * k

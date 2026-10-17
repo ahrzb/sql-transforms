@@ -144,28 +144,30 @@ MAX_BUILD_S = 7.0
 
 
 def _build_estimate(fields: list[S.Expr], est: Any) -> float:
-    """The seconds confit takes to build these output fields (warm, release
-    build) into the query that reads each output field. confit binds once a
-    value that the body reads more than once (#412), so the build follows
-    the distinct nodes the output fields read, not the text they spell, plus
-    a term in the nodes times the output fields and one in the output fields
-    times the features. Since the input guard's tests read each number as it
-    is (T46, `_registry._plain`), a guard adds no term of its own: fitted
-    with one, the test on the knots under `extrapolation="error"` added a
-    fifth of the last term, and the test on NaN and ±inf under
-    `handle_missing="error"` none. Fitted on the slower of a struct and a
-    list return over 113 warm builds of one instance over 0.3 s (8 to 320
-    features, degrees 1, 3 and 5, 5 and 8 knots, the five extrapolations, up
-    to 3,200 output fields; 15 of them again under `handle_missing="zeros"`;
-    0.3 to 15.8 s): each within 0.80 to 1.29 times the estimate (T46 on
-    master 12aca98, 2026-10-16). The cap took on none slower than 7.05 s and
-    refused none faster than 7.15 s, and it reaches 7 s at about 170 to 230
-    features of degree 3 and 8 knots, or 110 to 160 of degree 5, by the
-    extrapolation (170 to 230, and 100 to 140, fitted before T44's reads on
-    master 318575b). Past the estimate, confit refuses the struct return of
-    256 features of degree 5 and 8 knots, and of 320 features of degree 3
-    under `continue` (past 4,000,000 tokens); the fit leaves them out. The
-    estimate is one estimator's: a step's instances compound it linearly."""
+    """The seconds of confit's trial build alone (`_registry._builds`, warm,
+    release build), without the translation and the probe that `to_native`
+    also runs: the build of these output fields into the query that reads
+    each output field. confit binds once a value that the body reads more
+    than once (#412), so the build follows the distinct nodes the output
+    fields read, not the text they spell, plus a term in the nodes times the
+    output fields and one in the output fields times the features. Since the
+    input guard's tests read each number as it is (T46, `_registry._plain`),
+    a guard adds no term of its own: fitted with one, the test on the knots
+    under `extrapolation="error"` added a fifth of the last term, and the
+    test on NaN and ±inf under `handle_missing="error"` none. Fitted on the
+    slower of a struct and a list return over 113 warm builds of one
+    instance over 0.3 s (8 to 320 features, degrees 1, 3 and 5, 5 and 8
+    knots, the five extrapolations, up to 3,200 output fields; 15 of them
+    again under `handle_missing="zeros"`; 0.3 to 15.8 s): each within 0.80
+    to 1.29 times the estimate (T46 on master 12aca98, 2026-10-16). The cap
+    took on none slower than 7.05 s and refused none faster than 7.15 s, and
+    it reaches 7 s at about 170 to 230 features of degree 3 and 8 knots, or
+    110 to 160 of degree 5, by the extrapolation (170 to 230, and 100 to
+    140, fitted before T44's reads on master 318575b). Past the estimate,
+    confit refuses the struct return of 256 features of degree 5 and 8
+    knots, and of 320 features of degree 3 under `continue` (past 4,000,000
+    tokens); the fit leaves them out. The estimate is one estimator's: a
+    step's instances compound it linearly."""
     seen: set[int] = set()
     stack = list(fields)
     while stack:  # no recursion: a recurrence can be deep
