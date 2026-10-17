@@ -12,7 +12,7 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**49 of 68** in-scope transformers are native (84 listed by sklearn).
+**50 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -89,7 +89,7 @@ owner's ruling).
 | `SkewedChi2Sampler` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `SparseCoder` | not yet |  |
 | `SparsePCA` | not yet |  |
-| `SparseRandomProjection` | not yet |  |
+| `SparseRandomProjection` | native | bit-exact; within K·eps·S + τ (S its error scale) for some configurations, served only with `allow_bound=True` |
 | `SplineTransformer` | native | bit-exact |
 | `StackingClassifier` | composition | a final estimator over parts' predictions |
 | `StackingRegressor` | composition | a final estimator over parts' predictions |

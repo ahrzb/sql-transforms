@@ -509,6 +509,62 @@ def test_a_sparse_random_projection_the_entry_does_not_read_stays_python():
         to_native(_step(est), strict=True)
 
 
+def _repeating(k: int, u: int) -> SparseRandomProjection:
+    """A projection of 16 features whose k components repeat u sums of two
+    entries in turn, each sum of its own values."""
+    est = _sparse(16, k, 0.1)
+    rng = np.random.default_rng(u)
+    sums = [(rng.permutation(16)[:2], [1.0, -1.0 - i * 2.0**-20]) for i in range(u)]
+    rows = [sums[j % u] for j in range(k)]
+    est.components_ = sparse.csr_matrix(
+        (
+            np.concatenate([v for _, v in rows]),
+            np.concatenate([i for i, _ in rows]),
+            np.arange(0, 2 * k + 1, 2),
+        ),
+        shape=(k, 16),
+    )
+    return est
+
+
+def test_a_sparse_random_projection_takes_a_fit_by_its_estimated_build():
+    from sql_transform.native import project as P
+
+    # Over 4,096 features at the "auto" density, 32 components built in
+    # 6.1 s and 64 in 8.1 s. A struct read field by field builds slowly
+    # where its fields repeat a sum: 1,024 components over 512 sums in
+    # 7.2 s, and over 1,024 sums, none repeated, in 0.42 s
+    # (`_sparse_build_estimate`).
+    assert P._sparse_build_estimate(_sparse(4096, 32).components_) <= P.MAX_BUILD_S
+    assert P._sparse_build_estimate(_sparse(4096, 64).components_) > P.MAX_BUILD_S
+    assert P._repeated_sums(_repeating(1024, 512).components_) == 512
+    assert P._sparse_build_estimate(_repeating(1024, 1024).components_) <= 1.0
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated 9 s build, past 7 s \(2,048 stored entries of 1,024"
+        r" components over 16 features\)",
+    ):
+        to_native(_step(_repeating(1024, 512)), strict=True)
+
+
+def test_a_sparse_random_projection_of_a_long_component_stays_python():
+    # Each stored entry of a sum in scipy's order nests two levels of SQL,
+    # and confit's parser refuses an expression nested past 1,000 levels.
+    def longest(m):
+        est = _sparse(500, 2)
+        est.components_ = sparse.csr_matrix(
+            (np.ones(m + 1), np.r_[np.arange(m)[::-1], 0], [0, m, m + 1]),
+            shape=(2, 500),
+        )
+        return _step(est)
+
+    step = longest(480)
+    rows = _rows(_wide_rows(0, 500)[::6])
+    assert check(step, to_native(step, strict=True), rows, ulps=0) == rows.num_rows
+    with pytest.raises(NotNative, match="a component of 481 stored entries, past the"):
+        to_native(longest(481), strict=True)
+
+
 def test_the_kernel_probe_finds_scipys_sum_and_a_fused_one(monkeypatch):
     from sql_transform.native import project as P
 

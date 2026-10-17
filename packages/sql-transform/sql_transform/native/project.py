@@ -7,6 +7,10 @@ divided by `sqrt(explained_variance_)`, which sklearn clips below at eps.
 centered projections, `FastICA`, `LinearDiscriminantAnalysis` and the PLS
 family, subtract a fitted mean from the row before the product, and may
 divide it by a fitted scale: `_project_centered` gives their bound.
+`SparseRandomProjection` multiplies by the CSR matrix that its fit makes,
+which scipy sums in stored order, and its entry is bit-exact
+(`_sparse_project`); of density 1, its components are dense, and it is
+`GaussianRandomProjection`'s product.
 
 The twin hands each product to BLAS: `ddot` for one component, `gemv` for
 more. OpenBLAS picks its kernel for the CPU at run time and sums with fused
@@ -346,11 +350,79 @@ def csr_sum_is_scipys() -> bool:
     return True
 
 
-def _sparse_build_estimate(n: int, p: int) -> float:
+# The most entries that `_sparse_project` sums in one output field: a sum
+# in scipy's order nests two levels of SQL an entry, and confit's parser
+# refuses an expression nested past 1,000 levels. A component of 493 stored
+# entries builds as a scalar, a list and a struct, and one of 494 does not
+# as a struct (release build, master daf0e4c with T57's project.py,
+# 2026-10-17); 480 leaves room for an input nested deeper than a column.
+_MAX_STORED = 480
+
+
+def _repeated_sums(c: Any) -> int:
+    """The distinct sums that two output fields or more of the CSR matrix
+    `c` spell alike: the same entries stored in the same order, of the same
+    values. A field of no stored entry is the constant 0.0, which no field
+    shares."""
+    reads: dict[tuple[bytes, bytes], int] = {}
+    for i in range(c.shape[0]):
+        lo, hi = c.indptr[i], c.indptr[i + 1]
+        if lo < hi:
+            key = (c.indices[lo:hi].tobytes(), c.data[lo:hi].tobytes())
+            reads[key] = reads.get(key, 0) + 1
+    return sum(1 for v in reads.values() if v >= 2)
+
+
+def _sparse_build_estimate(c: Any) -> float:
     """The seconds of the whole warm `to_native` (release build) of a
-    `SparseRandomProjection` of n features whose components store p entries
-    in all."""
-    return 6.10e-4 * n + 9.28e-5 * p
+    `SparseRandomProjection` whose CSR `components_` is `c`: the
+    translation, the probe (`_registry._probed`) and confit's trial build
+    (`_registry._builds`), of the slower return. The entry cannot tell the
+    returns apart, and a struct, which `query` reads field by field, took
+    0.96 to 64 times as long as a list where it took 1 s or more (PLANS.md,
+    "Needs from confit").
+
+    It reads the n features, the k components, the p stored entries, the
+    sum q of each component's stored entries squared, and the r sums that
+    two output fields or more repeat (`_repeated_sums`). The terms in n and
+    n² are the probe's and the input guard's, as in `_build_estimate`. The
+    terms in p and q are the sums': a long sum builds about as its entries
+    squared. The terms in n·k, n²·k and k² are a struct's field reads,
+    each of which passes the n features and carries the k fields. The term
+    in k·r is a struct's too: confit computes a sum that two fields repeat
+    once a row (`share.rs`), and a struct read field by field then builds
+    in about 17 µs a field and repeated sum.
+
+    Fitted on the slower return of each shape over 116 shapes that built
+    in 0.30 to 42.7 s: 88 fits of 16 to 16,384 features and 1 to 4,096
+    components at the "auto" density, 1/3 and 0.1, and 28 projections of
+    16 and 64 features whose 512 to 4,096 fields repeat sums (master
+    daf0e4c with T57's project.py, 2026-10-17). Each took 0.66 to 2.57
+    times the estimate, and 0.66 to 1.54 over 1 s. The cap took on none
+    slower than 6.75 s and refused none faster than 7.20 s. Over 50 random
+    fits not fitted on (22 to 5,261 features, 2 to 3,904 components, the
+    "auto" density or 0.02 to 0.5; builds of 0.29 to 12.3 s), each took
+    0.80 to 1.26 times the estimate, and the cap took on none slower than
+    6.76 s and refused none faster than 8.39 s. At the "auto" density the
+    cap takes about 2,900 components over 16 features, 4,500 over 64,
+    2,100 over 256, 560 over 1,024, 210 over 2,048 or 45 over 4,096, and
+    one component over 6,000 features. Each shape that confit refused, past
+    4,000,000 tokens (a struct of about 105,000 stored entries or more) or
+    past the code generator's size limit, is estimated at 17 s or more."""
+    k, n = c.shape
+    m = np.diff(c.indptr).astype(np.float64)
+    p, q = float(m.sum()), float(m @ m)
+    r = _repeated_sums(c)
+    return (
+        4.99e-4 * n
+        + 1.08e-7 * n * n
+        + 6.43e-5 * p
+        + 2.72e-7 * q
+        + 6.55e-6 * n * k
+        + 2.22e-9 * n * n * k
+        + 1.30e-7 * k * k
+        + 1.68e-5 * k * r
+    )
 
 
 @translates(
@@ -386,7 +458,13 @@ def _sparse_project(
     if not np.isfinite(c.data).all():
         raise NotNative(f"{name}: components_ not all finite")
     k, n = c.shape
-    estimate = _sparse_build_estimate(n, c.nnz)
+    longest = int(np.diff(c.indptr).max(initial=0))
+    if longest > _MAX_STORED:
+        raise NotNative(
+            f"{name}: a component of {longest:,} stored entries, past the"
+            f" {_MAX_STORED} whose sum in scipy's order confit parses"
+        )
+    estimate = _sparse_build_estimate(c)
     if estimate > MAX_BUILD_S:
         raise NotNative(
             f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
