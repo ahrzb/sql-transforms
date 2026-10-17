@@ -102,15 +102,23 @@ again at each read, and builds as before."""
 from __future__ import annotations
 
 import functools
+import warnings
+import weakref
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
-from scipy import sparse
+from scipy import linalg, sparse
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
-from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
+from sklearn.decomposition import (
+    PCA,
+    FactorAnalysis,
+    FastICA,
+    IncrementalPCA,
+    TruncatedSVD,
+)
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
@@ -675,3 +683,200 @@ def _project_centered(
     if n == k == 1 and not isinstance(est, LinearDiscriminantAnalysis):
         return sums
     return [s + f64(0.0) for s in sums]
+
+
+def _cov_z(w: np.ndarray, psi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """`Wpsi` and `cov_z` in the twin's own spelling
+    (`FactorAnalysis.transform`): `w / psi`, and scipy's inverse of
+    `I + Wpsi @ w.T`, with BLAS's product."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # scipy warns of an ill-conditioned matrix
+        ih = np.eye(len(w))
+        wpsi = w / psi
+        return wpsi, linalg.inv(ih + np.dot(wpsi, w.T))
+
+
+def _factor_inverse(v: np.ndarray, w: np.ndarray) -> np.ndarray | None:
+    """`inv(I + v @ w.T)` in numpy's operations on whole arrays alone, each
+    one IEEE operation (add, multiply, divide, sqrt) rounded on its own, in
+    an order fixed here: no BLAS, no LAPACK and no reduction, so that every
+    host computes the same bits. The product is the sum of the features'
+    outer products, in order; then the Cholesky factor L of the sum's lower
+    triangle, L's inverse by forward substitution, and the inverse as the
+    sum of the outer products of the inverse's rows (exactly symmetric).
+    None where a pivot is not positive or a value is not finite."""
+    k, n = v.shape
+    g = np.zeros((k, k))
+    for f in range(n):
+        g = g + np.multiply.outer(v[:, f], w[:, f])
+    a = np.eye(k) + g
+    low = np.zeros((k, k))
+    for p in range(k):
+        if not a[p, p] > 0.0:
+            return None
+        r = np.sqrt(a[p, p])
+        low[p, p] = r
+        col = a[p + 1 :, p] / r
+        low[p + 1 :, p] = col
+        a[p + 1 :, p + 1 :] = a[p + 1 :, p + 1 :] - np.multiply.outer(col, col)
+    rest = np.eye(k)
+    inv_low = np.zeros((k, k))
+    for j in range(k):
+        inv_low[j] = rest[j] / low[j, j]
+        rest[j + 1 :] = rest[j + 1 :] - np.multiply.outer(low[j + 1 :, j], inv_low[j])
+    c = np.zeros((k, k))
+    for p in range(k):
+        c = c + np.multiply.outer(inv_low[p], inv_low[p])
+    return c if np.isfinite(c).all() else None
+
+
+class _Factor(NamedTuple):
+    """What `FactorAnalysis`'s entry and error scale read: the twin's
+    `Wpsi`, the entry's `cov_z` (`_factor_inverse`), and the twin's
+    `cov_z` less the entry's, the last two as long doubles too."""
+
+    v: np.ndarray
+    c: np.ndarray
+    v_ld: np.ndarray
+    abs_v: np.ndarray
+    abs_c: np.ndarray
+    dc: np.ndarray
+    abs_dc: np.ndarray
+
+
+# `_factor`'s answers: an estimator's id -> (a weak reference to it, the
+# fitted arrays they read, the answer). Holding the arrays keeps their ids.
+_FACTORS: dict[int, tuple[Any, np.ndarray, np.ndarray, _Factor]] = {}
+
+
+def _factor(est: Any) -> _Factor:
+    """`_Factor` of `est`, computed once for its fitted arrays: `check`
+    reads it at each row. Raises `NotNative` where the entry's `cov_z` or
+    the twin's is not finite."""
+    w, psi = est.components_, est.noise_variance_
+    hit = _FACTORS.get(id(est))
+    if hit is not None and hit[0]() is est and hit[1] is w and hit[2] is psi:
+        return hit[3]
+    v, twin = _cov_z(np.asarray(w), np.asarray(psi))
+    c = _factor_inverse(np.asarray(v, np.float64), np.asarray(w, np.float64))
+    if c is None or not np.isfinite(twin).all():
+        raise NotNative(
+            "FactorAnalysis: I + Wpsi @ components_.T has no finite inverse"
+            " (noise_variance_ of the fit too small)"
+        )
+    ld = np.longdouble
+    dc = np.asarray(twin, ld) - np.asarray(c, ld)
+    out = _Factor(
+        v=np.asarray(v, np.float64),
+        c=c,
+        v_ld=np.asarray(v, ld),
+        abs_v=np.abs(np.asarray(v, ld)),
+        abs_c=np.abs(np.asarray(c, ld)),
+        dc=dc,
+        abs_dc=np.abs(dc),
+    )
+    if len(_FACTORS) >= 16:
+        _FACTORS.clear()
+    _FACTORS[id(est)] = (weakref.ref(est), w, psi, out)
+    return out
+
+
+@functools.cache
+def cov_z_repeats() -> bool:
+    """Whether this platform's BLAS and LAPACK answer the twin's `cov_z`
+    (`_cov_z`) with the same bits for the same fitted arrays wherever they
+    sit, on probe fits of either memory layout at eight alignments. The
+    error scale of `FactorAnalysis` computes the twin's `cov_z` again for
+    `check`, and bounds the twin only where that is the twin's own.
+    OpenBLAS copies its operands to aligned buffers, and its sums do not
+    depend on where they sit; MKL without its conditional numerical
+    reproducibility may. Each layout has its own sums: an `F` copy of a
+    `C` array answers apart for 300 features (T58)."""
+    rng = np.random.default_rng(20261017)
+    for n, k in ((7, 3), (64, 17), (300, 33)):
+        w = rng.normal(size=(k, n)) * 10.0 ** rng.uniform(-1, 1, n)
+        psi = 10.0 ** rng.uniform(-12, 0, n)
+        for order in "CF":
+            want = None
+            for off in range(8):
+                buf = np.empty(k * n + off)
+                at = buf[off:].reshape((k, n), order=order)
+                at[...] = w
+                got = _cov_z(at, psi)[1]
+                if want is None:
+                    want = got
+                elif not np.array_equal(got.view(np.int64), want.view(np.int64)):
+                    return False
+    return True
+
+
+def _factor_k(est: Any) -> int:
+    k, n = np.shape(est.components_)
+    return n + k + 1
+
+
+def _factor_s(est: Any, x: np.ndarray) -> np.ndarray:
+    f = _factor(est)
+    d = np.asarray(np.asarray(x, dtype=np.float64) - est.mean_, dtype=np.longdouble)
+    s1 = f.abs_v @ np.abs(d)
+    t = f.v_ld @ d
+    return (
+        s1 @ f.abs_c
+        + s1 @ f.abs_dc
+        + np.abs(t @ f.dc) / (np.longdouble(_factor_k(est)) * np.longdouble(_EPS))
+    )
+
+
+def _factor_tau(est: Any) -> np.ndarray:
+    f = _factor(est)
+    k, n = np.shape(est.components_)
+    return (n * (f.abs_c.sum(axis=0) + f.abs_dc.sum(axis=0)) + 2 * k + 1) * _TINY
+
+
+FACTOR = ErrorScale(k=_factor_k, s=_factor_s, tau=_factor_tau)
+
+
+def _factor_build_estimate(n: int, k: int) -> float:
+    """The seconds of the whole warm `to_native` of a `FactorAnalysis`:
+    its first product as a centered projection's, and its second over the
+    k sums of the first (a placeholder until T58's grid is fitted)."""
+    return _centered_build_estimate(n, k) + _centered_build_estimate(k, k)
+
+
+@translates(FactorAnalysis, scale=FACTOR)
+def _factor_analysis(
+    est: Any, x: list[S.Expr], types: list[pa.DataType]
+) -> list[S.Expr]:
+    """`FactorAnalysis` (`transform`, sklearn 1.9): with
+    `Wpsi = components_ / noise_variance_` and
+    `cov_z = linalg.inv(I + Wpsi @ components_.T)`, the twin answers
+    `((X - mean_) @ Wpsi.T) @ cov_z`, each product by BLAS, and computes
+    `cov_z` with BLAS and LAPACK on each call."""
+    name = type(est).__name__
+    w = np.asarray(est.components_)
+    psi = np.asarray(est.noise_variance_)
+    m = np.asarray(est.mean_)
+    k, n = w.shape
+    if k == 0:
+        raise NotNative(f"{name}: no output fields")
+    if not (
+        np.isfinite(w).all() and np.isfinite(m).all() and (psi > 0).all()
+        and np.isfinite(psi).all()
+    ):
+        raise NotNative(
+            f"{name}: a fitted mean, component or noise variance not all"
+            " finite, or a noise variance not positive"
+        )
+    if not cov_z_repeats():
+        raise NotNative(
+            f"{name}: this platform's BLAS or LAPACK answers cov_z apart for"
+            " the same arrays (cov_z_repeats)"
+        )
+    _refuse_past_cap(name, n, k, _factor_build_estimate)
+    f = _factor(est)
+    d = [xi - f64(mi) for xi, mi in zip(x, m, strict=True)]
+    t = [_tree([di * f64(vi) for di, vi in zip(d, vj, strict=True)]) for vj in f.v]
+    return [
+        _tree([ti * f64(ci) for ti, ci in zip(t, f.c[:, j], strict=True)]) + f64(0.0)
+        for j in range(k)
+    ]
