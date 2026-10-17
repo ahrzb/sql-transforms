@@ -97,16 +97,18 @@ again at each read, and builds as before."""
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
+from scipy import sparse
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
 from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.random_projection import GaussianRandomProjection
+from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import ErrorScale, NotNative, translates
@@ -296,6 +298,106 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
             e = e / f64(s[j])
         out.append(e)
     return out
+
+
+def _csr_sum(c: Any, x: list[Any], const: Callable[[float], Any]) -> list[Any]:
+    """`x @ c.T` as scipy's `csr_matvec` sums it, for a CSR matrix `c`: each
+    output field from 0.0, adding each stored product in stored order, each
+    product and sum rounded on its own. Over doubles (`const=float`), the
+    twin's answer; over expressions (`const=f64`), the entry's."""
+    data = np.asarray(c.data, dtype=np.float64)
+    out = []
+    for i in range(c.shape[0]):
+        e = const(0.0)
+        for jj in range(c.indptr[i], c.indptr[i + 1]):
+            e = e + x[c.indices[jj]] * const(data[jj])
+        out.append(e)
+    return out
+
+
+@functools.cache
+def csr_sum_is_scipys() -> bool:
+    """Whether this platform's scipy sums the product of rows and a CSR
+    matrix's transpose as `_csr_sum` does, on probe matrices with unsorted
+    indices, one row at a time and three: a build that fuses the
+    multiply-add (aarch64 may) answers otherwise, and SQL cannot fuse it.
+    The first probe tells them apart on every build: a·x - a·x is 0 unfused
+    and the rounding error of a·x fused."""
+    a = 1.0 + 2.0**-30
+    probes = [
+        (sparse.csr_matrix(([a, a], [0, 1], [0, 2]), shape=(1, 2)), np.array([[a, -a]]))
+    ]
+    rng = np.random.default_rng(20261017)
+    for n, k in ((3, 2), (8, 5), (40, 7), (300, 4)):
+        nnz = rng.integers(1, n + 1, size=k)
+        indices = np.concatenate([rng.permutation(n)[:m] for m in nnz])
+        data = rng.choice([-1.0, 1.0], size=len(indices)) * 10.0 ** rng.uniform(-3, 3)
+        c = sparse.csr_matrix((data, indices, np.r_[0, np.cumsum(nnz)]), shape=(k, n))
+        probes.append(
+            (c, rng.normal(size=(3, n)) * 10.0 ** rng.integers(-8, 8, size=(3, n)))
+        )
+    for c, xs in probes:
+        want = np.array([_csr_sum(c, [float(v) for v in row], float) for row in xs])
+        if not (
+            np.array_equal(xs @ c.T, want)
+            and np.array_equal(np.vstack([r[None, :] @ c.T for r in xs]), want)
+        ):
+            return False
+    return True
+
+
+def _sparse_build_estimate(n: int, p: int) -> float:
+    """The seconds of the whole warm `to_native` (release build) of a
+    `SparseRandomProjection` of n features whose components store p entries
+    in all."""
+    return 6.10e-4 * n + 9.28e-5 * p
+
+
+@translates(
+    SparseRandomProjection,
+    scale=MATVEC,
+    scaled=lambda est: not sparse.issparse(est.components_),
+    apart=lambda est: sparse.issparse(est.components_) or _reads_apart(est),
+)
+def _sparse_project(
+    est: Any, x: list[S.Expr], types: list[pa.DataType]
+) -> list[S.Expr]:
+    """`SparseRandomProjection` (`transform`, sklearn 1.9): `validate_data`,
+    which raises on NaN and the infinities, then `safe_sparse_dot(X,
+    components_.T)`. The fit makes `components_` a CSR matrix, or, of
+    density 1 (and of one feature at the "auto" density), a dense one of
+    ±1/sqrt(n_components), which the twin hands to BLAS as
+    `GaussianRandomProjection`'s: that one is held to the matvec bound
+    (`_project`).
+
+    For a dense row and a CSR matrix, scipy computes `components_ @ X.T`
+    by `csr_matvec`: each output field from 0.0, adding the stored
+    products in stored order (the fit stores the indices unsorted), each
+    product and sum rounded on its own. The entry spells the same sum, so
+    it is bit-exact (`_csr_sum`), where the kernel probe finds scipy's sums
+    so (`csr_sum_is_scipys`). A fit in float32 stores float32 components,
+    which scipy widens to float64, exactly, before the product."""
+    c = est.components_
+    if not sparse.issparse(c):
+        return _project(est, x, types)
+    name = type(est).__name__
+    if c.format != "csr":
+        raise NotNative(f"{name}: components_ in {c.format}, not the csr the fit makes")
+    if not np.isfinite(c.data).all():
+        raise NotNative(f"{name}: components_ not all finite")
+    k, n = c.shape
+    estimate = _sparse_build_estimate(n, c.nnz)
+    if estimate > MAX_BUILD_S:
+        raise NotNative(
+            f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
+            f" ({c.nnz:,} stored entries of {k:,} components over {n:,} features)"
+        )
+    if not csr_sum_is_scipys():
+        raise NotNative(
+            f"{name}: this platform's scipy does not sum a CSR product as the entry"
+            " does (the kernel probe)"
+        )
+    return _csr_sum(c, x, f64)
 
 
 def _centered(est: Any) -> tuple[Any, Any, np.ndarray]:

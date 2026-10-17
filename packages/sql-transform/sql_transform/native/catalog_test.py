@@ -79,7 +79,7 @@ from sklearn.preprocessing import (
     StandardScaler,
     TargetEncoder,
 )
-from sklearn.random_projection import GaussianRandomProjection
+from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 from threadpoolctl import threadpool_limits
 
 from sql_transform._udf import PythonTransform, _dense
@@ -845,6 +845,13 @@ FIXTURES[TruncatedSVD] = [
 FIXTURES[GaussianRandomProjection] = [
     lambda: GaussianRandomProjection(n_components=1, random_state=0),
     lambda: GaussianRandomProjection(n_components=4, random_state=1),
+]
+# Bit-exact over its sparse components, in scipy's order; of one feature at
+# the "auto" density, its components are dense, within the matvec bound.
+FIXTURES[SparseRandomProjection] = [
+    lambda: SparseRandomProjection(n_components=1, random_state=0),
+    lambda: SparseRandomProjection(n_components=4, density=1 / 3, random_state=1),
+    lambda: SparseRandomProjection(n_components=3, dense_output=True, random_state=2),
 ]
 # The centered projections (project.py, `_project_centered`), within their
 # own error scale. The generator fits a classifier to a binary target, so a
