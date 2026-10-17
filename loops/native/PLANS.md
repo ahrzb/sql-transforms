@@ -6,8 +6,19 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. Reading 8 (`../reporting.md`, KPI crosses a mark: T47 made
-   `sklearn.cluster` wholly native).
+1. Finding 91 (reading 8): `AdditiveChi2Sampler` (kernel.py) has no build
+   estimate, so no cap keeps its slow builds Python: with `sample_steps=3`
+   over 256 features (1,280 output fields), `to_native` takes 28.5 s. On
+   new data of the same size (`ac2_build.py` in
+   `/mnt/project-files/transforms-loop/reading-8/`), `to_native` takes
+   20.1 to 21.0 s as a list and 27.3 to 28.3 s as a struct, and its trial
+   build 19.8 to 20.7 s and 26.9 to 28.1 s. Fit an estimate on the whole
+   warm `to_native`, as T47 to T52 did, and cap the entry with it
+   (`project._refuse_past_cap`). In the same PR, make the
+   docstring of each estimate say which time it estimates (finding 92:
+   T46's forest, isotonic, quantile and spline estimates time the trial
+   build alone, `_registry._builds`; T47's, T48's, T51's and T52's the
+   whole warm `to_native`, which also runs the probe).
 2. The rest of "Ruled 2026-10-06, to build", item 1 (`Nystroem` next, in
    kernel.py; `FactorAnalysis` last), one PR each; then the rest of item
    2.
@@ -436,6 +447,15 @@ Configurations a translator declines (`NotNative`), each with its ground:
   takes 9.4 to 10.9 s, and the cap estimates only that). Probe a special
   value over all features in one call of n rows first, and probe the
   features one at a time only where that call raises.
+- One time for every cap (reading 8, finding 92). T46 fitted the forest,
+  isotonic, quantile and spline estimates on the trial build alone; T47,
+  T48, T51 and T52 fitted theirs on the whole warm `to_native`, which
+  also runs the probe. So a cap of 7 s bounds the trial build in T46's
+  families and the whole `to_native` in the others: `PCA` over 4,600
+  features of one component takes 5.6 to 5.9 s in `to_native`, of which
+  the trial build is 1.5 to 1.6 s. Fit T46's four estimates again on the
+  warm `to_native`, so that each cap counts the probe, after the cheaper
+  probe above.
 
 - Since T44's reads, a forest over many features builds in up to 1.22
   times the time (100 trees of depth 5 over 128 features: 2.7 s, against
@@ -453,7 +473,7 @@ Configurations a translator declines (`NotNative`), each with its ground:
   build, master 12aca98 with T46).
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
-  `LocallyLinearEmbedding`, `KernelPCA`, `Nystroem`, `KNeighborsTransformer`,
+  `LocallyLinearEmbedding`, `KernelPCA`, `KNeighborsTransformer`,
   `RadiusNeighborsTransformer`, `IterativeImputer`, `BernoulliRBM`,
   `NMF`/`MiniBatchNMF`, the dictionary learners, `SparsePCA`,
   `LatentDirichletAllocation`, `NeighborhoodComponentsAnalysis`. Each needs a design first.
