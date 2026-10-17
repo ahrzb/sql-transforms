@@ -86,9 +86,9 @@ class ErrorScale:
     one per output field. `s(est, x)` is S for each output field at one
     row `x`: the features as the twin's `transform` sees them (NaN for
     NULL, a boolean as 0 or 1), as long doubles, so that a formula kept in
-    numpy's arithmetic does not overflow where the field does not (where a
-    long double is a double, as on macOS on arm64, an S past DBL_MAX
-    bounds nothing). `g` maps both sides before they are compared: the
+    numpy's arithmetic does not overflow where the field does. On hosts
+    where long double has no extra range, the checker rejects a non-finite
+    bound as inconclusive. `g` maps both sides before they are compared: the
     identity unless the family names one (a distance compares its
     square). `on` names what a map compares, as a message reads it after
     the bound ("on the squares"): a map and its name come together."""
@@ -732,6 +732,25 @@ def unshared(fn: SqlFunction) -> int:
 
 
 def _translate(step: Any, allow_bound: bool) -> SqlFunction:
+    try:
+        return _translate_step(step, allow_bound)
+    except NotNative:
+        raise
+    except Exception as e:  # noqa: BLE001 — translation is best-effort, including probes
+        kinds = ", ".join(
+            sorted(
+                {type(est).__name__ for est in getattr(step, "instances", {}).values()}
+            )
+        )
+        raise NotNative(
+            f"{kinds or type(step).__name__}: translation failed with"
+            f" {type(e).__name__}: {e}"
+        ) from None
+
+
+def _translate_step(step: Any, allow_bound: bool) -> SqlFunction:
+    from sql_transform.native.polynomial import refuse_large_polynomial
+
     if not isinstance(step, PythonTransform):
         raise NotNative(f"{type(step).__name__} is not a PythonTransform")
     if not step.instances:
@@ -740,6 +759,8 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
     missing = sorted(k.__name__ for k in kinds if k not in _CATALOG)
     if missing:
         raise NotNative(f"no translation for {', '.join(missing)}")
+    for est in step.instances.values():
+        refuse_large_polynomial(est)
     fields = _output_fields(step)
     types = list(step.takes.types)
     takes = pa.schema([pa.field(_ID, pa.int64()), *step.takes])
@@ -878,9 +899,7 @@ def _builds(step: PythonTransform, fn: SqlFunction) -> None:
             static_tables={},
             udfs=[fn],
         )
-    except (ValueError, RuntimeError) as e:
-        # A refusal (ValueError), or a limit met while compiling, such as
-        # Cranelift's function size (RuntimeError): the step stays Python.
+    except Exception as e:  # noqa: BLE001 — an engine failure leaves the step Python
         raise NotNative(f"confit does not build it: {e}") from None
 
 

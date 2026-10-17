@@ -20,6 +20,7 @@ list of the same width.
 **claim: entry-same-answer.** **The same answer.** By default, an entry
 serves only where it is bit-exact. It is bit-exact where it does the twin's
 operations in the twin's order, or where a kernel probe reads 0.
+The kernel probe compares zero signs before it permits bit-exact serving.
 
 - An entry with a parity bound above 0 serves only when the caller asks
   for it, with `to_native(step, allow_bound=True)`. Such an entry can
@@ -110,15 +111,32 @@ NULL struct. An id that the step does not know raises an error.
 **claim: entry-swap-check.** **A check that swaps the entry.**
 `native.check` serves one query with confit twice: once with the twin and
 once with the entry. It also checks that the entry answers exactly what
-DuckDB answers for the entry's own definition.
+DuckDB answers for the entry's own definition. It uses the installed DuckDB
+with the optimizer disabled, not confit's version-pinned test oracle.
 
-*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/guard_test.py::test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else`.
+The return value counts answered rows with a non-NULL instance id.
+The check also tests NULL-id answers and matching traps, but does not count
+them as answered-value evidence. If no answered non-NULL-id row remains,
+`check` raises `ParityError`.
+
+If the bound is non-finite, or a comparison map overflows on a finite
+answer, `check` raises `ParityError`. An overflow in the checker is
+inconclusive, never a parity pass. The error names the step, configuration,
+row, output field and both values.
+
+*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/guard_test.py::test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else`, `native/check_test.py::test_null_ids_do_not_supply_parity_evidence`, `native/check_test.py::test_a_comparison_map_cannot_pass_by_overflowing`, `native/check_test.py::test_a_checker_overflow_names_the_configuration_row_field_and_values`, `native/check_test.py::test_check_does_not_require_the_test_oracles_version_pin`.
 
 ## Converting a step
 
 **claim: to-native-best-effort.** `to_native` does what it can. A step
 with no translation comes back unchanged, and that step is always correct
-to serve. `to_native(step, strict=True)` raises an error instead.
+to serve. `to_native(step, strict=True)` raises `NotNative` instead.
+Build failures, failed probes and nesting beyond Python's recursion limit
+follow the same rule. The refusal names its reason.
+
+`PolynomialFeatures` refuses more than 13,041 generated terms, including
+terms removed by a minimum degree. It checks this limit before allocating
+the output metadata.
 
 - confit computes a value once for each row only if the value cannot
   raise an error. It counts a call of `ln`, `log2`, `log10`, `sqrt`,
@@ -132,7 +150,7 @@ to serve. `to_native(step, strict=True)` raises an error instead.
   returns the composition unchanged (`MAX_UNSHARED` in
   `native/_registry.py`).
 
-*Evidence:* `native/catalog_test.py::test_a_step_without_a_translation_comes_back_unchanged`, `native/catalog_test.py::test_to_native_is_idempotent`, `native/compose_test.py::test_a_composition_that_confit_cannot_share_stays_python`, `native/compose_test.py::test_unshared_writes_each_value_that_confit_cannot_share_at_each_read`.
+*Evidence:* `native/catalog_test.py::test_a_step_without_a_translation_comes_back_unchanged`, `native/catalog_test.py::test_to_native_is_idempotent`, `native/catalog_test.py::test_translation_returns_a_function_or_only_not_native`, `native/catalog_test.py::test_every_probed_family_declines_when_confit_cannot_run`, `native/catalog_test.py::test_a_polynomial_refuses_before_allocating_output_metadata`, `native/compose_test.py::test_a_composition_that_confit_cannot_share_stays_python`, `native/compose_test.py::test_unshared_writes_each_value_that_confit_cannot_share_at_each_read`.
 
 **claim: explicit-native-selection.** Native selection is explicit and has
 no automatic cache. The native contract and parity bounds apply

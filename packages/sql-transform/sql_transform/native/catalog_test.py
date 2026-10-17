@@ -13,8 +13,10 @@ import math
 import os
 import random
 import re
+import sys
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -114,7 +116,7 @@ pytestmark = pytest.mark.filterwarnings(
 def _one_blas_thread():
     # The suite runs on xdist workers, and BLAS threads per worker
     # oversubscribe the cores: an RFECV fixture took 35 s instead of 0.4 s.
-    with threadpool_limits(limits=1):
+    with threadpool_limits(limits=int(os.environ.get("NATIVE_BLAS_THREADS", "1"))):
         yield
 
 
@@ -403,6 +405,38 @@ FIXTURES[SplineTransformer] = [
     ),
 ]
 
+# #432's mutation-proven "zeros" periodic shapes. The direct infinity
+# regression covers degrees 0–3 and 5, but not degree 4 or degree 2 without
+# the bias; these also run on the generated types, fits and instance ids.
+FIXTURES[SplineTransformer] += [
+    lambda: SplineTransformer(
+        degree=0, n_knots=5, extrapolation="periodic", handle_missing="zeros"
+    ),
+    lambda: SplineTransformer(
+        degree=1, n_knots=4, extrapolation="periodic", handle_missing="zeros"
+    ),
+    narrow(
+        lambda: SplineTransformer(
+            degree=2,
+            n_knots=5,
+            extrapolation="periodic",
+            handle_missing="zeros",
+            include_bias=False,
+        ),
+        SPLINE_FEATURES,
+    ),
+    narrow(
+        lambda: SplineTransformer(
+            degree=4,
+            n_knots=9,
+            knots="quantile",
+            extrapolation="periodic",
+            handle_missing="zeros",
+        ),
+        SPLINE_FEATURES,
+    ),
+]
+
 
 # IsotonicRegression: one feature (the generator reads its one-d input tag)
 # and a continuous target. `increasing` only shapes the fit; `y_max=-0.0`
@@ -687,10 +721,8 @@ FIXTURES[FeatureAgglomeration] = [
 
 
 def positive(factory: Callable[[], Any]) -> Callable[[], Any]:
-    """`factory`'s fits and rows draw strictly positive numbers (an
-    estimator that rejects the rest): absolute values, a fitted zero made
-    one. A serving zero stays: Box-Cox's twin rejects it, and the additive
-    chi2 map answers 0."""
+    """`factory` fits positive numbers; serving also challenges its domain
+    with negatives and signed zeros."""
     factory.positive = True  # type: ignore[attr-defined]
     return factory
 
@@ -967,8 +999,15 @@ FIXTURES[Pipeline].append(
 # A string feature's fitted values, and the unseen ones serving adds.
 VOCAB = ["a", "b", "c", "d", "é", "日本"]
 UNSEEN = ["zz", "", "A"]
-# Serving values beyond the fit's range: signed zeros, extremes, infinities.
-EDGES = [0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324, math.inf, -math.inf]
+# Finite edges and non-finite values run separately: a wide edge row must
+# not almost always trap on an infinity before its finite values are compared.
+EDGES = [
+    0.0, -0.0, 1e-300, -1e300, 1e300, 5e-324, -5e-324,
+    sys.float_info.max, math.inf, -math.inf, math.nan,
+]  # fmt: skip
+FINITE_EDGES = [v for v in EDGES if math.isfinite(v)]
+NONFINITE_EDGES = [v for v in EDGES if not math.isfinite(v)]
+OFFSETS = (1e4, 1e8, 1e12)
 # A row of only these has a norm under sklearn's zero-scale threshold.
 SMALL = [0.0, -0.0, 1e-300, -5e-324, 1e-17, -2.5e-16]
 # The widest step drawn, in output fields: a wider fixture checks the same
@@ -986,18 +1025,26 @@ BOOL_STEPS = 0.07
 # a function the twin computes in a narrower dtype on a boolean array, a
 # whitened component of rounding noise, a FastICA fit that broke down, and
 # a FactorAnalysis whose cov_z is too ill-conditioned for a bound that
-# holds on any host, or whose LU has two pivot candidates about alike.
+# holds on any host, or whose LU has two pivot candidates about alike; and a
+# standardized PowerTransformer whose fitted mean_ or scale_ is non-finite.
 REFUSED = (
     "over boolean features only",
     "a whitened component of rounding noise",
     "its fit broke down",
     "a mean_ of 2**970 or more",
+    "a mean_ or scale_ not finite",
     "too ill-conditioned for a bound",
     "two pivot candidates of the LU",
 )
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
+SEED_BASE = int(os.environ.get("NATIVE_SEED_BASE", "0"))
+
+
+@dataclass(frozen=True)
+class _Fixture(PythonTransform):
+    fit_rows: dict[int, np.ndarray] = field(default_factory=dict, compare=False)
 
 
 def _fit_matrix(
@@ -1042,6 +1089,8 @@ def _fit_matrix(
             c = np.full(n, rng.uniform(-5, 5))  # zero variance
         elif kind == 3:
             c = rng.exponential(rng.uniform(0.1, 1e6), n)
+        elif kind == 5:
+            c = rng.normal(rng.choice(OFFSETS), 1.0, n)
         else:
             c = rng.integers(-3, 4, n).astype(float)  # few distinct values
         if t == pa.int64():
@@ -1129,7 +1178,9 @@ def _runs(est: Any) -> list[Any]:
     if isinstance(est, Pipeline):
         return [r for _, _, s in est._iter() for r in _runs(s)]
     if isinstance(est, ColumnTransformer):
-        parts = [t for _, t, _ in est.transformers] + [est.remainder]
+        parts = [t for _, t, _ in getattr(est, "transformers_", est.transformers)]
+        if not hasattr(est, "transformers_"):
+            parts.append(est.remainder)
     elif isinstance(est, FeatureUnion):
         parts = [t for _, t in est.transformer_list]
     else:
@@ -1151,7 +1202,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
             (pa.float64(), pa.int64(), pa.bool_())[int(np.searchsorted(SHARES, r))]
             for r in rng.random(n_features)
         ]
-    kinds = [int(rng.integers(5)) for _ in range(n_features)]
+    kinds = [int(rng.integers(6)) for _ in range(n_features)]
     runs = _runs(cls_factory())
     proto = runs[0]  # what reads the row
     positive = getattr(cls_factory, "positive", False)
@@ -1193,6 +1244,7 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
     # instances share one width, as a fitted step's do: an instance that
     # fits to another width ends the step before it.
     instances: dict[int, Any] = {}
+    fit_rows: dict[int, np.ndarray] = {}
     width = 0
     with warnings.catch_warnings():  # all-missing columns, by design
         warnings.simplefilter("ignore")
@@ -1201,11 +1253,13 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
                 X, y = _fit_matrix(
                     rng, kinds, types, holes, marker, positive, regression
                 )
+                original = X.copy()
                 est = cls_factory().fit(X, y)
                 w = np.asarray(_dense(est.transform(X[:1]))).reshape(1, -1).shape[1]
                 if k and w != width:
                     break
                 instances[k], width = est, w
+                fit_rows[k] = original
         except (ValueError, TypeError, IndexError):
             # sklearn rejects the data, or numpy cannot run the fit on it
             # (a quantile of a boolean column subtracts booleans), or the
@@ -1220,15 +1274,19 @@ def _draw(rng: np.random.Generator, cls_factory) -> PythonTransform | None:
         returns = pa.list_(pa.float64(), width)
     else:
         returns = pa.struct([(f"f{j}", pa.float64()) for j in range(width)])
-    return PythonTransform("tf", instances, takes, returns)
+    return _Fixture("tf", instances, takes, returns, fit_rows)
 
 
 def _value(rng: random.Random, regime: str) -> float | None:
     r = rng.random()
     if regime == "nulls" and r < 0.3:
         return None
-    if regime == "edges" and r < 0.3:
-        return rng.choice(EDGES)
+    if regime == "finite-edges" and r < 0.3:
+        return rng.choice(FINITE_EDGES)
+    if regime == "nonfinite" and r < 0.3:
+        return rng.choice(NONFINITE_EDGES)
+    if regime == "magnitude":
+        return rng.choice(OFFSETS) + rng.uniform(-10.0, 10.0)
     if regime == "small":
         return rng.choice(SMALL)
     if regime == "ints":
@@ -1236,43 +1294,246 @@ def _value(rng: random.Random, regime: str) -> float | None:
     return rng.uniform(-1e3, 1e3)
 
 
+def _fitted_values(est: Any) -> list[float]:
+    """Float values in fitted state, including nested arrays and objects
+    (for example spline knots), and the fitted parts of a composition."""
+    values: list[float] = []
+    seen: dict[int, Any] = {}
+
+    def collect(v):
+        if isinstance(v, float | np.floating):
+            if np.isfinite(v):
+                values.append(float(v))
+            return
+        if id(v) in seen:
+            return
+        seen[id(v)] = v
+        if isinstance(v, np.ndarray):
+            for x in v.flat:
+                collect(x)
+        elif isinstance(v, np.void) and v.dtype.names:
+            for name in v.dtype.names:
+                collect(v[name])
+        elif isinstance(v, dict):
+            for x in v.values():
+                collect(x)
+        elif isinstance(v, list | tuple):
+            for x in v:
+                collect(x)
+        elif hasattr(v, "__dict__"):
+            collect(vars(v))
+        elif hasattr(v, "__getstate__"):
+            state = v.__getstate__()
+            if state is not None:
+                collect(state)
+
+    for part in _runs(est):
+        for name, value in vars(part).items():
+            if name.endswith("_"):
+                collect(value)
+    return values
+
+
 def _rows(step: PythonTransform, seed: int, positive: bool = False) -> pa.Table:
     rng = random.Random(seed)  # noqa: S311
-    n = 40
-    ids = [rng.choice([None, *step.instances]) for _ in range(n)]
-    # A row's regime: plain values; some edges; some NULLs (where most
-    # twins answer and a validating one raises); all small; or few distinct
-    # integers (a category, or an imputer's numeric missing marker).
+    ids, rows = [], []
+    keys = list(step.instances)
+    fit_rows = getattr(step, "fit_rows", {})
+
+    def append(iid, row):
+        ids.append(iid)
+        rows.append(row)
+
+    # Both exact replay (categorical domains) and one-ulp replay (continuous
+    # boundaries). Never pair one instance's training row with another's id.
+    for i in range(12):
+        iid = keys[i % len(keys)]
+        if iid not in fit_rows:
+            continue
+        X = fit_rows[iid]
+        row = list(X[(seed + i) % len(X)])
+        append(iid, row)
+        append(
+            iid,
+            [
+                float(np.nextafter(v, math.inf if i % 2 else -math.inf))
+                if f.type == pa.float64() and v is not None
+                else v
+                for f, v in zip(step.takes, row, strict=True)
+            ],
+        )
+
+    # A bounded sample of fitted constants, each at and beside both signs.
+    # The seed rotates through the full flattened state rather than always
+    # choosing its first coefficient.
+    constants = {iid: _fitted_values(est) for iid, est in step.instances.items()}
+    for i in range(3):
+        iid = keys[i % len(keys)]
+        values = constants[iid]
+        if not values or iid not in fit_rows:
+            continue
+        v = values[(seed * 3 + i) % len(values)]
+        base = list(fit_rows[iid][0])
+        for sign in (v, -v):
+            for value in (
+                sign,
+                np.nextafter(sign, -np.inf),
+                np.nextafter(sign, np.inf),
+            ):
+                append(
+                    iid,
+                    [
+                        float(value) if f.type == pa.float64() else x
+                        for f, x in zip(step.takes, base, strict=True)
+                    ],
+                )
+
+    start = len(rows)
     regimes = rng.choices(
-        ["plain", "edges", "nulls", "small", "ints"], [45, 15, 15, 10, 15], k=n
+        ["plain", "finite-edges", "nonfinite", "nulls", "small", "ints", "magnitude"],
+        [25, 15, 5, 15, 10, 15, 15],
+        k=40,
     )
-    cols: dict[str, pa.Array] = {"__iid": pa.array(ids, pa.int64())}
-    for f in step.takes:
-        if f.type == pa.string():
-            strs = [
-                None
-                if g == "nulls" and rng.random() < 0.3
-                else rng.choice(VOCAB + UNSEEN)
-                for g in regimes
-            ]
-            cols[f.name] = pa.array(strs, pa.string())
-            continue
+    for i, regime in enumerate(regimes):
+        row = []
+        for f in step.takes:
+            if f.type == pa.string():
+                v = (
+                    None
+                    if regime == "nulls" and rng.random() < 0.3
+                    else rng.choice(VOCAB + UNSEEN)
+                )
+            elif f.type == pa.bool_():
+                v = (
+                    None
+                    if regime == "nulls" and rng.random() < 0.3
+                    else rng.random() < 0.5
+                )
+            else:
+                v = EDGES[i] if i < len(EDGES) else _value(rng, regime)
+                if positive and v is not None:
+                    v = abs(v)
+            row.append(v)
+        append(rng.choice(keys), row)
+    if positive:
+        for v in (-1.0, -5e-324, -0.0):
+            append(keys[0], [v] * len(step.takes))
+    # Fixed 5%, independent of the number of fitted instances; preserve
+    # the replay and deterministic edge rows' own ids.
+    for i in rng.sample(range(start + len(EDGES), start + 40), round(len(rows) * 0.05)):
+        ids[i] = None
+    cols = {"__iid": pa.array(ids, pa.int64())}
+    for j, f in enumerate(step.takes):
+        vals = [r[j] for r in rows]
         if f.type == pa.bool_():
-            bits = [
-                None if g == "nulls" and rng.random() < 0.3 else rng.random() < 0.5
-                for g in regimes
-            ]
-            cols[f.name] = pa.array(bits, pa.bool_())
-            continue
-        vals = [_value(rng, g) for g in regimes]
-        if positive:
-            vals = [None if v is None else abs(v) for v in vals]
-        if f.type == pa.int64():
+            vals = [None if v is None or math.isnan(v) else bool(v) for v in vals]
+        elif f.type == pa.int64():
             vals = [
-                None if v is None else round(max(-(2**62), min(2**62, v))) for v in vals
+                None
+                if v is None or math.isnan(v)
+                else round(max(-(2**62), min(2**62, v)))
+                for v in vals
             ]
         cols[f.name] = pa.array(vals, f.type)
     return pa.table(cols)
+
+
+def _row_can_overflow(est: Any, X: Any) -> bool:
+    """The open overflow question's rows, not a failed parity comparison.
+
+    Test the absolute terms of fitted matrix products in units of DBL_MAX,
+    before multiplying: this test must also work on a 64-bit long double.
+    Compositions inspect the actual row each part reads and its carried bound.
+    """
+    from sql_transform.native._carry import absolute
+    from sql_transform.native.compose import _columns, _parts
+
+    if isinstance(est, Pipeline):
+        part_X = X
+        for _, _, part in est._iter():
+            if _row_can_overflow(part, part_X):
+                return True
+            part_X = part.transform(part_X)
+    elif isinstance(est, ColumnTransformer | FeatureUnion):
+        for _, part, columns in _parts(est):
+            part_X = X
+            if columns is not None:
+                indices = _columns(columns, np.shape(X)[1])
+                if not indices:
+                    continue
+                part_X = np.asarray(X, dtype=object)[:, indices]
+            if _row_can_overflow(part, part_X):
+                return True
+    else:
+        entry = catalog().get(type(est))
+        if entry is None or entry.scale_for(est) is None:
+            return False
+        x = np.asarray(_dense(X), dtype=np.longdouble).reshape(-1)
+        if not np.isfinite(x).all():
+            return False  # keep the separate rejected-domain rows
+        # sklearn stores output-by-feature matrices in components_/centres,
+        # and feature-by-output matrices in scalings_/rotations_/weights.
+        for name in (
+            "components_",
+            "cluster_centers_",
+            "subcluster_centers_",
+            "scalings_",
+            "x_rotations_",
+            "x_weights_",
+        ):
+            if name == "x_weights_" and hasattr(est, "x_rotations_"):
+                continue  # transform reads rotations where the fit gives both
+            c = getattr(est, name, None)
+            if c is None:
+                continue
+            c = np.asarray(_dense(c), dtype=np.longdouble)
+            if name in ("scalings_", "x_rotations_", "x_weights_"):
+                c = c.T
+            if name == "scalings_" and hasattr(est, "_max_components"):
+                c = c[: est._max_components]
+            if c.ndim != 2 or c.shape[1] != len(x):
+                continue
+            if (
+                name == "components_"
+                and np.ndim(getattr(est, "noise_variance_", None)) == 1
+            ):
+                c = c / np.asarray(est.noise_variance_, dtype=np.longdouble)
+            d = x
+            for mean in ("xbar_", "_x_mean"):
+                if hasattr(est, mean):
+                    d = d - getattr(est, mean)
+            if hasattr(est, "_x_std"):
+                d = d / est._x_std
+            if np.any(np.abs(c) @ (np.abs(d) / sys.float_info.max) >= 1):
+                return True
+        return False
+    entry = catalog()[type(est)]
+    parts = entry.part_bounds(est)
+    if parts is None:
+        return False
+    y = np.asarray(_dense(est.transform(X)), dtype=np.longdouble).reshape(-1)
+    e = absolute(parts.at(X), y)
+    return bool(np.any(np.abs(y) / sys.float_info.max + e / sys.float_info.max >= 1))
+
+
+def _gate_rows(step: PythonTransform, rows: pa.Table) -> pa.Table:
+    """Keep raw overflow rows for strict xfails, not the default parity gate.
+
+    The interim rule keeps check strict and serves entries unchanged:
+    loops/native/decisions/open/where-a-sum-overflows.md.
+    """
+    from sql_transform.native._check import _twin_input
+
+    keep = []
+    for i, iid in enumerate(rows.column("__iid").to_pylist()):
+        try:
+            risk = iid is not None and _row_can_overflow(
+                step.instances[iid], _twin_input(step, rows, i)
+            )
+        except (ValueError, TypeError, IndexError):
+            risk = False  # preserve rows whose twin rejects the input
+        keep.append(not risk)
+    return rows.filter(keep)
 
 
 def test_every_entry_has_fixtures():
@@ -1280,27 +1541,52 @@ def test_every_entry_has_fixtures():
 
 
 @pytest.mark.parametrize(
-    "cls, j, seed",
+    "cls, j",
     [
-        pytest.param(c, j, s, id=f"{c.__name__}-{j}-{s}")
+        pytest.param(
+            c,
+            j,
+            id=f"{c.__name__}-{j}",
+            marks=pytest.mark.skipif(
+                np.finfo(np.longdouble).maxexp == 1024
+                and c is FactorAnalysis
+                and j in (0, 2),
+                reason=(
+                    "64-bit long double overflows FactorAnalysis's bound arithmetic"
+                    " despite finite answers within the rescaled bound"
+                ),
+            ),
+        )
         for c, fs in FIXTURES.items()
         for j in range(len(fs))
-        for s in range(SEEDS)
     ],
 )
-def test_an_entry_matches_its_twin(cls, j, seed):
+def test_an_entry_matches_its_twin(cls, j):
     make = FIXTURES[cls][j]
-    step = _step(make, seed, j)
-    try:
-        # A configuration within a bound above 0 is checked to that bound.
-        native = to_native(step, strict=True, allow_bound=True)
-    except NotNative as e:
-        # A wide step may outgrow what confit builds; a narrow one may not,
-        # unless it is a configuration refused by name (REFUSED).
-        if len(step.takes) <= 4 and not any(r in str(e) for r in REFUSED):
-            raise
-        pytest.skip(f"stays Python: {e}")
-    check(step, native, _rows(step, seed, getattr(make, "positive", False)))
+    answered = 0
+    refused = []
+    for seed in range(SEED_BASE, SEED_BASE + SEEDS):
+        step = _step(make, seed, j)
+        try:
+            native = to_native(step, strict=True, allow_bound=True)
+        except NotNative as e:
+            if len(step.takes) <= 4 and not any(r in str(e) for r in REFUSED):
+                raise
+            refused.append((seed, str(e)))
+            continue
+        try:
+            answered += check(
+                step,
+                native,
+                _gate_rows(step, _rows(step, seed, getattr(make, "positive", False))),
+            )
+        except ParityError as e:
+            raise ParityError(
+                f"{cls.__name__} configuration {j}, seed {seed}: {e}"
+            ) from e
+    # Keep the 64-row default floor even when named fit refusals leave only
+    # one accepted seed (FastICA(whiten=False) answers 63 with 8 replays).
+    assert answered >= 8 * SEEDS, (answered, "answered id rows", refused)
 
 
 def test_a_seed_draws_the_same_step_under_any_global_random_state():
@@ -1331,6 +1617,337 @@ def _answers(step: PythonTransform, make) -> list[str]:
         except Exception as e:  # noqa: BLE001 - the twin's error is its answer
             out.append(type(e).__name__)
     return out
+
+
+def test_replay_rows_keep_their_own_instance_and_challenge_both_sides():
+    step = _step(StandardScaler, 0)
+    rows = _rows(step, 0).to_pylist()
+    for i in range(12):
+        iid = list(step.instances)[i % len(step.instances)]
+        fit = step.fit_rows[iid][i % len(step.fit_rows[iid])]
+        exact, nudged = rows[2 * i : 2 * i + 2]
+        assert exact["__iid"] == nudged["__iid"] == iid
+        for f, v in zip(step.takes, fit, strict=True):
+            if f.type == pa.float64() and math.isfinite(v):
+                assert exact[f.name] == v
+                assert nudged[f.name] == np.nextafter(
+                    v, math.inf if i % 2 else -math.inf
+                )
+    assert sum(r["__iid"] is None for r in rows) == round(len(rows) * 0.05)
+
+
+def test_fitted_constants_reach_rows_inside_nested_compositions():
+    X = np.array([[2.0], [4.0], [6.0]])
+    est = make_pipeline(make_pipeline(StandardScaler())).fit(X)
+    step = _Fixture("tf", {0: est}, pa.schema([("x0", pa.float64())]), fit_rows={0: X})
+    rows = _rows(step, 0).column("x0").to_pylist()
+    for value in (4.0, -4.0):
+        assert value in rows
+        assert np.nextafter(value, -np.inf) in rows
+        assert np.nextafter(value, np.inf) in rows
+
+
+def test_positive_fixtures_still_challenge_the_rejected_domain():
+    step = _step(FIXTURES[PowerTransformer][0], 0)
+    values = _rows(step, 0, positive=True).column("x0").to_pylist()
+    assert -1.0 in values and -5e-324 in values
+    assert "-0.0" in list(map(repr, values))
+
+
+def test_the_default_gate_keeps_safe_extremes_and_rejected_domain_rows():
+    est = PCA(n_components=1).fit([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+    est.components_ = np.array([[1.0, 1.0]])
+    step = PythonTransform(
+        "tf", {0: est}, pa.schema([("x0", pa.float64()), ("x1", pa.float64())])
+    )
+    rows = pa.table(
+        {
+            "__iid": pa.array([0, 0, None, 0], pa.int64()),
+            "x0": [sys.float_info.max, 1e300, sys.float_info.max, math.inf],
+            "x1": [sys.float_info.max, 1e300, sys.float_info.max, 1.0],
+        }
+    )
+    assert _gate_rows(step, rows).equals(rows.slice(1))
+    est.components_ = np.array([[0.25, 0.25]])
+    assert _gate_rows(step, rows).equals(rows)
+    X = np.random.default_rng(0).normal(size=(12, 2))
+    y = np.arange(12) % 2
+    lda = LinearDiscriminantAnalysis().fit(X, y)
+    lda.scalings_ = np.array([[0.25, 2.0], [0.25, 2.0]])
+    assert not _row_can_overflow(lda, [[sys.float_info.max] * 2])
+    pls = PLSRegression(n_components=1, scale=False).fit(X, y)
+    pls.x_rotations_[:] = 0.25
+    pls.x_weights_[:] = 2.0
+    assert not _row_can_overflow(pls, [[sys.float_info.max] * 2])
+
+
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).maxexp == 1024,
+    reason="64-bit long double overflows S or an intermediate term before K*eps*S",
+)
+@pytest.mark.parametrize(
+    "cls, cfg, seed, offset",
+    [
+        (FastICA, 0, 3, 7),
+        (LinearDiscriminantAnalysis, 1, 0, 7),
+        (LinearDiscriminantAnalysis, 2, 7, 7),
+        (PLSRegression, 1, 3, 7),
+        (PLSCanonical, 1, 3, 7),
+        (PLSSVD, 1, 5, 7),
+        (FactorAnalysis, 0, 5, 7),
+        (FactorAnalysis, 2, 5, 18),
+    ],
+    ids=lambda v: v.__name__ if isinstance(v, type) else str(v),
+)
+def test_extreme_finite_pairs_fit_a_computable_bound(cls, cfg, seed, offset):
+    step = _step(FIXTURES[cls][cfg], seed, cfg)
+    rows = _rows(step, seed)
+    row = rows.slice(rows.num_rows - 40 + offset, 1)
+    assert check(step, to_native(step, strict=True, allow_bound=True), row) == 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=ParityError,
+    reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
+)
+def test_a_projection_sum_overflow_remains_a_strict_mismatch():
+    step = _step(FIXTURES[GaussianRandomProjection][1], 3, 1)
+    rows = _rows(step, 3)
+    row = rows.slice(rows.num_rows - 40 + 7, 1)
+    assert _gate_rows(step, row).num_rows == 0
+    check(step, to_native(step, strict=True, allow_bound=True), row)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=ParityError,
+    reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
+)
+@pytest.mark.parametrize("cls", [BisectingKMeans, Birch, Nystroem])
+def test_a_kernel_distance_nan_after_overflow_remains_a_strict_mismatch(cls):
+    step = _step(FIXTURES[cls][1], 3, 1)
+    rows = _rows(step, 3)
+    row = rows.slice(rows.num_rows - 40 + 32, 1)
+    assert _gate_rows(step, row).num_rows == 0
+    check(step, to_native(step, strict=True, allow_bound=True), row)
+
+
+# Real fits only. NATIVE_WIDE=1 exercises the expensive widths nightly.
+# Windows x64, 2026-10-17, four workers: the default ceilings took 37.13 s
+# (183 passed, 89 skipped), below the 60 s added-gate target. No lower cap
+# was needed. The wider run took 122 s: at 256 features the three encoders
+# took 33.29--36.78 s each (0.70--1.21 s at 33). Encoder probes transform
+# the full width for each feature/category. Other wider times are at 2048.
+_LADDER_WIDTH_LIMITS = {
+    FeatureAgglomeration: (256, "sklearn fits an O(n_features**2) distance matrix"),
+    SequentialFeatureSelector: (
+        33,
+        "sklearn cross-validates once per candidate feature",
+    ),
+    OrdinalEncoder: (33, "33.29--36.78 s at 256: quadratic feature/category probes"),
+    OneHotEncoder: (33, "33.29--36.78 s at 256: quadratic feature/category probes"),
+    TargetEncoder: (33, "33.29--36.78 s at 256: quadratic feature/category probes"),
+    PowerTransformer: (256, "4.61 s at 256: sklearn optimizes a lambda per feature"),
+    Pipeline: (256, "25.40 s at 2048 features"),
+    SkewedChi2Sampler: (256, "22.87 s at 2048 features"),
+    Birch: (256, "16.32 s at 2048 features"),
+    Nystroem: (256, "15.20 s at 2048 features"),
+    KMeans: (256, "14.90 s at 2048 features"),
+    KBinsDiscretizer: (256, "14.48 s at 2048 features"),
+    SimpleImputer: (256, "13.99 s at 2048 features"),
+    BisectingKMeans: (256, "13.42 s at 2048 features"),
+    MiniBatchKMeans: (256, "13.14 s at 2048 features"),
+    FeatureUnion: (256, "11.17 s at 2048 features"),
+    PLSRegression: (256, "9.19 s at 2048 features"),
+    CCA: (256, "9.11 s at 2048 features"),
+    TruncatedSVD: (256, "8.93 s at 2048 features"),
+    PLSCanonical: (256, "8.85 s at 2048 features"),
+    RBFSampler: (256, "8.75 s at 2048 features"),
+    LinearDiscriminantAnalysis: (256, "8.01 s at 2048 features"),
+    FastICA: (256, "7.98 s at 2048 features"),
+    FactorAnalysis: (256, "7.75 s at 2048 features"),
+    PolynomialFeatures: (
+        8192,
+        "cheap fit; generated-term count refuses before allocation",
+    ),
+}
+_FIT_MIN_WIDTHS = {
+    FeatureAgglomeration: 2,
+    RFE: 2,
+    RFECV: 2,
+    SequentialFeatureSelector: 2,
+    TruncatedSVD: 2,
+}
+_NARROWEST = {
+    Normalizer: 1,
+    MissingIndicator: 1,
+    SplineTransformer: 1,
+    PCA: 1,
+    Birch: 1,
+}
+
+
+def _ladder_step(cls, n, depth=0):
+    est = FIXTURES[cls][_NARROWEST.get(cls, 0)]()
+    params = est.get_params(deep=False)
+    # These knobs affect fitting cost, not the translated transform form.
+    changes = {}
+    if "n_components" in params:
+        changes["n_components"] = 1
+    if "n_clusters" in params and params["n_clusters"] is not None:
+        changes["n_clusters"] = 1
+    if cls in (RFE, RFECV):
+        changes["step"] = 0.99
+    if "random_state" in params:
+        changes["random_state"] = 0
+    est.set_params(**changes)
+    rng = np.random.default_rng(0)
+    X = rng.lognormal(size=(12, n))
+    y = np.arange(12) % 2
+    X[:, 0] = y + 0.1 * rng.random(12) + 1
+    est.fit(X, y)
+    if isinstance(est, PolynomialFeatures):
+        width = est.n_output_features_
+    else:
+        width = np.asarray(_dense(est.transform(X[:1]))).reshape(1, -1).shape[1]
+    for _ in range(depth):
+        est = Pipeline([("nested", est)])
+    returns = pa.list_(pa.float64(), width) if width > 1 else pa.float64()
+    return PythonTransform(
+        "tf", {0: est}, pa.schema([(f"x{i}", pa.float64()) for i in range(n)]), returns
+    )
+
+
+@pytest.mark.parametrize(
+    "cls, width, depth",
+    [
+        pytest.param(cls, n, 0, id=f"{cls.__name__}-{n}")
+        for cls in FIXTURES
+        for n in (1, 33, 256, 2048, 8192)
+    ]
+    + [pytest.param(Pipeline, 1, d, id=f"Pipeline-depth-{d}") for d in (10, 200)],
+)
+def test_translation_returns_a_function_or_only_not_native(cls, width, depth):
+    from confit import Function
+
+    if width < _FIT_MIN_WIDTHS.get(cls, 1):
+        pytest.skip(f"sklearn {cls.__name__}.fit requires at least two features")
+    if cls is IsotonicRegression and width > 1:
+        pytest.skip("sklearn IsotonicRegression.fit accepts exactly one feature")
+    if os.environ.get("NATIVE_WIDE", "0") != "1":
+        limit, why = _LADDER_WIDTH_LIMITS.get(
+            cls, (2048, "8192-feature nightly ladder")
+        )
+        if width > limit:
+            pytest.skip(f"NATIVE_WIDE=1 exercises widths past {limit}: {why}")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        step = _ladder_step(cls, width, depth)
+    try:
+        native = to_native(step, strict=True, allow_bound=True)
+    except NotNative as e:
+        assert str(e), "a refusal must name its reason"
+    else:
+        assert isinstance(native, Function)
+
+
+def test_nested_exact_steps_do_not_rediscover_their_bounds_exponentially(monkeypatch):
+    from confit import Function
+
+    from sql_transform.native import compose
+
+    original = compose._bounds_of
+    calls = 0
+
+    def counted(where, part):
+        nonlocal calls
+        calls += 1
+        assert calls < 2000, "ten nested steps repeated bound discovery exponentially"
+        return original(where, part)
+
+    monkeypatch.setattr(compose, "_bounds_of", counted)
+    assert isinstance(to_native(_ladder_step(Pipeline, 1, 10), strict=True), Function)
+
+
+@pytest.mark.parametrize("depth", [0, 1, 200])
+def test_a_polynomial_refuses_before_allocating_output_metadata(monkeypatch, depth):
+    from sql_transform.native import _registry
+
+    step = _ladder_step(PolynomialFeatures, 176, depth)
+
+    def too_late(*args):
+        raise AssertionError("output metadata was allocated before the refusal")
+
+    monkeypatch.setattr(_registry, "_output_fields", too_late)
+    with pytest.raises(NotNative, match="PolynomialFeatures.*15753 generated terms"):
+        to_native(step, strict=True)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: FunctionTransformer(np.sin),
+        lambda: FunctionTransformer(np.log),
+        OrdinalEncoder,
+        OneHotEncoder,
+        TargetEncoder,
+        Normalizer,
+        QuantileTransformer,
+        SplineTransformer,
+        IsotonicRegression,
+        lambda: SparseRandomProjection(n_components=1, random_state=0),
+        lambda: PowerTransformer("box-cox"),
+        PowerTransformer,
+        AdditiveChi2Sampler,
+        lambda: RBFSampler(n_components=1, random_state=0),
+        lambda: SkewedChi2Sampler(n_components=1, random_state=0),
+        lambda: Nystroem(n_components=1, random_state=0),
+    ],
+    ids=lambda make: repr(make()),
+)
+def test_every_probed_family_declines_when_confit_cannot_run(monkeypatch, make):
+    from sql_transform.native import _registry, function, power
+
+    X = np.arange(1.0, 13.0)[:, None]
+    est = make().fit(X, np.arange(12) % 2)
+    width = np.asarray(_dense(est.transform(X[:1]))).reshape(1, -1).shape[1]
+    returns = pa.list_(pa.float64(), width) if width > 1 else pa.float64()
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]), returns)
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(1)
+        raise OSError("injected engine failure")
+
+    for module in (_registry, function, power):
+        monkeypatch.setattr(module, "DuckDBInferFn", refuse)
+    function.kernel_distance.cache_clear()
+    power.kernel_distances.cache_clear()
+    try:
+        with pytest.raises(NotNative):
+            to_native(step, strict=True, allow_bound=True)
+        assert calls, "exercise the build/probe failure, not an unrelated refusal"
+    finally:
+        function.kernel_distance.cache_clear()
+        power.kernel_distances.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "cls", [OrdinalEncoder, OneHotEncoder, TargetEncoder, StandardScaler]
+)
+def test_a_failing_twin_probe_is_a_named_refusal(monkeypatch, cls):
+    step = _ladder_step(cls, 1)
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(1)
+        raise OSError("injected twin probe failure")
+
+    monkeypatch.setattr(step.instances[0], "transform", refuse)
+    with pytest.raises(NotNative):
+        to_native(step, strict=True, allow_bound=True)
+    assert calls
 
 
 # ------------------------------------------------------------------ framework
@@ -1451,7 +2068,7 @@ def test_an_output_field_of_one_arm_reads_no_id(returns, instances):
     assert reads[0] == reads[1]
     step = make(3)
     native = to_native(step, strict=True)
-    assert check(step, native, rows([0, None, instances - 1])) == 3
+    assert check(step, native, rows([0, None, instances - 1])) == 2
     last = ".f2" if returns == "struct" else "[3]"
     sql = f"SELECT tf(__iid, x0, x1, x2){last} AS o FROM __THIS__"
     unknown = rows([99])
@@ -1965,7 +2582,7 @@ def test_a_function_over_booleans_answers_as_numpy(func, beside):
     if beside:
         rows["x2"] = pa.array([2.5, -0.0, None, 4.0, 1.0])
     native = to_native(step, strict=True, allow_bound=True)
-    assert check(step, native, pa.table(rows)) == 5
+    assert check(step, native, pa.table(rows)) == 4
 
 
 def _bool_step(est: Any, beside: bool) -> PythonTransform:

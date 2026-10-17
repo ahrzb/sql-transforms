@@ -158,7 +158,7 @@ def test_nan_and_null_rows_compare_as_nan(dot):
             "x2": pa.array([3.0, 4.0, 3.0]),
         }
     )
-    assert check(step, native, rows) == 3
+    assert check(step, native, rows) == 2
 
 
 def test_an_overflow_on_one_side_passes_at_dbl_max(dot):
@@ -174,29 +174,143 @@ def test_an_overflow_on_one_side_passes_at_dbl_max(dot):
         ParityError, match="'f0': step 1.7976931348623157e[+]308, native inf"
     ):
         check(step, native, rows, ulps=0)
-    assert check(step, native, rows) == 1
+    if np.finfo(np.longdouble).maxexp <= 1024:
+        with pytest.raises(ParityError, match="overflow"):
+            check(step, native, rows)
+    else:
+        assert check(step, native, rows) == 1
 
 
-@pytest.mark.skipif(
-    np.finfo(np.longdouble).maxexp <= 1024, reason="a long double is a double here"
-)
 def test_an_error_scale_past_dbl_max_still_bounds(dot):
     # Left to right, 1e308 + 1e308 overflows and the entry answers inf;
     # right to left the twin answers 1e308, far from DBL_MAX. S, 3e308, is
     # past DBL_MAX: in long doubles the bound is 2.7e293, not inf.
     step = _step([[1.0, 1.0, 1.0]])
     native = to_native(step, strict=True, allow_bound=True)
-    with pytest.raises(ParityError, match="native inf, past its bound"):
+    with pytest.raises(ParityError, match="native inf, past its bound|overflow"):
         check(step, native, _rows([[1e308, 1e308, -1e308]]))
+
+
+@pytest.mark.parametrize("with_trap", [False, True])
+def test_null_ids_do_not_supply_parity_evidence(with_trap):
+    est = StandardScaler().fit([[0.0], [2.0]])
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    rows = pa.table(
+        {
+            "__iid": pa.array([None, *([0] if with_trap else [])], pa.int64()),
+            "x0": [1.0, *([math.inf] if with_trap else [])],
+        }
+    )
+    with pytest.raises(ParityError, match="no answered non-NULL-id row"):
+        check(step, to_native(step, strict=True), rows)
+
+
+def test_answered_ids_null_ids_and_matching_traps_are_counted_separately():
+    est = StandardScaler().fit([[0.0], [2.0]])
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    rows = pa.table(
+        {"__iid": pa.array([0, None, 0], pa.int64()), "x0": [1.0, 1.0, math.inf]}
+    )
+    native = to_native(step, strict=True)
+    assert check(step, native, rows) == 1
+    with pytest.raises(ParityError, match="1 NULL-id rows, 1 matching traps"):
+        check(step, native, rows.slice(1))
+
+
+def test_a_comparison_map_cannot_pass_by_overflowing():
+    if np.finfo(np.longdouble).maxexp <= 1024:
+        with pytest.raises(ParityError, match="overflow"):
+            near(1.4e154, 1.5e154, 1.0, np.square)
+    else:
+        assert not near(1.4e154, 1.5e154, 1.0, np.square)
+
+
+@pytest.mark.parametrize("bound", [math.inf, math.nan])
+def test_a_nonfinite_bound_is_inconclusive_even_when_answers_match(bound):
+    with pytest.raises(ParityError, match="non-finite bound"):
+        near(1.0, 1.0, bound)
+
+
+@pytest.mark.parametrize("composition", [None, Pipeline, FeatureUnion])
+def test_a_checker_overflow_names_the_configuration_row_field_and_values(
+    dot, monkeypatch, composition
+):
+    from sql_transform.native import _registry
+
+    step = _step([[1.0, 1.0, 1.0]])
+    if composition is not None:
+        est = composition([("dot", step.instances[0])]).fit([[0.0, 0.0, 0.0]])
+        step = dataclasses.replace(step, instances={0: est})
+    entry = dataclasses.replace(
+        _registry._CATALOG[_Dot],
+        scale=dataclasses.replace(SCALE, s=lambda est, x: math.inf),
+    )
+    monkeypatch.setitem(_registry._CATALOG, _Dot, entry)
+    native = to_native(step, strict=True, allow_bound=True)
+    with pytest.raises(ParityError, match="checker overflow") as error:
+        check(step, native, _rows([[1e16, -1e16, 1.0]]))
+    message = str(error.value)
+    assert "step 'tf', configuration " in message
+    assert type(step.instances[0]).__name__ in message
+    assert "(instance 0), row 0 output field 'f0': step 0.0, native 1.0" in message
+    assert "input {'__iid': 0, 'x0': 1e+16, 'x1': -1e+16, 'x2': 1.0}" in message
+
+
+def test_a_kernel_that_changes_only_a_zero_sign_is_not_promoted_to_exact(monkeypatch):
+    from confit import sql as S
+    from sklearn.preprocessing import FunctionTransformer
+
+    from sql_transform.native import function
+
+    monkeypatch.setattr(function, "probe_values", lambda: np.array([-0.0, 0.0]))
+    spell = function._SERVED[np.cbrt]
+    monkeypatch.setitem(
+        function._SERVED,
+        np.cbrt,
+        lambda x: S.case(x == f64(0.0), f64(0.0)).otherwise(spell(x)),
+    )
+    function.kernel_distance.cache_clear()
+    try:
+        est = FunctionTransformer(np.cbrt).fit([[1.0]])
+        step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+        with pytest.raises(NotNative, match="allow_bound=True"):
+            to_native(step, strict=True)
+        assert function.doubles_apart(np.array([-0.0]), np.array([0.0])) > 0
+    finally:
+        function.kernel_distance.cache_clear()
+
+
+@pytest.mark.parametrize("error", [OSError, TypeError, RecursionError])
+def test_a_failed_confit_build_is_a_named_refusal(monkeypatch, error):
+    from sql_transform.native import _registry
+
+    def refuse(*args, **kwargs):
+        raise error("injected engine failure")
+
+    est = StandardScaler().fit([[0.0], [2.0]])
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    monkeypatch.setattr(_registry, "DuckDBInferFn", refuse)
+    with pytest.raises(NotNative, match="confit does not build it.*injected"):
+        to_native(step, strict=True)
+    assert to_native(step) is step
+
+
+def test_check_does_not_require_the_test_oracles_version_pin(monkeypatch):
+    import duckdb
+
+    monkeypatch.setattr(duckdb, "__version__", "1.5.6")
+    est = StandardScaler().fit([[0.0], [2.0]])
+    step = PythonTransform("tf", {0: est}, pa.schema([("x0", pa.float64())]))
+    assert check(step, to_native(step, strict=True), _rows([[1.0]])) == 1
 
 
 @pytest.mark.parametrize(
     "a, b, bound, g, ok",
     [
         (math.nan, math.nan, 0.0, None, True),
-        (math.nan, 1.0, math.inf, None, False),
+        (math.nan, 1.0, 1.0, None, False),
         (math.inf, math.inf, 0.0, None, True),
-        (math.inf, -math.inf, math.inf, None, False),
+        (math.inf, -math.inf, 1.0, None, False),
         # One side infinite: the other within the bound of DBL_MAX, same sign.
         (math.inf, DBL_MAX, 0.0, None, True),
         (-math.inf, -DBL_MAX, 0.0, None, True),
@@ -211,8 +325,8 @@ def test_an_error_scale_past_dbl_max_still_bounds(dot):
         # g: a distance compares its square.
         (3.0, 3.0000000000000004, 1e-15, None, True),
         (3.0, 3.0000000000000004, 1e-15, np.square, False),
-        # Squares past DBL_MAX are long doubles: one side overflowed.
-        (1.4e154, math.inf, 0.0, np.square, True),
+        # The finite square is within the bound of DBL_MAX.
+        (1.3e154, math.inf, 2e307, np.square, True),
         (1e150, math.inf, 1e300, np.square, False),
     ],
 )
@@ -307,6 +421,22 @@ def test_a_composition_carries_an_error_scale_a_later_step_reads(dot):
     native = to_native(step, strict=True, allow_bound=True)
     with pytest.raises(ParityError, match=r"'f0'.*\(past its part's bound"):
         check(step, native, rows)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=ParityError,
+    reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
+)
+def test_a_carried_overflow_can_trap_on_one_side_only(dot):
+    pipe = Pipeline([("dot", _Dot()), ("scale", StandardScaler())])
+    pipe.set_params(dot__c=((1.0, 1.0, 1.0),))
+    pipe.fit([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    step = PythonTransform(
+        "tf", {0: pipe}, pa.schema([(f"x{i}", pa.float64()) for i in range(3)])
+    )
+    rows = _rows([[DBL_MAX, 2.0**970, -(2.0**969)]])
+    check(step, to_native(step, strict=True, allow_bound=True), rows)
 
 
 def test_a_composition_refuses_a_step_that_carries_no_bound(dot):

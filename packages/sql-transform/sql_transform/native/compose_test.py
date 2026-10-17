@@ -272,16 +272,16 @@ def test_a_pipeline_hands_booleans_on_as_its_twin_does(beside):
     # A selector hands a boolean row on as booleans, which the next step
     # reads as 0/1, as it reads its own boolean features.
     for est, compared in (
-        (make_pipeline(VarianceThreshold(), StandardScaler()), 5),
+        (make_pipeline(VarianceThreshold(), StandardScaler()), 4),
         # Binarizer rejects NaN: the twin answers the rows without a NULL.
         (
             make_pipeline(
                 VarianceThreshold(), Binarizer(threshold=0.5), MaxAbsScaler()
             ),
-            3,
+            2,
         ),
-        (make_pipeline(VarianceThreshold(), FunctionTransformer(np.sqrt)), 5),
-        (make_pipeline(Binarizer(), OneHotEncoder(sparse_output=False)), 3),
+        (make_pipeline(VarianceThreshold(), FunctionTransformer(np.sqrt)), 4),
+        (make_pipeline(Binarizer(), OneHotEncoder(sparse_output=False)), 2),
     ):
         step, rows = _bits(est, beside)
         assert check(step, to_native(step, strict=True), rows) == compared
@@ -313,7 +313,7 @@ def test_a_pipeline_over_booleans_only_refuses(make, reason):
         to_native(step, strict=True)
     # Beside a double the row is float64: served.
     step, rows = _bits(make(), beside=True)
-    assert check(step, to_native(step, strict=True), rows) == 5
+    assert check(step, to_native(step, strict=True), rows) == 4
 
 
 @pytest.mark.parametrize(
@@ -339,7 +339,7 @@ def test_a_column_transformer_refuses_an_encoder_over_a_boolean(part):
         ColumnTransformer([("enc", part(), [2]), ("p", "passthrough", [0, 1])]),
         beside=True,
     )
-    assert check(step, to_native(step, strict=True), rows) == 5
+    assert check(step, to_native(step, strict=True), rows) == 4
 
 
 def test_an_integer_weight_over_booleans():
@@ -360,12 +360,12 @@ def test_an_integer_weight_over_booleans():
     ):
         to_native(step, strict=True)
     step, rows = _bits(make(), beside=True)
-    assert check(step, to_native(step, strict=True), rows) == 5
+    assert check(step, to_native(step, strict=True), rows) == 4
     # A part whose output is float64 on a boolean row takes it.
     step, rows = _bits(
         FeatureUnion([("std", StandardScaler())], transformer_weights={"std": -2})
     )
-    assert check(step, to_native(step, strict=True), rows) == 5
+    assert check(step, to_native(step, strict=True), rows) == 4
     # A ColumnTransformer hands its parts objects, a boolean as a Python
     # bool, which a selector keeps: refused over any boolean feature.
     step, _ = _bits(
@@ -395,7 +395,7 @@ def test_an_int_output_last_is_served():
             "x0": pa.array([1.0, 3.0, 2.0, 2.0]),
         }
     )
-    assert check(step, to_native(step, strict=True), rows) == 4
+    assert check(step, to_native(step, strict=True), rows) == 3
 
 
 def test_a_pipeline_that_only_passes_serves_its_features():
@@ -417,7 +417,7 @@ def test_a_pipeline_that_only_passes_serves_its_features():
             "x2": pa.array([True, False, None, None]),
         }
     )
-    assert check(step, to_native(step, strict=True), rows) == 4
+    assert check(step, to_native(step, strict=True), rows) == 3
 
 
 # ------------------------------------------- ColumnTransformer, FeatureUnion
@@ -674,7 +674,7 @@ def test_a_column_transformer_reads_columns_as_its_twin_does():
             "x3": pa.array([True, False, None, True]),
         }
     )
-    assert check(step, to_native(step, strict=True), rows) == 4
+    assert check(step, to_native(step, strict=True), rows) == 3
 
 
 @pytest.mark.usefixtures("kernels_part")
@@ -691,16 +691,16 @@ def test_an_exact_function_composes_anywhere_a_bounded_one_where_it_is_carried()
             "x1": pa.array([2.0, float("nan"), 9.0]),
         }
     )
-    assert check(step, to_native(step, strict=True), rows) == 3
+    assert check(step, to_native(step, strict=True), rows) == 2
     bounded = FeatureUnion(
         [("id", FunctionTransformer()), ("exp", FunctionTransformer(np.exp))]
     )
     step = _numeric(bounded)
-    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 3
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 2
     # A scaler carries the bound of what it reads; a square root carries
     # none yet.
     step = _numeric(make_pipeline(bounded, StandardScaler()))
-    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 3
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 2
     with pytest.raises(
         NotNative,
         match="step 'functiontransformer': FunctionTransformer follows step"
@@ -806,7 +806,7 @@ def test_a_bounded_step_serves_last_or_as_a_part_on_request(make, within):
             **{f"x{i}": pa.array(x[:, i]) for i in range(4)},
         }
     )
-    assert check(step, native, rows) == 40
+    assert check(step, native, rows) == 39
 
 
 @pytest.mark.parametrize(
@@ -964,7 +964,7 @@ def test_a_bounded_step_is_carried_by_the_steps_after_it(make, within):
             **{f"x{i}": pa.array(x[:, i]) for i in range(4)},
         }
     )
-    assert check(step, native, rows) == 40
+    assert check(step, native, rows) == 39
 
 
 def _flat(n: int = 40, seed: int = 4) -> np.ndarray:

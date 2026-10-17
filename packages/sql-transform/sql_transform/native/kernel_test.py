@@ -536,7 +536,7 @@ def test_a_skewed_chi2_sampler_over_booleans_only_traps_where_it_rejects_both():
     step = _rbf_step(_skewed(2, skewedness=-1.0), [pa.bool_()] * 2)
     rows = _rows([a for a in BITS for _ in BITS], [b for _ in BITS for b in BITS])
     native = to_native(step, strict=True, allow_bound=True)
-    with pytest.raises(ParityError, match="the step raises on each of 9 rows"):
+    with pytest.raises(ParityError, match="0 NULL-id rows, 9 matching traps"):
         check(step, native, rows)
 
 
