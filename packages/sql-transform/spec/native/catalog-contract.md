@@ -131,11 +131,13 @@ in the entry does this. The owner ruled this in
 - A twin error that is not validation, for example an sklearn bug, is not
   covered. The ruling record lists each such error.
 - In a composition, a step can read the output of a step with a parity
-  bound above 0. A sum of that step can overflow on one side only, at values
-  of about the largest double. Then the later step's validation can raise
-  on one side only: the twin can raise where the entry answers, or answer
-  where the entry traps. The twin itself raises on such a row in one call
-  and answers in another. An open decision asks the owner what holds there:
+  bound above 0. On a row of values near the largest double, a sum of the
+  bounded step can overflow on one side only. Then the validation of the
+  later step raises an error on that side only. The twin can raise where
+  the entry answers, or answer where the entry traps. On such rows this
+  claim does not hold, and `native.check` reports a `ParityError`. The twin
+  itself raises on such a row in one call and answers in another. An open
+  decision record asks the owner what must hold there:
   [traps-where-a-sum-overflows.md](../../../../loops/native/decisions/open/traps-where-a-sum-overflows.md).
 
 *Evidence:* `native/guard_test.py::test_the_guard_traps_where_the_validation_raises`, `native/guard_test.py::test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else`.

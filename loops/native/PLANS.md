@@ -221,7 +221,19 @@ that request, `to_native(step, allow_bound=True)`. In order:
   of SQL at 8 features of 100 components, and at 64 of 100 DuckDB ran out
   of 16 GB of memory as `native.check` registered it. confit itself builds
   that step in 1.2 s. So `check` holds `Nystroem` to its definition only
-  at few components, and the tests keep to them. Low priority for confit.
+  at few components, and the tests keep to them. Since T59 a composition
+  multiplies it: a step that reads each output field of the step before
+  writes each of them again in each of its own. A `StandardScaler` and four
+  `PCA`s of 8 components over 8 features spell out to 9.6 million
+  characters, from 21,554 in the let form (`sql_lets`, `sql_let_body`).
+  T59's parity run met 120 million characters (`StandardScaler`,
+  `Nystroem`, `IncrementalPCA` and `FastICA`, 86,824 in the let form), and
+  its processes ran out of memory where `check` ran such a definition in
+  DuckDB, so the run skips `check` past 4 million (calib.py, in T59's
+  scripts: DuckDB took 5.75 s and 1.4 GB at 3.2 million). The longest
+  definition that `check` runs in the tests is 6.05 million characters, a
+  `Pipeline` of `catalog_test.py`. Medium priority for confit now: it
+  limits what `check` can hold of the compositions that T59 serves.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
