@@ -86,6 +86,23 @@ K = 7. The cap reads a new estimate of the
 standardized step (24 widths, each within 0.90 to 1.20 times it): it takes
 about 313 features of Yeo-Johnson and 682 of Box-Cox. Coverage stays 49 of
 68. Scripts and data are in `/mnt/project-files/transforms-loop/t56/`.
+T57 serves `SparseRandomProjection` bit-exactly over the CSR components
+that its fit makes (project.py, `_sparse_project`): scipy sums each output
+field from 0.0, adding the stored products in stored order, unfused, and
+the entry spells the same sum, where the kernel probe finds scipy's sums
+so (`csr_sum_is_scipys`). Of density 1 the components are dense, and the
+step is `GaussianRandomProjection`'s, within the matvec bound. Over 567
+million fields of 36 seeds (1 to 512 features, 1 to 128 components, five
+kinds of densities, float32 fits, seven kinds of rows), each field equals
+the twin's, in calls of 20,000 rows and of one row, and the entry traps on
+each of the 30,045 rows where the twin raises and on no other. A sum in
+stored order nests two levels of SQL an entry, and confit parses 493
+entries, so the entry refuses a component of more than 480. The cap reads
+a new estimate (`_sparse_build_estimate`): a struct read field by field
+builds in about 17 µs a field and sum that two fields repeat (PLANS "Needs
+from confit"). 116 shapes are each within 0.66 to 2.57 times it, and 50
+new shapes within 0.80 to 1.26. Coverage 50 of 68. Scripts and data are
+in `/mnt/project-files/transforms-loop/t57/`.
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
@@ -93,4 +110,4 @@ it. The owner paused this loop after T55 and resumed it at 07:01 UTC the
 same day (2026-10-17).
 
 Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`SparseRandomProjection` next, one PR each).
+`FactorAnalysis`, then the rest of item 2).

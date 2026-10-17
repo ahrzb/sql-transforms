@@ -6,8 +6,7 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. The rest of "Ruled 2026-10-06, to build", item 1
-   (`SparseRandomProjection` next; `FactorAnalysis` last), one PR each;
+1. The rest of "Ruled 2026-10-06, to build", item 1 (`FactorAnalysis`),
    then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
@@ -29,12 +28,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
    - The rest of the linear projections, each with its own S. T41 served
      the centered ones (`FastICA`, the PLS family and
      `LinearDiscriminantAnalysis`: project.py, `_project_centered`).
+     T57 served `SparseRandomProjection`, bit-exact in scipy's CSR order
+     behind a kernel probe (project.py, `_sparse_project`).
      `FactorAnalysis` chains two products, so the first one's error passes
      through the second, and its twin computes the inverse `cov_z` with
      LAPACK on each call: a bound that holds on another host needs that
-     inverse's own error, so it comes last. `SparseRandomProjection` sums
-     in scipy's CSR order, which SQL may follow bit-exactly behind a
-     kernel probe.
+     inverse's own error, so it comes last.
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
      compare squares (`ErrorScale.g`), K = n + 5. T51 served
@@ -84,8 +83,14 @@ that request, `to_native(step, allow_bound=True)`. In order:
   build, master 6b7e7f1). Since T55 it sets `PowerTransformer`'s cap too:
   a Box-Cox of 960 features builds in 4.8 s as a list and 14.4 s as a
   struct (release build, master 1a14ce6), and standardized, of 768
-  features, in 4.1 to 4.5 s and 9.0 to 9.3 s (T56, master 1592bfd). A
-  confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
+  features, in 4.1 to 4.5 s and 9.0 to 9.3 s (T56, master 1592bfd). Since
+  T57 it sets `SparseRandomProjection`'s cap too, most where a struct's
+  fields repeat a sum: confit computes such a sum once a row (`share.rs`),
+  and a struct read field by field then builds in about 17 µs a field and
+  repeated sum. 1,024 fields that repeat 512 sums of two entries build in
+  7.2 s as a struct and 0.14 s as a list, and 1,024 fields of their own
+  sums in 0.42 s and 0.16 s (release build, master daf0e4c with T57's
+  project.py). A confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
   1.4 s read field by field and 0.09 s read whole (loops/confit/PLANS.md).
   The distances to fitted centres grow faster, about as k³: a struct of
   1,000 centres over 2 features builds in 8.6 s, of 2,000 in 73 s
@@ -106,7 +111,12 @@ that request, `to_native(step, allow_bound=True)`. In order:
   in numpy's order, meets it. The input guard joins its tests in a chain
   (`_registry.any_of`): Box-Cox's, one test a feature (a standardized
   step joins its edge tests into it, T56), meets the limit at 1,024
-  features (T55), past its cap. Low priority for confit.
+  features (T55), past its cap. `SparseRandomProjection`, bit-exact in
+  scipy's order, meets it too: each stored entry nests the sum two levels
+  deeper, so confit's depth limit of 1,000 refuses a component of 494
+  entries as a struct, and the entry refuses one of more than 480 by name
+  (T57, `project._MAX_STORED`): at a density of 1/3, about 1,400
+  features or more. Low priority for confit.
 - **A named refusal, not a Cranelift verifier error.** `OneHotEncoder`
   over 16 string features of 125 categories (2,000 fields) stopped after
   31 s with `cranelift define: verifier error`, an internal error, where
@@ -295,6 +305,14 @@ Configurations a translator declines (`NotNative`), each with its ground:
   that are not unit vectors (on data that is not white); under
   "unit-variance", a row of `components_` that is not finite (a source of
   no spread).
+- `SparseRandomProjection` over sparse components (project.py,
+  `_sparse_project`): a `components_` other than the CSR matrix the fit
+  makes, or not all finite; a component of more than 480 stored entries,
+  whose sum in scipy's order confit does not parse; a step past an
+  estimated 7 s build (`project._sparse_build_estimate`); a platform whose
+  scipy does not sum a CSR product unfused in stored order
+  (`project.csr_sum_is_scipys`). Of density 1, its dense components serve
+  only with `allow_bound=True`, as the linear projections above.
 - `MinMaxScaler(clip=True)` with a NaN `feature_range` bound.
 - `SimpleImputer` fitted on object data (strings), whose output is not a
   float the step can return; a `missing_values` that is neither NaN nor a

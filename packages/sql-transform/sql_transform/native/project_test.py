@@ -10,10 +10,11 @@ import math
 import numpy as np
 import pyarrow as pa
 import pytest
+from scipy import sparse
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
 from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.random_projection import GaussianRandomProjection
+from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -423,3 +424,154 @@ def test_a_centered_projection_takes_a_fit_by_its_estimated_build():
         match=r"an estimated \d+ s build, past 7 s \(48 components over 1,024",
     ):
         to_native(_step_of(est, 48), strict=True, allow_bound=True)
+
+
+# ------------------------------------------------------ SparseRandomProjection
+
+MAX = float(np.finfo(np.float64).max)
+
+
+def _sparse(n: int, k: int, density: float | str = "auto", dtype=np.float64):
+    x = np.random.default_rng(n * 100 + k).normal(size=(4, n)).astype(dtype)
+    return SparseRandomProjection(n_components=k, density=density, random_state=k).fit(
+        x
+    )
+
+
+def _wide_rows(seed: int, n: int) -> np.ndarray:
+    """Rows of magnitudes 1e-300 to 1e300, where the products and the
+    partial sums round, underflow and overflow; then rows of signed zeros,
+    subnormals and the largest doubles."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(200, n)) * 10.0 ** rng.uniform(-300, 300, size=(200, n))
+    special = np.array(
+        [0.0, -0.0, 5e-324, -5e-324, 1e-310, 0.5, -1.0, 1e300, MAX, -MAX]
+    )
+    return np.vstack(
+        [x, special[(np.arange(40)[:, None] + np.arange(n)) % len(special)]]
+    )
+
+
+@pytest.mark.parametrize(
+    "n, k, density, dtype",
+    [
+        (2, 3, "auto", np.float64),
+        (8, 4, 1 / 3, np.float64),
+        (50, 7, "auto", np.float64),
+        (60, 6, "auto", np.float32),
+        (300, 20, 0.3, np.float64),
+    ],
+)
+def test_a_sparse_random_projection_is_bit_exact(n, k, density, dtype):
+    # scipy sums each output field from 0.0 in the stored order, which the
+    # entry follows (`_csr_sum`); a float32 fit's components widen exactly.
+    est = _sparse(n, k, density, dtype)
+    assert sparse.issparse(est.components_)
+    step = _step(est)
+    native = to_native(step, strict=True)
+    rows = _rows(_wide_rows(n, n))
+    assert check(step, native, rows, ulps=0) == rows.num_rows
+
+
+@pytest.mark.parametrize("order, want", [([0, 1, 2], 0.0), ([0, 2, 1], 1.0)])
+def test_a_sparse_random_projection_sums_in_its_stored_order(order, want):
+    # 1e16 + 1 rounds to 1e16, so the twin's sum is 0 or 1 by the order of
+    # the stored entries, unsorted as the fit stores them.
+    est = _sparse(3, 1, 1 / 3)
+    est.components_ = sparse.csr_matrix(([1.0, 1.0, 1.0], order, [0, 3]), shape=(1, 3))
+    x = np.array([[1e16, 1.0, -1e16]])
+    assert est.transform(x)[0, 0] == want
+    step = _step(est)
+    assert check(step, to_native(step, strict=True), _rows(x), ulps=0) == 1
+
+
+def test_a_sparse_random_projection_of_density_1_is_held_to_the_matvec_bound():
+    # Of density 1, the fit's components are dense, and the twin hands them
+    # to BLAS, as GaussianRandomProjection's (`_project`).
+    est = _sparse(6, 3, 1.0)
+    assert not sparse.issparse(est.components_)
+    step = _step(est)
+    with pytest.raises(NotNative, match=r"within 9·eps·S \+ τ"):
+        to_native(step, strict=True)
+    x, means = _data(1, 6)
+    rows = _rows(_near(2, x, means))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 60
+
+
+def test_a_sparse_random_projection_the_entry_does_not_read_stays_python():
+    est = _sparse(8, 3)
+    est.components_ = est.components_.tocsc()
+    with pytest.raises(NotNative, match="components_ in csc, not the csr"):
+        to_native(_step(est), strict=True)
+    est = _sparse(8, 3)
+    est.components_.data[0] = np.inf
+    with pytest.raises(NotNative, match="components_ not all finite"):
+        to_native(_step(est), strict=True)
+
+
+def _repeating(k: int, u: int) -> SparseRandomProjection:
+    """A projection of 16 features whose k components repeat u sums of two
+    entries in turn, each sum of its own values."""
+    est = _sparse(16, k, 0.1)
+    rng = np.random.default_rng(u)
+    sums = [(rng.permutation(16)[:2], [1.0, -1.0 - i * 2.0**-20]) for i in range(u)]
+    rows = [sums[j % u] for j in range(k)]
+    est.components_ = sparse.csr_matrix(
+        (
+            np.concatenate([v for _, v in rows]),
+            np.concatenate([i for i, _ in rows]),
+            np.arange(0, 2 * k + 1, 2),
+        ),
+        shape=(k, 16),
+    )
+    return est
+
+
+def test_a_sparse_random_projection_takes_a_fit_by_its_estimated_build():
+    from sql_transform.native import project as P
+
+    # Over 4,096 features at the "auto" density, 32 components built in
+    # 6.1 s and 64 in 8.1 s. A struct read field by field builds slowly
+    # where its fields repeat a sum: 1,024 components over 512 sums in
+    # 7.2 s, and over 1,024 sums, none repeated, in 0.42 s
+    # (`_sparse_build_estimate`).
+    assert P._sparse_build_estimate(_sparse(4096, 32).components_) <= P.MAX_BUILD_S
+    assert P._sparse_build_estimate(_sparse(4096, 64).components_) > P.MAX_BUILD_S
+    assert P._repeated_sums(_repeating(1024, 512).components_) == 512
+    assert P._sparse_build_estimate(_repeating(1024, 1024).components_) <= 1.0
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated 9 s build, past 7 s \(2,048 stored entries of 1,024"
+        r" components over 16 features\)",
+    ):
+        to_native(_step(_repeating(1024, 512)), strict=True)
+
+
+def test_a_sparse_random_projection_of_a_long_component_stays_python():
+    # Each stored entry of a sum in scipy's order nests two levels of SQL,
+    # and confit's parser refuses an expression nested past 1,000 levels.
+    def longest(m):
+        est = _sparse(500, 2)
+        est.components_ = sparse.csr_matrix(
+            (np.ones(m + 1), np.r_[np.arange(m)[::-1], 0], [0, m, m + 1]),
+            shape=(2, 500),
+        )
+        return _step(est)
+
+    step = longest(480)
+    rows = _rows(_wide_rows(0, 500)[::6])
+    assert check(step, to_native(step, strict=True), rows, ulps=0) == rows.num_rows
+    with pytest.raises(NotNative, match="a component of 481 stored entries, past the"):
+        to_native(longest(481), strict=True)
+
+
+def test_the_kernel_probe_finds_scipys_sum_and_a_fused_one(monkeypatch):
+    from sql_transform.native import project as P
+
+    assert P.csr_sum_is_scipys()
+    # A fused multiply-add answers the rounding error of a·x for a·x - a·x.
+    a = 1.0 + 2.0**-30
+    assert math.fma(a, -a, a * a) != 0.0
+    monkeypatch.setattr(P, "csr_sum_is_scipys", lambda: False)
+    with pytest.raises(NotNative, match="does not sum a CSR product as the entry"):
+        to_native(_step(_sparse(8, 3)), strict=True)

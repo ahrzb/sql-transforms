@@ -7,6 +7,10 @@ divided by `sqrt(explained_variance_)`, which sklearn clips below at eps.
 centered projections, `FastICA`, `LinearDiscriminantAnalysis` and the PLS
 family, subtract a fitted mean from the row before the product, and may
 divide it by a fitted scale: `_project_centered` gives their bound.
+`SparseRandomProjection` multiplies by the CSR matrix that its fit makes,
+which scipy sums in stored order, and its entry is bit-exact
+(`_sparse_project`); of density 1, its components are dense, and it is
+`GaussianRandomProjection`'s product.
 
 The twin hands each product to BLAS: `ddot` for one component, `gemv` for
 more. OpenBLAS picks its kernel for the CPU at run time and sums with fused
@@ -97,16 +101,18 @@ again at each read, and builds as before."""
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
+from scipy import sparse
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
 from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.random_projection import GaussianRandomProjection
+from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
 
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import ErrorScale, NotNative, translates
@@ -296,6 +302,208 @@ def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr
             e = e / f64(s[j])
         out.append(e)
     return out
+
+
+def _csr_sum(c: Any, x: list[Any], const: Callable[[float], Any]) -> list[Any]:
+    """`x @ c.T` as scipy's `csr_matvec` sums it, for a CSR matrix `c`: each
+    output field from 0.0, adding each stored product in stored order, each
+    product and sum rounded on its own. Over doubles (`const=float`), the
+    twin's answer; over expressions (`const=f64`), the entry's."""
+    data = np.asarray(c.data, dtype=np.float64)
+    out = []
+    for i in range(c.shape[0]):
+        e = const(0.0)
+        for jj in range(c.indptr[i], c.indptr[i + 1]):
+            e = e + x[c.indices[jj]] * const(data[jj])
+        out.append(e)
+    return out
+
+
+@functools.cache
+def csr_sum_is_scipys() -> bool:
+    """Whether this platform's scipy sums the product of rows and a CSR
+    matrix's transpose as `_csr_sum` does, on probe matrices with unsorted
+    indices, one row at a time and three: a build that fuses the
+    multiply-add (aarch64 may) answers otherwise, and SQL cannot fuse it.
+    The first probe tells them apart on every build: a·x - a·x is 0 unfused
+    and the rounding error of a·x fused."""
+    a = 1.0 + 2.0**-30
+    probes = [
+        (sparse.csr_matrix(([a, a], [0, 1], [0, 2]), shape=(1, 2)), np.array([[a, -a]]))
+    ]
+    rng = np.random.default_rng(20261017)
+    for n, k in ((3, 2), (8, 5), (40, 7), (300, 4)):
+        nnz = rng.integers(1, n + 1, size=k)
+        indices = np.concatenate([rng.permutation(n)[:m] for m in nnz])
+        data = rng.choice([-1.0, 1.0], size=len(indices)) * 10.0 ** rng.uniform(-3, 3)
+        c = sparse.csr_matrix((data, indices, np.r_[0, np.cumsum(nnz)]), shape=(k, n))
+        probes.append(
+            (c, rng.normal(size=(3, n)) * 10.0 ** rng.integers(-8, 8, size=(3, n)))
+        )
+    for c, xs in probes:
+        want = np.array([_csr_sum(c, [float(v) for v in row], float) for row in xs])
+        if not (
+            np.array_equal(xs @ c.T, want)
+            and np.array_equal(np.vstack([r[None, :] @ c.T for r in xs]), want)
+        ):
+            return False
+    return True
+
+
+# The most entries that `_sparse_project` sums in one output field: a sum
+# in scipy's order nests two levels of SQL an entry, and confit's parser
+# refuses an expression nested past 1,000 levels. A component of 493 stored
+# entries builds as a scalar, a list and a struct, and one of 494 does not
+# as a struct (release build, master daf0e4c with T57's project.py,
+# 2026-10-17); 480 leaves room for an input nested deeper than a column.
+_MAX_STORED = 480
+
+
+def _repeated_sums(c: Any) -> int:
+    """The distinct sums that two output fields or more of the CSR matrix
+    `c` spell alike: the same entries stored in the same order, of the same
+    values. A field of no stored entry is the constant 0.0, which no field
+    shares."""
+    reads: dict[tuple[bytes, bytes], int] = {}
+    for i in range(c.shape[0]):
+        lo, hi = c.indptr[i], c.indptr[i + 1]
+        if lo < hi:
+            key = (c.indices[lo:hi].tobytes(), c.data[lo:hi].tobytes())
+            reads[key] = reads.get(key, 0) + 1
+    return sum(1 for v in reads.values() if v >= 2)
+
+
+def _sparse_build_estimate(c: Any) -> float:
+    """The seconds of the whole warm `to_native` (release build) of a
+    `SparseRandomProjection` whose CSR `components_` is `c`: the
+    translation, the probe (`_registry._probed`) and confit's trial build
+    (`_registry._builds`), of the slower return. The entry cannot tell the
+    returns apart, and a struct, which `query` reads field by field, took
+    0.96 to 64 times as long as a list where it took 1 s or more (PLANS.md,
+    "Needs from confit").
+
+    It reads the n features, the k components, the p stored entries, the
+    sum q of each component's stored entries squared, and the r sums that
+    two output fields or more repeat (`_repeated_sums`). The terms in n and
+    n² are the probe's and the input guard's, as in `_build_estimate`. The
+    terms in p and q are the sums': a long sum builds about as its entries
+    squared. The terms in n·k, n²·k and k² are a struct's field reads,
+    each of which passes the n features and carries the k fields. The term
+    in k·r is a struct's too: confit computes a sum that two fields repeat
+    once a row (`share.rs`), and a struct read field by field then builds
+    in about 17 µs a field and repeated sum.
+
+    Fitted on the slower return of each shape over 116 shapes that built
+    in 0.30 to 42.7 s: 88 fits of 16 to 16,384 features and 1 to 4,096
+    components at the "auto" density, 1/3 and 0.1, and 28 projections of
+    16 and 64 features whose 512 to 4,096 fields repeat sums (master
+    daf0e4c with T57's project.py, 2026-10-17). Each took 0.66 to 2.57
+    times the estimate, and 0.66 to 1.54 over 1 s. The cap took on none
+    slower than 6.75 s and refused none faster than 7.20 s. Over 50 random
+    fits not fitted on (22 to 5,261 features, 2 to 3,904 components, the
+    "auto" density or 0.02 to 0.5; builds of 0.29 to 12.3 s), each took
+    0.80 to 1.26 times the estimate, and the cap took on none slower than
+    6.76 s and refused none faster than 8.39 s. At the "auto" density the
+    cap takes about 2,900 components over 16 features, 4,500 over 64,
+    2,100 over 256, 560 over 1,024, 210 over 2,048 or 45 over 4,096, and
+    one component over 6,000 features. Each shape that confit refused, past
+    4,000,000 tokens (a struct of about 105,000 stored entries or more) or
+    past the code generator's size limit, is estimated at 17 s or more."""
+    k, n = c.shape
+    m = np.diff(c.indptr).astype(np.float64)
+    p, q = float(m.sum()), float(m @ m)
+    r = _repeated_sums(c)
+    return (
+        4.99e-4 * n
+        + 1.08e-7 * n * n
+        + 6.43e-5 * p
+        + 2.72e-7 * q
+        + 6.55e-6 * n * k
+        + 2.22e-9 * n * n * k
+        + 1.30e-7 * k * k
+        + 1.68e-5 * k * r
+    )
+
+
+@translates(
+    SparseRandomProjection,
+    scale=MATVEC,
+    scaled=lambda est: not sparse.issparse(est.components_),
+    apart=lambda est: sparse.issparse(est.components_) or _reads_apart(est),
+)
+def _sparse_project(
+    est: Any, x: list[S.Expr], types: list[pa.DataType]
+) -> list[S.Expr]:
+    """`SparseRandomProjection` (`transform`, sklearn 1.9): `validate_data`,
+    which raises on NaN and the infinities, then `safe_sparse_dot(X,
+    components_.T)`. The fit makes `components_` a CSR matrix, or, of
+    density 1 (and of one feature at the "auto" density), a dense one of
+    ±1/sqrt(n_components), which the twin hands to BLAS as
+    `GaussianRandomProjection`'s: that one is held to the matvec bound
+    (`_project`).
+
+    For a dense X and a CSR matrix, scipy computes `components_ @ X.T`
+    (`csr_matvecs`): each output field from 0.0, adding the stored
+    products in stored order (the fit stores the indices unsorted), each
+    product and sum rounded on its own. The entry spells the same sum, so
+    it is bit-exact (`_csr_sum`), where the kernel probe finds scipy's sums
+    so (`csr_sum_is_scipys`). A fit in float32 stores float32 components,
+    which scipy widens to float64, exactly, before the product. The step
+    stays Python where `components_` is not the CSR matrix the fit makes
+    or not all finite, where a component stores more than `_MAX_STORED`
+    entries, or past an estimated 7 s build (`_sparse_build_estimate`).
+
+    Measured over 36 seeds of random fits (1 to 512 features, 1 to 128
+    components, the "auto" density, 1/3, 0.1, 0.01 to 0.99 and 1, a
+    quarter of them in float32) and rows of seven kinds (normal values,
+    magnitudes of 1e-300 to 1e300, subnormals and tiny normals, small
+    whole numbers, about the largest double, signed zeros, and NaN, an
+    infinity or NULL in one feature), 4 of the seeds with numpy's AVX-512
+    code turned off, as on CI's runner (release build, master daf0e4c with
+    T57's project.py, 2026-10-17). Over sparse components, each of 567
+    million output fields equals the twin's bit for bit, NaN as NaN, in
+    calls of 20,000 rows, and so does each of 5.7 million in calls of one
+    row; 3.6% of them are infinite, 0.16% NaN and 1.7% subnormal. The
+    entry traps on each of the 30,045 rows where the twin raises, and on
+    no other row. Of density 1, `check` held 116,972 rows within the
+    matvec bound, and it failed 23 of the 40 fits over rows of about the
+    largest double, where a partial sum overflows (the module's bound
+    assumes that none does).
+
+    Serving 64 rows at the "auto" density takes 29 us at 2 features of one
+    component, against the twin's 11.2 ms; 0.13 to 0.14 ms at 16 of 4
+    (12.6 to 14.5 ms); 0.46 to 0.73 ms at 64 of 16 (17.8 to 18.4 ms); 2.1
+    to 2.2 ms at 256 of 64 (33 to 38 ms); 3.0 to 3.1 ms at 256 of 256 (43
+    to 63 ms); 9.4 to 11.0 ms at 1,024 of 64 and of 256 (102 to 125 ms);
+    and 37 to 39 ms at 4,096 of 16 (363 to 383 ms): 10 to 386 times as
+    fast (release build, one thread, the same master)."""
+    c = est.components_
+    if not sparse.issparse(c):
+        return _project(est, x, types)
+    name = type(est).__name__
+    if c.format != "csr":
+        raise NotNative(f"{name}: components_ in {c.format}, not the csr the fit makes")
+    if not np.isfinite(c.data).all():
+        raise NotNative(f"{name}: components_ not all finite")
+    k, n = c.shape
+    longest = int(np.diff(c.indptr).max(initial=0))
+    if longest > _MAX_STORED:
+        raise NotNative(
+            f"{name}: a component of {longest:,} stored entries, past the"
+            f" {_MAX_STORED} whose sum in scipy's order confit parses"
+        )
+    estimate = _sparse_build_estimate(c)
+    if estimate > MAX_BUILD_S:
+        raise NotNative(
+            f"{name}: an estimated {estimate:.0f} s build, past {MAX_BUILD_S:.0f} s"
+            f" ({c.nnz:,} stored entries of {k:,} components over {n:,} features)"
+        )
+    if not csr_sum_is_scipys():
+        raise NotNative(
+            f"{name}: this platform's scipy does not sum a CSR product as the entry"
+            " does (the kernel probe)"
+        )
+    return _csr_sum(c, x, f64)
 
 
 def _centered(est: Any) -> tuple[Any, Any, np.ndarray]:
