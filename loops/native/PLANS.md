@@ -6,9 +6,10 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. The rest of "Ruled 2026-10-06, to build", item 1 (`Nystroem` next, in
-   kernel.py; `FactorAnalysis` last), one PR each; then the rest of item
-   2.
+1. The rest of "Ruled 2026-10-06, to build", item 1 (`PowerTransformer`
+   Yeo-Johnson and `standardize=True` next, in power.py; then
+   `SparseRandomProjection`; `FactorAnalysis` last), one PR each; then the
+   rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -42,9 +43,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
      compare squares (`ErrorScale.g`), K = n + 5. T51 served
      `RBFSampler`, K = n + 3 (kernel.py, its own build estimates), and
      T52 `SkewedChi2Sampler`, K = n + 4 (the RBF entry over ln(x + s),
-     numpy's `log` within 1 ulp). Left: `Nystroem` max(n + 5, m + 3): an
-     RBF kernel of `Nystroem` reads the same expansion of ‖x - c‖² as
-     distance.py.
+     numpy's `log` within 1 ulp). T54 served `Nystroem` of the rbf kernel,
+     K = max(n + 5, m + 3) (kernel.py, `_nystroem`): its S reads each
+     kernel at the least squared distance within the rounding of the
+     distance, which the research's S, with the kernel itself, does not
+     bound where the rounding moves the kernel's argument by 1 or more.
      `PolynomialCountSketch` is an FFT, not a matvec: not served until a
      normwise S is derived.
 2. **A bounded step inside a composition** (ruled 2026-10-15,
@@ -182,6 +185,15 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `kernel._skewed_build_estimate`. Low priority for confit: no other entry
   reads a logarithm in many products. Send it to the Confit Loop when it
   runs again.
+- **A definition that DuckDB runs with each bound value written once.**
+  confit's `SqlFunction.register` spells each bound value out at each of
+  its reads (`sql_body`), so a value that many output fields read is
+  written once in each. Each of `Nystroem`'s m kernels is read by all m
+  output fields (T54, kernel.py), so its definition grows as m²·n: 25 MB
+  of SQL at 8 features of 100 components, and at 64 of 100 DuckDB ran out
+  of 16 GB of memory as `native.check` registered it. confit itself builds
+  that step in 1.2 s. So `check` holds `Nystroem` to its definition only
+  at few components, and the tests keep to them. Low priority for confit.
 Served since this catalog began (#336–#339, #341, #346, #348, #350,
 #353, #358, #362, #363, #374, #375, #377, #387, #390): a constant CASE
 result counts as trap-free (a step of 32 output fields serves a 64-row call
@@ -420,6 +432,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
   of one sample step, 148 of three or 12 of 100. 3 steps over 256
   features build in 19.5 s as a list and 26.5 s as a struct (master
   6b7e7f1).
+- `Nystroem` of a kernel other than rbf (each needs its own error scale),
+  only with `allow_bound=True`; a gamma that the twin does not multiply by
+  as a double (a long double, an array, a factor -γ above 0 or not
+  finite); a component or a normalization not finite; a platform whose
+  numpy `exp` is more than 1 ulp from confit's on the kernel probe; a step
+  whose build is estimated past 7 s (`kernel._nystroem_build_estimate`,
+  T54): past about 276 components over 1 to 8 features, 200 over 256, 77
+  over 1,024 or 25 over 2,048, and past 3,100 features of one component.
+  300 components over 8 features build in 7.5 s as a list and 8.3 s as a
+  struct (master 3e22aa6).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 

@@ -3,18 +3,23 @@ field bit-exact, a product and a square root, each correctly rounded on
 both sides; its cos and sin fields within their error scale, as numpy's log
 parts from glibc's. The RBF sampler within its error scale, as the twin's
 BLAS sum and the entry's balanced tree part by rounding; the skewed chi2
-sampler, the same over ln(x + s), within its own."""
+sampler, the same over ln(x + s), within its own. Nystroem's rbf kernel
+within its error scale, as the squared distances, numpy's exp and the sums
+over the components part by rounding."""
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 import pytest
+from scipy import sparse
 from sklearn.kernel_approximation import (
     AdditiveChi2Sampler,
+    Nystroem,
     RBFSampler,
     SkewedChi2Sampler,
 )
@@ -616,3 +621,215 @@ def test_a_skewed_chi2_sampler_takes_a_fit_by_its_estimated_build():
     assert K._skewed_build_estimate(8, 256) <= 7
     with pytest.raises(NotNative, match=r"an estimated \d+ s build, past 7 s"):
         to_native(_rbf_step(_skewed(2, 1024)), strict=True, allow_bound=True)
+
+
+def _nystroem(n: int, m: int = 8, dtype: Any = np.float64, **kw) -> Nystroem:
+    est = Nystroem(n_components=m, random_state=0, **kw)
+    return est.fit(np.random.default_rng(n).normal(size=(m + 2, n)).astype(dtype))
+
+
+def _nystroem_step(est: Any, types: list[pa.DataType] | None = None) -> PythonTransform:
+    m, n = np.shape(est.components_)
+    return _step(est, types or [pa.float64()] * n, pa.list_(pa.float64(), m))
+
+
+def _kernel_rows(seed: int, est: Any) -> np.ndarray:
+    """Rows of the fit's scale, where each kernel is about exp(-2) at the
+    default gamma; each component, where its kernel is 1; and rows within
+    1e-9 to 1e-1 of one."""
+    rng = np.random.default_rng(seed)
+    c = np.asarray(sparse.csr_matrix(est.components_).toarray())
+    m, n = c.shape
+    off = rng.normal(size=(40, n)) * 10.0 ** rng.uniform(-9, -1, size=(40, 1))
+    return np.vstack(
+        [rng.normal(size=(40, n)), c, c[rng.integers(0, m, size=40)] + off]
+    )
+
+
+@pytest.mark.parametrize("n, m, gamma", [(3, 8, None), (12, 20, 0.05), (32, 10, None)])
+def test_a_nystroem_parts_from_its_twin_within_its_error_scale(n, m, gamma):
+    est = _nystroem(n, m, gamma=gamma)
+    step = _nystroem_step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _table(_kernel_rows(n, est))
+    with pytest.raises(ParityError, match="ulps, bound 0"):
+        check(step, native, rows, ulps=0)
+    assert check(step, native, rows) == rows.num_rows
+
+
+def test_a_nystroem_of_one_component_serves_a_scalar():
+    est = _nystroem(2, 1)
+    step = _step(est, [pa.float64()] * 2, pa.float64())
+    rows = _table(_kernel_rows(1, est))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_a_nystroem_serves_special_values():
+    # A square past the largest double makes the squared distance infinite,
+    # and its kernel 0 on both sides.
+    step = _nystroem_step(_nystroem(2))
+    k = len(RBF_SPECIALS)
+    rows = _rows(
+        [RBF_SPECIALS[i % k] for i in range(k * k)],
+        [RBF_SPECIALS[i // k] for i in range(k * k)],
+    )
+    valid = [v for v in RBF_SPECIALS if v is not None and math.isfinite(v)]
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, rows) == len(valid) ** 2
+
+
+def test_a_nystroem_serves_only_on_request():
+    step = _nystroem_step(_nystroem(2, 8))
+    assert to_native(step) is step
+    # K = max(n + 5, m + 3) = max(7, 11).
+    assert "within 11·eps·S + τ (S its error scale)" in explain_native(step)
+    with pytest.raises(NotNative, match="only with allow_bound=True"):
+        to_native(step, strict=True)
+
+
+def test_a_changed_normalization_breaches_the_error_scale():
+    # A normalization entry moved by 1e-9 of itself moves an output field by
+    # about 1e-9 of its terms, far past K·eps·S.
+    est = _nystroem(4)
+    step = _nystroem_step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    est.normalization_ = est.normalization_.copy()
+    est.normalization_[0, 0] *= 1 + 1e-9
+    with pytest.raises(ParityError, match=r"past its bound K\*eps\*S \+ tau"):
+        check(step, native, _table(_kernel_rows(4, est)))
+
+
+def test_a_nystroem_in_a_pipeline_serves_as_its_last_step():
+    est = make_pipeline(StandardScaler(), Nystroem(n_components=8, random_state=0))
+    est.fit(np.random.default_rng(5).normal(size=(30, 3)) * 100)
+    step = _step(est, [pa.float64()] * 3, pa.list_(pa.float64(), 8))
+    rows = _table(np.random.default_rng(6).normal(size=(60, 3)) * 100)
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_a_nystroem_over_booleans_only_serves():
+    # `check_pairwise_arrays` reads a boolean array as float64.
+    step = _nystroem_step(_nystroem(2), [pa.bool_()] * 2)
+    rows = _rows([a for a in BITS for _ in BITS], [b for _ in BITS for b in BITS])
+    # A NULL makes the row float64 with NaN, which the twin rejects.
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 4
+
+
+@pytest.mark.parametrize("bits", [False, True], ids=["numbers", "booleans"])
+def test_a_nystroem_fitted_in_float32_serves(bits):
+    # `check_pairwise_arrays` widens float32 components to float64 beside a
+    # row of doubles or booleans, and numpy widens the float32
+    # normalization in the product.
+    est = _nystroem(3, dtype=np.float32)
+    assert est.normalization_.dtype == np.float32
+    step = _nystroem_step(est, [pa.bool_()] * 3 if bits else None)
+    rows = (
+        _rows(*map(list, zip(*itertools.product(BITS, repeat=3), strict=True)))
+        if bits
+        else _table(_kernel_rows(7, est))
+    )
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_a_nystroem_fitted_on_a_sparse_matrix_serves():
+    # Its components stay sparse, which the twin reads through scipy's
+    # product and row norms: another order of the same sums.
+    x = sparse.random(30, 6, density=0.5, random_state=0, format="csr")
+    est = Nystroem(n_components=8, random_state=0).fit(x)
+    assert sparse.issparse(est.components_)
+    step = _nystroem_step(est)
+    rows = _table(np.vstack([x.toarray(), _kernel_rows(8, est)]))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def _gaussian(a: np.ndarray, b: np.ndarray) -> float:
+    """The rbf kernel of two rows, as a callable kernel reads them."""
+    return float(np.exp(-np.sum((a - b) ** 2)))
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    ["poly", "linear", "laplacian", _gaussian],
+    ids=lambda k: getattr(k, "__name__", k),
+)
+def test_another_kernel_keeps_a_nystroem_python(kernel):
+    est = Nystroem(kernel=kernel, n_components=4, random_state=0)
+    step = _nystroem_step(est.fit(np.random.default_rng(0).normal(size=(6, 2))))
+    with pytest.raises(NotNative, match="only the rbf kernel serves"):
+        to_native(step, strict=True, allow_bound=True)
+
+
+def test_an_exp_apart_from_confits_keeps_a_nystroem_python(monkeypatch):
+    monkeypatch.setattr(K, "kernel_distance", lambda func: 2)
+    with pytest.raises(NotNative, match="numpy exp is 2 ulps from confit's"):
+        to_native(_nystroem_step(_nystroem(2)), strict=True, allow_bound=True)
+
+
+def test_a_component_or_a_normalization_not_finite_keeps_a_nystroem_python():
+    est = _nystroem(2)
+    est.components_[1, 0] = math.inf
+    with pytest.raises(NotNative, match="a component not finite"):
+        to_native(_nystroem_step(est), strict=True, allow_bound=True)
+    est = _nystroem(2)
+    est.normalization_[0, 1] = math.nan
+    with pytest.raises(NotNative, match="a normalization not finite"):
+        to_native(_nystroem_step(est), strict=True, allow_bound=True)
+
+
+def test_a_nystroem_reads_its_gamma_as_its_twin_does():
+    # `_get_kernel_params` reads `gamma` over the one of `kernel_params`,
+    # and `rbf_kernel` takes 1 / n_features where neither is set.
+    fit = np.random.default_rng(3).normal(size=(10, 3))
+    ests = [
+        Nystroem(n_components=5, kernel_params={"gamma": 0.3}, random_state=0),
+        Nystroem(n_components=5, gamma=2.0, kernel_params={"gamma": 0.3}),
+        Nystroem(n_components=5, random_state=0),
+    ]
+    for est, factor in zip(ests, [-0.3, -2.0, -(1.0 / 3)], strict=True):
+        est.fit(fit)
+        assert K._nystroem_factor(est) == factor
+        step = _nystroem_step(est)
+        native = to_native(step, strict=True, allow_bound=True)
+        assert check(step, native, _table(_kernel_rows(3, est)))
+
+
+@pytest.mark.parametrize(
+    "given",
+    [np.longdouble(0.5), np.array(0.5), np.uint64(3), math.inf, "scale"],
+    ids=["longdouble", "array", "uint64", "inf", "str"],
+)
+def test_a_gamma_read_otherwise_than_as_a_double_stays_python(given):
+    # A long double multiplies in long doubles; -np.uint64(3) wraps around
+    # to a positive factor.
+    est = _nystroem(2)
+    est.gamma = given
+    with pytest.raises(NotNative, match=r"Nystroem\(gamma="):
+        to_native(_nystroem_step(est), strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("given", [np.float32(0.3), np.int64(2), 2])
+def test_a_gamma_of_another_numpy_type_is_read_as_a_double(given):
+    est = _nystroem(2)
+    est.gamma = given
+    step = _nystroem_step(est)
+    rows = _table(_kernel_rows(2, est))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows)
+
+
+def test_the_nystroem_build_estimate_takes_what_builds_within_the_cap():
+    # Of the shapes it was fitted on, these built in 7.4 s or less, and
+    # those in 7.9 s or more (the slower of a list and a struct).
+    for n, m in [(8, 250), (256, 150), (1024, 75), (2048, 20)]:
+        assert K._nystroem_build_estimate(n, m) <= K.MAX_BUILD_S
+    for n, m in [(8, 300), (128, 250), (1024, 100), (4096, 1)]:
+        assert K._nystroem_build_estimate(n, m) > K.MAX_BUILD_S
+
+
+def test_a_nystroem_past_its_estimated_build_stays_python():
+    est = Nystroem(n_components=300, random_state=0)
+    est.fit(np.random.default_rng(0).normal(size=(300, 2)))
+    with pytest.raises(
+        NotNative,
+        match=r"an estimated \d+ s build, past 7 s \(300 components over 2 features",
+    ):
+        to_native(_nystroem_step(est), strict=True, allow_bound=True)

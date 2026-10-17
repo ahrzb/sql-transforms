@@ -38,10 +38,23 @@ features of one step, 148 of three or 12 of 100. Each build estimate's
 docstring now says which time it estimates: the trial build alone (T46's
 forest, isotonic, quantile and spline estimates) or the whole warm
 `to_native` (finding 92).
+T54 serves `Nystroem` of the rbf kernel (`kernel._nystroem`) within
+K = max(n + 5, m + 3), the bound that the owner ruled, with n features and
+m components. Its S reads each kernel at the least squared distance within
+the rounding of the distance (k̃_j): the research's S, with the kernel
+itself, fails at 11.1 million fields where the rows and the fit sit far
+from 0. Over 354 million fields of 16 seeds (1 to 64 features of 8 and 64
+components, numpy's `exp` of AVX-512 and glibc's), no field is past K: the
+largest |entry - twin| / (eps·S) is 3.19 against K = 67, and the least
+room is 1.99 against K = 11. The entry refuses a step whose build
+`kernel._nystroem_build_estimate` estimates past 7 s (110 shapes, each
+within 0.86 to 1.13 times the estimate). `check` runs a definition that
+grows as m²·n, so the tests keep to few components (a new need in PLANS).
+Scripts and data are in `/mnt/project-files/transforms-loop/t54/`.
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it.
 
 Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`Nystroem` next, one PR each).
+`PowerTransformer` Yeo-Johnson and `standardize=True` next, one PR each).

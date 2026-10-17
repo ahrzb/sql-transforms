@@ -12,7 +12,7 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**48 of 68** in-scope transformers are native (84 listed by sklearn).
+**49 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -59,7 +59,7 @@ owner's ruling).
 | `NMF` | not yet |  |
 | `NeighborhoodComponentsAnalysis` | not yet |  |
 | `Normalizer` | native | bit-exact |
-| `Nystroem` | not yet |  |
+| `Nystroem` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `OneHotEncoder` | native | bit-exact |
 | `OrdinalEncoder` | native | bit-exact |
 | `PCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
