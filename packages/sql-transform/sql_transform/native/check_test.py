@@ -18,7 +18,7 @@ import pyarrow as pa
 import pytest
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import FeatureUnion, Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import Binarizer, StandardScaler
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -292,13 +292,30 @@ def test_a_composition_holds_a_bit_exact_part_bit_exactly(dot):
         check(dataclasses.replace(step, instances={0: twin}), native, rows)
 
 
-def test_a_composition_refuses_an_error_scale_a_later_step_reads(dot):
-    pipe = Pipeline([("dot", _dots(1)), ("s", StandardScaler())])
+def test_a_composition_carries_an_error_scale_a_later_step_reads(dot):
+    # The scaler carries the dot product's bound to its own output fields
+    # (option 2 of the ruling): a dropped term breaches it there.
+    pipe = Pipeline([("dot", _dots(2)), ("s", StandardScaler())])
+    step = _composed(pipe, 8)
+    native = to_native(step, strict=True, allow_bound=True)
+    assert explain_native(step, allow_bound=True).endswith(
+        "within the bound of its steps 'dot' and 's'"
+    )
+    rows = _rows(_cancelling(8, 64))
+    assert check(step, native, rows) == 64
+    dot(_without_the_last_term)
+    native = to_native(step, strict=True, allow_bound=True)
+    with pytest.raises(ParityError, match=r"'f0'.*\(past its part's bound"):
+        check(step, native, rows)
+
+
+def test_a_composition_refuses_a_step_that_carries_no_bound(dot):
+    pipe = Pipeline([("dot", _dots(1)), ("b", Binarizer())])
     with pytest.raises(
         NotNative,
-        match=r"Pipeline step 'dot': _Dot is within 9·eps·S \+ τ \(S its error"
-        r" scale\), and a later step reads its output, for which no bound is"
-        " derived yet",
+        match=r"Pipeline step 'b': Binarizer follows step 'dot', which is within"
+        r" 9·eps·S \+ τ \(S its error scale\), and no bound is derived through"
+        " it yet",
     ):
         to_native(_composed(pipe, 8), strict=True, allow_bound=True)
 

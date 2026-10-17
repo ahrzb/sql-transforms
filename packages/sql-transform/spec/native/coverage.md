@@ -22,14 +22,14 @@ owner's ruling).
 | `Birch` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
 | `BisectingKMeans` | native | within K·eps·S + τ on the squares (S its error scale), served only with `allow_bound=True` |
 | `CCA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
-| `ColumnTransformer` | composition | routes columns to parts; served over entries, one with a parity bound above 0 only as an unweighted part, with `allow_bound=True` |
+| `ColumnTransformer` | composition | routes columns to parts; served over entries, one with a parity bound above 0 in a part, weighted or not, where each later step carries its bound, with `allow_bound=True` |
 | `DictVectorizer` | out of scope | input is dicts, not a row of columns |
 | `DictionaryLearning` | not yet |  |
 | `FactorAnalysis` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `FastICA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `FeatureAgglomeration` | native | bit-exact |
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
-| `FeatureUnion` | composition | concatenates parts' outputs; served over entries, one with a parity bound above 0 only as an unweighted part, with `allow_bound=True` |
+| `FeatureUnion` | composition | concatenates parts' outputs; served over entries, one with a parity bound above 0 in a part, weighted or not, where each later step carries its bound, with `allow_bound=True` |
 | `FunctionTransformer` | native | bit-exact; within 3 ulps for some configurations, served only with `allow_bound=True` |
 | `GaussianRandomProjection` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `GenericUnivariateSelect` | native | bit-exact |
@@ -67,7 +67,7 @@ owner's ruling).
 | `PLSRegression` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `PLSSVD` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `PatchExtractor` | out of scope | input is images |
-| `Pipeline` | composition | chains steps; served over entries, one with a parity bound above 0 only as the last step, with `allow_bound=True` |
+| `Pipeline` | composition | chains steps; served over entries, one with a parity bound above 0 where each later step carries its bound, with `allow_bound=True` |
 | `PolynomialCountSketch` | not yet |  |
 | `PolynomialFeatures` | native | bit-exact |
 | `PowerTransformer` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |

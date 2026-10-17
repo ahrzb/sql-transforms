@@ -34,23 +34,35 @@ operations in the twin's order, or where a kernel probe reads 0.
   `to_native` returns such a composition unchanged.
 - In a composition, each output field has the parity bound of the step or
   part that gives it. With `allow_bound=True`, a step with a parity bound
-  above 0 can be the last step of a `Pipeline`. It can also be a part of a
-  `ColumnTransformer` or a `FeatureUnion`, if `transformer_weights` gives
-  the part no weight. In these places, the step's catalog entry reads the
-  same input as the step inside the twin. The steps before the last step of
-  a `Pipeline` are bit-exact, and a part reads the columns that the twin
-  gives it. If a later step reads the output of a step with a bound above 0,
-  `to_native` returns the `PythonTransform` unchanged. It does the same if
-  `transformer_weights` gives a weight, even 1.0, to a part with a bound
-  above 0. The owner ruled this in
+  above 0 can be a step of a `Pipeline`, or a part of a
+  `ColumnTransformer` or a `FeatureUnion`. Where the step reads the same
+  input as the step inside the twin, its own bound holds. Each later step
+  that reads its output gives its own output fields a carried bound. These
+  steps give one: the affine steps, and `FunctionTransformer` of the
+  identity, `negative`, `positive`, `conjugate`, `abs` and `fabs`. The
+  affine steps are the scalers except `Normalizer`, the feature selectors,
+  the mean of `FeatureAgglomeration` and the linear projections. A weight
+  in `transformer_weights` gives a part a carried bound too. If another step
+  reads the output of a step with a bound above 0, `to_native` returns the
+  `PythonTransform` unchanged. A discretizer is an example of such a step.
+  `to_native` does the same if an infinite weight multiplies such an
+  output. The owner ruled this in
   [bounded-steps-in-compositions.md](../../../../loops/native/decisions/closed/bounded-steps-in-compositions.md).
 - The owner ruled this in
   [native-transform-parity-bounds.md](../../../../loops/confit/decisions/closed/native-transform-parity-bounds.md)
   and [matvec-parity-bound.md](../../../../loops/native/decisions/closed/matvec-parity-bound.md).
 - NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
   are different answers.
+- On a row of values near the largest double, a sum of a projection can
+  overflow in one order of addition and not in another. There an output
+  field can be infinite or NaN on one side only. The twin itself answers
+  such a row one way in one call and another way in another call. On such
+  a row, the entry can be past its parity bound, and `native.check` then
+  reports a `ParityError`. An open decision record asks the owner what
+  must hold there:
+  [where-a-sum-overflows.md](../../../../loops/native/decisions/open/where-a-sum-overflows.md).
 
-*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`, `native/compose_test.py::test_a_bounded_step_serves_last_or_as_a_part_on_request`, `native/compose_test.py::test_a_pipeline_names_the_step_it_refuses`, `native/check_test.py::test_a_composition_holds_its_last_step_to_its_error_scale`, `native/check_test.py::test_a_composition_holds_a_bit_exact_part_bit_exactly`, `native/distance_test.py::test_a_distance_near_a_centre_is_compared_by_its_square`, `native/distance_test.py::test_a_distance_in_a_composition_stays_python`.
+*Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`, `native/compose_test.py::test_a_bounded_step_serves_last_or_as_a_part_on_request`, `native/compose_test.py::test_a_bounded_step_is_carried_by_the_steps_after_it`, `native/compose_test.py::test_a_carried_bound_grows_as_the_step_that_carries_it`, `native/compose_test.py::test_a_weight_carries_its_part_s_bound_times_the_weight`, `native/compose_test.py::test_a_pipeline_names_the_step_it_refuses`, `native/check_test.py::test_a_composition_holds_its_last_step_to_its_error_scale`, `native/check_test.py::test_a_composition_carries_an_error_scale_a_later_step_reads`, `native/_carry_test.py::test_a_carry_bounds_the_two_sides`, `native/check_test.py::test_a_composition_holds_a_bit_exact_part_bit_exactly`, `native/distance_test.py::test_a_distance_near_a_centre_is_compared_by_its_square`, `native/distance_test.py::test_a_distance_in_a_composition_stays_python`.
 
 **claim: entry-same-inputs.** **The same inputs.** A feature reaches the
 translation as `PythonTransform` hands it to `transform`. A number or a
@@ -108,7 +120,19 @@ DuckDB answers for the entry's own definition.
 with no translation comes back unchanged, and that step is always correct
 to serve. `to_native(step, strict=True)` raises an error instead.
 
-*Evidence:* `native/catalog_test.py::test_a_step_without_a_translation_comes_back_unchanged`, `native/catalog_test.py::test_to_native_is_idempotent`.
+- confit computes a value once for each row only if the value cannot
+  raise an error. It counts a call of `ln`, `log2`, `log10`, `sqrt`,
+  `sin`, `cos` or `tan` as one that can raise, also where a CASE rules
+  the error out, and each value that reads such a call too. confit
+  computes each of these values again at each read. So in a composition
+  after a step that calls one of these functions, the build of confit
+  can take tens of seconds or use all the memory. `to_native` counts the
+  characters that writing each of these values at each read adds to the
+  definition of a composition. If they are more than 500,000, `to_native`
+  returns the composition unchanged (`MAX_UNSHARED` in
+  `native/_registry.py`).
+
+*Evidence:* `native/catalog_test.py::test_a_step_without_a_translation_comes_back_unchanged`, `native/catalog_test.py::test_to_native_is_idempotent`, `native/compose_test.py::test_a_composition_that_confit_cannot_share_stays_python`, `native/compose_test.py::test_unshared_writes_each_value_that_confit_cannot_share_at_each_read`.
 
 **claim: explicit-native-selection.** Native selection is explicit and has
 no automatic cache. The native contract and parity bounds apply
@@ -127,6 +151,15 @@ in the entry does this. The owner ruled this in
 - An entry may never trap where the twin answers.
 - A twin error that is not validation, for example an sklearn bug, is not
   covered. The ruling record lists each such error.
+- In a composition, a step can read the output of a step with a parity
+  bound above 0. On a row of values near the largest double, a sum of the
+  bounded step can overflow on one side only. Then the validation of the
+  later step raises an error on that side only. The twin can raise where
+  the entry answers, or answer where the entry traps. On such rows this
+  claim can fail, and `native.check` then reports a `ParityError`. The twin
+  itself raises on such a row in one call and answers in another. An open
+  decision record asks the owner what must hold there:
+  [where-a-sum-overflows.md](../../../../loops/native/decisions/open/where-a-sum-overflows.md).
 
 *Evidence:* `native/guard_test.py::test_the_guard_traps_where_the_validation_raises`, `native/guard_test.py::test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else`.
 
