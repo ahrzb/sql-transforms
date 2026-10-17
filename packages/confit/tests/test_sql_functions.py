@@ -396,6 +396,7 @@ def test_a_wide_struct_function_builds_once_per_call():
         infer.infer_arrow(rows.slice(0, 1).set_column(0, "iid", pa.array([7])))
 
 
+@pytest.mark.cost
 def test_a_struct_read_field_by_field_builds_in_about_linear_time():
     # Each field read holds the call's marker. The check of each SELECT item
     # for a subquery walked the whole call again at every read, so k reads of
@@ -430,6 +431,7 @@ def test_a_struct_read_field_by_field_builds_in_about_linear_time():
     small = min(build(500) for _ in range(3))
     big = build(4_000)
     # 8 times the fields: 10 to 14 times the time, against 40 and more.
+    print(f"struct build: small={small:.6f}s big={big:.6f}s ratio={big / small:.3f}")
     assert big < 25 * small, (small, big)
 
 

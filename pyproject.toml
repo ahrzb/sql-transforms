@@ -56,6 +56,7 @@ known-third-party = ["duckdb"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
+markers = ["cost: serial structural and baseline-relative native cost contracts"]
 # `benchmarks/` lives at the repo root and is imported by both packages' test
 # suites (the serving scenarios are the shared parity fixtures). `python -m
 # pytest` would put the cwd on sys.path and hide this; the `pytest` console
