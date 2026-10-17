@@ -1,8 +1,9 @@
 """Kernel approximations (sklearn 1.9, `sklearn/kernel_approximation.py`):
 `AdditiveChi2Sampler`, which maps each feature on its own; `RBFSampler`,
-the cosine of a random projection of the row (`_rbf`); and
-`SkewedChi2Sampler`, the same over the logarithm of each feature shifted
-by the skewedness (`_skewed_chi2`).
+the cosine of a random projection of the row (`_rbf`); `SkewedChi2Sampler`,
+the same over the logarithm of each feature shifted by the skewedness
+(`_skewed_chi2`); and `Nystroem` of the rbf kernel, the kernel of the row
+to each fitted component, times a fitted matrix (`_nystroem`).
 
 For each feature x, with s the sample interval, the twin
 (`_transform_dense`) answers 0 where x is 0, else `sqrt(x * s)`; then, for
@@ -54,21 +55,32 @@ features, in 19.5 s and 26.5 s. The entry refuses a step whose build
 from __future__ import annotations
 
 import math
+import numbers
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from confit import sql as S
+from scipy import sparse
 from sklearn.kernel_approximation import (
     AdditiveChi2Sampler,
+    Nystroem,
     RBFSampler,
     SkewedChi2Sampler,
 )
+from sklearn.metrics.pairwise import check_pairwise_arrays
+from sklearn.utils.extmath import row_norms
 
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import ErrorScale, NotNative, rejects, translates
+from sql_transform.native._registry import (
+    EPS,
+    ErrorScale,
+    NotNative,
+    rejects,
+    translates,
+)
 from sql_transform.native.function import kernel_distance
-from sql_transform.native.project import MAX_BUILD_S, _refuse_past_cap, _tree
+from sql_transform.native.project import _TINY, MAX_BUILD_S, _refuse_past_cap, _tree
 
 # The sample interval sklearn takes where `sample_interval` is None, for
 # `sample_steps` 1 to 3 (Vedaldi and Zisserman, 2011, figure 2 c).
@@ -609,3 +621,229 @@ def _skewed_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.
     # computes its own), and the CASE splits a block in each.
     logs = [S.fn("ln", xi + f64(s)) for xi in x]
     return _projection_cos(est, logs, _skewed_factor(est))
+
+
+def _nystroem_factor(est: Any) -> float:
+    """-γ, the double the twin's `rbf_kernel` multiplies each squared
+    distance by (`K *= -gamma`): of `gamma`, else of the gamma of
+    `kernel_params`, else of `1.0 / n_features` (`_get_kernel_params`,
+    whose parameters `pairwise_kernels` filters to the kernel's own).
+    NotNative where the twin multiplies in another dtype than a double (a
+    long double γ rounds the product twice), or where -γ is not a finite
+    double of 0 or less."""
+    params = est.kernel_params
+    if params is not None and not isinstance(params, dict):
+        raise NotNative(f"Nystroem(kernel_params={params!r})")
+    given = est.gamma
+    if given is None and params is not None:
+        given = params.get("gamma")
+    if given is None:
+        return -(1.0 / est.n_features_in_)
+    if isinstance(given, np.ndarray) or not isinstance(given, numbers.Real):
+        raise NotNative(f"Nystroem(gamma={given!r})")
+    with np.errstate(all="ignore"):
+        neg = -given
+        dtype = (np.ones(1) * neg).dtype
+    if dtype != np.float64:
+        raise NotNative(f"Nystroem(gamma={given!r}): the twin multiplies in {dtype}")
+    try:
+        factor = float(neg)
+    except OverflowError as e:
+        raise NotNative(f"Nystroem(gamma={given!r})") from e
+    if not (math.isfinite(factor) and factor <= 0.0):
+        raise NotNative(f"Nystroem(gamma={given!r})")
+    return factor
+
+
+def _nystroem_components(est: Any) -> tuple[np.ndarray, np.ndarray]:
+    """The components as the twin reads them, float64, one per row, and
+    each one's ‖c_j‖² as the twin computes it, a constant: through
+    `check_pairwise_arrays`, then `row_norms` (sparse where the fit was,
+    as distance.py). NotNative where a component is not finite, which
+    `check_pairwise_arrays` rejects."""
+    c = est.components_
+    if not np.isfinite(c.data if sparse.issparse(c) else np.asarray(c)).all():
+        raise NotNative("Nystroem: a component not finite")
+    _, y = check_pairwise_arrays(np.zeros((1, est.n_features_in_)), c)
+    dense = y.toarray() if sparse.issparse(y) else y
+    return np.asarray(dense, np.float64), row_norms(y, squared=True)
+
+
+def _nystroem_s(est: Any, x: np.ndarray) -> np.ndarray:
+    """S_l = Σ_j |N_lj|·k̃_j·(1 + γ·S2_j) for each output field l at the row
+    `x` (long doubles), with S2_j = ‖x‖² + ‖c_j‖² + 2·Σ_i |x_i·c_ji| and
+    k̃_j = exp(-γ·max(q_j - (n + 4)/2·eps·S2_j, 0)), q_j = ‖x - c_j‖² as the
+    sum of the squares of the differences (`_nystroem`)."""
+    c = est.components_
+    c = np.asarray(c.toarray() if sparse.issparse(c) else c, np.longdouble)
+    g = -np.longdouble(_nystroem_factor(est))
+    s2 = np.sum(x * x) + np.sum(c * c, axis=1) + 2 * (np.abs(c) @ np.abs(x))
+    q = np.sum((x - c) ** 2, axis=1)
+    near = np.maximum(q - (c.shape[1] + 4) / 2 * EPS * s2, 0)
+    nrm = np.abs(np.asarray(est.normalization_, np.longdouble))
+    return nrm @ (np.exp(-g * near) * (1 + g * s2))
+
+
+def _nystroem_tau(est: Any) -> np.ndarray:
+    """tau_l = 2**-1074·(m + (4nγ + 4)·Σ_j |N_lj|) for each output field l
+    (`_nystroem`)."""
+    nrm = np.abs(np.asarray(est.normalization_, np.longdouble))
+    g = -np.longdouble(_nystroem_factor(est))
+    n = est.n_features_in_
+    return np.longdouble(_TINY) * (len(nrm) + (4 * n * g + 4) * nrm.sum(axis=1))
+
+
+NYSTROEM = ErrorScale(
+    k=lambda est: max(est.n_features_in_ + 5, len(est.normalization_) + 3),
+    s=_nystroem_s,
+    tau=_nystroem_tau,
+)
+
+
+def _nystroem_build_estimate(n: int, m: int) -> float:
+    """The seconds of the whole warm `to_native` of the entry, as
+    `_rbf_build_estimate`, from its n features and m components: the n·m
+    products of the squared distances, the m² products of the output
+    fields' sums, a term in m³, and terms in n and n² that the build grows
+    by at wide rows. Over 1 s, a struct return builds in 0.87 to 1.23 times
+    the time of a list. Fitted on the slower return of each shape over 110
+    shapes (1 to 4,096 features, 1 to 400 components; builds of 0.3 to
+    23.6 s, one each; master 3e22aa6, 2026-10-17): each within 0.86 to 1.13
+    times the estimate. The cap took on none slower than 7.44 s and refused
+    none faster than 7.86 s. It takes about 276 components over 1 to 8
+    features, 256 over 64, 200 over 256, 77 over 1,024 or 25 over 2,048,
+    and one component up to 3,100 features. confit refuses a step past
+    4,000,000 tokens after 6.3 to 23 s: in the grid, from 500 components
+    over 1 to 32 features, 400 over 64 and 128, 350 over 256, 250 over 512,
+    150 over 1,024 (a struct) and 100 over 2,048. The cap refuses each of
+    them at an estimated 13.5 s or more."""
+    return (
+        4.36e-4 * n
+        + 7.05e-5 * n * m
+        + 5.40e-5 * m * m
+        + 1.35e-7 * m**3
+        + 5.55e-7 * n * n
+    )
+
+
+@translates(Nystroem, scale=NYSTROEM)
+def _nystroem(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
+    """`Nystroem(kernel="rbf")` (`transform`): `validate_data`, where NaN
+    and the infinities raise; `pairwise_kernels(X, components_)`, which for
+    the rbf kernel is `rbf_kernel` (`sklearn/metrics/pairwise.py`): the
+    squared distance to each component c_j as distance.py spells it,
+    `max(((-2·(x @ c_j)) + ‖x‖²) + ‖c_j‖², 0)`, then `*= -gamma` and
+    `np.exp`, the kernel k_j; then `@ normalization_.T` (BLAS): output
+    field l is the sum over j of k_j·N_lj, with N the normalization.
+
+    The entry spells the same expression: ‖x‖², each x @ c_j and each
+    output field's sum as a balanced tree, ‖c_j‖² as numpy computes it (a
+    constant, `_nystroem_components`), and confit's `exp`. It is held to the
+    error scale of the ruling (decisions/closed/matvec-parity-bound.md,
+    item 4): for output field l,
+
+        |entry - twin| <= max(n + 5, m + 3)·eps·S_l + tau_l,
+        S_l = sum_j |N_lj|·k̃_j·(1 + γ·S2_j),
+        S2_j = ‖x‖² + ‖c_j‖² + 2·sum_i |x_i·c_ji|,
+
+    with n the number of features, m of components and γ the kernel's
+    gamma. k̃_j = exp(-γ·max(q_j - (n + 4)/2·eps·S2_j, 0)) is the kernel at
+    the least squared distance within the rounding of q_j = ‖x - c_j‖²: k_j
+    itself to first order.
+
+    On each side, the clipped square is within (γ_n + 2u)·S2_j of q_j
+    (distance.py; Higham, *Accuracy and Stability of Numerical
+    Algorithms*, §3.1; γ_n = n·u/(1 - n·u), u = eps/2), and its product by
+    -γ within γ·(n + 3)·u·S2_j of -γ·q_j, to first order. So the two
+    sides' arguments of `exp` are within γ·(n + 3)·eps·S2_j of each other,
+    and both are at most min(0, -γ·q_j + γ·(n + 3)·u·S2_j): by the mean
+    value theorem, the exact exps of the two part by at most k̃_j times
+    that difference. confit's `exp` is Rust's, which calls the C library's
+    (`duck_exp` in confit's `kernels.rs`): on Linux glibc's, within 0.511
+    ulp of the exact value (glibc, `sysdeps/ieee754/dbl-64/e_exp_data.c`),
+    and the kernel probe reads 0 where numpy's `exp` is glibc's, as without
+    AVX-512. numpy's `exp` is within d = 1 ulp of confit's on the probe
+    (elsewhere the step stays Python), so the two roundings add 2·0.511 + d
+    = 2.022 ulps of the kernel at most, and the two kernels are within
+    k̃_j·eps·((n + 3)·γ·S2_j + 2.022). Each side sums the m products
+    k_j·N_lj within γ_m·sum_j |k_j·N_lj| of the exact sum, in any order,
+    fused or not. So the two fields are within
+    eps·sum_j |N_lj|·k̃_j·((n + 3)·γ·S2_j + m + 2.022), which
+    max(n + 3, m + 2.022)·eps·S_l covers, and K = max(n + 5, m + 3) covers
+    with room for the rounding of S in `check`.
+
+    A product or a square that underflows errs by up to 2**-1075 more on
+    each side, and so does each side's product by -γ; an `exp` below the
+    least normal double errs by up to 2**-1074 on each side, and the two
+    `exp`s part by up to d·2**-1074 more there.
+    tau_l = 2**-1074·(m + (4nγ + 4)·sum_j |N_lj|) covers them. As
+    distance.py's, the bound assumes that no partial sum overflows.
+
+    The research's S reads k_j in place of k̃_j (research/2026-10-06/
+    distances.md, §2.2). k̃_j/k_j is at most exp((n + 4)/2·γ·eps·S2_j), so
+    the two part by more than a factor of e only where γ·eps·S2_j exceeds
+    2/(n + 4): where the rounding of q_j can move the argument of `exp` by
+    1 or more, and the twin's kernel is itself rounding noise. There, k_j
+    can be far below what both sides compute, and the research's S fails.
+
+    Measured over 16 seeds of 1, 2, 3, 5, 8, 17, 32 and 64 features of 8
+    and 64 components, at γ = 1/n and at 1, 0.1 and 10 over n times the
+    mean variance of the fit (rows normal; offset from 0 by 300 times their
+    spread; of magnitudes 1e-5 to 1e5; small whole numbers; each component
+    and rows near one; and with means of 1e6 times their spread, or of 1e8
+    to 1e9, as the fit's; master 3e22aa6, 2026-10-17): 295 million output
+    fields against the twin of the whole call, 88% of them apart, and 59
+    million against the twin of each row alone, 84% apart (the two twins
+    part in 87%). 265 million read numpy's `exp` of AVX-512, 1 ulp from
+    confit's on its probe, and 88 million glibc's
+    (`NPY_DISABLE_CPU_FEATURES`). No field is past its bound, and none
+    parts from the twin in NaN. The largest |entry - twin| / (eps·S) is
+    3.19, at 32 features of 64 components against K = 67; the least room
+    is at 1 feature of 8 components, 1.99 against K = 11. With the
+    research's S, 11.1 million fields are past K, in 685 of the 3,072
+    configurations of rows far from 0, at up to 9.5e286·eps·S. The measured
+    value is evidence for K, not K.
+
+    A call of 64 rows takes 61 to 77 µs at 2 features of 10 components,
+    against 33 ms for the twin; 1.7 to 3.5 ms at 8 to 256 features of 50
+    to 100 components, 12.5 to 25.7 times as fast as the twin; and 6.6 to
+    9.5 ms at 64 features of 200 components or 8 of 250, 4.9 to 10.3 times
+    as fast (a list or a struct, one thread, the median of 30 warm calls,
+    release build, master 3e22aa6). A row computes n·m products for the
+    distances and m² for the output fields. A step builds in the time that
+    `_nystroem_build_estimate` estimates, which the cap reads: 8 features
+    of 250 components build in 5.6 s as a list and 6.1 s as a struct.
+
+    `check` runs the definition that DuckDB registers, which spells each
+    kernel out in every output field, so its SQL grows as m²·n: 25 MB at 8
+    features of 100 components, and DuckDB ran out of 16 GB at 64 of 100.
+    The tests and catalog fixtures hold few components.
+
+    Only the rbf kernel serves. A fit in float32, on booleans or on a
+    sparse matrix serves: `check_pairwise_arrays` widens the components and
+    the row to float64, numpy widens a float32 normalization in the
+    product, and sparse components read the same sums in scipy's order."""
+    kernel = est.kernel
+    if not (isinstance(kernel, str) and kernel == "rbf"):
+        raise NotNative(f"Nystroem(kernel={kernel!r}): only the rbf kernel serves")
+    factor = _nystroem_factor(est)
+    c, cc = _nystroem_components(est)
+    m, n = c.shape
+    nrm = np.asarray(est.normalization_)
+    if nrm.shape != (m, m) or not np.isfinite(nrm).all():
+        raise NotNative("Nystroem: a normalization not finite")
+    _refuse_past_cap("Nystroem", n, m, _nystroem_build_estimate)
+    d = kernel_distance(np.exp)
+    if d is None or d > 1:
+        raise NotNative(
+            f"Nystroem: this platform's numpy exp is {d} ulps from confit's on"
+            " the kernel probe, past what K = max(n + 5, m + 3) reads (1)"
+        )
+    xx = _tree([xi * xi for xi in x])
+    k = []
+    for cj, ccj in zip(c, cc, strict=True):
+        dot = _tree([xi * f64(ci) for xi, ci in zip(x, cj, strict=True)])
+        q = ((f64(-2.0) * dot) + xx) + f64(ccj)
+        k.append(S.fn("exp", S.fn("greatest", q, _ZERO) * f64(factor)))
+    w = np.asarray(nrm, np.float64)
+    return [_tree([kj * f64(v) for kj, v in zip(k, row, strict=True)]) for row in w]

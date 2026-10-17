@@ -55,6 +55,7 @@ from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.isotonic import IsotonicRegression
 from sklearn.kernel_approximation import (
     AdditiveChi2Sampler,
+    Nystroem,
     RBFSampler,
     SkewedChi2Sampler,
 )
@@ -887,6 +888,17 @@ FIXTURES[Pipeline].append(
     lambda: make_pipeline(
         MinMaxScaler(), SkewedChi2Sampler(n_components=8, random_state=2)
     )
+)
+# Nystroem's rbf kernel (kernel.py), within its error scale: the default
+# gamma, 1 / n_features, and one of `kernel_params`. A fit of fewer rows
+# than its components keeps one a row. Few components: `check` runs a
+# definition that spells each kernel out in every output field.
+FIXTURES[Nystroem] = [
+    lambda: Nystroem(n_components=5, random_state=0),
+    lambda: Nystroem(kernel_params={"gamma": 1e-4}, n_components=20, random_state=1),
+]
+FIXTURES[Pipeline].append(
+    lambda: make_pipeline(StandardScaler(), Nystroem(n_components=8, random_state=2))
 )
 
 # A string feature's fitted values, and the unseen ones serving adds.
