@@ -465,6 +465,23 @@ fn a_repeated_pure_subexpression_is_computed_once() {
 }
 
 #[test]
+fn a_native_apart_read_is_subtracted_once_per_row() {
+    // T44 relies on this seven-node expression passing MIN_SHARED_SIZE,
+    // and on folding retaining its sign-safe subtraction. Plain coalesce
+    // is five nodes; its duplication is intentional until sharing improves.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    for reads in [2, 16] {
+        let items = (0..reads)
+            .map(|i| format!("(coalesce(x, 'NaN'::DOUBLE) - 0.0e0) * {}.0e0 AS f{i}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT {items} FROM __THIS__");
+        let p = prep(&sql, &schema).unwrap();
+        assert_eq!(count_op(&p, "fsub"), 1, "{}", print(&p));
+    }
+}
+
+#[test]
 fn a_small_subexpression_is_evaluated_again() {
     // Five nodes: cheaper to compute at each read than to carry.
     let schema = cols(&[("a", Ty::F64, true), ("b", Ty::F64, true)]);

@@ -113,6 +113,7 @@ def test_a_read_of_any_output_field_fires_the_guard(returns):
             assert f.infer_arrow(rows).to_pylist() == want.to_pylist()
 
 
+@pytest.mark.cost
 def test_a_translator_reads_each_number_as_a_value_confit_shares():
     # The guard reads each feature's `coalesce(x, NaN)`, which confit
     # computes again at each read, and the translator `x - 0.0`, the same
