@@ -37,11 +37,12 @@ operations in the twin's order, or where a kernel probe reads 0.
   above 0 can be a step of a `Pipeline`, or a part of a
   `ColumnTransformer` or a `FeatureUnion`. Where the step reads the same
   input as the step inside the twin, its own bound holds. Each later step
-  that reads its output gives its own output fields a carried bound. The
-  affine steps give one: the scalers except `Normalizer`, the identity and
-  the exact functions of `FunctionTransformer`, the feature selectors, the
-  mean of `FeatureAgglomeration` and the linear projections. A weight in
-  `transformer_weights` gives a part a carried bound too. If another step
+  that reads its output gives its own output fields a carried bound. These
+  steps give one: the affine steps, and `FunctionTransformer` of the
+  identity, `negative`, `positive`, `conjugate`, `abs` and `fabs`. The
+  affine steps are the scalers except `Normalizer`, the feature selectors,
+  the mean of `FeatureAgglomeration` and the linear projections. A weight
+  in `transformer_weights` gives a part a carried bound too. If another step
   reads the output of a step with a bound above 0, `to_native` returns the
   `PythonTransform` unchanged. A discretizer is an example of such a step.
   `to_native` does the same if an infinite weight multiplies such an

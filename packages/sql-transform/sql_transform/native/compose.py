@@ -24,9 +24,10 @@ its own output fields (option 2, _carry.py). An output field within k ulps
 of its twin is not within k ulps after `x - mean_` where `x` is near
 `mean_`, but it is within 2k·spacing(x) plus the subtraction's rounding.
 The affine steps carry a bound, each by its module's derivation: the
-scalers but `Normalizer`, the identity and the exact functions of
-`FunctionTransformer`, the selectors, the mean of `FeatureAgglomeration`
-and the linear projections; and so does a weight. `check` holds each output
+scalers but `Normalizer`, the selectors, the mean of `FeatureAgglomeration`
+and the linear projections; and so do the identity and the functions of
+`FunctionTransformer` that move two values no further apart (function.py),
+and a weight. `check` holds each output
 field to the bound of the step or part that gives it, carried by the steps
 after it, and the rest bit-exact (`_pipeline_bounds`, `_parts_bounds`). A
 step that tests a threshold, such as a discretizer, can answer otherwise
