@@ -442,13 +442,41 @@ def _sparse_project(
     `GaussianRandomProjection`'s: that one is held to the matvec bound
     (`_project`).
 
-    For a dense row and a CSR matrix, scipy computes `components_ @ X.T`
-    by `csr_matvec`: each output field from 0.0, adding the stored
+    For a dense X and a CSR matrix, scipy computes `components_ @ X.T`
+    (`csr_matvecs`): each output field from 0.0, adding the stored
     products in stored order (the fit stores the indices unsorted), each
     product and sum rounded on its own. The entry spells the same sum, so
     it is bit-exact (`_csr_sum`), where the kernel probe finds scipy's sums
     so (`csr_sum_is_scipys`). A fit in float32 stores float32 components,
-    which scipy widens to float64, exactly, before the product."""
+    which scipy widens to float64, exactly, before the product. The step
+    stays Python where `components_` is not the CSR matrix the fit makes
+    or not all finite, where a component stores more than `_MAX_STORED`
+    entries, or past an estimated 7 s build (`_sparse_build_estimate`).
+
+    Measured over 36 seeds of random fits (1 to 512 features, 1 to 128
+    components, the "auto" density, 1/3, 0.1, 0.01 to 0.99 and 1, a
+    quarter of them in float32) and rows of seven kinds (normal values,
+    magnitudes of 1e-300 to 1e300, subnormals and tiny normals, small
+    whole numbers, about the largest double, signed zeros, and NaN, an
+    infinity or NULL in one feature), 4 of the seeds with numpy's AVX-512
+    code turned off, as on CI's runner (release build, master daf0e4c with
+    T57's project.py, 2026-10-17). Over sparse components, each of 567
+    million output fields equals the twin's bit for bit, NaN as NaN, in
+    calls of 20,000 rows, and so does each of 5.7 million in calls of one
+    row; 3.6% of them are infinite, 0.16% NaN and 1.7% subnormal. The
+    entry traps on each of the 30,045 rows where the twin raises, and on
+    no other row. Of density 1, `check` held 116,972 rows within the
+    matvec bound, and it failed 23 of the 40 fits over rows of about the
+    largest double, where a partial sum overflows (the module's bound
+    assumes that none does).
+
+    Serving 64 rows at the "auto" density takes 29 us at 2 features of one
+    component, against the twin's 11.2 ms; 0.13 to 0.14 ms at 16 of 4
+    (12.6 to 14.5 ms); 0.46 to 0.73 ms at 64 of 16 (17.8 to 18.4 ms); 2.1
+    to 2.2 ms at 256 of 64 (33 to 38 ms); 3.0 to 3.1 ms at 256 of 256 (43
+    to 63 ms); 9.4 to 11.0 ms at 1,024 of 64 and of 256 (102 to 125 ms);
+    and 37 to 39 ms at 4,096 of 16 (363 to 383 ms): 10 to 386 times as
+    fast (release build, one thread, the same master)."""
     c = est.components_
     if not sparse.issparse(c):
         return _project(est, x, types)
