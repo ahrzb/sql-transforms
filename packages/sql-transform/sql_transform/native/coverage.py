@@ -169,8 +169,8 @@ def block(text: str) -> str:
 
 
 def write() -> None:
-    text = DOC.read_text()
-    DOC.write_text(text.replace(block(text), table()))
+    text = DOC.read_text(encoding="utf-8")
+    DOC.write_text(text.replace(block(text), table()), encoding="utf-8")
 
 
 if __name__ == "__main__":

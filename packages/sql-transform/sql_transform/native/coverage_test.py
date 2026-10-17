@@ -2,9 +2,9 @@ from sql_transform.native import coverage
 
 
 def test_the_coverage_table_is_current():
-    assert coverage.block(coverage.DOC.read_text()) == coverage.table(), (
-        "regenerate it: uv run python -m sql_transform.native.coverage --write"
-    )
+    assert (
+        coverage.block(coverage.DOC.read_text(encoding="utf-8")) == coverage.table()
+    ), "regenerate it: uv run python -m sql_transform.native.coverage --write"
 
 
 def test_every_named_class_has_a_row():
@@ -47,3 +47,12 @@ def test_nonzero_ulp_bounds_counts_the_classes_with_a_bound():
     assert coverage.nonzero_ulp_bounds() == sum(
         1 for note in rows.values() if note != "bit-exact"
     )
+
+
+def test_writing_the_coverage_table_keeps_utf8_text(tmp_path, monkeypatch):
+    doc = tmp_path / "coverage.md"
+    text = "Before: µ\n" + coverage.table() + "\nAfter: τ\n"
+    doc.write_bytes(text.encode("utf-8"))
+    monkeypatch.setattr(coverage, "DOC", doc)
+    coverage.write()
+    assert doc.read_text(encoding="utf-8") == text
