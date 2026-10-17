@@ -80,8 +80,8 @@ class _MyPipeline(Pipeline):
             lambda: make_pipeline(
                 PowerTransformer("box-cox", standardize=False), StandardScaler()
             ),
-            "step 'powertransformer': PowerTransformer is within 4 ulps, and a"
-            " later step reads its output",
+            r"step 'powertransformer': PowerTransformer is within 5·eps·S \+ τ \(S"
+            r" its error scale\), and a later step reads its output",
         ),
         (
             lambda: make_pipeline(FunctionTransformer(np.exp), StandardScaler()),
@@ -431,7 +431,8 @@ class _MyScaler(StandardScaler):
                 ]
             ),
             "part 'pow': Pipeline step 'powertransformer': PowerTransformer is"
-            " within 4 ulps, and a later step reads its output",
+            r" within 5·eps·S \+ τ \(S its error scale\), and a later step reads"
+            " its output",
         ),
         (
             lambda: ColumnTransformer(

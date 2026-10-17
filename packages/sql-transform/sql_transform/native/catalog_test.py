@@ -12,6 +12,7 @@ import functools
 import math
 import os
 import random
+import re
 import warnings
 from collections.abc import Callable
 from typing import Any
@@ -695,34 +696,60 @@ def positive(factory: Callable[[], Any]) -> Callable[[], Any]:
 
 # Fitted lambdas pinned on and around scipy's Box-Cox branches (`log`
 # under |lambda| 1e-19; past `lambda * log(x)` 709.78, `exp`, which the
-# rows' 1e300 and 1e-300 reach), one per feature in turn.
+# rows' 1e300 and 1e-300 reach).
 BOX_COX_LAMBDAS = [0.0, 1e-20, -1e-20, 1e-19, -1e-19, -3e-12, 3.0, -50.0, 2.0]
+_E = float(np.finfo(np.float64).eps)
+# And on and around scipy's Yeo-Johnson branches (`log1p` for x >= 0 under
+# |lambda| eps, `-log1p(-x)` for x < 0 unless |lambda - 2| > eps, so at
+# 2 - eps; 2 + eps rounds to 2), with lambdas whose `expm1` overflows on
+# the rows' 1e300 (x >= 0 past 1, x < 0 below 1).
+YEO_JOHNSON_LAMBDAS = [
+    *(0.0, _E / 2, -_E / 2, _E, -_E, 2 * _E),
+    *(2.0, 2 - _E, 2 - 2 * _E, 2 + 2 * _E, 2 + 4 * _E),
+    *(1.0, 0.5, 3.0, 50.0, -3.0, -50.0),
+]
+# A fit in float32 holds float32 lambdas, and the twin rounds `lambda - 2`
+# and `2 - lambda` in float32 (NEP 50): `2 - lambda` rounds there for 0.1,
+# -0.7 and 1e-8 (to 2).
+YEO_JOHNSON_LAMBDAS_32 = [
+    0.1, -0.7, 1e-8, 3.7, 1e-30, 0.0, 2.0, 1.9999999, 2.0000002, 1.0, 0.5,
+]  # fmt: skip
 
 
-def _pinned_box_cox() -> PowerTransformer:
-    """A Box-Cox PowerTransformer(standardize=False) whose fit then pins
-    `lambdas_` to BOX_COX_LAMBDAS, where no fit lands."""
-    est = PowerTransformer("box-cox", standardize=False)
+def _pinned(method: str, lambdas: list[float], dtype: Any = np.float64):
+    """A PowerTransformer(method, standardize=False) whose fit then pins
+    `lambdas_` to `lambdas` in `dtype`, where no fit lands: one per feature
+    in turn, from the fit's row count, so that narrow steps reach each of
+    them over the seeds."""
 
-    def fit(X, y=None):
-        del est.fit  # the class's own again
-        PowerTransformer.fit(est, X, y)
-        n = len(est.lambdas_)
-        est.lambdas_ = np.array(
-            [BOX_COX_LAMBDAS[j % len(BOX_COX_LAMBDAS)] for j in range(n)]
-        )
+    def make() -> PowerTransformer:
+        est = PowerTransformer(method, standardize=False)
+
+        def fit(X, y=None):
+            del est.fit  # the class's own again
+            PowerTransformer.fit(est, X, y)
+            n, start = len(est.lambdas_), len(X)
+            est.lambdas_ = np.array(
+                [lambdas[(start + j) % len(lambdas)] for j in range(n)], dtype
+            )
+            return est
+
+        est.fit = fit
         return est
 
-    est.fit = fit
-    return est
+    return make
 
 
-# Box-Cox only, unstandardized: what the entry serves (power.py).
+# Unstandardized: what the entry serves (power.py).
 FIXTURES[PowerTransformer] = [
     positive(lambda: PowerTransformer("box-cox", standardize=False)),
-    positive(_pinned_box_cox),
+    positive(_pinned("box-cox", BOX_COX_LAMBDAS)),
+    lambda: PowerTransformer(standardize=False),
+    _pinned("yeo-johnson", YEO_JOHNSON_LAMBDAS),
+    _pinned("yeo-johnson", YEO_JOHNSON_LAMBDAS_32, np.float32),
 ]
-# Box-Cox as a pipeline's last step, within its own 4 ulps (compose.py).
+# Box-Cox as a pipeline's last step, within its own error scale
+# (compose.py).
 FIXTURES[Pipeline].append(
     positive(
         lambda: make_pipeline(
@@ -1832,18 +1859,12 @@ def test_kbins_counts_equal_edges_as_numpy_does(encode):
     assert check(step, to_native(step, strict=True), rows) == n
 
 
-@pytest.mark.parametrize(
-    "make, reason",
-    [
-        (PowerTransformer, "method='yeo-johnson'"),
-        (lambda: PowerTransformer(standardize=False), "method='yeo-johnson'"),
-        (lambda: PowerTransformer("box-cox"), "standardize=True"),
-    ],
-    ids=["yeo-johnson", "yeo-johnson-unstandardized", "box-cox-standardized"],
-)
-def test_a_power_transform_without_a_small_bound_stays_python(make, reason):
-    step = _step(positive(lambda: make()), 0)
-    with pytest.raises(NotNative, match=reason):
+@pytest.mark.parametrize("method", ["yeo-johnson", "box-cox"])
+def test_a_standardized_power_transform_stays_python(method):
+    # The twin's scaler raises on an infinite power transform, an edge that
+    # the entry's rounding moves (power.py).
+    step = _step(positive(lambda: PowerTransformer(method)), 0)
+    with pytest.raises(NotNative, match=r"standardize=True\): the twin's scaler"):
         to_native(step, strict=True)
 
 
@@ -2102,21 +2123,20 @@ ON_REQUEST = (
 )
 
 
-def test_box_cox_serves_only_on_request():
-    make = FIXTURES[PowerTransformer][0]
-    step = _step(make, 0)
-    assert bound(step) == 4
+@pytest.mark.parametrize("j, k", [(0, 5), (2, 10)], ids=["box-cox", "yeo-johnson"])
+def test_a_power_transform_serves_only_on_request(j, k):
+    make = FIXTURES[PowerTransformer][j]
+    step = _step(make, 0, j)
+    within = f"within {k}·eps·S + τ (S its error scale)"
     assert to_native(step) is step
     with pytest.raises(
-        NotNative, match=r"PowerTransformer is within 4 ulps " + ON_REQUEST
+        NotNative, match=re.escape(f"PowerTransformer is {within} ") + ON_REQUEST
     ):
         to_native(step, strict=True)
     assert "stays Python" in explain_native(step)
     native = to_native(step, strict=True, allow_bound=True)
-    assert check(step, native, _rows(step, 0, positive=True)) > 0
-    assert explain_native(step, allow_bound=True).endswith(
-        "-> SqlFunction, within 4 ulps"
-    )
+    assert check(step, native, _rows(step, 0, positive=j == 0)) > 0
+    assert explain_native(step, allow_bound=True).endswith(f"-> SqlFunction, {within}")
 
 
 @pytest.mark.parametrize("func", BOUNDED, ids=lambda f: f.__name__)
@@ -2168,11 +2188,11 @@ def test_a_step_serves_on_request_by_its_loosest_instance(monkeypatch):
 
 
 def test_a_refused_configuration_says_why_before_its_bound():
-    # Yeo-Johnson waits on the parity bound: allow_bound does not serve it,
-    # so the refusal names the configuration, not the bound.
-    step = _step(lambda: PowerTransformer(standardize=False), 0)
+    # A standardized power transform stays Python: allow_bound does not
+    # serve it, so the refusal names the configuration, not the bound.
+    step = _step(positive(lambda: PowerTransformer("box-cox")), 0)
     for allow in (False, True):
-        with pytest.raises(NotNative, match="method='yeo-johnson'"):
+        with pytest.raises(NotNative, match="standardize=True"):
             to_native(step, strict=True, allow_bound=allow)
 
 
