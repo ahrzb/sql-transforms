@@ -1,6 +1,7 @@
 """Feature selectors: `transform` keeps a fitted subset of the columns,
 unchanged (sklearn 1.9, `SelectorMixin.transform` in
-`sklearn/feature_selection/_base.py`, which no selector overrides)."""
+`sklearn/feature_selection/_base.py`, which no selector overrides). So a
+selector carries the bound of each column it keeps as it is (_carry.py)."""
 
 from __future__ import annotations
 
@@ -23,7 +24,15 @@ from sklearn.feature_selection import (
     VarianceThreshold,
 )
 
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import Carry, NotNative, translates
+
+
+def _carry(est: Any) -> Carry | None:
+    try:
+        keep = np.flatnonzero(est.get_support())
+    except Exception:  # noqa: BLE001 — the translation refuses it
+        return None
+    return lambda x, e: np.asarray(e, dtype=np.longdouble)[keep]
 
 
 @translates(
@@ -38,6 +47,7 @@ from sql_transform.native._registry import NotNative, translates
     SelectPercentile,
     SequentialFeatureSelector,
     VarianceThreshold,
+    carry=_carry,
 )
 def _select(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate (NaN raises unless the estimator's tags allow it),

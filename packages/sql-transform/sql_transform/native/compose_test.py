@@ -3,30 +3,43 @@ and a pipeline that only passes its features through."""
 
 from __future__ import annotations
 
+import dataclasses
 from fractions import Fraction
 
 import numpy as np
 import pyarrow as pa
 import pytest
 import sklearn
+from sklearn.cluster import FeatureAgglomeration, KMeans
 from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import PCA, KernelPCA
+from sklearn.cross_decomposition import PLSRegression
+from sklearn.decomposition import PCA, FactorAnalysis, FastICA, KernelPCA, TruncatedSVD
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.pipeline import FeatureUnion, Pipeline, make_pipeline
 from sklearn.preprocessing import (
     Binarizer,
     FunctionTransformer,
+    KBinsDiscretizer,
     MaxAbsScaler,
     MinMaxScaler,
+    Normalizer,
     OneHotEncoder,
     OrdinalEncoder,
     PowerTransformer,
+    RobustScaler,
     StandardScaler,
 )
+from sklearn.random_projection import SparseRandomProjection
 
 from sql_transform._udf import PythonTransform, _dense
-from sql_transform.native import NotNative, check, explain_native, to_native
+from sql_transform.native import (
+    NotNative,
+    ParityError,
+    check,
+    explain_native,
+    to_native,
+)
 
 
 def _step(est, X: np.ndarray, types: list[pa.DataType]) -> PythonTransform:
@@ -72,39 +85,61 @@ class _MyPipeline(Pipeline):
             "step 'kernelpca': no translation for KernelPCA",
         ),
         (
-            lambda: make_pipeline(PCA(n_components=1), StandardScaler()),
-            r"step 'pca': PCA is within 5·eps·S \+ τ \(S its error scale\), and a"
-            " later step reads its output, for which no bound is derived yet",
+            lambda: make_pipeline(PCA(n_components=1), Binarizer()),
+            r"step 'binarizer': Binarizer follows step 'pca', which is within"
+            r" 5·eps·S \+ τ \(S its error scale\), and no bound is derived through"
+            " it yet",
         ),
         (
             lambda: make_pipeline(
-                PowerTransformer("box-cox", standardize=False), StandardScaler()
+                PowerTransformer("box-cox", standardize=False),
+                StandardScaler(),
+                KBinsDiscretizer(n_bins=3, encode="ordinal"),
             ),
-            r"step 'powertransformer': PowerTransformer is within 5·eps·S \+ τ \(S"
-            r" its error scale\), and a later step reads its output",
+            "step 'kbinsdiscretizer': KBinsDiscretizer follows step"
+            r" 'powertransformer', which is within 5·eps·S \+ τ \(S its error"
+            r" scale\), and no bound",
         ),
         (
-            lambda: make_pipeline(FunctionTransformer(np.exp), StandardScaler()),
-            "step 'functiontransformer': FunctionTransformer is within 1 ulps, and a"
-            " later step reads its output",
+            lambda: make_pipeline(
+                FunctionTransformer(np.exp), FunctionTransformer(np.log)
+            ),
+            "step 'functiontransformer-2': FunctionTransformer follows step"
+            " 'functiontransformer-1', which is within 1 ulps, and no bound",
         ),
         (
             lambda: Pipeline(
                 [
                     ("inner", make_pipeline(StandardScaler(), PCA(n_components=1))),
-                    ("s", StandardScaler()),
+                    ("n", Normalizer()),
                 ]
             ),
-            "step 'inner': Pipeline is within the bound of its step 'pca', and a"
-            " later step reads its output",
+            "step 'n': Normalizer follows step 'inner', which is within the bound of"
+            " its step 'pca', and no bound",
         ),
         (
             lambda: make_pipeline(
                 FeatureUnion([("p", PCA(n_components=1)), ("s", StandardScaler())]),
-                StandardScaler(),
+                PowerTransformer(),
             ),
-            "step 'featureunion': FeatureUnion is within the bound of its part 'p',"
-            " and a later step reads its output",
+            "step 'powertransformer': PowerTransformer follows step 'featureunion',"
+            " which is within the bound of its part 'p', and no bound",
+        ),
+        (
+            lambda: make_pipeline(
+                PCA(n_components=1),
+                FeatureUnion([("s", StandardScaler()), ("b", Binarizer())]),
+            ),
+            "step 'featureunion': FeatureUnion part 'b': Binarizer follows step"
+            " 'pca', which is within",
+        ),
+        (
+            lambda: make_pipeline(
+                PCA(n_components=2),
+                make_pipeline(StandardScaler(), KMeans(n_clusters=2, n_init=1)),
+            ),
+            "step 'pipeline': Pipeline step 'kmeans': KMeans follows step 'pca',"
+            " which is within",
         ),
         (
             lambda: make_pipeline(MissingIndicator(features="all"), StandardScaler()),
@@ -143,6 +178,8 @@ class _MyPipeline(Pipeline):
         "bounded-function-first",
         "bounded-pipeline-first",
         "bounded-union-first",
+        "bounded-then-union",
+        "bounded-then-pipeline",
         "boolean",
         "nested",
         "nested-boolean",
@@ -408,10 +445,11 @@ class _MyScaler(StandardScaler):
         ),
         (
             lambda: ColumnTransformer(
-                [("p", PCA(n_components=1), [0, 1])], transformer_weights={"p": 2.0}
+                [("p", PCA(n_components=1), [0, 1])],
+                transformer_weights={"p": float("inf")},
             ),
-            r"part 'p': PCA is within 5·eps·S \+ τ \(S its error scale\), and a"
-            " weight multiplies its output, for which no bound is derived yet",
+            r"part 'p': PCA is within 5·eps·S \+ τ \(S its error scale\), and its"
+            " weight inf is infinite",
         ),
         (
             lambda: ColumnTransformer([("s", _MyScaler(), [0])]),
@@ -425,23 +463,24 @@ class _MyScaler(StandardScaler):
                         make_pipeline(
                             PowerTransformer("box-cox", standardize=False),
                             StandardScaler(),
+                            Binarizer(),
                         ),
                         [0],
                     )
                 ]
             ),
-            "part 'pow': Pipeline step 'powertransformer': PowerTransformer is"
-            r" within 5·eps·S \+ τ \(S its error scale\), and a later step reads"
-            " its output",
+            "part 'pow': Pipeline step 'binarizer': Binarizer follows step"
+            r" 'powertransformer', which is within 5·eps·S \+ τ \(S its error"
+            r" scale\), and no bound",
         ),
         (
             lambda: ColumnTransformer(
                 [("log", FunctionTransformer(np.log10, validate=True), [0])],
                 remainder="passthrough",
-                transformer_weights={"log": 0.5},
+                transformer_weights={"log": -float("inf")},
             ),
-            "part 'log': FunctionTransformer is within 2 ulps, and a weight"
-            " multiplies its output",
+            "part 'log': FunctionTransformer is within 2 ulps, and its weight -inf"
+            " is infinite",
         ),
         (
             lambda: ColumnTransformer(
@@ -506,12 +545,16 @@ class _MyScaler(StandardScaler):
             " passes columns through as objects",
         ),
         (
-            lambda: FeatureUnion(
-                [("pass", "passthrough"), ("tan", FunctionTransformer(np.tan))],
-                transformer_weights={"tan": 0.5},
+            lambda: make_pipeline(
+                FunctionTransformer(np.tan),
+                FeatureUnion(
+                    [("pass", "passthrough"), ("s", StandardScaler())],
+                    transformer_weights={"s": float("inf")},
+                ),
             ),
-            "FeatureUnion part 'tan': FunctionTransformer is within 1 ulps, and a"
-            " weight multiplies its output",
+            "step 'featureunion': FeatureUnion part 's': its weight inf multiplies"
+            " an output that follows step 'functiontransformer', which is within 1"
+            " ulps",
         ),
         (
             lambda: FeatureUnion([("p", KernelPCA(n_components=1))]),
@@ -546,10 +589,10 @@ class _MyScaler(StandardScaler):
     ],
     ids=[
         "ct-unknown",
-        "ct-weighted-scale",
+        "ct-infinite-weight",
         "ct-subclass",
         "ct-bounded-first",
-        "ct-weighted-function",
+        "ct-infinite-weight-function",
         "ct-remainder",
         "ct-object-func",
         "ct-object-func-nested",
@@ -558,7 +601,7 @@ class _MyScaler(StandardScaler):
         "ct-integer-weight",
         "ct-inexact-weight",
         "ct-not-last",
-        "fu-weighted-function",
+        "fu-infinite-weight-carried",
         "fu-unknown",
         "fu-weighted-passthrough",
         "fu-weight-type",
@@ -635,7 +678,7 @@ def test_a_column_transformer_reads_columns_as_its_twin_does():
 
 
 @pytest.mark.usefixtures("kernels_part")
-def test_an_exact_function_composes_anywhere_a_bounded_one_last():
+def test_an_exact_function_composes_anywhere_a_bounded_one_where_it_is_carried():
     # The part's own bound decides, not its class's ceiling.
     exact = FeatureUnion(
         [("id", FunctionTransformer()), ("sqrt", FunctionTransformer(np.sqrt))]
@@ -652,18 +695,23 @@ def test_an_exact_function_composes_anywhere_a_bounded_one_last():
     bounded = FeatureUnion(
         [("id", FunctionTransformer()), ("exp", FunctionTransformer(np.exp))]
     )
+    step = _numeric(bounded)
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 3
+    # A scaler carries the bound of what it reads; a square root carries
+    # none yet.
+    step = _numeric(make_pipeline(bounded, StandardScaler()))
+    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 3
     with pytest.raises(
         NotNative,
-        match="step 'featureunion': FeatureUnion is within the bound of its part"
-        " 'exp', and a later step reads its output",
+        match="step 'functiontransformer': FunctionTransformer follows step"
+        " 'featureunion', which is within the bound of its part 'exp', and no"
+        " bound is derived through it yet",
     ):
         to_native(
-            _numeric(make_pipeline(bounded, StandardScaler())),
+            _numeric(make_pipeline(bounded, FunctionTransformer(np.sqrt))),
             strict=True,
             allow_bound=True,
         )
-    step = _numeric(bounded)
-    assert check(step, to_native(step, strict=True, allow_bound=True), rows) == 3
 
 
 @pytest.mark.parametrize(
@@ -759,3 +807,222 @@ def test_a_bounded_step_serves_last_or_as_a_part_on_request(make, within):
         }
     )
     assert check(step, native, rows) == 40
+
+
+@pytest.mark.parametrize(
+    "make, within",
+    [
+        (
+            lambda: make_pipeline(PCA(n_components=2), StandardScaler()),
+            "steps 'pca' and 'standardscaler'",
+        ),
+        (
+            lambda: make_pipeline(
+                PowerTransformer("box-cox", standardize=False), StandardScaler()
+            ),
+            "steps 'powertransformer' and 'standardscaler'",
+        ),
+        (
+            lambda: make_pipeline(
+                FunctionTransformer(np.exp), MinMaxScaler(clip=True), MaxAbsScaler()
+            ),
+            "steps 'functiontransformer', 'minmaxscaler' and 'maxabsscaler'",
+        ),
+        (
+            lambda: Pipeline(
+                [
+                    ("inner", make_pipeline(StandardScaler(), PCA(n_components=3))),
+                    ("r", RobustScaler()),
+                    ("v", VarianceThreshold()),
+                ]
+            ),
+            "steps 'inner', 'r' and 'v'",
+        ),
+        (
+            lambda: make_pipeline(
+                StandardScaler(), PCA(n_components=3), TruncatedSVD(n_components=2)
+            ),
+            "steps 'pca' and 'truncatedsvd'",
+        ),
+        (
+            lambda: make_pipeline(
+                FastICA(n_components=3, random_state=0),
+                FunctionTransformer(np.negative),
+                FactorAnalysis(n_components=2, random_state=0),
+            ),
+            "steps 'fastica', 'functiontransformer' and 'factoranalysis'",
+        ),
+        (
+            lambda: make_pipeline(
+                PCA(n_components=3),
+                FeatureAgglomeration(n_clusters=2),
+                PLSRegression(n_components=1),
+            ),
+            "steps 'pca', 'featureagglomeration' and 'plsregression'",
+        ),
+        (
+            lambda: make_pipeline(
+                PCA(n_components=4),
+                SparseRandomProjection(n_components=3, density=0.5, random_state=0),
+            ),
+            "steps 'pca' and 'sparserandomprojection'",
+        ),
+        (
+            lambda: make_pipeline(
+                PCA(n_components=2),
+                FeatureUnion(
+                    [("s", StandardScaler()), ("abs", FunctionTransformer(np.abs))],
+                    transformer_weights={"s": -3.0},
+                ),
+            ),
+            "steps 'pca' and 'featureunion'",
+        ),
+        (
+            lambda: ColumnTransformer(
+                [("p", PCA(n_components=1), [0, 1]), ("s", StandardScaler(), [2])],
+                remainder="passthrough",
+                transformer_weights={"p": 2.0, "s": 0.5},
+            ),
+            "part 'p' (weighted)",
+        ),
+        (
+            lambda: ColumnTransformer(
+                [
+                    ("log", FunctionTransformer(np.log10, validate=True), [0]),
+                    (
+                        "p",
+                        make_pipeline(
+                            PowerTransformer("box-cox", standardize=False),
+                            StandardScaler(),
+                        ),
+                        [1, 2],
+                    ),
+                ],
+                transformer_weights={"log": 0.5},
+            ),
+            "parts 'log' (weighted) and 'p'",
+        ),
+        (
+            lambda: FeatureUnion(
+                [("pass", "passthrough"), ("tan", FunctionTransformer(np.tan))],
+                transformer_weights={"tan": 0.5},
+            ),
+            "part 'tan' (weighted)",
+        ),
+        (
+            lambda: make_pipeline(
+                ColumnTransformer(
+                    [
+                        ("p", PCA(n_components=2), [0, 1, 2]),
+                        ("s", StandardScaler(), [3]),
+                    ]
+                ),
+                ColumnTransformer(
+                    [("m", MinMaxScaler(), [0, 2]), ("q", PCA(n_components=1), [1, 2])],
+                    transformer_weights={"q": 1e3},
+                ),
+            ),
+            "steps 'columntransformer-1' and 'columntransformer-2'",
+        ),
+    ],
+    ids=[
+        "pca-scaler",
+        "power-scaler",
+        "function-scalers",
+        "pipeline-scaler-selector",
+        "two-projections",
+        "ica-negative-factor",
+        "pca-agglomeration-pls",
+        "pca-sparse-projection",
+        "pca-weighted-union",
+        "ct-weighted-scale",
+        "ct-weighted-function",
+        "fu-weighted-function",
+        "ct-ct",
+    ],
+)
+@pytest.mark.usefixtures("kernels_part")
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.DataDimensionalityWarning")
+def test_a_bounded_step_is_carried_by_the_steps_after_it(make, within):
+    # Option 2 of decisions/closed/bounded-steps-in-compositions.md: each
+    # later step carries the bound on what it reads to its output fields,
+    # and a weight carries the bound of its part.
+    est = make()
+    step = _composed(est)
+    with pytest.raises(NotNative, match="to_native serves a bound above 0 only"):
+        to_native(step, strict=True)
+    native = to_native(step, strict=True, allow_bound=True)
+    bound = "bounds" if within.startswith("parts") else "bound"
+    assert explain_native(step, allow_bound=True).endswith(
+        f"within the {bound} of its {within}"
+    )
+    x = np.random.default_rng(3).uniform(0.5, 12.0, size=(40, 4))
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * 39 + [None], pa.int64()),
+            **{f"x{i}": pa.array(x[:, i]) for i in range(4)},
+        }
+    )
+    assert check(step, native, rows) == 40
+
+
+def _flat(n: int = 40, seed: int = 4) -> np.ndarray:
+    """Rows near a line: the second principal component spreads 1e-6 as
+    far as the first."""
+    rng = np.random.default_rng(seed)
+    t = rng.uniform(1.0, 9.0, size=(n, 1))
+    return np.hstack([t, 2 * t]) + rng.normal(scale=1e-6, size=(n, 2))
+
+
+def test_a_carried_bound_grows_as_the_step_that_carries_it(monkeypatch):
+    # The scaler divides the second component by its spread, 1e-6 of the
+    # first: what the two sides' PCA part by grows by as much, and so does
+    # the bound the scaler carries. Carried as it is, it fails.
+    from sql_transform.native import _registry
+
+    step = _step(
+        make_pipeline(PCA(n_components=2), StandardScaler()),
+        _flat(),
+        [pa.float64()] * 2,
+    )
+    native = to_native(step, strict=True, allow_bound=True)
+    x = _flat(400, seed=5)
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * 400, pa.int64()),
+            "x0": pa.array(x[:, 0]),
+            "x1": pa.array(x[:, 1]),
+        }
+    )
+    assert check(step, native, rows) == 400
+    entry = _registry._CATALOG[StandardScaler]
+    monkeypatch.setitem(
+        _registry._CATALOG,
+        StandardScaler,
+        dataclasses.replace(entry, carry_of=lambda est: lambda x, e: e),
+    )
+    with pytest.raises(ParityError, match="past its part's bound"):
+        check(step, native, rows)
+
+
+def test_a_weight_carries_its_part_s_bound_times_the_weight(monkeypatch):
+    from sql_transform.native import compose
+
+    est = ColumnTransformer(
+        [("p", PCA(n_components=2), [0, 1])], transformer_weights={"p": 1e6}
+    )
+    step = _step(est, _flat(), [pa.float64()] * 2)
+    native = to_native(step, strict=True, allow_bound=True)
+    x = _flat(400, seed=5) * 1e3
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * 400, pa.int64()),
+            "x0": pa.array(x[:, 0]),
+            "x1": pa.array(x[:, 1]),
+        }
+    )
+    assert check(step, native, rows) == 400
+    monkeypatch.setattr(compose, "weighted", lambda e, y, w: e)
+    with pytest.raises(ParityError, match="past its part's bound"):
+        check(step, native, rows)

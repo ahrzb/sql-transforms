@@ -57,10 +57,21 @@ that request, `to_native(step, allow_bound=True)`. In order:
    part of a `ColumnTransformer` or `FeatureUnion`, and `native.check`
    holds each output field to the bound of the step or part that gives it,
    at the input its twin reads (`compose._pipeline_bounds`,
-   `_parts_bounds`). Left: pass the error scale through affine steps
-   (|A|·S plus their own rounding) and through a part's weight; a map `g`
-   (a distance's square) through a composition; after a discontinuous
-   step, `native.check` reports the flip rate in place of a bound.
+   `_parts_bounds`). T59 served option 2 for the affine steps and a part's
+   weight: each step after a bounded one gives its output fields a carried
+   bound (`_registry.Entry.carry`, `_carry.py`), from the bound of each
+   field it reads at the twin's value and its own rounding. The affine
+   scalers carry one, as do the linear projections (project.py),
+   `FeatureAgglomeration`'s mean, the selectors and `FunctionTransformer`
+   of None, `np.negative`, `np.abs` and the like. Any other step after a
+   bounded one refuses by name. Left: carries for continuous steps that
+   are not affine (`Normalizer`, `PowerTransformer`, the kernel maps, the
+   functions within a bound of their own); a map `g` (a distance's square)
+   through a composition; after a discontinuous step, `native.check`
+   reports the flip rate in place of a bound. Open with the owner: the
+   rows where a bounded step's sum overflows on one side only, where a
+   later step's validation raises on that side alone
+   ([decisions/open/traps-where-a-sum-overflows.md](decisions/open/traps-where-a-sum-overflows.md)).
 
 ## Needs from confit
 

@@ -29,6 +29,11 @@ with `allow_bound=True`.
 
 Refused: `log1p` and `expm1` (DuckDB has neither), and every other
 function (confit has no inverse or hyperbolic trigonometry).
+
+The identity, `positive`, `conjugate`, `negative`, `abs` and `fabs` carry
+a bound on their input to their output fields as it is (_carry.py): each
+is exact on each side, and moves two values no further apart. No other
+function carries one yet.
 """
 
 from __future__ import annotations
@@ -45,7 +50,7 @@ from confit import sql as S
 from sklearn.preprocessing import FunctionTransformer
 
 from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import Carry, NotNative, translates
 
 _NAN = f64(math.nan)
 _ZERO = f64(0.0)
@@ -262,6 +267,17 @@ def kernel_distance(func: Any) -> int | None:
     return doubles_apart(want, got)
 
 
+# The functions that carry a bound on their input as it is: exact, and
+# |f(a) - f(b)| <= |a - b|.
+_CARRIED = (np.positive, np.conjugate, np.negative, np.absolute, np.fabs)
+
+
+def _carry(est: Any) -> Carry | None:
+    if est.func is None or any(est.func is f for f in _CARRIED):
+        return lambda x, e: np.array(e, dtype=np.longdouble)
+    return None
+
+
 def _bound(est: Any) -> int:
     """The estimator's own bound: its function's, 0 for the rest. A bounded
     function whose kernel probe reads 0 on this platform is bit-exact here
@@ -274,7 +290,7 @@ def _bound(est: Any) -> int:
     return 0 if b and kernel_distance(est.func) == 0 else b
 
 
-@translates(FunctionTransformer, ulps=max(_BOUNDS.values()), bound=_bound)
+@translates(FunctionTransformer, ulps=max(_BOUNDS.values()), bound=_bound, carry=_carry)
 def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate if `validate` (NaN and infinity raise), then
     # `func(X, **kw_args)`, elementwise on the float64 row.

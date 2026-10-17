@@ -40,10 +40,11 @@ COMPOSITIONS = {
 
 # Where a served composition holds an entry with a parity bound above 0
 # (compose.py).
+_CARRIED = "where each later step carries its bound"
 BOUNDED_IN = {
-    "ColumnTransformer": "an unweighted part",
-    "FeatureUnion": "an unweighted part",
-    "Pipeline": "the last step",
+    "ColumnTransformer": f"in a part, weighted or not, {_CARRIED}",
+    "FeatureUnion": f"in a part, weighted or not, {_CARRIED}",
+    "Pipeline": _CARRIED,
 }
 
 # Outside the catalog by claim: catalog-scope, each with its reason.
@@ -109,8 +110,8 @@ def rows() -> list[tuple[str, str, str]]:
             note = COMPOSITIONS[name]
             if name in native:
                 note += (
-                    "; served over entries, one with a parity bound above 0 only"
-                    f" as {BOUNDED_IN[name]}, with `allow_bound=True`"
+                    "; served over entries, one with a parity bound above 0"
+                    f" {BOUNDED_IN[name]}, with `allow_bound=True`"
                 )
             out.append((name, "composition", note))
         elif name in native:
