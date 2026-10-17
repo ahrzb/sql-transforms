@@ -103,11 +103,35 @@ builds in about 17 µs a field and sum that two fields repeat (PLANS "Needs
 from confit"). 116 shapes are each within 0.66 to 2.57 times it, and 50
 new shapes within 0.80 to 1.26. Coverage 50 of 68. Scripts and data are
 in `/mnt/project-files/transforms-loop/t57/`.
+T58 serves `FactorAnalysis` (project.py, `_factor_analysis`) within
+K = n + k + 1, on a bound that holds where the twin runs on another host,
+as the ruling of 2026-10-06 asks. The twin computes `cov_z` with LAPACK on
+each call, by Cholesky where its matrix is exactly symmetric and by LU
+elsewhere. Over 80 fits on 8 BLAS setups of this machine (OpenBLAS kernels
+of four CPU types, 1 to 4 threads, numpy without AVX-512), its `cov_z`
+differs in 2,966 of 4,480 ordered pairs, by up to 4.1e-6. A bound that
+reads the twin's `cov_z` in the process failed against another setup's
+twin in 46 of the 80 fits. The entry computes its own `cov_z` without BLAS
+or LAPACK, and its S reads D, a first-order bound on the error of either
+path's inverse (`_factor_prior`), with a margin theta for the second order.
+Each twin of the 8 setups is within 0.129 of the bound. The step stays
+Python where theta is past 2**-10 (11 of the 80 fits, each of a condition
+number past 1e14), or where two pivot candidates of the entry's LU are
+within a ratio of 1 + 2**-8: on each setup, getrf picked the entry's pivots
+in each of the 68 fits that it factors. In a parity run of 44 seeds of 10
+fits (1 to 128 features and components; 12 seeds without numpy's AVX-512
+code or on OpenBLAS's Haswell and Sandybridge kernels), it served 415 fits
+and refused 25. No field of 178.9 million passes the bound, in calls of
+5,000 rows and of one row, and the largest difference is 0.148 of it.
+`check` passes on 53,120 rows, and the entry traps on each of the 4,678
+rows where the twin raises and on no other. A new build estimate
+(`_factor_build_estimate`): 71 shapes within 0.88 to 1.53 times it, and 40
+new shapes within 0.89 to 1.31. Coverage 51 of 68. Scripts and data are in
+`/mnt/project-files/transforms-loop/t58/`.
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it. The owner paused this loop after T55 and resumed it at 07:01 UTC the
 same day (2026-10-17).
 
-Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
-`FactorAnalysis`, then the rest of item 2).
+Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 2).

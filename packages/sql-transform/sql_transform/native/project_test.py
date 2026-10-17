@@ -12,9 +12,16 @@ import pyarrow as pa
 import pytest
 from scipy import sparse
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
-from sklearn.decomposition import PCA, FastICA, IncrementalPCA, TruncatedSVD
+from sklearn.decomposition import (
+    PCA,
+    FactorAnalysis,
+    FastICA,
+    IncrementalPCA,
+    TruncatedSVD,
+)
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
+from threadpoolctl import threadpool_limits
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import (
@@ -575,3 +582,232 @@ def test_the_kernel_probe_finds_scipys_sum_and_a_fused_one(monkeypatch):
     monkeypatch.setattr(P, "csr_sum_is_scipys", lambda: False)
     with pytest.raises(NotNative, match="does not sum a CSR product as the entry"):
         to_native(_step(_sparse(8, 3)), strict=True)
+
+
+# ------------------------------------------------------------- FactorAnalysis
+
+
+def _factor_fit(
+    seed: int, n: int, k: int | None, factors: int = 2, **kw
+) -> tuple[FactorAnalysis, np.ndarray]:
+    """A FactorAnalysis of k components over n features, fitted to rows of
+    `factors` factors, features of scales 1e-2 to 1e2 with large means, and
+    noise of 1e-8 to 1 of each feature's scale; and its fit rows. Past
+    `factors` components, noise_variance_ meets sklearn's floor of 1e-12,
+    and the twin's cov_z is ill-conditioned: of 6 components over 8
+    features, seed 0, its condition number is about 3e13."""
+    rng = np.random.default_rng(seed)
+    scale = 10.0 ** rng.uniform(-2, 2, n)
+    f = min(factors, n)
+    x = rng.normal(size=(200, f)) @ rng.normal(size=(f, n))
+    x = (x + rng.normal(size=(200, n)) * 10.0 ** rng.uniform(-8, 0, n)) * scale
+    x = x + rng.normal(size=n) * scale * 10
+    est = FactorAnalysis(n_components=k, random_state=seed, **kw).fit(x)
+    return est, x
+
+
+def _factor_rows(seed: int, est: FactorAnalysis, x: np.ndarray) -> np.ndarray:
+    """Rows of magnitudes 1e-150 to 1e150, where no partial sum overflows;
+    rows near the mean, where the products cancel; and the fit's rows."""
+    rng = np.random.default_rng(seed)
+    n = x.shape[1]
+    wide = rng.choice([-1.0, 1.0], (60, n)) * 10.0 ** rng.uniform(-150, 150, (60, n))
+    m = est.mean_
+    spread = np.abs(m) * 10.0 ** rng.uniform(-15, -3, (40, 1))
+    near = m + rng.normal(size=(40, n)) * spread
+    return np.vstack([wide, near, x[:20]])
+
+
+@pytest.mark.parametrize(
+    "n, k, kw",
+    [
+        (1, 1, {}),
+        (5, 2, {}),
+        (8, 6, {}),
+        (6, None, {"rotation": "varimax"}),
+        (12, 3, {"svd_method": "lapack", "rotation": "quartimax"}),
+    ],
+)
+def test_a_factor_analysis_parts_from_its_twin_within_its_error_scale(n, k, kw):
+    est, x = _factor_fit(0, n, k, **kw)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_factor_rows(1, est, x))
+    if n > 1:
+        with pytest.raises(ParityError, match="ulps, bound 0"):
+            check(step, native, rows, ulps=0)
+    assert check(step, native, rows) == rows.num_rows
+
+
+def test_a_factor_analysis_serves_only_on_request():
+    est, _ = _factor_fit(0, 5, 2)
+    step = _step(est)
+    assert to_native(step) is step
+    with pytest.raises(NotNative, match=r"FactorAnalysis is within 8·eps·S \+ τ"):
+        to_native(step, strict=True)
+
+
+def test_a_factor_analysis_is_held_to_the_error_of_its_inverse(monkeypatch):
+    from scipy import linalg
+
+    from sql_transform.native import project as P
+
+    # Where I + Wpsi·W^T is ill-conditioned, an inverse that another host's
+    # LAPACK can answer, within D of the entry's C, moves the twin by much
+    # more than the products' rounding, and only D bounds what that moves.
+    est, x = _factor_fit(0, 8, 6)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = _rows(_factor_rows(1, est, x))
+    f = P._factor(est)
+    assert np.linalg.cond(np.eye(6) + f.v @ est.components_.T) > 1e12
+    half = np.where(np.random.default_rng(0).random(f.d.shape) < 0.5, -0.5, 0.5)
+    other = np.asarray(f.c + half * f.d, dtype=np.float64)
+    monkeypatch.setattr(linalg, "inv", lambda a: other.copy())
+    assert check(step, native, rows) == rows.num_rows
+    alike = f._replace(d=np.zeros_like(f.d))
+    monkeypatch.setattr(P, "_factor", lambda est: alike)
+    with pytest.raises(ParityError, match="past its bound"):
+        check(step, native, rows)
+
+
+@pytest.mark.parametrize("path", ["gen", "pos"])
+def test_a_factor_analysis_holds_on_either_path_of_the_twins_inverse(monkeypatch, path):
+    from scipy import linalg
+
+    # scipy inverts an exactly symmetric matrix by Cholesky (potrf, potri)
+    # and another by LU (getrf, getri). Whether I + Wpsi·W^T is exactly
+    # symmetric depends on the rounding of BLAS's product, so the twin of
+    # another host can take the other path for the same fit: here the
+    # twin takes one path, as such a host's would.
+    real = linalg.inv
+    monkeypatch.setattr(linalg, "inv", lambda a: real(a, assume_a=path))
+    for seed, n, k in [(0, 8, 6), (4, 6, 3), (0, 5, 2)]:
+        est, x = _factor_fit(seed, n, k)
+        step = _step(est)
+        native = to_native(step, strict=True, allow_bound=True)
+        rows = _rows(_factor_rows(1, est, x))
+        assert check(step, native, rows) == rows.num_rows
+
+
+def test_a_factor_analysis_holds_at_each_thread_count_of_the_twin():
+    from sql_transform.native import project as P
+    from sql_transform.native._check import _serve
+    from sql_transform.native._registry import query
+
+    # At 100 components over 128 features, OpenBLAS's SkylakeX kernels
+    # answer the twin's cov_z apart at each thread count (on a machine of 4
+    # cores, its Haswell kernels only at 4 threads, and its Sandybridge
+    # kernels at none), and the entry is within its bound of each.
+    # `check`'s oracle of this size takes minutes, so the entry's answers
+    # are served without it.
+    rng = np.random.default_rng(0)
+    est, x = _factor_fit(0, 128, 100, max_iter=2)
+    est.components_ = rng.normal(size=(100, 128)) * 10.0 ** rng.uniform(-1, 1, 128)
+    est.noise_variance_ = 10.0 ** rng.uniform(-1, 0, 128)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    xs = _factor_rows(1, est, x)[::4]
+    got = _serve(query(step), _rows(xs), native)
+    entry = np.array([[r[f"f{j}"] for j in range(100)] for r in got])
+    bound = np.array([P.FACTOR.at(est, np.longdouble(r), 100) for r in xs])
+    for limit in (1, 2, 3, None):
+        with threadpool_limits(limits=limit):
+            twin = est.transform(xs)
+        assert (np.abs(np.longdouble(entry) - twin) <= bound).all()
+
+
+def test_a_factor_analysis_answers_the_twins_zero():
+    # At the mean each product is a zero: the twin's sums of more than one
+    # product answer 0.0, and the entry adds 0.0 to its sums. At one
+    # feature and one output field, the twin's `np.dot`s of 1×1 arrays
+    # answer the products themselves, as the entry does: -0.0 where they
+    # are -0.0.
+    for n, k in [(5, 2), (4, 1), (1, 1)]:
+        est, _ = _factor_fit(2, n, k)
+        step = _step(est)
+        native = to_native(step, strict=True, allow_bound=True)
+        rows = _rows(np.repeat(est.mean_[None], 3, axis=0))
+        assert check(step, native, rows, ulps=0) == 3
+    est.mean_ = np.zeros(1)
+    signs = [[0.0], [-0.0]]
+    assert {math.copysign(1, v) for v in est.transform(np.array(signs)[:1]).ravel()}
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, _rows(np.array(signs)), ulps=0) == 2
+
+
+def test_a_factor_analysis_the_entry_does_not_read_stays_python(monkeypatch):
+    from sql_transform.native import project as P
+
+    est, _ = _factor_fit(3, 5, 2)
+    est.noise_variance_ = est.noise_variance_.copy()
+    est.noise_variance_[1] = 0.0
+    # The twin raises on every row of these three (`_step_of`, as `_step`
+    # reads the twin's output).
+    with pytest.raises(NotNative, match="or a noise variance not positive"):
+        to_native(_step_of(est, 2), strict=True, allow_bound=True)
+    est, _ = _factor_fit(3, 5, 2)
+    est.components_ = est.components_.copy()
+    est.components_[0, 0] = np.nan
+    with pytest.raises(NotNative, match="component or noise variance not all"):
+        to_native(_step_of(est, 2), strict=True, allow_bound=True)
+    # A subnormal noise variance: Wpsi is not finite, nor is the inverse.
+    est, _ = _factor_fit(3, 5, 2)
+    est.noise_variance_ = np.full(5, 5e-324)
+    with pytest.raises(NotNative, match="has no finite inverse"):
+        to_native(_step_of(est, 2), strict=True, allow_bound=True)
+    # Two components that read one feature of almost no noise: theta is
+    # about 0.0065, past 2**-10.
+    est, _ = _factor_fit(0, 2, 2)
+    est.components_ = np.array([[1.0, 0.0], [1.0, 1.0]])
+    est.noise_variance_ = np.array([1e-12, 1.0])
+    with pytest.raises(NotNative, match="too ill-conditioned for a bound"):
+        to_native(_step(est), strict=True, allow_bound=True)
+    # Two pivot candidates about alike: another host may pick the other.
+    est, _ = _factor_fit(3, 5, 2)
+    real = P._pivoted_lu
+    monkeypatch.setattr(P, "_pivoted_lu", lambda a: (*real(a)[:2], 1.001))
+    with pytest.raises(NotNative, match="two pivot candidates of the LU"):
+        to_native(_step(est), strict=True, allow_bound=True)
+
+
+def test_the_entrys_cov_z_is_the_same_at_any_thread_count():
+    from sql_transform.native import project as P
+
+    # Without BLAS or LAPACK, the entry's inverse does not depend on the
+    # thread count, as the twin's can from about 68 components; it is
+    # exactly symmetric, and near the inverse of I + v·w^T.
+    rng = np.random.default_rng(5)
+    w = rng.normal(size=(100, 120))
+    v = w / 10.0 ** rng.uniform(-3, 0, 120)
+    c = P._factor_inverse(v, w)
+    with threadpool_limits(limits=1):
+        assert np.array_equal(P._factor_inverse(v, w).view(np.int64), c.view(np.int64))
+    assert np.array_equal(c, c.T)
+    exact = np.linalg.inv(np.eye(100) + v @ w.T)
+    assert np.max(np.abs(c - exact)) < 1e-12 * np.max(np.abs(exact))
+    # A pivot of 0 or less: I + v·w^T is not positive definite.
+    assert P._factor_inverse(-2 * w[:1] / np.linalg.norm(w[0]) ** 2, w[:1]) is None
+
+
+def test_the_entrys_lu_picks_lapacks_pivots():
+    from scipy.linalg import lapack
+
+    from sql_transform.native import project as P
+
+    # The first largest candidate of each column, as getrf's idamax picks
+    # it; P^T·L·U is the matrix.
+    rng = np.random.default_rng(6)
+    a = rng.normal(size=(9, 9))
+    a[:, 2] = np.round(a[:, 2])  # ties
+    ptl, up, margin = P._pivoted_lu(a)
+    lu, piv, _ = lapack.dgetrf(a)
+    perm = np.arange(9)
+    for i, p in enumerate(piv):
+        perm[[i, p]] = perm[[p, i]]
+    want = np.empty_like(a)
+    want[perm] = np.tril(lu, -1) + np.eye(9)
+    assert np.allclose(ptl, want) and np.allclose(up, np.triu(lu))
+    assert np.allclose(ptl @ up, a)
+    assert margin >= 1.0
