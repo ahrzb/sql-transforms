@@ -6,9 +6,9 @@ the options, the provisional choice that the loop works under, and the
 evidence. After the owner rules, the record states the ruling.
 
 - [open/](open) holds the records that wait for a ruling:
-  - [where a sum overflows on one side only](open/traps-where-a-sum-overflows.md)
-    (2026-10-17): must the entry and its twin trap on the same rows after a
-    step with a parity bound above 0?
+  - [where a sum overflows on one side only](open/where-a-sum-overflows.md)
+    (2026-10-17): what must the entry give on rows where a sum of a
+    projection overflows in one order of addition and not in another?
 - [closed/](closed) holds the owner's rulings. Each ruling below is of
   2026-10-06, unless the list gives a different date:
   - [a step with a parity bound in a

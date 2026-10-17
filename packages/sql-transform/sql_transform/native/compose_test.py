@@ -1050,15 +1050,15 @@ def _unshared_fn(name: str):
 
 def test_unshared_writes_each_value_that_confit_cannot_share_at_each_read():
     # confit counts `ln` as able to trap, though a CASE rules its trap out,
-    # and so each value that reads it: those are written at each read. It
-    # shares `exp`'s, which are written once.
+    # and so each value that reads it: written at each read, they add what
+    # the definition spelled out adds. It shares `exp`'s, which add none.
     from sql_transform.native._registry import unshared
 
     ln, exp = _unshared_fn("ln"), _unshared_fn("exp")
     assert len(ln.sql_lets) == len(exp.sql_lets) == 2
-    assert unshared(ln) == len(ln.sql_body)
-    assert unshared(exp) == sum(map(len, exp.sql_lets)) + len(exp.sql_let_body)
-    assert unshared(exp) < len(exp.sql_body)
+    let_form = sum(map(len, ln.sql_lets)) + len(ln.sql_let_body)
+    assert unshared(ln) == len(ln.sql_body) - let_form > 0
+    assert unshared(exp) == 0
 
 
 @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
@@ -1078,8 +1078,9 @@ def test_a_composition_that_confit_cannot_share_stays_python():
     X = np.random.default_rng(0).normal(size=(300, 16)) * 3
     with pytest.raises(
         NotNative,
-        match=r"confit does not build it: with each value that confit cannot share"
-        r" written at each read, its definition is [\d,]+ characters, past 500,000",
+        match=r"confit does not build it: each value that confit cannot share,"
+        r" written at each read, adds [\d,]+ characters to its definition, past"
+        " 500,000",
     ):
         to_native(_composed(make(np.log2), X), strict=True, allow_bound=True)
     to_native(_composed(make(np.exp), X), strict=True, allow_bound=True)

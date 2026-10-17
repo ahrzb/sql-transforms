@@ -690,24 +690,26 @@ _LET_READ = re.compile(
     re.IGNORECASE,
 )
 
-# The longest definition of a composition, as `unshared` writes it, that
-# `to_native` builds. T59's parity run gave 41 compositions of 1,426 to
-# 40,142,437 characters so (one build at a time, T59's branch at e3f21e2):
-# the 33 up to 500,000 built in at most 1.32 s and 445 MB; the 7 past it
-# in 0.51 to 47 s and 330 MB to 5.0 GB, from 1 million characters on at
-# 1.4 to 12 µs and 0.5 to 1.5 KB a character; the longest ran out of
-# memory under a limit of 12 GB.
+# The most characters that `unshared` counts in a composition that
+# `to_native` builds. 44 compositions of T59's parity run were built alone
+# (release build, T59's branch at 34a33b9). The 36 at or under 500,000
+# built in at most 6.16 s and 758 MB. The slowest took 13.1 us for each
+# added character, so 500,000 build in about 6.5 s, under a family's cap
+# of 7 s (`trees.MAX_BUILD_S`). Past it, builds took up to 50.4 s and
+# 5.0 GB at 3.9 million, and one ran out of a limit of 12 GB of address
+# space at 40 million.
 MAX_UNSHARED = 500_000
 
 
 def unshared(fn: SqlFunction) -> int:
-    """The length of `fn`'s definition as confit's build computes it: each
-    let that confit cannot share written at each read, every other let
-    once. A let cannot be shared where it calls one of `_TRAPS` or reads a
-    let that cannot."""
+    """The characters that confit's build computes again in `fn`'s
+    definition: its length with each let that confit cannot share written
+    at each read and every other let once, less its length with each let
+    once (`sql_lets`, `sql_let_body`). A let cannot be shared where it
+    calls one of `_TRAPS` or reads a let that cannot."""
     lets = getattr(fn, "sql_lets", None)
     if lets is None:
-        return len(fn.sql_body)
+        return 0
 
     def reads(text: str) -> list[tuple[int, int]]:
         # Each let read: the let's number, and the length of the read.
@@ -724,12 +726,9 @@ def unshared(fn: SqlFunction) -> int:
         calls = any(m.group(1) for m in _TRAPS.finditer(text))
         traps.append(calls or any(traps[j] for j, _ in r))
         size.append(len(text) + sum(size[j] - n for j, n in r if traps[j]))
-    body = fn.sql_let_body
-    return (
-        len(body)
-        + sum(size[j] - n for j, n in reads(body) if traps[j])
-        + sum(s for s, t in zip(size, traps, strict=True) if not t)
-    )
+    again = sum(size[j] - n for j, n in reads(fn.sql_let_body) if traps[j])
+    once = sum(s for s, t in zip(size, traps, strict=True) if not t)
+    return max(0, again + once - sum(map(len, lets)))
 
 
 def _translate(step: Any, allow_bound: bool) -> SqlFunction:
@@ -843,9 +842,9 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
         size = unshared(fn)
         if size > MAX_UNSHARED:
             raise NotNative(
-                "confit does not build it: with each value that confit cannot"
-                f" share written at each read, its definition is {size:,}"
-                f" characters, past {MAX_UNSHARED:,}"
+                "confit does not build it: each value that confit cannot share,"
+                f" written at each read, adds {size:,} characters to its"
+                f" definition, past {MAX_UNSHARED:,}"
             )
     _builds(step, fn)
     return fn

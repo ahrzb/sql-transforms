@@ -69,9 +69,10 @@ that request, `to_native(step, allow_bound=True)`. In order:
    functions within a bound of their own); a map `g` (a distance's square)
    through a composition; after a discontinuous step, `native.check`
    reports the flip rate in place of a bound. Open with the owner: the
-   rows where a bounded step's sum overflows on one side only, where a
-   later step's validation raises on that side alone
-   ([decisions/open/traps-where-a-sum-overflows.md](decisions/open/traps-where-a-sum-overflows.md)).
+   rows where a projection's sum overflows on one side only, where an
+   output field is infinite or NaN on that side alone, and a later step's
+   validation raises on that side alone
+   ([decisions/open/where-a-sum-overflows.md](decisions/open/where-a-sum-overflows.md)).
 
 ## Needs from confit
 
@@ -212,8 +213,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
   ran out of 16 GB of memory. So T52 stays Python past 2,048 products,
   where a call can take longer than the twin's. Since T59 a composition
   multiplies it: confit computes each value of the steps after such a
-  call at every read, so their build grows with the definition spelled
-  out. `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
+  call at every read, so their build grows with what writing each such
+  value at each read adds to the definition. `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
   `np.log2`, `FactorAnalysis(8)`, `GaussianRandomProjection(8)` and
   `FeatureAgglomeration(4)` over 16 features build in 33 s and 3.8 GB as
   a list, 21 s after `np.tan`, and 0.06 s after `np.exp` or `np.cbrt`
@@ -221,9 +222,9 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `PowerTransformer`, the kernel samplers and these functions of
   `FunctionTransformer`. One composition of T59's parity run ran out of
   memory in confit's check of its IR (`ir::verify`) under a limit of
-  12 GB. So `to_native` refuses a composition past 500,000 characters with
-  each such value written at each read (`_registry.unshared`,
-  `MAX_UNSHARED`). When it lands, measure again, lift those caps
+  12 GB. So `to_native` refuses a composition where writing each such
+  value at each read adds more than 500,000 characters to its definition
+  (`_registry.unshared`, `MAX_UNSHARED`). When it lands, measure again, lift those caps
   (`kernel._SKEWED_PRODUCTS`, `_registry.MAX_UNSHARED`) and refit
   `kernel._skewed_build_estimate`. Medium priority for confit now: it
   limits the compositions after these steps that T59 serves. Send it to
