@@ -42,7 +42,8 @@ against 459), and since confit #430 it builds about as fast, so it is the
 entry's one spelling. The entry takes a forest whose build is estimated
 within MAX_BUILD_S (`_build_estimate`), about 10,000 output fields at 8
 features, 8,600 at 32, 7,200 at 64 and 5,200 at 128, and refuses it past
-that. The estimate is fitted on 35 warm builds over 0.3 s, each the slower
+that. The estimate is fitted on 35 warm trial builds (`_registry._builds`,
+without `to_native`'s translation and probe) over 0.3 s, each the slower
 of a struct and a list return (release build, 8 features and, for nine
 forests, 32 to 128; fits of 1,000 to 8,000 rows; T46 on master 12aca98,
 2026-10-16). The struct return is the slower, by 1.7 to 5.8 times, more as
@@ -103,8 +104,10 @@ MAX_BUILD_S = 7.0
 
 
 def _build_estimate(est: Any) -> float:
-    """The seconds confit takes to build the entry (warm, release build),
-    from its output fields and features (module docstring)."""
+    """The seconds of confit's trial build of the entry alone
+    (`_registry._builds`, warm, release build), without the translation
+    and the probe that `to_native` also runs, from its output fields and
+    features (module docstring)."""
     fields = sum(len(c) for c in est.one_hot_encoder_.categories_)
     features = int(est.n_features_in_)
     return 1.89e-4 * fields + 4.56e-8 * fields**2 + 7.19e-6 * fields * features

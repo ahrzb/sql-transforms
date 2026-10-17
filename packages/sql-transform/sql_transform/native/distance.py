@@ -103,24 +103,26 @@ DISTANCE = ErrorScale(
 
 
 def _build_estimate(n: int, k: int) -> float:
-    """The seconds confit takes to build the entry (warm, release build),
-    from its n features and k centres: the products (n·k), terms in n²,
-    n²·k and n·k² that the build grows by at wide rows, where a list or a
-    scalar return builds more slowly than a struct, and terms in k and k³
-    that a struct return takes, as `query` reads each of its fields on its
-    own (PLANS.md, "Needs from confit"). Fitted on the slower of the two
-    returns over 66 shapes (1 to 4,096 features, 1 to 2,000 centres; builds
-    of 0.1 to 75 s; `KMeans`, and `Birch` of one subcluster a row; master
-    c06a15a, 2026-10-16): each within 0.85 to 1.27 times the estimate. The
-    cap took on none slower than 7.7 s and refused none faster than 6.6 s.
-    It takes about 920 centres over 2 features, 600 over 64, 230 over 256,
-    100 over 512, 36 over 1,024 or 7 over 2,048, and one centre up to 2,830
-    features. A struct of 2,000 centres over 2 features built in 73 s,
-    against 1.1 s as a list, and confit refused one of 4,000 after 475 s,
-    as past its code generator's size limit.
-    The estimate of a centered projection (`project._centered_build_estimate`),
-    whose products also read shared values, takes about 6,500 centres over
-    2 features, and one centre over 4,096 features (14.8 s)."""
+    """The seconds of the whole warm `to_native` of the entry, release
+    build: the translation, the probe (`_registry._probed`) and confit's
+    trial build (`_registry._builds`). It grows with the n features and k
+    centres: the products (n·k), terms in n², n²·k and n·k² that the build
+    grows by at wide rows, where a list or a scalar return builds more
+    slowly than a struct, and terms in k and k³ that a struct return takes,
+    as `query` reads each of its fields on its own (PLANS.md, "Needs from
+    confit"). Fitted on the slower of the two returns over 66 shapes (1 to
+    4,096 features, 1 to 2,000 centres; builds of 0.1 to 75 s; `KMeans`, and
+    `Birch` of one subcluster a row; master c06a15a, 2026-10-16): each
+    within 0.85 to 1.27 times the estimate. The cap took on none slower than
+    7.7 s and refused none faster than 6.6 s. It takes about 920 centres
+    over 2 features, 600 over 64, 230 over 256, 100 over 512, 36 over 1,024
+    or 7 over 2,048, and one centre up to 2,830 features. A struct of 2,000
+    centres over 2 features built in 73 s, against 1.1 s as a list, and
+    confit refused one of 4,000 after 475 s, as past its code generator's
+    size limit. The estimate of a centered projection
+    (`project._centered_build_estimate`), whose products also read shared
+    values, takes about 6,500 centres over 2 features, and one centre over
+    4,096 features (14.8 s)."""
     return (
         1.14e-3 * n
         + 8.11e-4 * k

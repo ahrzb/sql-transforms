@@ -28,11 +28,20 @@ T52 time the whole warm `to_native`, probe included (finding 92). Need 5 is
 new: confit shares no `ln` (a value that can raise), so `SkewedChi2Sampler`
 computes n·m logarithms a row (finding 90). The needs are in PLANS "Needs
 from confit".
+T53 (#508) gives `AdditiveChi2Sampler` a build estimate of the whole warm
+`to_native` (`kernel._additive_chi2_build_estimate`), and the entry refuses
+a step estimated past 7 s (finding 91). Over 117 shapes of 1 to 1,024
+features and 1 to 400 sample steps, each build over 0.3 s is within 0.84 to
+1.22 times the estimate (scripts and builds in
+`/mnt/project-files/transforms-loop/t53/`). The cap takes about 900
+features of one step, 148 of three or 12 of 100. Each build estimate's
+docstring now says which time it estimates: the trial build alone (T46's
+forest, isotonic, quantile and spline estimates) or the whole warm
+`to_native` (finding 92).
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
 it.
 
-Next: PLANS "Next" (finding 91's estimate and cap for
-`AdditiveChi2Sampler`, then the rest of "Ruled 2026-10-06, to build", item
-1, `Nystroem` next, one PR each).
+Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
+`Nystroem` next, one PR each).

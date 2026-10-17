@@ -6,20 +6,7 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. Finding 91 (reading 8): `AdditiveChi2Sampler` (kernel.py) has no build
-   estimate, so no cap keeps its slow builds Python: with `sample_steps=3`
-   over 256 features (1,280 output fields), `to_native` takes 28.5 s. On
-   new data of the same size (`ac2_build.py` in
-   `/mnt/project-files/transforms-loop/reading-8/`), `to_native` takes
-   20.1 to 21.0 s as a list and 27.3 to 28.3 s as a struct, and its trial
-   build 19.8 to 20.7 s and 26.9 to 28.1 s. Fit an estimate on the whole
-   warm `to_native`, as T47 to T52 did, and cap the entry with it
-   (`project._refuse_past_cap`). In the same PR, make the
-   docstring of each estimate say which time it estimates (finding 92:
-   T46's forest, isotonic, quantile and spline estimates time the trial
-   build alone, `_registry._builds`; T47's, T48's, T51's and T52's the
-   whole warm `to_native`, which also runs the probe).
-2. The rest of "Ruled 2026-10-06, to build", item 1 (`Nystroem` next, in
+1. The rest of "Ruled 2026-10-06, to build", item 1 (`Nystroem` next, in
    kernel.py; `FactorAnalysis` last), one PR each; then the rest of item
    2.
 
@@ -90,7 +77,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   `RandomTreesEmbedding` of 100 trees of depth 5 (2,286 fields) in 0.77 s
   against 0.39 s, of 800 trees (18,360 fields) in 21.5 s against 4.4 s,
   and `QuantileTransformer` over 800 features of one leaf in 4.6 s against
-  0.5 s (T40, release build, master 318575b with confit #461). A
+  0.5 s (T40, release build, master 318575b with confit #461). Since T53
+  it sets `AdditiveChi2Sampler`'s cap too: with one sample step over 1,024
+  features, a struct builds in 8.3 to 9.6 s and a list in 0.85 to 0.92 s,
+  and the cap refuses both, as the entry cannot tell them apart (release
+  build, master 6b7e7f1). A
   confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
   1.4 s read field by field and 0.09 s read whole (loops/confit/PLANS.md).
   The distances to fitted centres grow faster, about as k³: a struct of
@@ -424,6 +415,11 @@ Configurations a translator declines (`NotNative`), each with its ground:
   features past about 5,200, such as 250 trees of depth 5 (5,751 fields,
   8.4 s; T46 on master 12aca98). 400 trees of depth 5 over 8 features
   (9,210 fields, 6.3 s) are served.
+- `AdditiveChi2Sampler`: a step whose build is estimated past 7 s
+  (`kernel._additive_chi2_build_estimate`, T53): past about 900 features
+  of one sample step, 148 of three or 12 of 100. 3 steps over 256
+  features build in 19.5 s as a list and 26.5 s as a struct (master
+  6b7e7f1).
 - Any step confit does not build (past its expansion cap or Cranelift's
   function size): `to_native` builds it first.
 
@@ -449,8 +445,9 @@ Configurations a translator declines (`NotNative`), each with its ground:
   features one at a time only where that call raises.
 - One time for every cap (reading 8, finding 92). T46 fitted the forest,
   isotonic, quantile and spline estimates on the trial build alone; T47,
-  T48, T51 and T52 fitted theirs on the whole warm `to_native`, which
-  also runs the probe. So a cap of 7 s bounds the trial build in T46's
+  T48 and T51 to T53 fitted theirs on the whole warm `to_native`, which
+  also runs the probe. Since T53, each estimate's docstring says which
+  time it estimates. So a cap of 7 s bounds the trial build in T46's
   families and the whole `to_native` in the others: `PCA` over 4,600
   features of one component takes 5.6 to 5.9 s in `to_native`, of which
   the trial build is 1.5 to 1.6 s. Fit T46's four estimates again on the
