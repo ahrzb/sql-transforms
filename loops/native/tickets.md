@@ -128,6 +128,47 @@ rows where the twin raises and on no other. A new build estimate
 (`_factor_build_estimate`): 71 shapes within 0.88 to 1.53 times it, and 40
 new shapes within 0.89 to 1.31. Coverage 51 of 68. Scripts and data are in
 `/mnt/project-files/transforms-loop/t58/`.
+T59 serves option 2 of the ruling on a bounded step in a composition for
+the affine steps and a part's weight: each step after a step whose bound
+is above 0 gives its output fields a carried bound (`_carry.py`,
+`_registry.Entry.carry`), from the bound of each field that it reads at
+the twin's value and its own rounding. The affine scalers carry one, as do
+the linear projections, `FeatureAgglomeration`'s mean, the selectors,
+`FunctionTransformer` of None, `np.negative`, `np.abs` and the like, and
+a weight of `transformer_weights`. Any other step after a bounded one
+refuses by name. In a parity run of 320 random compositions (32 seeds of
+10: 4 seeds without numpy's AVX-512 code, 4 on OpenBLAS's Haswell kernels
+and 8 of a `Pipeline` after a union), it served 264 and refused 53, 23 of
+them by the cap below; 3 fits failed. On the eight kinds of rows below
+the largest double, no field of 8.9 million passes its bound, against the
+twin of one row and of a call of 500 rows, the largest difference is
+0.633 of it, and the entry traps exactly where the twin raises. On rows of
+values near the largest double, 447 fields of 174,778 pass it (1,159
+against the call), and on 231 rows one side traps or raises alone. There a
+sum can overflow in one order and not another: over 80 projections alone
+(`fields.py`) and 80 `Pipeline`s of a projection and a `StandardScaler`
+(`band.py`), each such field and trap is on a row where the absolute
+values of a sum's terms add to about DBL_MAX, and the twin itself answers
+7,289 fields and 2,224 rows differently in a call of one row and of 64.
+The open record `decisions/open/where-a-sum-overflows.md` asks the owner
+what must hold there, and `check` stays strict until then. Against the
+twins of 6 BLAS setups of this machine (`hosts.py`), 55 compositions give
+no field past the bound of 12.3 million, at most 0.392 of it; the 280
+pairs with a `FunctionTransformer` function within a bound of its own are
+apart: where numpy has no AVX-512 code, its kernel probe reads 0 and the
+entry serves bit-exact (the ruling on `AdditiveChi2Sampler`), so 1,210
+fields of each such pair pass against a twin with AVX-512 code. confit
+shares no value above a guarded `ln`, `log2`, `log10`, `sqrt`, `sin`,
+`cos` or `tan` (PLANS "Needs from confit"), so a composition after such a
+call builds with each such value computed at each read: `to_native`
+refuses one where that adds more than 500,000 characters to its definition
+(`_registry.MAX_UNSHARED`). Of 44 compositions built alone, the 36 under
+it took at most 6.16 s and 758 MB, those past it up to 50.4 s and 5.0 GB,
+and one ran out of 12 GB. `check` ran on 252 of the 264 compositions (it
+skips 12 definitions past 4 million characters spelled out, which DuckDB
+reads: `calib.py`) and failed on one, on rows near the largest double.
+Coverage stays 51 of 68. Scripts and data are in
+`/mnt/project-files/transforms-loop/t59/`.
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around

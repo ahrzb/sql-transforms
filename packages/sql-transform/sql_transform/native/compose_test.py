@@ -1064,8 +1064,8 @@ def test_unshared_writes_each_value_that_confit_cannot_share_at_each_read():
 @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_a_composition_that_confit_cannot_share_stays_python():
     # After np.log2, under the CASE that rules its trap out, confit shares
-    # no value of the steps after it: their build took 33 s and 3.8 GB
-    # (T59). After np.exp, the same steps build in 0.06 s.
+    # no value of the steps after it: their build took 31 s and 3.8 GB
+    # (T59). After np.exp, the same steps build in 0.05 s.
     def make(func):
         return make_pipeline(
             MinMaxScaler(feature_range=(1, 2)),

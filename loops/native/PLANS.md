@@ -217,9 +217,9 @@ that request, `to_native(step, allow_bound=True)`. In order:
   value at each read adds to the definition.
   `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
   `np.log2`, `FactorAnalysis(8)`, `GaussianRandomProjection(8)` and
-  `FeatureAgglomeration(4)` over 16 features build in 33 s and 3.8 GB as
-  a list, 21 s after `np.tan`, and 0.06 s after `np.exp` or `np.cbrt`
-  (T59's branch at e3f21e2). The steps that call them are
+  `FeatureAgglomeration(4)` over 16 features build in 31 s and 3.8 GB as
+  a list, 21 s after `np.tan`, and 0.05 and 0.06 s after `np.exp` and
+  `np.cbrt` (T59's branch at 7d23086). The steps that call them are
   `PowerTransformer`, the kernel samplers and these functions of
   `FunctionTransformer`. One composition of T59's parity run ran out of
   memory in confit's check of its IR (`ir::verify`) under a limit of

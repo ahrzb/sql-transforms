@@ -125,7 +125,7 @@ to serve. `to_native(step, strict=True)` raises an error instead.
   the error out, and each value that reads such a call too. confit
   computes each of these values again at each read. So in a composition
   after a step that calls one of these functions, the build of confit
-  can take minutes or use all the memory. `to_native` counts the
+  can take tens of seconds or use all the memory. `to_native` counts the
   characters that writing each of these values at each read adds to the
   definition of a composition. If they are more than 500,000, `to_native`
   returns the composition unchanged (`MAX_UNSHARED` in
