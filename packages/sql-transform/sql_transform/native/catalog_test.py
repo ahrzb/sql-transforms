@@ -716,14 +716,21 @@ YEO_JOHNSON_LAMBDAS_32 = [
 ]  # fmt: skip
 
 
-def _pinned(method: str, lambdas: list[float], dtype: Any = np.float64):
-    """A PowerTransformer(method, standardize=False) whose fit then pins
+def _pinned(
+    method: str,
+    lambdas: list[float],
+    dtype: Any = np.float64,
+    standardize: bool = False,
+):
+    """A PowerTransformer(method, standardize) whose fit then pins
     `lambdas_` to `lambdas` in `dtype`, where no fit lands: one per feature
     in turn, from the fit's row count, so that narrow steps reach each of
-    them over the seeds."""
+    them over the seeds. A standardized one's scaler is fit again on the
+    pinned transform of the fit data, where that is finite, so that rows
+    like the fit's answer about `mean_`."""
 
     def make() -> PowerTransformer:
-        est = PowerTransformer(method, standardize=False)
+        est = PowerTransformer(method, standardize=standardize)
 
         def fit(X, y=None):
             del est.fit  # the class's own again
@@ -732,6 +739,12 @@ def _pinned(method: str, lambdas: list[float], dtype: Any = np.float64):
             est.lambdas_ = np.array(
                 [lambdas[(start + j) % len(lambdas)] for j in range(n)], dtype
             )
+            if standardize:
+                est.standardize = False
+                t = est.transform(X)
+                est.standardize = True
+                if not np.isinf(t).any():
+                    est._scaler.fit(t)
             return est
 
         est.fit = fit
@@ -740,23 +753,29 @@ def _pinned(method: str, lambdas: list[float], dtype: Any = np.float64):
     return make
 
 
-# Unstandardized: what the entry serves (power.py).
+# Unstandardized, then standardized (the default; power.py).
 FIXTURES[PowerTransformer] = [
     positive(lambda: PowerTransformer("box-cox", standardize=False)),
     positive(_pinned("box-cox", BOX_COX_LAMBDAS)),
     lambda: PowerTransformer(standardize=False),
     _pinned("yeo-johnson", YEO_JOHNSON_LAMBDAS),
     _pinned("yeo-johnson", YEO_JOHNSON_LAMBDAS_32, np.float32),
+    positive(lambda: PowerTransformer("box-cox")),
+    positive(_pinned("box-cox", BOX_COX_LAMBDAS, standardize=True)),
+    lambda: PowerTransformer(),
+    _pinned("yeo-johnson", YEO_JOHNSON_LAMBDAS, standardize=True),
+    _pinned("yeo-johnson", YEO_JOHNSON_LAMBDAS_32, np.float32, standardize=True),
 ]
 # Box-Cox as a pipeline's last step, within its own error scale
-# (compose.py).
-FIXTURES[Pipeline].append(
+# (compose.py), unstandardized and standardized.
+FIXTURES[Pipeline] += [
     positive(
         lambda: make_pipeline(
             MaxAbsScaler(), PowerTransformer("box-cox", standardize=False)
         )
-    )
-)
+    ),
+    positive(lambda: make_pipeline(MaxAbsScaler(), PowerTransformer("box-cox"))),
+]
 
 # RandomTreesEmbedding: both outputs (trees.py). One tree to 30, depth
 # 1 to 5 (the default) and unbounded, min_samples_leaf above 1, and
@@ -953,6 +972,7 @@ REFUSED = (
     "over boolean features only",
     "a whitened component of rounding noise",
     "its fit broke down",
+    "a mean_ of 2**970 or more",
 )
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).
@@ -1859,15 +1879,6 @@ def test_kbins_counts_equal_edges_as_numpy_does(encode):
     assert check(step, to_native(step, strict=True), rows) == n
 
 
-@pytest.mark.parametrize("method", ["yeo-johnson", "box-cox"])
-def test_a_standardized_power_transform_stays_python(method):
-    # The twin's scaler raises on an infinite power transform, an edge that
-    # the entry's rounding moves (power.py).
-    step = _step(positive(lambda: PowerTransformer(method)), 0)
-    with pytest.raises(NotNative, match=r"standardize=True\): the twin's scaler"):
-        to_native(step, strict=True)
-
-
 # --------------------------------------------------------- FunctionTransformer
 
 # Doubles where an elementwise function's spelling can part from numpy's:
@@ -2123,7 +2134,11 @@ ON_REQUEST = (
 )
 
 
-@pytest.mark.parametrize("j, k", [(0, 5), (2, 10)], ids=["box-cox", "yeo-johnson"])
+@pytest.mark.parametrize(
+    "j, k",
+    [(0, 5), (2, 10), (5, 7), (7, 12)],
+    ids=["box-cox", "yeo-johnson", "box-cox-standardized", "yeo-johnson-standardized"],
+)
 def test_a_power_transform_serves_only_on_request(j, k):
     make = FIXTURES[PowerTransformer][j]
     step = _step(make, 0, j)
@@ -2135,7 +2150,8 @@ def test_a_power_transform_serves_only_on_request(j, k):
         to_native(step, strict=True)
     assert "stays Python" in explain_native(step)
     native = to_native(step, strict=True, allow_bound=True)
-    assert check(step, native, _rows(step, 0, positive=j == 0)) > 0
+    rows = _rows(step, 0, positive=getattr(make, "positive", False))
+    assert check(step, native, rows) > 0
     assert explain_native(step, allow_bound=True).endswith(f"-> SqlFunction, {within}")
 
 
@@ -2188,11 +2204,12 @@ def test_a_step_serves_on_request_by_its_loosest_instance(monkeypatch):
 
 
 def test_a_refused_configuration_says_why_before_its_bound():
-    # A standardized power transform stays Python: allow_bound does not
-    # serve it, so the refusal names the configuration, not the bound.
-    step = _step(positive(lambda: PowerTransformer("box-cox")), 0)
+    # A power transform with a lambda not finite stays Python: allow_bound
+    # does not serve it, so the refusal names the configuration, not the
+    # bound.
+    step = _step(positive(_pinned("box-cox", [math.inf])), 0)
     for allow in (False, True):
-        with pytest.raises(NotNative, match="standardize=True"):
+        with pytest.raises(NotNative, match="a lambda not finite"):
             to_native(step, strict=True, allow_bound=allow)
 
 

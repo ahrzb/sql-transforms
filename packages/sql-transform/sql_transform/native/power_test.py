@@ -1,8 +1,9 @@
 """The power transforms (power.py): Box-Cox within 5·eps·|t| + τ and
 Yeo-Johnson within 10·eps·(1 + max(w, 0))·|t| + τ of the twin, as the
 entry's log1p and expm1, spelled from ln and exp, part from the twin's by
-rounding; the entry overflows where the twin does; the kernel probe and
-the build cap keep the rest Python."""
+rounding; the entry overflows where the twin does. Standardized, within
+7 and 12·eps·(S_t + |mean_|)/scale_ + τ, the entry traps where the twin's
+scaler raises; the kernel probe and the build cap keep the rest Python."""
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 from confit import sql as S
-from sklearn.preprocessing import PowerTransformer
+from sklearn.preprocessing import PowerTransformer, StandardScaler
 
 from sql_transform._udf import PythonTransform
 from sql_transform.native import NotNative, ParityError, catalog, check, to_native
@@ -50,6 +51,42 @@ def _fitted(
     est = PowerTransformer(method, standardize=False).fit(X)
     est.lambdas_ = np.array(lambdas, dtype)
     return est
+
+
+def _standardized(
+    method: str,
+    lambdas: list[float],
+    dtype: type = np.float64,
+    mean: list[float] | None = None,
+    scale: list[float] | None = None,
+) -> PowerTransformer:
+    """`_fitted(method, lambdas, dtype)`, standardized: its scaler fit on
+    the transform of the fit data (an infinite t read as 0), unless `mean`
+    and `scale` pin it."""
+    est = _fitted(method, lambdas, dtype)
+    X = np.random.default_rng(0).lognormal(size=(20, len(lambdas)))
+    t = est.transform(X)
+    scaler = StandardScaler(copy=False).set_output(transform="default")
+    est._scaler = scaler.fit(np.where(np.isinf(t), 0.0, t))
+    if mean is not None:
+        est._scaler.mean_ = np.array(mean)
+    if scale is not None:
+        est._scaler.scale_ = np.array(scale)
+    est.standardize = True
+    return est
+
+
+def _answered(est: PowerTransformer, values: list) -> int:
+    """How many rows of `values`, each value in every feature, the twin
+    answers."""
+    n = 0
+    for v in values:
+        try:
+            est.transform([[math.nan if v is None else v] * len(est.lambdas_)])
+        except ValueError:
+            continue
+        n += 1
+    return n
 
 
 def _step(est: PowerTransformer) -> PythonTransform:
@@ -142,8 +179,8 @@ def test_the_entry_overflows_where_the_twin_does(lam):
     native = to_native(step, strict=True, allow_bound=True)
     lam_ = np.asarray(est.lambdas_)
     k = np.arange(-3000, 3001, 7)
-    for positive in (True, False):
-        edge = P._edges(lam_, positive)[0]
+    for positive, edges in zip((True, False), P._yeo_johnson_edges(lam_), strict=True):
+        edge = edges[0]
         if math.isnan(edge):
             continue
         top = np.array([MAX]).view(np.int64)[0]
@@ -164,6 +201,137 @@ def test_an_edge_the_twin_does_not_keep_leaves_the_step_python(monkeypatch):
     monkeypatch.setattr(P, "_yeo_johnson_t", twin)
     with pytest.raises(NotNative, match="overflows on no single edge near 1000000000"):
         to_native(_step(_fitted("yeo-johnson", [3.0])), strict=True, allow_bound=True)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32], ids=["f64", "f32"])
+def test_a_standardized_yeo_johnson_matches_its_twin_on_special_values(dtype):
+    lambdas = [v for v in LAMBDAS if abs(v) < 1e38 or dtype == np.float64]
+    est = _standardized("yeo-johnson", lambdas, dtype)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    # The twin rejects the infinities, and its scaler a row whose t is
+    # infinite, where the entry traps; `check` compares the rest.
+    answered = _answered(est, SPECIALS)
+    assert answered < len(SPECIALS) - 2
+    assert check(step, native, _rows(*[SPECIALS] * len(lambdas))) == answered
+
+
+def test_a_standardized_box_cox_matches_its_twin_on_special_values():
+    lambdas = [0.0, 1e-20, 1e-19, -3e-12, 0.5, 3.0, -50.0, 2.0, 1e300, -0.98, -1.0]
+    est = _standardized("box-cox", lambdas)
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    # x <= 0 and the infinities, and a row whose t is infinite, trap.
+    answered = _answered(est, SPECIALS)
+    assert 0 < answered < 13
+    assert check(step, native, _rows(*[SPECIALS] * len(lambdas))) == answered
+
+
+@pytest.mark.parametrize(
+    "method, lam",
+    [("yeo-johnson", v) for v in (3.0, 1.5, 1 + 1e-9, 0.5, 0.0, -1.0, 50.0)]
+    + [("box-cox", v) for v in (3.0, 1.5, -0.98, -1.0, -50.0)],
+)
+def test_a_standardized_step_traps_from_the_twins_edges_on(method, lam):
+    # The twin's scaler raises where t is infinite: past the twin's own
+    # edge (the twin's largest x where Box-Cox, lambda < 0, is -inf near 0).
+    est = _standardized(method, [lam, 0.5])
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    lam_ = np.asarray(est.lambdas_[:1])
+    if method == "box-cox":
+        sides = [
+            (P._edges(P._box_cox_t, lam_, r, method)[0], 1.0) for r in (True, False)
+        ]
+    else:
+        tops, bottoms = P._yeo_johnson_edges(lam_)
+        sides = [(tops[0], 1.0), (bottoms[0], -1.0)]
+    top = np.array([MAX]).view(np.int64)[0]
+    k = np.arange(-3000, 3001, 7)
+    traps = 0
+    for edge, sign in sides:
+        if math.isnan(edge):
+            continue
+        bits = np.clip(np.array([edge]).view(np.int64)[0] + k, 1, top)
+        xs = bits.view(np.float64) * sign
+        if method == "box-cox":
+            t = P._box_cox_t(lam_, xs)
+        else:
+            t = P._yeo_johnson_t(lam_, np.abs(xs), sign > 0)
+        assert np.isinf(t).any() and np.isfinite(t).any()
+        rows = _rows(xs.tolist(), [1.0] * len(xs))
+        assert check(step, native, rows) == np.isfinite(t).sum()
+        traps += 1
+    assert traps
+
+
+def test_a_row_at_the_mean_answers_within_the_mean_s_scale():
+    # mean_ is the twin's t at the first row, where the twin answers 0 and
+    # the entry's t is a few ulps of mean_ away (the ruling, item 7).
+    est = _standardized("yeo-johnson", [0.5, 3.0, -1.5])
+    xs = np.random.default_rng(2).normal(size=(3, 50)) * 50
+    est.standardize = False
+    est._scaler.mean_ = est.transform(xs.T)[0].copy()
+    est.standardize = True
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    assert check(step, native, _rows(*xs.tolist())) == 50
+
+
+def test_a_quotient_past_the_largest_double_may_overflow_on_one_side():
+    # t is about x, which a scale_ of 1e-300 takes past DBL_MAX near
+    # 1.8e8: a side infinite alone passes within K·eps·S of DBL_MAX.
+    est = _standardized("yeo-johnson", [1.0], mean=[0.0], scale=[1e-300])
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    edge = np.array([MAX * 1e-300]).view(np.int64)[0]
+    xs = (edge + np.arange(-500, 501, 5)).view(np.float64)
+    assert check(step, native, _rows(xs.tolist())) == len(xs)
+
+
+def test_the_standardized_error_scale_reads_the_scaler():
+    scale = catalog()[PowerTransformer].scale
+    est = _standardized("box-cox", [0.0, 2.0], mean=[0.5, -3.0], scale=[2.0, 0.25])
+    got = scale.s(est, np.array([4.0, 3.0], np.longdouble))
+    log4 = np.log(np.longdouble(4))
+    want = [(log4 + 0.5) / 2, (4 + 3) / np.longdouble(0.25)]
+    assert np.allclose(got, np.array(want, np.longdouble), rtol=1e-15)
+    assert scale.k(est) == 7
+    tau = P._TINY * (1 + 1 / np.array([2.0, 0.25], np.longdouble))
+    assert np.array_equal(scale.tau(est), tau)
+    assert scale.k(_standardized("yeo-johnson", [0.5])) == 12
+
+
+@pytest.mark.parametrize(
+    "attr, value, reason",
+    [
+        ("with_mean", False, "a scaler other than the one the fit makes"),
+        ("with_std", False, "a scaler other than the one the fit makes"),
+        ("mean_", [math.nan, 0.0], "a mean_ or scale_ not finite"),
+        ("scale_", [math.inf, 1.0], "a mean_ or scale_ not finite"),
+        ("scale_", [0.0, 1.0], "or a scale_ not above 0"),
+        ("mean_", [2.0**970, 0.0], r"a mean_ of 2\*\*970 or more"),
+        ("mean_", [0.0, -(2.0**970)], r"a mean_ of 2\*\*970 or more"),
+    ],
+)
+def test_a_scaler_the_entry_does_not_read_leaves_the_step_python(attr, value, reason):
+    est = _standardized("yeo-johnson", [0.5, 1.5])
+    setattr(est._scaler, attr, np.array(value) if isinstance(value, list) else value)
+    with pytest.raises(NotNative, match=reason):
+        to_native(_step(est), strict=True, allow_bound=True)
+
+
+def test_a_box_cox_edge_the_twin_does_not_keep_leaves_the_step_python(monkeypatch):
+    # -inf up to 1e-10, but for a run of doubles just below it.
+    def twin(lam, v):
+        v = np.asarray(v, np.float64)
+        hole = (v < 1e-10 - 1e-23) & (v > 1e-10 - 2e-23)
+        return np.where((v <= 1e-10) & ~hole, -np.inf, 1.0) + 0 * lam
+
+    monkeypatch.setattr(P, "_box_cox_t", twin)
+    est = _standardized("box-cox", [-3.0])
+    with pytest.raises(NotNative, match=r"overflows on no single edge near 9\.9999"):
+        to_native(_step(est), strict=True, allow_bound=True)
 
 
 def test_the_fields_part_from_the_twin():

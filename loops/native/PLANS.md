@@ -7,9 +7,8 @@ on the board: [tickets.md](tickets.md).
 ## Next
 
 1. The rest of "Ruled 2026-10-06, to build", item 1
-   (`PowerTransformer(standardize=True)` next, in power.py; then
-   `SparseRandomProjection`; `FactorAnalysis` last), one PR each; then the
-   rest of item 2.
+   (`SparseRandomProjection` next; `FactorAnalysis` last), one PR each;
+   then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -36,15 +35,6 @@ that request, `to_native(step, allow_bound=True)`. In order:
      inverse's own error, so it comes last. `SparseRandomProjection` sums
      in scipy's CSR order, which SQL may follow bit-exactly behind a
      kernel probe.
-   - T55 served `PowerTransformer(standardize=False)` on its ruled error
-     scales (power.py): Box-Cox within K = 5, S = |t|, and Yeo-Johnson
-     within K = 10, S = (1 + max(w, 0))·|t|, where the kernel probe finds
-     confit's `ln` and `exp` the C library's and, for Yeo-Johnson, numpy's
-     `log1p` and `expm1` within 1 ulp of it. Left: `standardize=True`
-     (K = 12 for Yeo-Johnson, 7 for Box-Cox). The twin's scaler raises on
-     a row whose t is infinite, so the entry must trap exactly from the
-     twin's overflow edges (`power._edges`, Box-Cox's too) and keep t
-     finite below them, as the twin's is.
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
      compare squares (`ErrorScale.g`), K = n + 5. T51 served

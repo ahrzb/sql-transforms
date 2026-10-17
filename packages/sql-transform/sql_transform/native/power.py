@@ -14,10 +14,11 @@ Both serve only with `to_native(step, allow_bound=True)`, only where the
 kernel probe (`kernel_distances`) finds the functions the bounds read, and
 only where the build is estimated within 7 s (`_build_estimate`).
 
-`standardize=True` stays Python: the twin's scaler raises on a row whose t
-is infinite, and near the overflow the entry and the twin can round to
-either side of the largest double, so the entry cannot trap exactly where
-the twin raises.
+With `standardize=True`, the twin's scaler then computes `(t - mean_) /
+scale_`, and raises on a row whose t is infinite. So the entry traps from
+the twin's own overflow edges on (`_edges`), and is held to the ruling's
+error scale `(S_t + |mean_|) / scale_`, with S_t the scale above: K = 12
+for Yeo-Johnson and 7 for Box-Cox.
 """
 
 from __future__ import annotations
@@ -31,10 +32,17 @@ import numpy as np
 import pyarrow as pa
 from confit import DuckDBInferFn
 from confit import sql as S
-from sklearn.preprocessing import PowerTransformer
+from scipy.special import boxcox
+from sklearn.preprocessing import PowerTransformer, StandardScaler
 
 from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import ErrorScale, NotNative, rejects, translates
+from sql_transform.native._registry import (
+    ErrorScale,
+    NotNative,
+    any_of,
+    rejects,
+    translates,
+)
 from sql_transform.native.function import doubles_apart, probe_values
 from sql_transform.native.project import _TINY, MAX_BUILD_S
 
@@ -116,45 +124,84 @@ def _yeo_johnson_t(lam: np.ndarray, v: np.ndarray, positive: bool) -> np.ndarray
         return np.where(np.abs(lam - 2) > _EPS, -np.expm1(d * lv) / d, -lv)
 
 
+def _box_cox_t(lam: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """The twin's Box-Cox of x = v > 0, for the fitted lambdas `lam`
+    broadcast against `v` (`_box_cox`)."""
+    with np.errstate(all="ignore"):
+        return boxcox(v, lam)
+
+
+_MAX = float(np.finfo(np.float64).max)
+_MAX_BITS = int(np.array([_MAX]).view(np.int64)[0])
 # Around the edge where the twin's transform overflows, the doubles on which
-# it is checked to be finite below and infinite from the edge on.
+# it is checked to be finite on one side and infinite on the other.
 _WINDOW = 1 << 13
 
 
-def _edges(lam: np.ndarray, positive: bool) -> np.ndarray:
-    """For each fitted lambda, the least |x| on its side (x >= 0 where
-    `positive`, else x < 0) where the twin's Yeo-Johnson is infinite, by
-    bisection on the doubles; NaN where it is finite up to the largest
-    double. The twin computes `expm1(w)` before it divides by c, so it is
-    infinite past c·DBL_MAX: with c > 1 the entry, which computes t
-    without overflowing first, answers DBL_MAX / c there, out of the reach
-    of `check`'s rule for one infinite side. So the entry answers ±inf from
-    this edge on (`_yeo_johnson`). The twin's w is within about 2 ulps of
-    the exact one at the edge (`_power`), so it can part from monotone only
-    within about 4,300 doubles of it: `NotNative` where the twin is not
-    finite below the edge and infinite from it on, over _WINDOW doubles
-    either side."""
-    top = np.full(lam.shape, np.finfo(np.float64).max)
-    has = np.isinf(_yeo_johnson_t(lam, top, positive))
-    lo, hi = np.zeros(lam.shape, np.int64), top.view(np.int64)
+def _edges(
+    t: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    lam: np.ndarray,
+    rising: bool,
+    method: str,
+    sign: float = 1.0,
+) -> np.ndarray:
+    """For each fitted lambda, the edge of the doubles v > 0 where the
+    twin's transform `t(lam, v)` is infinite, by bisection on the doubles:
+    the least such v, all past it infinite too, where `rising`, else the
+    largest, all below it infinite too; NaN where t has no such edge.
+
+    Yeo-Johnson's |t| rises with |x| on each side (v = |x|, `sign` the
+    side's, for the message): the twin computes `expm1(w)` before it
+    divides by c, so it is infinite past c·DBL_MAX, where with c > 1 the
+    entry, which computes t without overflowing first, answers DBL_MAX /
+    c, out of the reach of `check`'s rule for one infinite side. So the
+    entry answers ±inf from this edge on (`_yeo_johnson`). Box-Cox
+    overflows at large x for lambda > 1 and at small x for lambda below
+    about -0.95. With `standardize=True`, the twin's scaler raises where t
+    is infinite, and the entry traps from either edge on (`_power`).
+
+    The twin's w is within about 2 ulps of the exact one at an edge
+    (`_power`), so it can part from monotone only within about 4,300
+    doubles of it: `NotNative` where the twin is not finite on one side of
+    the edge and infinite on the other, over _WINDOW doubles either side."""
+    lo = np.ones(lam.shape, np.int64)  # 5e-324
+    hi = np.full(lam.shape, _MAX_BITS)
+
+    def past(lam: np.ndarray, bits: np.ndarray) -> np.ndarray:
+        # True at the largest double and false at 5e-324 where t has an
+        # edge: the bisection finds the least double where it holds.
+        inf = np.isinf(t(lam, bits.view(np.float64)))
+        return inf if rising else ~inf
+
+    has = ~past(lam, lo) & past(lam, hi)
     while np.any(has & (hi - lo > 1)):
         mid = lo + (hi - lo) // 2
-        inf = np.isinf(_yeo_johnson_t(lam, mid.view(np.float64), positive))
-        hi, lo = np.where(inf, mid, hi), np.where(inf, lo, mid)
+        p = past(lam, mid)
+        hi, lo = np.where(p, mid, hi), np.where(p, lo, mid)
     j = np.flatnonzero(has)
     if j.size:
         k = np.arange(-_WINDOW, _WINDOW + 1)
-        bits = np.clip(hi[j, None] + k, 0, top.view(np.int64)[0])
-        inf = np.isinf(_yeo_johnson_t(lam[j, None], bits.view(np.float64), positive))
-        bad = np.flatnonzero(np.any(inf != (k >= 0), axis=1))
+        bits = np.clip(hi[j, None] + k, 1, _MAX_BITS)
+        bad = np.flatnonzero(np.any(past(lam[j, None], bits) != (k >= 0), axis=1))
         if bad.size:
-            edge = float(hi.view(np.float64)[j[bad[0]]])
+            edge = float(hi.view(np.float64)[j[bad[0]]]) * sign
             raise NotNative(
-                "PowerTransformer(method='yeo-johnson'): the twin's transform of"
-                f" feature {j[bad[0]]} overflows on no single edge near"
-                f" {'' if positive else '-'}{edge!r}"
+                f"PowerTransformer(method={method!r}): the twin's transform of"
+                f" feature {j[bad[0]]} overflows on no single edge near {edge!r}"
             )
-    return np.where(has, hi.view(np.float64), np.nan)
+    edge = hi if rising else hi - 1
+    return np.where(has, edge.view(np.float64), np.nan)
+
+
+def _yeo_johnson_edges(lam: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Each feature's least x >= 0 and least |x| of x < 0 where the twin's
+    Yeo-Johnson is infinite (`_edges`)."""
+    return (
+        _edges(lambda c, v: _yeo_johnson_t(c, v, True), lam, True, "yeo-johnson"),
+        _edges(
+            lambda c, v: _yeo_johnson_t(c, v, False), lam, True, "yeo-johnson", -1.0
+        ),
+    )
 
 
 def _part(lx: S.Expr, c: Any) -> S.Expr:
@@ -196,30 +243,49 @@ def _yeo_johnson(x: S.Expr, lam: Any, top: float, bottom: float) -> S.Expr:
 
 
 def _power_s(est: Any, x: np.ndarray) -> np.ndarray:
-    """S for each output field at the row `x` (long doubles): |t| for
+    """S for each output field at the row `x` (long doubles): S_t = |t| for
     Box-Cox, (1 + max(w, 0))·|t| for Yeo-Johnson, with t the transform and
     w the argument of its `expm1` (0 on a `log1p` branch), each on the
-    twin's branches and constants (`_box_cox`, `_yeo_johnson`)."""
+    twin's branches and constants (`_box_cox`, `_yeo_johnson`); with
+    `standardize=True`, (S_t + |mean_|) / scale_."""
     lam = np.asarray(est.lambdas_)
     c = lam.astype(np.longdouble)
     with np.errstate(all="ignore"):
         if est.method == "box-cox":
             lx = np.log(x)
-            return np.abs(np.where(np.abs(c) < _LOG_LAMBDA, lx, np.expm1(c * lx) / c))
-        pos = x >= 0
-        z = np.log1p(np.abs(x))
-        c = np.where(pos, c, (2 - lam).astype(np.longdouble))
-        logs = np.where(pos, np.abs(lam) < _EPS, ~(np.abs(lam - 2) > _EPS))
-        w = np.where(logs, 0, c * z)
-        t = np.where(logs, z, np.expm1(w) / c)
-        return (1 + np.maximum(w, 0)) * np.abs(t)
+            s = np.abs(np.where(np.abs(c) < _LOG_LAMBDA, lx, np.expm1(c * lx) / c))
+        else:
+            pos = x >= 0
+            z = np.log1p(np.abs(x))
+            c = np.where(pos, c, (2 - lam).astype(np.longdouble))
+            logs = np.where(pos, np.abs(lam) < _EPS, ~(np.abs(lam - 2) > _EPS))
+            w = np.where(logs, 0, c * z)
+            t = np.where(logs, z, np.expm1(w) / c)
+            s = (1 + np.maximum(w, 0)) * np.abs(t)
+    if not est.standardize:
+        return s
+    sc = est._scaler
+    mean = np.asarray(sc.mean_).astype(np.longdouble)
+    return (s + np.abs(mean)) / np.asarray(sc.scale_).astype(np.longdouble)
 
 
-POWER = ErrorScale(
-    k=lambda est: 5 if est.method == "box-cox" else 10,
-    s=_power_s,
-    tau=lambda est: _TINY,
-)
+def _power_k(est: Any) -> int:
+    """K: 5 for Box-Cox and 10 for Yeo-Johnson, and 2 more with
+    `standardize=True` for the scaler's two roundings on each side."""
+    k = 5 if est.method == "box-cox" else 10
+    return k + 2 if est.standardize else k
+
+
+def _power_tau(est: Any) -> Any:
+    """tau: 2**-1074, for a division by lambda that rounds into the
+    subnormals; with `standardize=True`, that over scale_, and 2**-1074
+    more for the scaler's own division, one per output field."""
+    if not est.standardize:
+        return _TINY
+    return _TINY * (1 + 1 / np.asarray(est._scaler.scale_).astype(np.longdouble))
+
+
+POWER = ErrorScale(k=_power_k, s=_power_s, tau=_power_tau)
 
 
 def _c_library(f: Callable[[float], float], v: np.ndarray) -> np.ndarray:
@@ -308,13 +374,29 @@ def _build_estimate(n: int, method: str) -> float:
     return 5.69e-3 * n + 4.15e-5 * n * n
 
 
-@translates(PowerTransformer, scale=POWER)
+def _at_zero(est: Any, types: list[pa.DataType]) -> list[Any]:
+    """The input guard's probe row: the x where t is 0 whatever the lambda,
+    which the twin answers, standardized too: 0 for Yeo-Johnson (False in a
+    boolean) and 1 for Box-Cox (True). A string, which the twin rejects,
+    reads an empty string (`_registry._base`)."""
+    one = est.method == "box-cox"
+    return [
+        "" if t == pa.string() else one if t == pa.bool_() else float(one)
+        for t in types
+    ]
+
+
+@translates(PowerTransformer, scale=POWER, base=_at_zero)
 def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
-    """`PowerTransformer(standardize=False)` (`transform`): `validate_data`,
-    where the infinities raise and NaN passes; Box-Cox raises where
-    `np.nanmin(X) <= 0`; then per feature, in float64, scipy's `boxcox`
-    or `_yeojohnson_transform` with the fitted lambda (`_box_cox`,
-    `_yeo_johnson`).
+    """`PowerTransformer` (`transform`): `validate_data`, where the
+    infinities raise and NaN passes; Box-Cox raises where `np.nanmin(X) <=
+    0`; then per feature, in float64, scipy's `boxcox` or
+    `_yeojohnson_transform` with the fitted lambda (`_box_cox`,
+    `_yeo_johnson`). With `standardize=True`, the fitted StandardScaler's
+    `transform` follows: its `validate_data` raises where a t is infinite
+    and passes NaN, and it computes `t - mean_`, then that over `scale_`,
+    in float64 (the row's dtype; `mean_` and `scale_` are float64 after a
+    fit in float32 too).
 
     Bound (decisions/closed/power-parity-bound.md, the ruling): each output
     field is within K·eps·S + tau of the twin's, eps = 2**-52, tau =
@@ -363,6 +445,24 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     side is finite, of the same sign, and within K·eps·S of the largest
     double (the ruling, item 11).
 
+    With `standardize=True`, K = 12 and 7, S = (S_t + |mean_|) / scale_
+    (the ruling), with K_t = 10 and 5 and S_t the scales above. The entry
+    traps where the twin's t is infinite, from each of the twin's own
+    edges on (`_edges`, Box-Cox's too), and computes `(t - mean_) /
+    scale_` with the fitted doubles, the twin's two roundings. Below the
+    edges the twin's t is finite. Where the entry's t overflows alone
+    there, the exact t is within K_t·eps·S_t of the largest double, so the
+    entry clamps t to ±DBL_MAX, which keeps it within that of the twin's.
+    Each side rounds t - mean_ and the quotient within u, so the sides are
+    within (K_t·eps·S_t + 4 u·(|t| + |mean_|)) / scale_ to first order,
+    and |t| <= S_t: within (K_t + 2)·eps·S, 11.05·eps·S and 6.53·eps·S
+    from the constants above. A quotient that rounds into the subnormals
+    is within 2**-1075 on each side, and the tau of t is divided by
+    scale_: tau = 2**-1074·(1 + 1/scale_). With |mean_| below 2**970,
+    t - mean_ is finite on both sides (`_scaler`). A quotient past the
+    largest double can overflow on one side only, which `check`'s rule
+    above passes within K·eps·S.
+
     Measured on master 1a14ce6 with T55's power.py (release build,
     2026-10-17): over 153.6 million output fields of 32 seeds, 8 features
     of five kinds of lambdas (uniform within ±5, small, near the twin's
@@ -378,17 +478,13 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     ms for Box-Cox, 7.1 to 176 times as fast (a list or a struct, one
     thread, the median of 30 warm calls). A step builds in the time that
     `_build_estimate` estimates, which the cap reads."""
-    if est.standardize:
-        raise NotNative(
-            "PowerTransformer(standardize=True): the twin's scaler raises on an"
-            " infinite power transform, and near the overflow the entry and the"
-            " twin can round to either side of the largest double"
-        )
     method = est.method
     if method not in ("box-cox", "yeo-johnson"):
         raise NotNative(f"PowerTransformer(method={method!r})")
     if not np.isfinite(np.asarray(est.lambdas_, np.float64)).all():
         raise NotNative(f"PowerTransformer(method={method!r}): a lambda not finite")
+    if est.standardize:
+        _scaler(est)
     estimate = _build_estimate(len(x), method)
     if estimate > MAX_BUILD_S:
         raise NotNative(
@@ -396,17 +492,90 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
             f" build, past {MAX_BUILD_S:.0f} s ({len(x):,} features)"
         )
     _probe(method)
-    if method == "box-cox":
-        for xi in x:
-            # `np.nanmin(X) <= 0` raises; NaN reads above every number, so it
-            # meets no test, as `nanmin` skips it.
-            rejects(xi <= _ZERO)
-        return [
-            _box_cox(xi, float(lam)) for xi, lam in zip(x, est.lambdas_, strict=True)
-        ]
     lam = np.asarray(est.lambdas_)
-    tops, bottoms = _edges(lam, True), _edges(lam, False)
+    nan = np.full(lam.shape, np.nan)
+    if method == "box-cox":
+        tops, lows = nan, nan
+        if est.standardize:
+            tops = _edges(_box_cox_t, lam, True, method)
+            lows = _edges(_box_cox_t, lam, False, method)
+        ts = []
+        for xi, lam_i, top, low in zip(x, lam, tops, lows, strict=True):
+            # `np.nanmin(X) <= 0` raises; NaN reads above every number, so it
+            # meets no test, as `nanmin` skips it. The scaler raises from
+            # either edge on, which lies past 0.
+            rejects(any_of(_past(xi, top, 0.0 if math.isnan(low) else low)))
+            ts.append(_box_cox(xi, float(lam_i)))
+    else:
+        tops, bottoms = _yeo_johnson_edges(lam)
+        if est.standardize:
+            for xi, top, bottom in zip(x, tops, bottoms, strict=True):
+                if tests := _past(xi, top, -bottom):
+                    rejects(any_of(tests))
+            # Past an edge the row traps, so t needs no infinite arm.
+            tops, bottoms = nan, nan
+        ts = [
+            _yeo_johnson(xi, lam_i, top, bottom)
+            for xi, lam_i, top, bottom in zip(x, lam, tops, bottoms, strict=True)
+        ]
+    if not est.standardize:
+        return ts
+    sc = est._scaler
     return [
-        _yeo_johnson(xi, lam_i, top, bottom)
-        for xi, lam_i, top, bottom in zip(x, lam, tops, bottoms, strict=True)
+        (_finite(xi, t) - f64(m)) / f64(s)
+        for xi, t, m, s in zip(x, ts, sc.mean_, sc.scale_, strict=True)
     ]
+
+
+def _finite(x: S.Expr, t: S.Expr) -> S.Expr:
+    """t, the transform of x, clamped to ±DBL_MAX: below the twin's edges
+    the twin's t is finite, and where the entry's overflows alone there, it
+    is the largest double (`_power`). t is NaN only where x is, which the
+    first arm answers, as `least` would answer the largest double for NaN.
+    The clamp reads t once: a Yeo-Johnson of 192 features built in 2.7 to
+    2.8 s, against 5.0 to 5.4 s with a clamp by CASE (`_helpers.clip`),
+    which reads t three times (release build, master 1592bfd with T56's
+    power.py, 2026-10-17)."""
+    clamped = S.fn("least", S.fn("greatest", t, f64(-_MAX)), f64(_MAX))
+    return S.case(isnan(x), _NAN).otherwise(clamped)
+
+
+def _past(x: S.Expr, top: float, low: float) -> list[S.Expr]:
+    """The tests that x is at or past an edge of the twin's overflow: x >=
+    top, x not NaN (DuckDB orders NaN above every number), and x <= low;
+    none for an edge that is NaN."""
+    tests = []
+    if not math.isnan(top):
+        tests.append((x >= f64(top)) & ~isnan(x))
+    if not math.isnan(low):
+        tests.append(x <= f64(low))
+    return tests
+
+
+def _scaler(est: Any) -> None:
+    """Raise `NotNative` unless the step's scaler is the StandardScaler
+    that the fit makes, with finite `mean_` and `scale_`, `scale_` above 0
+    (`_handle_zeros_in_scale` makes a 0 one), and |`mean_`| below 2**970,
+    half an ulp of the largest double: there `t - mean_` rounds to a finite
+    double on both sides, for any t up to the largest double."""
+    what = f"PowerTransformer(method={est.method!r}, standardize=True)"
+    sc = getattr(est, "_scaler", None)
+    if not (
+        isinstance(sc, StandardScaler)
+        and sc.with_mean
+        and sc.with_std
+        and np.shape(getattr(sc, "mean_", None))
+        == np.shape(getattr(sc, "scale_", None))
+        == np.shape(est.lambdas_)
+    ):
+        raise NotNative(f"{what}: a scaler other than the one the fit makes")
+    mean, scale = np.asarray(sc.mean_, np.float64), np.asarray(sc.scale_, np.float64)
+    if not (np.isfinite(mean).all() and np.isfinite(scale).all() and (scale > 0).all()):
+        raise NotNative(
+            f"{what}: a mean_ or scale_ not finite, or a scale_ not above 0"
+        )
+    if (np.abs(mean) >= 2.0**970).any():
+        raise NotNative(
+            f"{what}: a mean_ of 2**970 or more, where t - mean_ can overflow"
+            " on one side only"
+        )
