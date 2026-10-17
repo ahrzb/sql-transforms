@@ -2,20 +2,20 @@
 
 **Question.** On some rows of values near the largest double, a sum of a
 projection overflows in one order of addition and not in another. There an
-output field can be infinite or NaN on one side only. In a composition, a
-later step can then raise an error on one side only. The twin itself
-answers such a row one way in one call and another way in another call.
-What must the entry give on such rows?
+output field can be infinite or NaN on one side only: on the entry or on
+its twin. In a composition, a later step can then raise an error on one
+side only. The twin itself answers such a row one way in one call and
+another way in another call. What must the entry give on such rows?
 
 **What it decides.** It decides what `native.check` requires on such rows.
 `native.check` is the function that holds an entry to its twin on test
 rows. It raises a `ParityError` where it finds a difference. The question
 also decides what the catalog contract claims on such rows. The catalog
-contract is the part of the spec of `sql-transform` that states how a
-catalog entry must match its twin
+contract is the part of the spec of `sql-transform` that states what a
+catalog entry must give, compared with its twin
 (`packages/sql-transform/spec/native/catalog-contract.md`). Two of its
-claims now say that they can fail on such rows, and link to this record:
-"the same answer" and "where the twin raises".
+claims, "the same answer" and "where the twin raises", now say that they
+can fail on such rows. Each of them links to this record.
 
 - A projection is a linear map of the features, such as `PCA`. Its output
   field k is the sum over the features i of the terms x_i·c_ki. Here x_i
@@ -29,15 +29,17 @@ claims now say that they can fail on such rows, and link to this record:
 - confit computes each row on its own. So the entry answers a row in the
   same way in any call.
 - Let DBL_MAX be the largest double, about 1.8e308. If a partial sum of a
-  sum passes DBL_MAX, the partial sum overflows and becomes infinite. If
+  sum is larger than DBL_MAX in absolute value, it overflows and becomes
+  infinite. If
   two partial sums overflow with opposite signs, the sum is NaN (not a
   number). An infinity plus an infinity of the other sign is NaN.
 - `FactorAnalysis` computes its output with two products of a matrix and
   a vector. A sum of either product can overflow.
 - A composition is a `Pipeline`, `ColumnTransformer` or `FeatureUnion` of
   catalog entries. For a composition, `to_native` gives one function that
-  composes the entries of its steps. This record also calls that function
-  an entry, with the composition as its twin.
+  composes the entries of its steps. This record calls that function the
+  entry of the composition, and the `PythonTransform` of the composition
+  its twin.
 - In a composition, a later step can read the output of a projection. The
   owner ruled this in
   [bounded-steps-in-compositions.md](../closed/bounded-steps-in-compositions.md).
@@ -64,8 +66,8 @@ claims now say that they can fail on such rows, and link to this record:
   conditions:
   - The other side is finite.
   - The other side has the same sign as the infinite side.
-  - The distance of the other side to DBL_MAX is at most the parity bound
-    of the field.
+  - DBL_MAX minus the absolute value of the other side is at most the
+    parity bound of the field.
 
   On each difference of an infinite or NaN value that item 6 does not
   pass, `native.check` raises a `ParityError`.
@@ -79,9 +81,9 @@ claims now say that they can fail on such rows, and link to this record:
   1. Where the validation of the twin raises an error, the entry traps.
   2. Where the twin answers, the entry does not trap.
 
-**Evidence.** The scripts and the data are in the project's shared folder,
-at `/mnt/project-files/transforms-loop/t59/`. Its `README.md` names each
-script.
+**Evidence.** The scripts and the data are in the native loop's folder of
+the project's shared files, at `/mnt/project-files/transforms-loop/t59/`.
+Its `README.md` names each script.
 
 - `fields.py` fitted 80 projections, each on its own random rows: 24
   `PCA`, 16 `TruncatedSVD`, 13 `GaussianRandomProjection`, 11 `FastICA`
@@ -90,10 +92,12 @@ script.
   of a test row was 5% to 100% of DBL_MAX, with a random sign. A value can
   overflow on 19,487 of these test rows.
 - `fields.py` compared each output field as `native.check` compares it,
-  with item 6. It compared the entry with two answers of the twin: the
-  answer to the test row alone, and the answer to the test row in a call
-  of 64 rows. The other 63 rows of the call were drawn like the rows of
-  the fit. `fields.py` also compared the two answers of the twin. Each
+  with item 6. The twin gave two answers to each test row. "The twin
+  alone" is its answer to a call of the test row only. "The twin in the
+  call" is its answer to a call of 64 rows: the test row and 63 rows drawn
+  like the rows that the projection was fitted on. So `fields.py` made
+  three comparisons: the entry and the twin alone, the entry and the twin
+  in the call, and the twin alone and the twin in the call. Each
   comparison covered 180,400 output fields. The table gives those past
   the bound:
 
@@ -118,9 +122,10 @@ script.
   of the 32,000 test rows.
 - The validation of the twin raised an error on 15,226 test rows when the
   twin read each test row alone. It raised on 14,326 test rows in calls of
-  64 rows, and on 16,285 test rows in calls of 1,024 rows. The other rows
-  of each call were drawn like the rows of the fit. The twin raises on
-  none of these other rows alone (`band.py` asserts this).
+  64 rows, and on 16,285 test rows in calls of 1,024 rows. Each call held
+  the test row and rows drawn like the rows that the `Pipeline` was fitted
+  on. The twin raises on none of these added rows alone (`band.py` asserts
+  this).
 - On 2,224 test rows, the twin raised in one of two calls and answered in
   the other: the call of the test row alone, and the call of 64 rows. 54
   of the 80 `Pipeline`s had such test rows.
@@ -130,12 +135,14 @@ script.
   22,268 rows where a sum of the projection can overflow.
 - The parity run of T59 (`measure.py`) served 264 random compositions,
   each with a step that is not bit-exact. Each composition read rows of
-  nine kinds, for example rows drawn like the rows of the fit, rows of
-  signed zeros and rows of values near DBL_MAX. On the eight kinds that
-  are not near DBL_MAX, the run compared 8.9 million output fields, and
-  none was past its bound. No row of these kinds trapped or raised an
-  error on one side only. On the kind near DBL_MAX, 447 of 174,778 output
-  fields were past their bound, against the twin of each row alone. On
+  nine kinds: rows drawn like the rows that it was fitted on, rows near
+  their mean, rows far from it, rows of magnitudes from 1e-300 to 1e300,
+  rows of tiny values, rows of integers, rows of signed zeros, rows with a
+  NaN, an infinity or NULL, and rows of values near DBL_MAX. On the eight
+  kinds that are not near DBL_MAX, the run compared 8.9 million output
+  fields, and none was past its bound. No row of these kinds trapped or
+  raised an error on one side only. On the kind near DBL_MAX, 447 of
+  174,778 output fields were past their bound, against the twin alone. On
   231 rows of that kind, one side trapped or raised an error alone.
 
 **Options.**
