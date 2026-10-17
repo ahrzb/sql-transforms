@@ -352,7 +352,7 @@ def _probe(method: str) -> None:
         )
 
 
-def _build_estimate(n: int, method: str) -> float:
+def _build_estimate(n: int, method: str, standardize: bool = False) -> float:
     """The seconds of the whole warm `to_native` (release build) of a step
     of n features: the translation, the probe (`_registry._probed`) and
     confit's trial build (`_registry._builds`). The probe hands the twin a
@@ -368,7 +368,23 @@ def _build_estimate(n: int, method: str) -> float:
     of Yeo-Johnson and 702 of Box-Cox. A Box-Cox of 960 features builds in
     4.8 s as a list and 14.4 s as a struct, and confit refuses one of 1,024
     features or more after 3.8 s or more, as an expression nested past
-    Python's recursion limit."""
+    Python's recursion limit.
+
+    With `standardize=True`, fitted on the slowest build of each width (a
+    list and a struct, over the fitted lambdas of lognormal data and over
+    lambdas of 3 and -3, each feature with an edge and so a trap test) over
+    12 widths of Yeo-Johnson (64 to 416 features; builds of 0.58 to 10.5 s)
+    and 12 of Box-Cox (64 to 768 features; builds of 0.31 to 9.33 s; master
+    1592bfd with T56's power.py, 2026-10-17): each within 0.92 to 1.20 and
+    0.90 to 1.14 times the estimate. The cap took on none slower than 6.25 s
+    and 6.19 s, and refused none faster than 7.45 s and 7.61 s. It takes
+    about 313 features of Yeo-Johnson and 682 of Box-Cox. On that machine,
+    it took 1.04 to 1.15 times as long as the step without `standardize`,
+    at 256 to 768 features."""
+    if standardize:
+        if method == "box-cox":
+            return 3.92e-3 * n + 9.3e-6 * n * n
+        return 6.19e-3 * n + 5.13e-5 * n * n
     if method == "box-cox":
         return 1.17e-3 * n + 1.25e-5 * n * n
     return 5.69e-3 * n + 4.15e-5 * n * n
@@ -476,8 +492,24 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     to 197 us at 8 and 11.0 to 12.3 ms at 256 for Yeo-Johnson, 48 to 349
     times as fast as the twin, and 51 us, 159 to 226 us and 10.4 to 10.8
     ms for Box-Cox, 7.1 to 176 times as fast (a list or a struct, one
-    thread, the median of 30 warm calls). A step builds in the time that
-    `_build_estimate` estimates, which the cap reads."""
+    thread, the median of 30 warm calls).
+
+    With `standardize=True`, measured on master 1592bfd with T56's power.py
+    (release build, 2026-10-17) over 32 seeds of the same lambdas and rows
+    and four kinds of scalers (the fit's, a `mean_` of the twin's t at a
+    row, and a `scale_` of 1e-300 to 0.1 or of 10 to 1e300): the entry's
+    edges trap each of the 2.0 million rows of 19.2 million where the twin
+    raises, and no other row. The entry serves the other rows together, and
+    traps each of 7,244 raising rows served alone. Over the 137.6 million
+    output fields of the other rows, no field is past K, and none is NaN or
+    infinite on one side only. The largest (|entry - twin| - tau) / (eps·S)
+    is 3.94 for Yeo-Johnson (K = 12) and 3.00 for Box-Cox (K = 7), and 11.6%
+    and 9.5% of the fields part from the twin's. Serving 64 rows takes 32 us
+    at one feature, 196 to 225 us at 8 and 13.7 to 13.8 ms at 256 for
+    Yeo-Johnson, 47 to 621 times as fast as the twin, and 30 us, 157 to 202
+    us and 11.9 to 12.4 ms for Box-Cox, 7.1 to 508 times as fast. A step
+    builds in the time that `_build_estimate` estimates, which the cap
+    reads."""
     method = est.method
     if method not in ("box-cox", "yeo-johnson"):
         raise NotNative(f"PowerTransformer(method={method!r})")
@@ -485,7 +517,7 @@ def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
         raise NotNative(f"PowerTransformer(method={method!r}): a lambda not finite")
     if est.standardize:
         _scaler(est)
-    estimate = _build_estimate(len(x), method)
+    estimate = _build_estimate(len(x), method, est.standardize)
     if estimate > MAX_BUILD_S:
         raise NotNative(
             f"PowerTransformer(method={method!r}): an estimated {estimate:.0f} s"

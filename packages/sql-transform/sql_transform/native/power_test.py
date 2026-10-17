@@ -227,6 +227,37 @@ def test_a_standardized_box_cox_matches_its_twin_on_special_values():
     assert check(step, native, _rows(*[SPECIALS] * len(lambdas))) == answered
 
 
+def test_a_standardized_yeo_johnson_probes_at_0():
+    # At x = 1, a lambda of 2,000 takes t past the largest double, where the
+    # scaler raises: the input guard probes at x = 0, where t is 0 for every
+    # lambda (`power._at_zero`), and x = 1 traps.
+    est = _standardized("yeo-johnson", [2000.0, 0.5], mean=[0.0, 0.0], scale=[1.0, 1.0])
+    step = _step(est)
+    native = to_native(step, strict=True, allow_bound=True)
+    xs = [0.0, 0.25, 1.0, -1.0, math.nan]
+    assert check(step, native, _rows(xs, [1.0] * len(xs))) == 4
+
+
+@pytest.mark.parametrize("standardize", [False, True])
+def test_a_box_cox_of_a_boolean_probes_at_true(standardize):
+    # False reads 0, where Box-Cox raises: the input guard probes at True
+    # (`power._at_zero`), and False traps.
+    X = np.column_stack([np.random.default_rng(0).lognormal(size=40), np.ones(40)])
+    X[::3, 1] = 2.0
+    est = PowerTransformer("box-cox", standardize=standardize).fit(X)
+    takes = pa.schema([("x0", pa.float64()), ("x1", pa.bool_())])
+    step = PythonTransform("tf", {0: est}, takes, pa.list_(pa.float64(), 2))
+    native = to_native(step, strict=True, allow_bound=True)
+    rows = pa.table(
+        {
+            "__iid": pa.array([0] * 6, pa.int64()),
+            "x0": pa.array([0.5, 1.0, 2.0, 3.0, math.nan, 7.0]),
+            "x1": pa.array([True, False, True, None, True, False]),
+        }
+    )
+    assert check(step, native, rows) == 4
+
+
 @pytest.mark.parametrize(
     "method, lam",
     [("yeo-johnson", v) for v in (3.0, 1.5, 1 + 1e-9, 0.5, 0.0, -1.0, 50.0)]
@@ -415,20 +446,37 @@ def test_a_lambda_not_finite_leaves_the_step_python(method, lam):
         to_native(_step(_fitted(method, [0.5, lam])), strict=True, allow_bound=True)
 
 
-def test_the_build_estimate_takes_what_builds_within_the_cap():
+@pytest.mark.parametrize(
+    "method, standardize, took, refused",
+    [
+        ("yeo-johnson", False, 320, 352),
+        ("box-cox", False, 640, 704),
+        ("yeo-johnson", True, 288, 320),
+        ("box-cox", True, 640, 704),
+    ],
+)
+def test_the_build_estimate_takes_what_builds_within_the_cap(
+    method, standardize, took, refused
+):
     # Of the widths it was fitted on, these built in 6.4 s or less, and
-    # those in 7.0 s or more (the slower of a list and a struct).
-    assert P._build_estimate(320, "yeo-johnson") <= P.MAX_BUILD_S
-    assert P._build_estimate(352, "yeo-johnson") > P.MAX_BUILD_S
-    assert P._build_estimate(640, "box-cox") <= P.MAX_BUILD_S
-    assert P._build_estimate(704, "box-cox") > P.MAX_BUILD_S
+    # those in 7.0 s or more (the slowest of a list and a struct).
+    assert P._build_estimate(took, method, standardize) <= P.MAX_BUILD_S
+    assert P._build_estimate(refused, method, standardize) > P.MAX_BUILD_S
 
 
-@pytest.mark.parametrize("method, n", [("yeo-johnson", 352), ("box-cox", 704)])
-def test_a_power_transform_past_its_estimated_build_stays_python(method, n):
-    # The lambdas alone: a fit over this many features is slow.
-    est = PowerTransformer(method, standardize=False)
+@pytest.mark.parametrize(
+    "method, n, standardize",
+    [("yeo-johnson", 352, False), ("box-cox", 704, False), ("yeo-johnson", 320, True)],
+)
+def test_a_power_transform_past_its_estimated_build_stays_python(
+    method, n, standardize
+):
+    # The lambdas (and the scaler) alone: a fit over this many features is
+    # slow.
+    est = PowerTransformer(method, standardize=standardize)
     est.lambdas_ = np.full(n, 0.5)
+    if standardize:
+        est._scaler = StandardScaler().fit(np.random.default_rng(0).normal(size=(2, n)))
     reason = rf"an estimated 7 s build, past 7 s \({n} features\)"
     with pytest.raises(NotNative, match=reason):
         to_native(_step(est), strict=True, allow_bound=True)
