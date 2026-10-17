@@ -121,6 +121,7 @@ from sklearn.decomposition import (
 )
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
+from threadpoolctl import ThreadpoolController
 
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import ErrorScale, NotNative, translates
@@ -744,19 +745,40 @@ class _Factor(NamedTuple):
     abs_dc: np.ndarray
 
 
+@functools.cache
+def _blas() -> ThreadpoolController:
+    return ThreadpoolController()
+
+
+def _blas_threads() -> tuple[int, ...]:
+    """The thread count of each BLAS library that the process had loaded
+    at the first call (threadpoolctl, which sklearn requires). For the same
+    arrays, OpenBLAS answers the twin's `cov_z` alike at one thread count,
+    and from about 68 components apart at each count (T58)."""
+    return tuple(lib.num_threads for lib in _blas().lib_controllers)
+
+
 # `_factor`'s answers: an estimator's id -> (a weak reference to it, the
-# fitted arrays they read, the answer). Holding the arrays keeps their ids.
-_FACTORS: dict[int, tuple[Any, np.ndarray, np.ndarray, _Factor]] = {}
+# fitted arrays they read, the BLAS thread counts, the answer). Holding the
+# arrays keeps their ids.
+_FACTORS: dict[int, tuple[Any, np.ndarray, np.ndarray, tuple[int, ...], _Factor]] = {}
 
 
 def _factor(est: Any) -> _Factor:
-    """`_Factor` of `est`, computed once for its fitted arrays: `check`
-    reads it at each row. Raises `NotNative` where the entry's `cov_z` or
-    the twin's is not finite."""
-    w, psi = est.components_, est.noise_variance_
+    """`_Factor` of `est`, computed once for its fitted arrays at the BLAS
+    thread counts of the call (`_blas_threads`): `check` reads it at each
+    row, and the twin's `cov_z` depends on both. Raises `NotNative` where
+    the entry's `cov_z` or the twin's is not finite."""
+    w, psi, threads = est.components_, est.noise_variance_, _blas_threads()
     hit = _FACTORS.get(id(est))
-    if hit is not None and hit[0]() is est and hit[1] is w and hit[2] is psi:
-        return hit[3]
+    if (
+        hit is not None
+        and hit[0]() is est
+        and hit[1] is w
+        and hit[2] is psi
+        and hit[3] == threads
+    ):
+        return hit[4]
     v, twin = _cov_z(np.asarray(w), np.asarray(psi))
     c = _factor_inverse(np.asarray(v, np.float64), np.asarray(w, np.float64))
     if c is None or not np.isfinite(twin).all():
@@ -777,7 +799,7 @@ def _factor(est: Any) -> _Factor:
     )
     if len(_FACTORS) >= 16:
         _FACTORS.clear()
-    _FACTORS[id(est)] = (weakref.ref(est), w, psi, out)
+    _FACTORS[id(est)] = (weakref.ref(est), w, psi, threads, out)
     return out
 
 
@@ -860,7 +882,9 @@ def _factor_analysis(
     if k == 0:
         raise NotNative(f"{name}: no output fields")
     if not (
-        np.isfinite(w).all() and np.isfinite(m).all() and (psi > 0).all()
+        np.isfinite(w).all()
+        and np.isfinite(m).all()
+        and (psi > 0).all()
         and np.isfinite(psi).all()
     ):
         raise NotNative(
@@ -876,7 +900,13 @@ def _factor_analysis(
     f = _factor(est)
     d = [xi - f64(mi) for xi, mi in zip(x, m, strict=True)]
     t = [_tree([di * f64(vi) for di, vi in zip(d, vj, strict=True)]) for vj in f.v]
-    return [
-        _tree([ti * f64(ci) for ti, ci in zip(t, f.c[:, j], strict=True)]) + f64(0.0)
+    out = [
+        _tree([ti * f64(ci) for ti, ci in zip(t, f.c[:, j], strict=True)])
         for j in range(k)
     ]
+    # `+ 0.0` as `_project_centered`'s, and at one feature and one output
+    # field the twin's two `np.dot`s of 1×1 arrays answer the products
+    # themselves (finding 81).
+    if n == k == 1:
+        return out
+    return [o + f64(0.0) for o in out]
