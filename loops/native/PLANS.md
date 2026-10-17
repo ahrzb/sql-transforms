@@ -7,9 +7,8 @@ on the board: [tickets.md](tickets.md).
 ## Next
 
 1. The rest of "Ruled 2026-10-06, to build", item 1
-   (`PowerTransformer(standardize=True)` next, in power.py; then
-   `SparseRandomProjection`; `FactorAnalysis` last), one PR each; then the
-   rest of item 2.
+   (`SparseRandomProjection` next; `FactorAnalysis` last), one PR each;
+   then the rest of item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -36,15 +35,6 @@ that request, `to_native(step, allow_bound=True)`. In order:
      inverse's own error, so it comes last. `SparseRandomProjection` sums
      in scipy's CSR order, which SQL may follow bit-exactly behind a
      kernel probe.
-   - T55 served `PowerTransformer(standardize=False)` on its ruled error
-     scales (power.py): Box-Cox within K = 5, S = |t|, and Yeo-Johnson
-     within K = 10, S = (1 + max(w, 0))·|t|, where the kernel probe finds
-     confit's `ln` and `exp` the C library's and, for Yeo-Johnson, numpy's
-     `log1p` and `expm1` within 1 ulp of it. Left: `standardize=True`
-     (K = 12 for Yeo-Johnson, 7 for Box-Cox). The twin's scaler raises on
-     a row whose t is infinite, so the entry must trap exactly from the
-     twin's overflow edges (`power._edges`, Box-Cox's too) and keep t
-     finite below them, as the twin's is.
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
      compare squares (`ErrorScale.g`), K = n + 5. T51 served
@@ -93,7 +83,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
   and the cap refuses both, as the entry cannot tell them apart (release
   build, master 6b7e7f1). Since T55 it sets `PowerTransformer`'s cap too:
   a Box-Cox of 960 features builds in 4.8 s as a list and 14.4 s as a
-  struct (release build, master 1a14ce6). A
+  struct (release build, master 1a14ce6), and standardized, of 768
+  features, in 4.1 to 4.5 s and 9.0 to 9.3 s (T56, master 1592bfd). A
   confit-only struct of 2,000 fields over 64 parameters builds in 1.1 to
   1.4 s read field by field and 0.09 s read whole (loops/confit/PLANS.md).
   The distances to fitted centres grow faster, about as k³: a struct of
@@ -113,8 +104,9 @@ that request, `to_native(step, allow_bound=True)`. In order:
   Python. A family within an error scale sums as a balanced tree, log2(n)
   deep; of the entries measured, only `Normalizer(norm="l2")`, bit-exact
   in numpy's order, meets it. The input guard joins its tests in a chain
-  (`_registry.any_of`): Box-Cox's, one test a feature, meets the limit at
-  1,024 features (T55), past its cap. Low priority for confit.
+  (`_registry.any_of`): Box-Cox's, one test a feature (a standardized
+  step joins its edge tests into it, T56), meets the limit at 1,024
+  features (T55), past its cap. Low priority for confit.
 - **A named refusal, not a Cranelift verifier error.** `OneHotEncoder`
   over 16 string features of 125 categories (2,000 fields) stopped after
   31 s with `cranelift define: verifier error`, an internal error, where
@@ -325,14 +317,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
   feature missing everywhere is served), quantiles further apart than a
   double spans, or a platform whose `np.interp` fuses its multiply-add
   (`quantile.interp_is_numpys` probes it).
-- `PowerTransformer(standardize=True)` (on the parity bound, above). With
-  `allow_bound=True`: a lambda not finite; a step past an estimated 7 s
-  build (`power._build_estimate`, which takes about 347 features of
-  Yeo-Johnson and 702 of Box-Cox); a kernel probe that does not find confit's `ln` and
-  `exp` the C library's, or, for Yeo-Johnson, numpy's `log1p` and `expm1`
-  within 1 ulp of it (`power.kernel_distances`); a Yeo-Johnson whose twin
-  overflows on no single edge (`power._edges`, not seen in the
-  measurements).
+- `PowerTransformer` with `allow_bound=True`: a lambda not finite; a step
+  past an estimated 7 s build (`power._build_estimate`, which takes about
+  347 features of Yeo-Johnson and 702 of Box-Cox, and standardized about
+  313 and 682); a kernel probe that does not find confit's `ln` and `exp`
+  the C library's, or, for Yeo-Johnson, numpy's `log1p` and `expm1` within
+  1 ulp of it (`power.kernel_distances`); a twin that overflows on no
+  single edge (`power._edges`, not seen in the measurements); standardized,
+  a scaler other than the one the fit makes, a `mean_` or `scale_` not
+  finite, or a `mean_` of 2**970 or more, where `t - mean_` can overflow on
+  one side only (`power._scaler`).
 - `FunctionTransformer` with a `func` other than the identity and numpy's
   `abs`, `fabs`, `negative`, `positive`, `conjugate`, `square`, `sqrt`,
   `reciprocal`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `sin`, `cos`

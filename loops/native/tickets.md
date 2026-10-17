@@ -68,11 +68,29 @@ K = 10 and 2.50 against K = 5. The entry refuses a step whose build
 702 of Box-Cox. `standardize=True` stays Python, as the twin's scaler
 raises on an infinite t (PLANS). Coverage stays 49 of 68. Scripts and data
 are in `/mnt/project-files/transforms-loop/t55/`.
+T56 serves `PowerTransformer(standardize=True)` (power.py) within K = 12
+for Yeo-Johnson and K = 7 for Box-Cox, S = (S_t + |mean_|) / scale_, the
+bound that the owner ruled, with S_t T55's scale of t. The twin's scaler
+raises on a row whose t is infinite, so the entry traps from each of the
+twin's own overflow edges on, Box-Cox's too, and clamps t to ±DBL_MAX
+below them. It computes `(t - mean_) / scale_` with the fitted doubles,
+and it refuses a `mean_` of 2**970 or more, where `t - mean_` can overflow
+on one side only. The input guard's probe row is now where t is 0
+(`power._at_zero`), so a Box-Cox of a boolean feature serves too, and a
+standardized Yeo-Johnson with a lambda above about 1,024. Over 137.6
+million fields of 32 seeds (numpy's kernels of AVX-512 and glibc's, four
+kinds of scalers), the entry's edges trap each of the 2.0 million rows
+where the twin raises and no other row, and no field is past K: the
+largest |entry - twin| / (eps·S) is 3.94 against K = 12 and 3.00 against
+K = 7. The cap reads a new estimate of the
+standardized step (24 widths, each within 0.90 to 1.20 times it): it takes
+about 313 features of Yeo-Johnson and 682 of Box-Cox. Coverage stays 49 of
+68. Scripts and data are in `/mnt/project-files/transforms-loop/t56/`.
 
 The loop runs from the "Transforms Loop" project thread. The Confit Loop
 is paused since 2026-10-16: a confit need waits, and the loop works around
-it. The owner paused this loop after T55 (2026-10-17): it takes no new
-ticket until the owner resumes it.
+it. The owner paused this loop after T55 and resumed it at 07:01 UTC the
+same day (2026-10-17).
 
-Next, when the loop resumes: PLANS "Next" (the rest of "Ruled 2026-10-06,
-to build", item 1, `PowerTransformer(standardize=True)` next, one PR each).
+Next: PLANS "Next" (the rest of "Ruled 2026-10-06, to build", item 1,
+`SparseRandomProjection` next, one PR each).
