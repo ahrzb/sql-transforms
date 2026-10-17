@@ -10,9 +10,9 @@ its twin answers, or answer where its twin raises an error. May it?
 
 **What it decides.** It decides what `native.check` requires on such rows.
 `native.check` is the function that holds an entry to its twin on test
-rows. It raises a `ParityError` where the entry is not within its parity
-bound of the twin, and where only one of the two answers. The question
-also decides what the catalog contract claims on these rows. The catalog
+rows. It raises a `ParityError` where it finds a difference. For example,
+the entry is not within its parity bound of the twin, or only one of the
+two answers. The question also decides what the catalog contract claims on these rows. The catalog
 contract is the spec of what a catalog entry must equal
 (`packages/sql-transform/spec/native/catalog-contract.md`).
 
@@ -65,9 +65,9 @@ at `/mnt/project-files/transforms-loop/t59/`.
   raised on 15,385 test rows when it read each in its own call of 64 rows:
   the test row and 63 rows drawn like the rows that the `Pipeline` was
   fitted on. It raised on 17,103 test rows in calls of 1,024 rows: the
-  test row and 1,023 such rows. The drawn rows have values of about 10 or
-  less, and the twin raises on none of them (`band.py` asserts this). So
-  each error in these calls comes from the test row.
+  test row and 1,023 such rows. The drawn rows have values near 0, far
+  below DBL_MAX, and the twin raises on none of them (`band.py` asserts
+  this). So each error in these calls comes from the test row.
 - So the twin does not agree with itself on these rows. On 2,137 test rows,
   the twin raised in one of two calls and answered in the other: the call
   of the test row alone, and the call of 64 rows. 56 of the 80 `Pipeline`s
