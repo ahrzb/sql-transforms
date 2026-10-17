@@ -56,7 +56,7 @@ import math
 import re
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from functools import reduce
 from typing import Any, NamedTuple
@@ -70,6 +70,7 @@ from sql_transform._udf import PythonTransform, _dense
 from sql_transform.native._helpers import SameTree, f64, isnan
 
 Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
+SumProducts = Callable[[Any, np.ndarray], Iterable[tuple[np.ndarray, np.ndarray]]]
 
 EPS = np.longdouble(2.0**-52)
 
@@ -176,7 +177,16 @@ class Entry:
     `carry_of(est)` answers how `est` carries a bound on its input to its
     output fields, where it reads the output of a step whose bound is
     above 0 (`Carry`, _carry.py): None where no bound is derived through
-    it, as for every entry without `carry_of`."""
+    it, as for every entry without `carry_of`.
+
+    `sum_products(est, x)` yields the two operands of each sum of products,
+    reduced along the last axis, at the twin's input row x. The operands
+    broadcast together; coefficient matrices have one row per output.
+    Families declare their actual matrices and intermediate inputs here so
+    the generated gate can find the open overflow question's rows without
+    guessing fitted attribute names. Stages are yielded in execution order,
+    before computing the input to the next stage. This metadata changes
+    neither serving nor parity bounds."""
 
     translate: Translator
     ulps: int
@@ -188,6 +198,7 @@ class Entry:
     apart_of: Callable[[Any], bool] | None = None
     scaled_of: Callable[[Any], bool] | None = None
     carry_of: Callable[[Any], Carry | None] | None = None
+    sum_products: SumProducts | None = None
 
     def apart(self, est: Any) -> bool:
         """The translator reads each number of `est`'s row as `x - 0.0`."""
@@ -287,6 +298,7 @@ def translates(
     apart: Callable[[Any], bool] | None = None,
     scaled: Callable[[Any], bool] | None = None,
     carry: Callable[[Any], Carry | None] | None = None,
+    sum_products: SumProducts | None = None,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
     unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
@@ -296,8 +308,8 @@ def translates(
     that error scale, and with `scaled` too, only where `scaled(est)` says
     so: elsewhere the estimator is bit-exact (`AdditiveChi2Sampler` of one
     sample step). `base`, `composes`, a composition's `part_bounds`,
-    `apart` (`apart_of`) and `carry` (`carry_of`) are `Entry`'s. A
-    subclass is not covered: it may override what `transform` computes."""
+    `apart` (`apart_of`), `carry` (`carry_of`) and `sum_products` are `Entry`'s.
+    A subclass is not covered: it may override what `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
     if scale is not None and (ulps or bound is not None):
@@ -320,6 +332,7 @@ def translates(
                 apart,
                 scaled,
                 carry,
+                sum_products,
             )
         return fn
 

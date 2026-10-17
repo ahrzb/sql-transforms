@@ -1466,46 +1466,17 @@ def _row_can_overflow(est: Any, X: Any) -> bool:
                 return True
     else:
         entry = catalog().get(type(est))
-        if entry is None or entry.scale_for(est) is None:
+        if entry is None or entry.sum_products is None:
             return False
         x = np.asarray(_dense(X), dtype=np.longdouble).reshape(-1)
         if not np.isfinite(x).all():
             return False  # keep the separate rejected-domain rows
-        # sklearn stores output-by-feature matrices in components_/centres,
-        # and feature-by-output matrices in scalings_/rotations_/weights.
-        for name in (
-            "components_",
-            "cluster_centers_",
-            "subcluster_centers_",
-            "scalings_",
-            "x_rotations_",
-            "x_weights_",
-        ):
-            if name == "x_weights_" and hasattr(est, "x_rotations_"):
-                continue  # transform reads rotations where the fit gives both
-            c = getattr(est, name, None)
-            if c is None:
-                continue
-            c = np.asarray(_dense(c), dtype=np.longdouble)
-            if name in ("scalings_", "x_rotations_", "x_weights_"):
-                c = c.T
-            if name == "scalings_" and hasattr(est, "_max_components"):
-                c = c[: est._max_components]
-            if c.ndim != 2 or c.shape[1] != len(x):
-                continue
-            if (
-                name == "components_"
-                and np.ndim(getattr(est, "noise_variance_", None)) == 1
-            ):
-                c = c / np.asarray(est.noise_variance_, dtype=np.longdouble)
-            d = x
-            for mean in ("xbar_", "_x_mean"):
-                if hasattr(est, mean):
-                    d = d - getattr(est, mean)
-            if hasattr(est, "_x_std"):
-                d = d / est._x_std
-            if np.any(np.abs(c) @ (np.abs(d) / sys.float_info.max) >= 1):
-                return True
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            for left, right in entry.sum_products(est, x):
+                scaled = np.abs(np.asarray(left, np.longdouble)) / sys.float_info.max
+                terms = scaled * np.abs(np.asarray(right, np.longdouble))
+                if np.any(np.sum(terms, axis=-1) >= 1):
+                    return True
         return False
     entry = catalog()[type(est)]
     parts = entry.part_bounds(est)
@@ -1681,6 +1652,85 @@ def test_the_default_gate_keeps_safe_extremes_and_rejected_domain_rows():
     assert not _row_can_overflow(pls, [[sys.float_info.max] * 2])
 
 
+def test_the_default_gate_finds_the_rbf_sampler_sum_overflow():
+    step = _step(FIXTURES[RBFSampler][0], 1, 0)
+    rows = _rows(step, 1)
+    row = rows.slice(rows.num_rows - 40 + 7, 1)
+    assert row.to_pylist() == [
+        {
+            "__iid": 1,
+            "x0": True,
+            "x1": sys.float_info.max,
+            "x2": sys.float_info.max,
+            "x3": 2**62,
+        }
+    ]
+    assert _gate_rows(step, row).num_rows == 0
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        PCA,
+        IncrementalPCA,
+        TruncatedSVD,
+        GaussianRandomProjection,
+        SparseRandomProjection,
+        FastICA,
+        LinearDiscriminantAnalysis,
+        PLSRegression,
+        PLSCanonical,
+        CCA,
+        PLSSVD,
+        FactorAnalysis,
+        KMeans,
+        MiniBatchKMeans,
+        BisectingKMeans,
+        Birch,
+        RBFSampler,
+        SkewedChi2Sampler,
+        Nystroem,
+    ],
+)
+def test_each_matrix_product_entry_declares_its_actual_sum_operands(cls):
+    entry = catalog()[cls]
+    assert entry.sum_products is not None
+    est = _ladder_step(cls, 2).instances[0]
+    products = list(entry.sum_products(est, np.ones(2, np.longdouble)))
+    assert products
+    for left, right in products:
+        a, b = np.broadcast_arrays(left, right)
+        assert a.ndim >= 1 and a.shape == b.shape
+
+
+def test_logarithmic_kernel_sums_use_the_transformed_row():
+    est = _ladder_step(SkewedChi2Sampler, 2).instances[0]
+    est.random_weights_[:] = 2.0
+    assert not _row_can_overflow(est, [[sys.float_info.max] * 2])
+    est.random_weights_[:] = sys.float_info.max
+    assert _row_can_overflow(est, [[math.e - 1] * 2])
+    assert not _row_can_overflow(est, [[-2.0] * 2])
+    assert catalog()[AdditiveChi2Sampler].sum_products is None
+
+
+def test_the_kernel_normalization_product_is_checked_too():
+    est = Nystroem(n_components=2, random_state=0).fit(np.zeros((3, 2)))
+    est.normalization_[:] = sys.float_info.max
+    assert _row_can_overflow(est, [[0.0, 0.0]])
+
+
+def test_the_second_factor_product_is_checked_too(monkeypatch):
+    from sql_transform.native import project
+
+    est = _ladder_step(FactorAnalysis, 2).instances[0]
+    est.mean_[:] = 0.0
+    f = project._factor(est)._replace(
+        v=np.full((2, 2), 0.5), c=np.full((2, 2), sys.float_info.max)
+    )
+    monkeypatch.setattr(project, "_factor", lambda est: f)
+    assert _row_can_overflow(est, [[1.0, 1.0]])
+
+
 @pytest.mark.skipif(
     np.finfo(np.longdouble).maxexp == 1024,
     reason="64-bit long double overflows S or an intermediate term before K*eps*S",
@@ -1724,11 +1774,28 @@ def test_a_projection_sum_overflow_remains_a_strict_mismatch():
     raises=ParityError,
     reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
 )
-@pytest.mark.parametrize("cls", [BisectingKMeans, Birch, Nystroem])
-def test_a_kernel_distance_nan_after_overflow_remains_a_strict_mismatch(cls):
-    step = _step(FIXTURES[cls][1], 3, 1)
-    rows = _rows(step, 3)
-    row = rows.slice(rows.num_rows - 40 + 32, 1)
+@pytest.mark.parametrize(
+    "cls, cfg, seed, offset",
+    [
+        (BisectingKMeans, 1, 3, 32),
+        (Birch, 1, 3, 32),
+        (Nystroem, 1, 3, 32),
+        (RBFSampler, 0, 1, 7),
+    ],
+)
+def test_a_kernel_distance_nan_after_overflow_remains_a_strict_mismatch(
+    cls, cfg, seed, offset
+):
+    step = _step(FIXTURES[cls][cfg], seed, cfg)
+    rows = _rows(step, seed)
+    row = rows.slice(rows.num_rows - 40 + offset, 1)
+    if cls is RBFSampler:
+        from sql_transform.native._check import _twin_input
+
+        iid = row.column("__iid")[0].as_py()
+        value = step.instances[iid].transform(_twin_input(step, row, 0))[0, 2]
+        if not math.isfinite(value):
+            pytest.skip("this host's BLAS also overflows the reported RBF angle")
     assert _gate_rows(step, row).num_rows == 0
     check(step, to_native(step, strict=True, allow_bound=True), row)
 
