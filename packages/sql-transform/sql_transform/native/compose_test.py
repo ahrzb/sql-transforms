@@ -975,18 +975,35 @@ def _flat(n: int = 40, seed: int = 4) -> np.ndarray:
     return np.hstack([t, 2 * t]) + rng.normal(scale=1e-6, size=(n, 2))
 
 
+def _another_hosts_pca(monkeypatch, pca: PCA) -> None:
+    """Make the twin's PCA answer as another host's BLAS may: each output
+    field moves by eps·S, inside PCA's bound of (n + 3)·eps·S. On a host
+    whose BLAS adds as the entry does, the two sides agree to the bit, so a
+    test that a bound is needed must make the difference itself."""
+    from sql_transform.native import project
+
+    transform = pca.transform
+    eps = np.finfo(np.float64).eps
+
+    def moved(X):
+        y = np.asarray(transform(X), dtype=np.float64)
+        x = np.asarray(X, dtype=np.float64)
+        s = np.stack([project._s(pca, row) for row in x]).astype(np.float64)
+        return y + eps * s
+
+    monkeypatch.setattr(pca, "transform", moved)
+
+
 def test_a_carried_bound_grows_as_the_step_that_carries_it(monkeypatch):
     # The scaler divides the second component by its spread, 1e-6 of the
     # first: what the two sides' PCA part by grows by as much, and so does
     # the bound the scaler carries. Carried as it is, it fails.
     from sql_transform.native import _registry
 
-    step = _step(
-        make_pipeline(PCA(n_components=2), StandardScaler()),
-        _flat(),
-        [pa.float64()] * 2,
-    )
+    est = make_pipeline(PCA(n_components=2), StandardScaler())
+    step = _step(est, _flat(), [pa.float64()] * 2)
     native = to_native(step, strict=True, allow_bound=True)
+    _another_hosts_pca(monkeypatch, est[0])
     x = _flat(400, seed=5)
     rows = pa.table(
         {
@@ -1014,6 +1031,7 @@ def test_a_weight_carries_its_part_s_bound_times_the_weight(monkeypatch):
     )
     step = _step(est, _flat(), [pa.float64()] * 2)
     native = to_native(step, strict=True, allow_bound=True)
+    _another_hosts_pca(monkeypatch, est.named_transformers_["p"])
     x = _flat(400, seed=5) * 1e3
     rows = pa.table(
         {
