@@ -1,5 +1,11 @@
 """Scalers: one affine map per feature, or one row norm, in sklearn's own
-operation order (sklearn 1.9, `sklearn/preprocessing/_data.py`)."""
+operation order (sklearn 1.9, `sklearn/preprocessing/_data.py`).
+
+Each affine scaler carries a bound on its input to its output fields
+(_carry.py): `StandardScaler` and `RobustScaler` the bound of
+`fl(fl(v - m) / s)` (`_carry.shifted`), `MaxAbsScaler` of `fl(v / s)`, and
+`MinMaxScaler` of `fl(fl(v·s) + m)` (`_carry.scaled`). A clip is exact,
+and moves two values no further apart."""
 
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 
+from sql_transform.native._carry import scaled, shifted
 from sql_transform.native._helpers import (
     TINY_SCALE,
     clip,
@@ -26,10 +33,16 @@ from sql_transform.native._helpers import (
     row_sumsq,
     row_sumsq_is_numpys,
 )
-from sql_transform.native._registry import NotNative, translates
+from sql_transform.native._registry import Carry, NotNative, translates
 
 
-@translates(StandardScaler)
+def _standard_carry(est: Any) -> Carry:
+    m = est.mean_ if est.with_mean else None
+    s = est.scale_ if est.with_std else None
+    return lambda x, e: shifted(e, x, m, s)
+
+
+@translates(StandardScaler, carry=_standard_carry)
 def _standard(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X -= mean_` if with_mean, then `X /= scale_` if with_std, in
     # float64. `scale_` already has zero variances replaced by 1.0.
@@ -44,7 +57,9 @@ def _standard(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
     return out
 
 
-@translates(MinMaxScaler)
+@translates(
+    MinMaxScaler, carry=lambda est: lambda x, e: scaled(e, x, est.scale_, est.min_)
+)
 def _minmax(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X *= scale_`, `X += min_`, then with `clip` the array-API
     # clip to `feature_range` (`_helpers.clip`). `scale_` already has zero
@@ -59,7 +74,7 @@ def _minmax(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     return out
 
 
-@translates(MaxAbsScaler)
+@translates(MaxAbsScaler, carry=lambda est: lambda x, e: shifted(e, x, s=est.scale_))
 def _maxabs(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X /= scale_`, then with `clip` the array-API clip to [-1, 1].
     # `scale_` already has zero maxima replaced by 1.0.
@@ -70,7 +85,13 @@ def _maxabs(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     return out
 
 
-@translates(RobustScaler)
+def _robust_carry(est: Any) -> Carry:
+    m = est.center_ if est.with_centering else None
+    s = est.scale_ if est.with_scaling else None
+    return lambda x, e: shifted(e, x, m, s)
+
+
+@translates(RobustScaler, carry=_robust_carry)
 def _robust(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X -= center_` if with_centering, then `X /= scale_` if
     # with_scaling. `quantile_range` and `unit_variance` only shape the

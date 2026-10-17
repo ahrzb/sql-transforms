@@ -53,6 +53,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import math
+import re
 import sys
 import warnings
 from collections.abc import Callable
@@ -114,6 +115,14 @@ class ErrorScale:
         return np.broadcast_to(b + np.asarray(tau, np.longdouble), (width,))
 
 
+# How a step carries a bound on its input to its output fields: at the
+# twin's input row x of one call, as long doubles (NaN for NULL, a boolean
+# as 0 or 1), and the bound e of each input field on |entry - twin| (0
+# where the two are bit-exact, inf where none holds), the bound of each
+# output field the same way (_carry.py).
+Carry = Callable[[np.ndarray, np.ndarray], np.ndarray]
+
+
 class FieldBounds(NamedTuple):
     """Each output field's parity bound at one row of a composition
     (`PartBounds`): where `near[j]` is NaN, within `ulps[j]` doubles of the
@@ -127,11 +136,11 @@ class FieldBounds(NamedTuple):
 @dataclass(frozen=True)
 class PartBounds:
     """The parity bound of a composition that holds a part whose bound is
-    above 0 (compose.py): each output field keeps the bound of the part
-    that gives it, which reads what its twin reads. `at(X)` answers each
-    output field's bound at the one-row input `X`, as the twin's
-    `transform` takes it (`FieldBounds`); `within` names that bound as a
-    message reads it."""
+    above 0 (compose.py): each output field has the bound of the part that
+    gives it, at the input its twin reads, carried by the steps after it
+    (_carry.py). `at(X)` answers each output field's bound at the one-row
+    input `X`, as the twin's `transform` takes it (`FieldBounds`); `within`
+    names that bound as a message reads it."""
 
     at: Callable[[Any], FieldBounds]
     within: str
@@ -162,7 +171,12 @@ class Entry:
     `apart(est)` says whether the translator reads each number as `x -
     0.0` (`_apart`). Every entry does, unless `apart_of(est)` says no for
     one estimator: a projection whose build would pass its cap where it
-    reads them so (project.py)."""
+    reads them so (project.py).
+
+    `carry_of(est)` answers how `est` carries a bound on its input to its
+    output fields, where it reads the output of a step whose bound is
+    above 0 (`Carry`, _carry.py): None where no bound is derived through
+    it, as for every entry without `carry_of`."""
 
     translate: Translator
     ulps: int
@@ -173,10 +187,16 @@ class Entry:
     part_bounds_of: Callable[[Any], PartBounds | None] | None = None
     apart_of: Callable[[Any], bool] | None = None
     scaled_of: Callable[[Any], bool] | None = None
+    carry_of: Callable[[Any], Carry | None] | None = None
 
     def apart(self, est: Any) -> bool:
         """The translator reads each number of `est`'s row as `x - 0.0`."""
         return self.apart_of is None or self.apart_of(est)
+
+    def carry(self, est: Any) -> Carry | None:
+        """How `est` carries a bound on its input to its output fields, or
+        None where no bound is derived through it."""
+        return None if self.carry_of is None else self.carry_of(est)
 
     @property
     def varies(self) -> bool:
@@ -266,6 +286,7 @@ def translates(
     part_bounds: Callable[[Any], PartBounds | None] | None = None,
     apart: Callable[[Any], bool] | None = None,
     scaled: Callable[[Any], bool] | None = None,
+    carry: Callable[[Any], Carry | None] | None = None,
 ) -> Callable[[Translator], Translator]:
     """Register a translator for exactly these estimator classes, bit-exact
     unless `ulps` or `scale` says otherwise. With `bound`, `ulps` is the
@@ -274,9 +295,9 @@ def translates(
     identity and within 2 ulps for `np.log10`). With `scale`, the bound is
     that error scale, and with `scaled` too, only where `scaled(est)` says
     so: elsewhere the estimator is bit-exact (`AdditiveChi2Sampler` of one
-    sample step). `base`, `composes`, a composition's `part_bounds` and
-    `apart` (`apart_of`) are `Entry`'s. A subclass is not covered: it may
-    override what `transform` computes."""
+    sample step). `base`, `composes`, a composition's `part_bounds`,
+    `apart` (`apart_of`) and `carry` (`carry_of`) are `Entry`'s. A
+    subclass is not covered: it may override what `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
     if scale is not None and (ulps or bound is not None):
@@ -289,7 +310,16 @@ def translates(
             if c in _CATALOG:
                 raise ValueError(f"{c.__name__} is already in the catalog")
             _CATALOG[c] = Entry(
-                fn, ulps, bound, scale, base, composes, part_bounds, apart, scaled
+                fn,
+                ulps,
+                bound,
+                scale,
+                base,
+                composes,
+                part_bounds,
+                apart,
+                scaled,
+                carry,
             )
         return fn
 
@@ -642,6 +672,65 @@ def _output_fields(step: PythonTransform) -> list[tuple[str | None, pa.DataType]
     return [(None, r)]
 
 
+# The calls that confit's pass of shared values (`share.rs`) counts as able
+# to trap wherever they stand. It judges each node of a definition alone,
+# without the CASE above it, so a call that a CASE guards counts too (ln,
+# log2, log10 and sqrt under `x <= 0` passed, sin, cos and tan under
+# `abs(x) = inf` passed: function.py, kernel.py), and so does each value
+# that reads one. confit shares none of them: its build computes each at
+# every read, so the build of a composition after such a step grows with
+# its definition spelled out (loops/native/PLANS.md, "Needs from confit").
+_TRAPS = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|"
+    r"\b(ln|log|log2|log10|sqrt|sin|cos|tan|pow|power|error)\s*\(",
+    re.IGNORECASE,
+)
+_LET_READ = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|" + S.LET_MARKER + r"\((\d+)\)",
+    re.IGNORECASE,
+)
+
+# The most characters that `unshared` counts in a composition that
+# `to_native` builds. 44 compositions of T59's parity run were built alone
+# (release build, T59's branch at 34a33b9). The 36 at or under 500,000
+# built in at most 6.16 s and 758 MB. The slowest took 13.1 us for each
+# added character, so 500,000 build in about 6.5 s, under a family's cap
+# of 7 s (`trees.MAX_BUILD_S`). Past it, builds took up to 50.4 s and
+# 5.0 GB at 3.9 million, and one ran out of a limit of 12 GB of address
+# space at 40 million.
+MAX_UNSHARED = 500_000
+
+
+def unshared(fn: SqlFunction) -> int:
+    """The characters that confit's build computes again in `fn`'s
+    definition: its length with each let that confit cannot share written
+    at each read and every other let once, less its length with each let
+    once (`sql_lets`, `sql_let_body`). A let cannot be shared where it
+    calls one of `_TRAPS` or reads a let that cannot."""
+    lets = getattr(fn, "sql_lets", None)
+    if lets is None:
+        return 0
+
+    def reads(text: str) -> list[tuple[int, int]]:
+        # Each let read: the let's number, and the length of the read.
+        return [
+            (int(m.group(1)), len(m.group(0)))
+            for m in _LET_READ.finditer(text)
+            if m.group(1) is not None
+        ]
+
+    traps: list[bool] = []
+    size: list[int] = []  # each let, with the lets it reads that trap written out
+    for text in lets:
+        r = reads(text)
+        calls = any(m.group(1) for m in _TRAPS.finditer(text))
+        traps.append(calls or any(traps[j] for j, _ in r))
+        size.append(len(text) + sum(size[j] - n for j, n in r if traps[j]))
+    again = sum(size[j] - n for j, n in reads(fn.sql_let_body) if traps[j])
+    once = sum(s for s, t in zip(size, traps, strict=True) if not t)
+    return max(0, again + once - sum(map(len, lets)))
+
+
 def _translate(step: Any, allow_bound: bool) -> SqlFunction:
     if not isinstance(step, PythonTransform):
         raise NotNative(f"{type(step).__name__} is not a PythonTransform")
@@ -749,6 +838,14 @@ def _translate(step: Any, allow_bound: bool) -> SqlFunction:
             "confit does not build it: an expression nested past Python's"
             " recursion limit"
         ) from None
+    if any(_CATALOG[type(e)].composes for e in step.instances.values()):
+        size = unshared(fn)
+        if size > MAX_UNSHARED:
+            raise NotNative(
+                "confit does not build it: each value that confit cannot share,"
+                f" written at each read, adds {size:,} characters to its"
+                f" definition, past {MAX_UNSHARED:,}"
+            )
     _builds(step, fn)
     return fn
 
