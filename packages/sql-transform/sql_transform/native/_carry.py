@@ -27,11 +27,12 @@ The bound of a field is 0 only where the field is bit-exact on both
 sides: a step that is bit-exact carries 0 to each output field that reads
 only bit-exact input. As each family's bound, a carried bound assumes that
 no sum overflows on one side only. Where one does, at values of about
-DBL_MAX/n, a later step's validation can raise on one side alone, either
-side, and the twin itself raises on such a row in one call and answers in
+DBL_MAX/n, an output field can be infinite or NaN on one side alone, a
+later step's validation can raise on one side alone, either side, and the
+twin itself answers such a row one way in one call and another way in
 another. The bound does not cover that row, and
-loops/native/decisions/open/traps-where-a-sum-overflows.md asks the owner
-what holds there.
+loops/native/decisions/open/where-a-sum-overflows.md asks the owner what
+holds there.
 """
 
 from __future__ import annotations

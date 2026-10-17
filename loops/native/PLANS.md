@@ -214,7 +214,8 @@ that request, `to_native(step, allow_bound=True)`. In order:
   where a call can take longer than the twin's. Since T59 a composition
   multiplies it: confit computes each value of the steps after such a
   call at every read, so their build grows with what writing each such
-  value at each read adds to the definition. `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
+  value at each read adds to the definition.
+  `MinMaxScaler(feature_range=(1, 2))`, `FunctionTransformer` of
   `np.log2`, `FactorAnalysis(8)`, `GaussianRandomProjection(8)` and
   `FeatureAgglomeration(4)` over 16 features build in 33 s and 3.8 GB as
   a list, 21 s after `np.tan`, and 0.06 s after `np.exp` or `np.cbrt`
@@ -224,11 +225,11 @@ that request, `to_native(step, allow_bound=True)`. In order:
   memory in confit's check of its IR (`ir::verify`) under a limit of
   12 GB. So `to_native` refuses a composition where writing each such
   value at each read adds more than 500,000 characters to its definition
-  (`_registry.unshared`, `MAX_UNSHARED`). When it lands, measure again, lift those caps
-  (`kernel._SKEWED_PRODUCTS`, `_registry.MAX_UNSHARED`) and refit
-  `kernel._skewed_build_estimate`. Medium priority for confit now: it
-  limits the compositions after these steps that T59 serves. Send it to
-  the Confit Loop when it runs again.
+  (`_registry.unshared`, `MAX_UNSHARED`). When it lands, measure again,
+  lift those caps (`kernel._SKEWED_PRODUCTS`, `_registry.MAX_UNSHARED`)
+  and refit `kernel._skewed_build_estimate`. Medium priority for confit
+  now: it limits the compositions after these steps that T59 serves. Send
+  it to the Confit Loop when it runs again.
 - **A definition that DuckDB runs with each bound value written once.**
   confit's `SqlFunction.register` spells each bound value out at each of
   its reads (`sql_body`), so a value that many output fields read is
