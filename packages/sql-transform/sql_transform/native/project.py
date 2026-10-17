@@ -107,7 +107,7 @@ from __future__ import annotations
 import functools
 import warnings
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -166,6 +166,17 @@ def _tau(est: Any) -> np.ndarray:
 
 
 MATVEC = ErrorScale(k=_k, s=_s, tau=_tau)
+
+
+def _project_products(
+    est: Any, x: np.ndarray
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    c = est.components_
+    c = c.toarray() if sparse.issparse(c) else np.asarray(c)
+    yield x, c
+    if (m := _mean(est)) is not None:
+        yield np.asarray(m), c
+
 
 _KEPS = np.longdouble(_EPS)
 
@@ -311,6 +322,7 @@ def _tree(terms: list[S.Expr]) -> S.Expr:
     scale=MATVEC,
     apart=_reads_apart,
     carry=_project_carry,
+    sum_products=_project_products,
 )
 def _project(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     name = type(est).__name__
@@ -502,6 +514,7 @@ def _sparse_carry(est: Any) -> Carry:
     scaled=lambda est: not sparse.issparse(est.components_),
     apart=lambda est: sparse.issparse(est.components_) or _reads_apart(est),
     carry=_sparse_carry,
+    sum_products=_project_products,
 )
 def _sparse_project(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
@@ -614,6 +627,12 @@ CENTERED = ErrorScale(
 )
 
 
+def _centered_products(
+    est: Any, x: np.ndarray
+) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
+    return ((_d(est, x), _centered(est)[2]),)
+
+
 def _centered_carry(est: Any) -> Carry:
     """How a centered projection carries a bound e on its input to its
     output fields (_carry.py): its subtraction and division carry e to a
@@ -679,7 +698,13 @@ def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
         )
 
 
-@translates(*_CENTERED, scale=CENTERED, apart=_reads_apart, carry=_centered_carry)
+@translates(
+    *_CENTERED,
+    scale=CENTERED,
+    apart=_reads_apart,
+    carry=_centered_carry,
+    sum_products=_centered_products,
+)
 def _project_centered(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:
@@ -1002,6 +1027,15 @@ def _factor_tau(est: Any) -> np.ndarray:
 FACTOR = ErrorScale(k=_factor_k, s=_factor_s, tau=_factor_tau)
 
 
+def _factor_products(
+    est: Any, x: np.ndarray
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    f = _factor(est)
+    d = np.asarray(x, np.float64) - est.mean_
+    yield d, f.v
+    yield d @ f.v.T, f.c.T
+
+
 def _factor_carry(est: Any) -> Carry:
     """How `FactorAnalysis` carries a bound e on its input to its output
     fields (_carry.py). The difference d = x - mean_ carries e to e_d
@@ -1067,7 +1101,12 @@ def _factor_build_estimate(n: int, k: int) -> float:
     )
 
 
-@translates(FactorAnalysis, scale=FACTOR, carry=_factor_carry)
+@translates(
+    FactorAnalysis,
+    scale=FACTOR,
+    carry=_factor_carry,
+    sum_products=_factor_products,
+)
 def _factor_analysis(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:

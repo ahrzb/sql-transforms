@@ -64,6 +64,7 @@ release build. A step builds by `_build_estimate`, which the cap reads.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -102,6 +103,20 @@ DISTANCE = ErrorScale(
 )
 
 
+def _squared_products(
+    x: np.ndarray, c: np.ndarray
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """The products and the final three-term sum of a squared distance."""
+    yield x, x
+    yield c, c
+    yield x, c
+    x = np.asarray(x, np.float64)
+    xx = row_norms(x.reshape(1, -1), squared=True)[0]
+    cc = row_norms(c, squared=True)
+    terms = np.column_stack((-2.0 * (c @ x), np.full(len(c), xx), cc))
+    yield terms, np.ones(3)
+
+
 def _build_estimate(n: int, k: int) -> float:
     """The seconds of the whole warm `to_native` of the entry, release
     build: the translation, the probe (`_registry._probed`) and confit's
@@ -134,7 +149,14 @@ def _build_estimate(n: int, k: int) -> float:
     )
 
 
-@translates(KMeans, MiniBatchKMeans, BisectingKMeans, Birch, scale=DISTANCE)
+@translates(
+    KMeans,
+    MiniBatchKMeans,
+    BisectingKMeans,
+    Birch,
+    scale=DISTANCE,
+    sum_products=lambda est, x: _squared_products(x, _centres(est)),
+)
 def _distances(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     name = type(est).__name__
     c = _centres(est)

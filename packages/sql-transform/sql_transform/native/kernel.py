@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import math
 import numbers
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -68,7 +69,7 @@ from sklearn.kernel_approximation import (
     RBFSampler,
     SkewedChi2Sampler,
 )
-from sklearn.metrics.pairwise import check_pairwise_arrays
+from sklearn.metrics.pairwise import check_pairwise_arrays, rbf_kernel
 from sklearn.utils.extmath import row_norms
 
 from sql_transform.native._helpers import f64
@@ -79,6 +80,7 @@ from sql_transform.native._registry import (
     rejects,
     translates,
 )
+from sql_transform.native.distance import _squared_products
 from sql_transform.native.function import kernel_distance
 from sql_transform.native.project import _TINY, MAX_BUILD_S, _refuse_past_cap, _tree
 
@@ -356,7 +358,12 @@ def _rbf_reads_apart(est: Any) -> bool:
     return _rbf_build_estimate(n, m, True) <= MAX_BUILD_S
 
 
-@translates(RBFSampler, scale=RBF, apart=_rbf_reads_apart)
+@translates(
+    RBFSampler,
+    scale=RBF,
+    apart=_rbf_reads_apart,
+    sum_products=lambda est, x: ((x, np.asarray(est.random_weights_).T),),
+)
 def _rbf(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     """`RBFSampler` (`transform`): `validate_data`, where NaN and the
     infinities raise, then `X @ random_weights_` (BLAS), `+=
@@ -490,6 +497,13 @@ SKEWED_CHI2 = ErrorScale(
 )
 
 
+def _skewed_products(
+    est: Any, x: np.ndarray
+) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
+    shifted = np.asarray(x, np.float64) + _skewedness(est)
+    return ((np.log(shifted), np.asarray(est.random_weights_).T),)
+
+
 def _above_skew(est: Any, types: list[pa.DataType]) -> list[Any]:
     """The input guard's probe row: each feature above -s, which the twin
     takes. A number reads 1.0, or -2·s where s < 0; a boolean False where
@@ -530,7 +544,12 @@ def _skewed_build_estimate(n: int, m: int) -> float:
     )
 
 
-@translates(SkewedChi2Sampler, scale=SKEWED_CHI2, base=_above_skew)
+@translates(
+    SkewedChi2Sampler,
+    scale=SKEWED_CHI2,
+    base=_above_skew,
+    sum_products=_skewed_products,
+)
 def _skewed_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     """`SkewedChi2Sampler` (`transform`): `validate_data` into doubles (a
     boolean reads 0 or 1), where NaN and the infinities raise; a raise
@@ -700,6 +719,19 @@ NYSTROEM = ErrorScale(
 )
 
 
+def _nystroem_products(
+    est: Any, x: np.ndarray
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    c, _ = _nystroem_components(est)
+    yield from _squared_products(x, c)
+    k = rbf_kernel(
+        np.asarray(x, np.float64).reshape(1, -1),
+        c,
+        gamma=-_nystroem_factor(est),
+    )[0]
+    yield k, np.asarray(est.normalization_)
+
+
 def _nystroem_build_estimate(n: int, m: int) -> float:
     """The seconds of the whole warm `to_native` of the entry, as
     `_rbf_build_estimate`, from its n features and m components: the n·m
@@ -726,7 +758,7 @@ def _nystroem_build_estimate(n: int, m: int) -> float:
     )
 
 
-@translates(Nystroem, scale=NYSTROEM)
+@translates(Nystroem, scale=NYSTROEM, sum_products=_nystroem_products)
 def _nystroem(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     """`Nystroem(kernel="rbf")` (`transform`): `validate_data`, where NaN
     and the infinities raise; `pairwise_kernels(X, components_)`, which for
