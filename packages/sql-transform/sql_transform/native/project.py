@@ -10,7 +10,10 @@ divide it by a fitted scale: `_project_centered` gives their bound.
 `SparseRandomProjection` multiplies by the CSR matrix that its fit makes,
 which scipy sums in stored order, and its entry is bit-exact
 (`_sparse_project`); of density 1, its components are dense, and it is
-`GaussianRandomProjection`'s product.
+`GaussianRandomProjection`'s product. `FactorAnalysis` multiplies the
+centered row by `components_ / noise_variance_`, then by an inverse that
+its twin computes with LAPACK on each call: `_factor_analysis` gives its
+bound, which holds for the inverse of another host's LAPACK too.
 
 The twin hands each product to BLAS: `ddot` for one component, `gemv` for
 more. OpenBLAS picks its kernel for the CPU at run time and sums with fused
@@ -121,7 +124,6 @@ from sklearn.decomposition import (
 )
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.random_projection import GaussianRandomProjection, SparseRandomProjection
-from threadpoolctl import ThreadpoolController
 
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import ErrorScale, NotNative, translates
@@ -697,7 +699,18 @@ def _cov_z(w: np.ndarray, psi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return wpsi, linalg.inv(ih + np.dot(wpsi, w.T))
 
 
-def _factor_inverse(v: np.ndarray, w: np.ndarray) -> np.ndarray | None:
+class _Cholesky(NamedTuple):
+    """The steps of `_factor_inverse`: the matrix that it forms,
+    `I + v @ w.T`; its Cholesky factor L (`low`, lower triangular); L's
+    inverse Z (`z`); and the inverse `c = Z.T @ Z`."""
+
+    formed: np.ndarray
+    low: np.ndarray
+    z: np.ndarray
+    c: np.ndarray
+
+
+def _cholesky(v: np.ndarray, w: np.ndarray) -> _Cholesky | None:
     """`inv(I + v @ w.T)` in numpy's operations on whole arrays alone, each
     one IEEE operation (add, multiply, divide, sqrt) rounded on its own, in
     an order fixed here: no BLAS, no LAPACK and no reduction, so that every
@@ -710,7 +723,8 @@ def _factor_inverse(v: np.ndarray, w: np.ndarray) -> np.ndarray | None:
     g = np.zeros((k, k))
     for f in range(n):
         g = g + np.multiply.outer(v[:, f], w[:, f])
-    a = np.eye(k) + g
+    formed = np.eye(k) + g
+    a = formed.copy()
     low = np.zeros((k, k))
     for p in range(k):
         if not a[p, p] > 0.0:
@@ -721,115 +735,166 @@ def _factor_inverse(v: np.ndarray, w: np.ndarray) -> np.ndarray | None:
         low[p + 1 :, p] = col
         a[p + 1 :, p + 1 :] = a[p + 1 :, p + 1 :] - np.multiply.outer(col, col)
     rest = np.eye(k)
-    inv_low = np.zeros((k, k))
+    z = np.zeros((k, k))
     for j in range(k):
-        inv_low[j] = rest[j] / low[j, j]
-        rest[j + 1 :] = rest[j + 1 :] - np.multiply.outer(low[j + 1 :, j], inv_low[j])
+        z[j] = rest[j] / low[j, j]
+        rest[j + 1 :] = rest[j + 1 :] - np.multiply.outer(low[j + 1 :, j], z[j])
     c = np.zeros((k, k))
     for p in range(k):
-        c = c + np.multiply.outer(inv_low[p], inv_low[p])
-    return c if np.isfinite(c).all() else None
+        c = c + np.multiply.outer(z[p], z[p])
+    return _Cholesky(formed, low, z, c) if np.isfinite(c).all() else None
+
+
+def _factor_inverse(v: np.ndarray, w: np.ndarray) -> np.ndarray | None:
+    """The entry's `cov_z`, `inv(I + v @ w.T)` (`_cholesky`), or None."""
+    parts = _cholesky(v, w)
+    return None if parts is None else parts.c
+
+
+def _pivoted_lu(a: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """The LU factors of `a` with partial pivoting, in numpy's operations on
+    whole arrays: each pivot is the first largest candidate of its column,
+    as LAPACK's getrf picks it (idamax). Answers P^T·L and U, whose product
+    is about `a`, and the least ratio of a pivot to the next largest
+    candidate of its column (inf where no column has two)."""
+    a = a.copy()
+    k = len(a)
+    perm = np.arange(k)
+    low = np.eye(k)
+    margin = np.inf
+    for p in range(k):
+        col = np.abs(a[p:, p])
+        r = int(np.argmax(col))
+        rest = np.delete(col, r)
+        if rest.size and rest.max() > 0.0:
+            margin = min(margin, float(col[r] / rest.max()))
+        r += p
+        if r != p:
+            a[[p, r]] = a[[r, p]]
+            low[[p, r], :p] = low[[r, p], :p]
+            perm[[p, r]] = perm[[r, p]]
+        f = a[p + 1 :, p] / a[p, p]
+        low[p + 1 :, p] = f
+        a[p + 1 :, p:] = a[p + 1 :, p:] - np.multiply.outer(f, a[p, p:])
+        a[p + 1 :, p] = 0.0
+    ptl = np.empty_like(low)
+    ptl[perm] = low
+    return ptl, np.triu(a), margin
+
+
+def _gamma(m: int) -> np.longdouble:
+    """γ_m = m·u/(1 - m·u), u = eps/2 (Higham, §3.1), as a long double."""
+    mu = m * np.longdouble(_EPS) / 2
+    return mu / (1 - mu)
+
+
+def _norm(a: np.ndarray) -> np.longdouble:
+    """max(|a|_1, |a|_inf) of a matrix of no negative entry: it bounds each
+    entry, and the norm of a product by the product of the norms."""
+    return max(a.sum(axis=0).max(), a.sum(axis=1).max())
+
+
+# FactorAnalysis serves where theta (`_factor_prior`) is at most THETA_MAX,
+# and where each pivot of the LU of its I + Wpsi @ components_.T is past
+# the next largest candidate of its column by a ratio of at least
+# MARGIN_MIN (`_factor_analysis`).
+THETA_MAX = 2.0**-10
+MARGIN_MIN = 1.0 + 2.0**-8
+
+
+def _factor_prior(
+    v: np.ndarray, w: np.ndarray, parts: _Cholesky
+) -> tuple[np.ndarray, float, float]:
+    """D, which bounds |cov_z - inv(A)| entry by entry for A = I + v @ w.T,
+    for the entry's `cov_z` and for the twin's on any host (the derivation
+    in `_factor_analysis`), as long doubles; theta, the bound on the
+    second-order terms; and the least margin of a pivot of the LU of A."""
+    k, n = v.shape
+    ld = np.longdouble
+    ptl, up, margin = _pivoted_lu(parts.formed)
+    ac = np.abs(parts.c).astype(ld)
+    al, az = np.abs(parts.low).astype(ld), np.abs(parts.z).astype(ld)
+    mg = np.abs(ptl).astype(ld) @ np.abs(up).astype(ld)
+    mc = al @ al.T
+    b = np.eye(k, dtype=ld) + np.abs(v).astype(ld) @ np.abs(w).astype(ld).T
+    nl, nr = az.T @ al.T, al @ az
+    fg = ac @ mg @ ac
+    fc = nl @ ac + ac @ nr + ac @ mc @ ac + az.T @ az
+    gg = ac @ b @ ac
+    g3, gc, gf = _gamma(3 * k + 2), _gamma(k + 2), _gamma(n + 3)
+    d0 = np.maximum(g3 * fg, gc * fc) + gc * fc + 2 * gf * gg
+    e = 2 * _norm(d0)
+    # What each term of d0 gains where |cov_z| stands for the twin's and
+    # the exact inverse's magnitudes, a factor for each error in them.
+    lu = _norm(mg @ ac) + _norm(ac @ mg) + _norm(mg) * e
+    chol = _norm(nl) + _norm(nr) + _norm(mc @ ac) + _norm(ac @ mc) + _norm(mc) * e
+    form = _norm(b @ ac) + _norm(ac @ b) + _norm(b) * e
+    theta = g3 * lu + 2 * gc * chol + 2 * gf * form
+    return d0 + 2 * theta * _norm(d0), float(theta), margin
 
 
 class _Factor(NamedTuple):
     """What `FactorAnalysis`'s entry and error scale read: the twin's
-    `Wpsi`, the entry's `cov_z` (`_factor_inverse`), and the twin's
-    `cov_z` less the entry's, the last two as long doubles too."""
+    `Wpsi`, the entry's `cov_z` (`_factor_inverse`), and D
+    (`_factor_prior`), with `Wpsi` and the magnitudes as long doubles."""
 
     v: np.ndarray
     c: np.ndarray
     v_ld: np.ndarray
     abs_v: np.ndarray
     abs_c: np.ndarray
-    dc: np.ndarray
-    abs_dc: np.ndarray
-
-
-@functools.cache
-def _blas() -> ThreadpoolController:
-    return ThreadpoolController()
-
-
-def _blas_threads() -> tuple[int, ...]:
-    """The thread count of each BLAS library that the process had loaded
-    at the first call (threadpoolctl, which sklearn requires). For the same
-    arrays, OpenBLAS answers the twin's `cov_z` alike at one thread count,
-    and from about 68 components apart at each count (T58)."""
-    return tuple(lib.num_threads for lib in _blas().lib_controllers)
+    d: np.ndarray
 
 
 # `_factor`'s answers: an estimator's id -> (a weak reference to it, the
-# fitted arrays they read, the BLAS thread counts, the answer). Holding the
-# arrays keeps their ids.
-_FACTORS: dict[int, tuple[Any, np.ndarray, np.ndarray, tuple[int, ...], _Factor]] = {}
+# fitted arrays they read, the answer). Holding the arrays keeps their ids.
+_FACTORS: dict[int, tuple[Any, np.ndarray, np.ndarray, _Factor]] = {}
 
 
 def _factor(est: Any) -> _Factor:
-    """`_Factor` of `est`, computed once for its fitted arrays at the BLAS
-    thread counts of the call (`_blas_threads`): `check` reads it at each
-    row, and the twin's `cov_z` depends on both. Raises `NotNative` where
-    the entry's `cov_z` or the twin's is not finite."""
-    w, psi, threads = est.components_, est.noise_variance_, _blas_threads()
+    """`_Factor` of `est`, computed once for its fitted arrays: `check`
+    reads it at each row. Raises `NotNative` where the entry's `cov_z` is
+    not finite, where theta is past THETA_MAX, or where a pivot's margin
+    is below MARGIN_MIN."""
+    w, psi = est.components_, est.noise_variance_
     hit = _FACTORS.get(id(est))
-    if (
-        hit is not None
-        and hit[0]() is est
-        and hit[1] is w
-        and hit[2] is psi
-        and hit[3] == threads
-    ):
-        return hit[4]
-    v, twin = _cov_z(np.asarray(w), np.asarray(psi))
-    c = _factor_inverse(np.asarray(v, np.float64), np.asarray(w, np.float64))
-    if c is None or not np.isfinite(twin).all():
+    if hit is not None and hit[0]() is est and hit[1] is w and hit[2] is psi:
+        return hit[3]
+    name = type(est).__name__
+    with np.errstate(all="ignore"):
+        v = np.asarray(np.asarray(w) / np.asarray(psi), np.float64)
+        wd = np.asarray(w, np.float64)
+        parts = _cholesky(v, wd)
+        if parts is None:
+            raise NotNative(
+                f"{name}: I + Wpsi @ components_.T has no finite inverse"
+                " (noise_variance_ of the fit too small)"
+            )
+        d, theta, margin = _factor_prior(v, wd, parts)
+    if not theta <= THETA_MAX:
         raise NotNative(
-            "FactorAnalysis: I + Wpsi @ components_.T has no finite inverse"
-            " (noise_variance_ of the fit too small)"
+            f"{name}: I + Wpsi @ components_.T is too ill-conditioned for a"
+            f" bound that holds on any host (theta {theta:.3g}, past 2**-10)"
+        )
+    if not margin >= MARGIN_MIN:
+        raise NotNative(
+            f"{name}: two pivot candidates of the LU of I + Wpsi @ components_.T"
+            f" are within a ratio of {margin:.9g}: another host's LAPACK may"
+            " pick the other one"
         )
     ld = np.longdouble
-    dc = np.asarray(twin, ld) - np.asarray(c, ld)
     out = _Factor(
-        v=np.asarray(v, np.float64),
-        c=c,
+        v=v,
+        c=parts.c,
         v_ld=np.asarray(v, ld),
         abs_v=np.abs(np.asarray(v, ld)),
-        abs_c=np.abs(np.asarray(c, ld)),
-        dc=dc,
-        abs_dc=np.abs(dc),
+        abs_c=np.abs(np.asarray(parts.c, ld)),
+        d=d,
     )
     if len(_FACTORS) >= 16:
         _FACTORS.clear()
-    _FACTORS[id(est)] = (weakref.ref(est), w, psi, threads, out)
+    _FACTORS[id(est)] = (weakref.ref(est), w, psi, out)
     return out
-
-
-@functools.cache
-def cov_z_repeats() -> bool:
-    """Whether this platform's BLAS and LAPACK answer the twin's `cov_z`
-    (`_cov_z`) with the same bits for the same fitted arrays wherever they
-    sit, on probe fits of either memory layout at eight alignments. The
-    error scale of `FactorAnalysis` computes the twin's `cov_z` again for
-    `check`, and bounds the twin only where that is the twin's own.
-    OpenBLAS copies its operands to aligned buffers, and its sums do not
-    depend on where they sit; MKL without its conditional numerical
-    reproducibility may. Each layout has its own sums: an `F` copy of a
-    `C` array answers apart for 300 features (T58)."""
-    rng = np.random.default_rng(20261017)
-    for n, k in ((7, 3), (64, 17), (300, 33)):
-        w = rng.normal(size=(k, n)) * 10.0 ** rng.uniform(-1, 1, n)
-        psi = 10.0 ** rng.uniform(-12, 0, n)
-        for order in "CF":
-            want = None
-            for off in range(8):
-                buf = np.empty(k * n + off)
-                at = buf[off:].reshape((k, n), order=order)
-                at[...] = w
-                got = _cov_z(at, psi)[1]
-                if want is None:
-                    want = got
-                elif not np.array_equal(got.view(np.int64), want.view(np.int64)):
-                    return False
-    return True
 
 
 def _factor_k(est: Any) -> int:
@@ -839,30 +904,54 @@ def _factor_k(est: Any) -> int:
 
 def _factor_s(est: Any, x: np.ndarray) -> np.ndarray:
     f = _factor(est)
+    k, n = np.shape(est.components_)
     d = np.asarray(np.asarray(x, dtype=np.float64) - est.mean_, dtype=np.longdouble)
     s1 = f.abs_v @ np.abs(d)
-    t = f.v_ld @ d
-    return (
-        s1 @ f.abs_c
-        + s1 @ f.abs_dc
-        + np.abs(t @ f.dc) / (np.longdouble(_factor_k(est)) * np.longdouble(_EPS))
-    )
+    t = np.abs(f.v_ld @ d)
+    keps = np.longdouble(_factor_k(est)) * np.longdouble(_EPS)
+    return s1 @ f.abs_c + ((t + _gamma(n + k) * s1) @ f.d) / keps
 
 
 def _factor_tau(est: Any) -> np.ndarray:
     f = _factor(est)
     k, n = np.shape(est.components_)
-    return (n * (f.abs_c.sum(axis=0) + f.abs_dc.sum(axis=0)) + 2 * k + 1) * _TINY
+    return (n * (f.abs_c.sum(axis=0) + f.d.sum(axis=0)) + 2 * k + 1) * _TINY
 
 
 FACTOR = ErrorScale(k=_factor_k, s=_factor_s, tau=_factor_tau)
 
 
 def _factor_build_estimate(n: int, k: int) -> float:
-    """The seconds of the whole warm `to_native` of a `FactorAnalysis`:
-    its first product as a centered projection's, and its second over the
-    k sums of the first (a placeholder until T58's grid is fitted)."""
-    return _centered_build_estimate(n, k) + _centered_build_estimate(k, k)
+    """The seconds of the whole warm `to_native` (release build) of a
+    `FactorAnalysis` of n features and k components: the translation,
+    which computes D (`_factor_prior`), the probe (`_registry._probed`) and
+    confit's trial build (`_registry._builds`), of the slower return. The
+    build is about linear in the products n·k, with terms in n²·k and
+    n·k², in the features, in their square where the return can be a list
+    (as `_centered_build_estimate`: each product reads a difference
+    x - mean_ that confit shares), and in k² for the second product.
+
+    Fitted on the slower return of each shape over 71 shapes that built in
+    0.31 to 19.3 s (64 to 4,096 features, 1 to 256 components; T58's draft
+    of the entry, branch commit 0e4cf11, 2026-10-17): each took 0.88 to
+    1.53 times the estimate, and 0.88 to 1.14 over 1 s. The cap took on
+    none slower than 5.88 s and refused none faster than 6.85 s. Over 40
+    random shapes not fitted on, with the entry as it is (67 to 5,201
+    features, 1 to 160 components; builds of 0.29 to 13.3 s), each took
+    0.89 to 1.31 times the estimate, and 0.93 to 1.31 over 1 s. The cap
+    took on none slower than 8.01 s and refused none faster than 7.62 s.
+    It takes each k up to 128 features, about 144 components over 256, 74
+    over 512, 25 over 1,024, 5 over 2,048 or 1 over 4,096, and one
+    component over 4,700 features."""
+    p = n * k
+    return (
+        5.97e-4 * n
+        + 4.70e-5 * p
+        + 1.78e-7 * p * n
+        + 3.07e-7 * p * k
+        + (1.89e-7 * n * n if k > 1 else 0.0)
+        + 8.48e-5 * k * k
+    )
 
 
 @translates(FactorAnalysis, scale=FACTOR)
@@ -872,8 +961,79 @@ def _factor_analysis(
     """`FactorAnalysis` (`transform`, sklearn 1.9): with
     `Wpsi = components_ / noise_variance_` and
     `cov_z = linalg.inv(I + Wpsi @ components_.T)`, the twin answers
-    `((X - mean_) @ Wpsi.T) @ cov_z`, each product by BLAS, and computes
-    `cov_z` with BLAS and LAPACK on each call."""
+    `((X - mean_) @ Wpsi.T) @ cov_z`. It hands each product to BLAS and
+    computes `cov_z` on each call with LAPACK: by Cholesky (potrf, potri)
+    where `I + Wpsi @ components_.T` is exactly symmetric, which scipy 1.18
+    detects, and else by LU with partial pivoting (getrf, getri). So the
+    bits of `cov_z` depend on the host's BLAS and LAPACK kernels and on
+    their thread count. Over 80 fits on 8 BLAS setups of one machine (T58),
+    2,966 of the 4,480 ordered pairs of setups answered `cov_z` apart, by
+    up to 4.1e-6 of its largest entry. A bound that reads the twin's own
+    `cov_z` in the process failed against the twin of another setup in 46
+    of the 80 fits, by up to 2.9e8 times.
+
+    The entry multiplies the twin's own differences d = x - mean_ and its
+    own `Wpsi`, each one IEEE operation on either side, then its own
+    `cov_z`, C (`_cholesky`: no BLAS and no LAPACK, the same bits on every
+    host), each product summed as a balanced tree. With A =
+    I + Wpsi·components_^T, S1_j = sum_i |d_i·Wpsi_ji| and t = d·Wpsi^T,
+    for output field l,
+
+        |entry - twin| <= 2γ_{n+k}·(S1·|C|)_l + ((|t| + γ_{n+k}·S1)·D)_l + tau_l,
+
+    where D bounds, entry by entry, how far C and the twin's `cov_z` on
+    any host are from the exact inverse of A (`_factor_prior`). On either
+    side the two products, of n terms and then of k, are within
+    γ_{n+k}·S1·|cov_z| of the exact product with that side's `cov_z`, in
+    any order, fused or not (the module's derivation); and the twin's
+    `cov_z` is within D of C. So K = n + k + 1 and
+    S = S1·|C| + (|t| + γ_{n+k}·S1)·D/(K·eps): K·eps covers 2γ_{n+k} and
+    the rounding of S in `check`. tau = (n·colsum(|C| + D) + 2k + 1)·2**-1074
+    covers the products that underflow. As for the projections above, the
+    bound assumes that no partial sum overflows.
+
+    D adds first-order error bounds (Higham, *Accuracy and Stability of
+    Numerical Algorithms*, 2nd ed., Theorems 9.3 and 10.3, §14.2 and
+    §14.3), with B = I + |Wpsi|·|components_|^T:
+
+    - each side forms A within γ_{n+3}·B, which moves the inverse by up
+      to γ_{n+3}·G, G = |C|·B·|C|: γ_{n+1} for the product and the
+      identity, and 2u where the entry reads one triangle of A, whose
+      products round apart from the other's;
+    - the twin's LU path leaves a left residual |X·A - I| of at most
+      γ_{3k+2}·|X|·|P^T·L|·|U| (getrf, then getri: U's inverse, then
+      the solve by L), so its inverse X is within γ_{3k+2}·Fg,
+      Fg = |C|·|P^T·L|·|U|·|C|, with the factors of the entry's own
+      elimination of A (`_pivoted_lu`);
+    - a Cholesky path, the twin's (potrf, potri) or the entry's, is within
+      γ_{k+2}·Fc, Fc = |Z^T|·|L^T|·|C| + |C|·|L|·|Z| + |C|·|L|·|L^T|·|C|
+      + |Z^T|·|Z|, with L the Cholesky factor and Z its inverse.
+
+    So D0 = max(γ_{3k+2}·Fg, γ_{k+2}·Fc) + γ_{k+2}·Fc + 2γ_{n+3}·G. Each
+    term reads magnitudes of the exact inverse, of the twin's `cov_z` and
+    of the twin's factors, where D0 reads C and the entry's factors. In the
+    norm max(|.|_1, |.|_inf), theta bounds what that costs relative to an
+    error E of these magnitudes: the terms gain at most theta·|E|, and
+    |E| <= 2·|D0| where theta <= 1/2, so D = D0 + 2·theta·|D0| at each
+    entry. The step serves only where theta <= THETA_MAX = 2**-10, and
+    stays Python elsewhere: features of almost no noise meet sklearn's
+    floor of noise variance, 1e-12, and then A can be so ill-conditioned
+    that no inverse in doubles has a correct digit. Over the 80 fits, 11
+    have a theta past 2**-10, each an A of a condition number past 1e14.
+
+    The bound assumes that the twin's LAPACK picks the pivots of the
+    entry's elimination: the step stays Python where a pivot is less than
+    MARGIN_MIN = 1 + 2**-8 times the next largest candidate of its column.
+    On each of the 8 setups, getrf picked the entry's pivots for each of
+    the 68 fits that it factors (the other 12 are exactly symmetric).
+
+    MEASURED.
+
+    Each field gives a zero the twin's sign. Where every product is a
+    zero, the twin's sums of more than one product answer 0.0, and the
+    entry adds 0.0 to its sums. At one feature and one output field, the
+    twin's two `np.dot`s of 1×1 arrays answer the products themselves, as
+    the entry does (finding 81)."""
     name = type(est).__name__
     w = np.asarray(est.components_)
     psi = np.asarray(est.noise_variance_)
@@ -891,11 +1051,6 @@ def _factor_analysis(
             f"{name}: a fitted mean, component or noise variance not all"
             " finite, or a noise variance not positive"
         )
-    if not cov_z_repeats():
-        raise NotNative(
-            f"{name}: this platform's BLAS or LAPACK answers cov_z apart for"
-            " the same arrays (cov_z_repeats)"
-        )
     _refuse_past_cap(name, n, k, _factor_build_estimate)
     f = _factor(est)
     d = [xi - f64(mi) for xi, mi in zip(x, m, strict=True)]
@@ -904,9 +1059,6 @@ def _factor_analysis(
         _tree([ti * f64(ci) for ti, ci in zip(t, f.c[:, j], strict=True)])
         for j in range(k)
     ]
-    # `+ 0.0` as `_project_centered`'s, and at one feature and one output
-    # field the twin's two `np.dot`s of 1×1 arrays answer the products
-    # themselves (finding 81).
     if n == k == 1:
         return out
     return [o + f64(0.0) for o in out]

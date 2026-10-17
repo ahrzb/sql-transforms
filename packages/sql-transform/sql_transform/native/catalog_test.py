@@ -31,6 +31,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.cross_decomposition import CCA, PLSSVD, PLSCanonical, PLSRegression
 from sklearn.decomposition import (
     PCA,
+    FactorAnalysis,
     FastICA,
     IncrementalPCA,
     KernelPCA,
@@ -882,6 +883,15 @@ FIXTURES[PLSSVD] = [
     lambda: PLSSVD(n_components=1),
     lambda: PLSSVD(n_components=1, scale=False),
 ]
+# FactorAnalysis (project.py, `_factor_analysis`), within its own error
+# scale. Where I + Wpsi @ components_.T is too ill-conditioned for a bound
+# that holds on any host, the step stays Python (REFUSED): a constant
+# column of the fit has sklearn's floor of noise, 1e-12.
+FIXTURES[FactorAnalysis] = [
+    lambda: FactorAnalysis(n_components=1, random_state=0),
+    lambda: FactorAnalysis(n_components=2, rotation="varimax", random_state=1),
+    lambda: FactorAnalysis(svd_method="lapack", random_state=2),
+]
 # Distances to fitted centres, within their error scale on the squares
 # (distance.py). A fit of fewer rows than its clusters raises, and is drawn
 # again. Birch's subclusters are its output fields: under the default
@@ -974,12 +984,16 @@ BOOL_STEPS = 0.07
 # Refusals the generator draws, each tested by name on its own
 # (test_a_function_transformer_refuses, compose_test.py, project_test.py):
 # a function the twin computes in a narrower dtype on a boolean array, a
-# whitened component of rounding noise, and a FastICA fit that broke down.
+# whitened component of rounding noise, a FastICA fit that broke down, and
+# a FactorAnalysis whose cov_z is too ill-conditioned for a bound that
+# holds on any host, or whose LU has two pivot candidates about alike.
 REFUSED = (
     "over boolean features only",
     "a whitened component of rounding noise",
     "its fit broke down",
     "a mean_ of 2**970 or more",
+    "too ill-conditioned for a bound",
+    "two pivot candidates of the LU",
 )
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
 # (NATIVE_SEEDS=200, loops/native/report-format.md).

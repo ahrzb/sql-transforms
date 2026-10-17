@@ -6,8 +6,7 @@ on the board: [tickets.md](tickets.md).
 
 ## Next
 
-1. The rest of "Ruled 2026-10-06, to build", item 1 (`FactorAnalysis`),
-   then the rest of item 2.
+1. The rest of "Ruled 2026-10-06, to build", item 2.
 
 ## Ruled 2026-10-06, to build
 
@@ -30,10 +29,15 @@ that request, `to_native(step, allow_bound=True)`. In order:
      `LinearDiscriminantAnalysis`: project.py, `_project_centered`).
      T57 served `SparseRandomProjection`, bit-exact in scipy's CSR order
      behind a kernel probe (project.py, `_sparse_project`).
-     `FactorAnalysis` chains two products, so the first one's error passes
-     through the second, and its twin computes the inverse `cov_z` with
-     LAPACK on each call: a bound that holds on another host needs that
-     inverse's own error, so it comes last.
+     T58 served `FactorAnalysis` (project.py, `_factor_analysis`),
+     K = n + k + 1: its twin computes the inverse `cov_z` with LAPACK on
+     each call, by Cholesky where the matrix is exactly symmetric and by
+     LU elsewhere, and its bits change with the host's kernels and thread
+     count, so S reads D, a first-order bound on the error of either
+     path's inverse on any host (`_factor_prior`). It stays Python where
+     theta, the bound's second order, is past 2**-10 (measured only where
+     A's condition number is past 1e14), or where two pivot candidates
+     are within a ratio of 1 + 2**-8.
    - T47 served the distances to fitted centres (`KMeans`,
      `MiniBatchKMeans`, `BisectingKMeans` and `Birch`: distance.py), which
      compare squares (`ErrorScale.g`), K = n + 5. T51 served

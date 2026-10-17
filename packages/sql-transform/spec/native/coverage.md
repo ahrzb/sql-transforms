@@ -12,7 +12,7 @@ Box-Cox entry. On one host, the twin of an elementwise family flips none
 owner's ruling).
 
 <!-- coverage:begin -->
-**50 of 68** in-scope transformers are native (84 listed by sklearn).
+**51 of 68** in-scope transformers are native (84 listed by sklearn).
 
 | transformer | status | note |
 |---|---|---|
@@ -25,7 +25,7 @@ owner's ruling).
 | `ColumnTransformer` | composition | routes columns to parts; served over entries, one with a parity bound above 0 only as an unweighted part, with `allow_bound=True` |
 | `DictVectorizer` | out of scope | input is dicts, not a row of columns |
 | `DictionaryLearning` | not yet |  |
-| `FactorAnalysis` | not yet |  |
+| `FactorAnalysis` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `FastICA` | native | within K·eps·S + τ (S its error scale), served only with `allow_bound=True` |
 | `FeatureAgglomeration` | native | bit-exact |
 | `FeatureHasher` | out of scope | input is dicts or token lists, not a row of columns |
