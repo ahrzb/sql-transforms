@@ -317,6 +317,14 @@ Configurations a translator declines (`NotNative`), each with its ground:
   scipy does not sum a CSR product unfused in stored order
   (`project.csr_sum_is_scipys`). Of density 1, its dense components serve
   only with `allow_bound=True`, as the linear projections above.
+- `FactorAnalysis` (project.py, `_factor_analysis`), only with
+  `allow_bound=True`: a fit whose theta is past 2**-10, where
+  `I + Wpsi @ components_.T` is too ill-conditioned for a bound that holds
+  on any host; a fit where two pivot candidates of the entry's LU of that
+  matrix are within a ratio of 1 + 2**-8; a matrix with no finite inverse;
+  a fitted mean, component or noise variance not all finite, or a noise
+  variance not positive; a step past an estimated 7 s build
+  (`project._factor_build_estimate`).
 - `MinMaxScaler(clip=True)` with a NaN `feature_range` bound.
 - `SimpleImputer` fitted on object data (strings), whose output is not a
   float the step can return; a `missing_values` that is neither NaN nor a
@@ -523,6 +531,16 @@ Configurations a translator declines (`NotNative`), each with its ground:
   do (T45), would test about log2(k) of k classes: at 64 features of 64
   classes, a row of a 1,024-row call takes 37 µs with the chain (release
   build, master 12aca98 with T46).
+
+- At one feature and one output field, the twins of `FastICA`, the PLS
+  classes and `FactorAnalysis` answer a zero's sign by the rows of the
+  call: in a call of one row, `np.dot` of 1×1 arrays answers the product
+  itself, -0.0 included, and in a call of more rows it adds the product
+  to 0.0. Since T43 the entries answer the one-row sign, which `check`
+  compares, and the bound allows either sign. In T58's parity run, the
+  twin of `FactorAnalysis` answered 0.0 where its entry answered -0.0 in
+  321,024 fields of calls of 5,000 rows, in 19 fits of one feature. So which sign matches the twin
+  depends on the number of rows in each call of the twin.
 
 - Transformers that read their fit samples: `KNNImputer`, `Isomap`,
   `LocallyLinearEmbedding`, `KernelPCA`, `KNeighborsTransformer`,

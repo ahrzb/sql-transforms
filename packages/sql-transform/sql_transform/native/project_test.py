@@ -648,18 +648,23 @@ def test_a_factor_analysis_serves_only_on_request():
 
 
 def test_a_factor_analysis_is_held_to_the_error_of_its_inverse(monkeypatch):
+    from scipy import linalg
+
     from sql_transform.native import project as P
 
-    # Where I + Wpsi·W^T is ill-conditioned, the twin's cov_z parts from the
-    # entry's by much more than the products' rounding, and only D bounds
-    # what that moves.
+    # Where I + Wpsi·W^T is ill-conditioned, an inverse that another host's
+    # LAPACK can answer, within D of the entry's C, moves the twin by much
+    # more than the products' rounding, and only D bounds what that moves.
     est, x = _factor_fit(0, 8, 6)
     step = _step(est)
     native = to_native(step, strict=True, allow_bound=True)
     rows = _rows(_factor_rows(1, est, x))
-    assert check(step, native, rows) == rows.num_rows
     f = P._factor(est)
     assert np.linalg.cond(np.eye(6) + f.v @ est.components_.T) > 1e12
+    half = np.where(np.random.default_rng(0).random(f.d.shape) < 0.5, -0.5, 0.5)
+    other = np.asarray(f.c + half * f.d, dtype=np.float64)
+    monkeypatch.setattr(linalg, "inv", lambda a: other.copy())
+    assert check(step, native, rows) == rows.num_rows
     alike = f._replace(d=np.zeros_like(f.d))
     monkeypatch.setattr(P, "_factor", lambda est: alike)
     with pytest.raises(ParityError, match="past its bound"):
@@ -690,10 +695,12 @@ def test_a_factor_analysis_holds_at_each_thread_count_of_the_twin():
     from sql_transform.native._check import _serve
     from sql_transform.native._registry import query
 
-    # At 100 components over 128 features, OpenBLAS answers the twin's
-    # cov_z apart at each thread count, and the entry is within its bound
-    # of each. `check`'s oracle of this size takes minutes, so the entry's
-    # answers are served without it.
+    # At 100 components over 128 features, OpenBLAS's SkylakeX kernels
+    # answer the twin's cov_z apart at each thread count (on a machine of 4
+    # cores, its Haswell kernels only at 4 threads, and its Sandybridge
+    # kernels at none), and the entry is within its bound of each.
+    # `check`'s oracle of this size takes minutes, so the entry's answers
+    # are served without it.
     rng = np.random.default_rng(0)
     est, x = _factor_fit(0, 128, 100, max_iter=2)
     est.components_ = rng.normal(size=(100, 128)) * 10.0 ** rng.uniform(-1, 1, 128)
@@ -704,12 +711,10 @@ def test_a_factor_analysis_holds_at_each_thread_count_of_the_twin():
     got = _serve(query(step), _rows(xs), native)
     entry = np.array([[r[f"f{j}"] for j in range(100)] for r in got])
     bound = np.array([P.FACTOR.at(est, np.longdouble(r), 100) for r in xs])
-    answers = []
     for limit in (1, 2, 3, None):
         with threadpool_limits(limits=limit):
-            answers.append(est.transform(xs))
-        assert (np.abs(np.longdouble(entry) - answers[-1]) <= bound).all()
-    assert all(not np.array_equal(a, answers[0]) for a in answers[1:])
+            twin = est.transform(xs)
+        assert (np.abs(np.longdouble(entry) - twin) <= bound).all()
 
 
 def test_a_factor_analysis_answers_the_twins_zero():

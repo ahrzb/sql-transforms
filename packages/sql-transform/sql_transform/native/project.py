@@ -1027,13 +1027,27 @@ def _factor_analysis(
     On each of the 8 setups, getrf picked the entry's pivots for each of
     the 68 fits that it factors (the other 12 are exactly symmetric).
 
-    MEASURED.
+    Over the 69 fits that the entry serves on the 8 setups, each twin is
+    within 0.129 of the bound, in calls of a batch and of one row, and the
+    twins of two setups differ by up to 0.084 of it. In T58's parity run
+    (44 seeds of 10 fits, 1 to 128 features and components; seeds 32 to
+    43 without numpy's AVX-512 code or on OpenBLAS's Haswell and
+    Sandybridge kernels), the entry served 415 fits and stayed Python for
+    25 (24 past THETA_MAX, one within MARGIN_MIN). Of 178.9 million fields
+    of 8 kinds of rows, 130.1 million differ from the twin's and none
+    passes the bound, in calls of 5,000 rows and of one row: the largest
+    difference is 0.148 of the bound. The 369,221 fields where one side
+    is not finite and the two differ are in rows where a partial sum can
+    overflow.
 
-    Each field gives a zero the twin's sign. Where every product is a
-    zero, the twin's sums of more than one product answer 0.0, and the
-    entry adds 0.0 to its sums. At one feature and one output field, the
-    twin's two `np.dot`s of 1×1 arrays answer the products themselves, as
-    the entry does (finding 81)."""
+    Each field gives a zero the twin's sign in a call of one row. Where
+    every product is a zero, the twin's sums of more than one product
+    answer 0.0, and the entry adds 0.0 to its sums. At one feature and one
+    output field, the twin's two `np.dot`s of a one-row call multiply 1×1
+    arrays and answer the products themselves, as the entry does (finding
+    81). In a call of more rows, they add each product to 0.0: there the
+    twin answers 0.0 where the entry answers -0.0, which the bound
+    allows."""
     name = type(est).__name__
     w = np.asarray(est.components_)
     psi = np.asarray(est.noise_variance_)
