@@ -4,8 +4,9 @@
 projection overflows in one order of addition and not in another. There an
 output field can be infinite or NaN on one side only: on the entry or on
 its twin. In a composition, a later step can then raise an error on one
-side only. The twin itself answers such a row one way in one call and
-another way in another call. What must the entry give on such rows?
+side only. The twin itself answers such a row one way in one call of
+`transform` and another way in another call. What must the entry give on
+such rows?
 
 **What it decides.** It decides what `native.check` requires on such rows.
 `native.check` is the function that holds an entry to its twin on test
@@ -28,11 +29,11 @@ can fail on such rows. Each of them links to this record.
   (`packages/sql-transform/sql_transform/native/project.py`).
 - confit computes each row on its own. So the entry answers a row in the
   same way in any call.
-- Let DBL_MAX be the largest double, about 1.8e308. If a partial sum of a
-  sum is larger than DBL_MAX in absolute value, it overflows and becomes
-  infinite. If
-  two partial sums overflow with opposite signs, the sum is NaN (not a
-  number). An infinity plus an infinity of the other sign is NaN.
+- Let DBL_MAX be the largest double, about 1.8e308. If the absolute value
+  of a partial sum of a sum rounds past DBL_MAX, the partial sum overflows
+  and becomes infinite. If two partial sums overflow with opposite signs,
+  the sum is NaN (not a number). An infinity plus an infinity of the other
+  sign is NaN.
 - `FactorAnalysis` computes its output with two products of a matrix and
   a vector. A sum of either product can overflow.
 - A composition is a `Pipeline`, `ColumnTransformer` or `FeatureUnion` of
@@ -52,8 +53,9 @@ can fail on such rows. Each of them links to this record.
   these is true:
   - The absolute values of the terms of a sum add to about DBL_MAX or
     more.
-  - In a composition, |v| + e is about DBL_MAX or more. Here v is the
-    twin's value of a later output field, and e is its carried bound.
+  - In a composition, let v be the twin's value of a later output field,
+    and let e be its carried bound. Then |v| + e is about DBL_MAX or
+    more.
 
   On every other row, no value overflows on one side only. The derivation
   of each parity bound assumes this (`project.py` and `_carry.py` state
@@ -72,9 +74,11 @@ can fail on such rows. Each of them links to this record.
   On each difference of an infinite or NaN value that item 6 does not
   pass, `native.check` raises a `ParityError`.
 - A later step can validate its input. For example, the validation of
-  `StandardScaler` raises an error on an infinite value. So on a row where
-  a value can overflow, the twin can raise an error where the entry
-  answers. The entry can also trap where the twin answers.
+  `StandardScaler` raises an error on an infinite value. On a row where a
+  value can overflow, an output field of the projection can be infinite on
+  the twin's side only. Then the validation raises an error on the twin's
+  side, and the entry answers. The entry can also trap where the twin
+  answers.
 - The ruling on where the twin raises
   ([tolerated-differences.md](../closed/tolerated-differences.md)) has two
   requirements:
@@ -112,7 +116,8 @@ Its `README.md` names each script.
 
 - Each of these output fields was on a row where a value can overflow.
   The entry was past the bound in 58 of the 80 projections. In 45 of these
-  58 projections, the two answers of the twin were also past the bound.
+  58 projections, the twin alone and the twin in the call also differed
+  past the bound.
 - `band.py` made 80 `Pipeline`s of a projection and a `StandardScaler`,
   and fitted each on its own random rows. The projection was a `PCA` (42
   `Pipeline`s) or a `GaussianRandomProjection` (38), with 2 to 512
@@ -124,26 +129,28 @@ Its `README.md` names each script.
   twin read each test row alone. It raised on 14,326 test rows in calls of
   64 rows, and on 16,285 test rows in calls of 1,024 rows. Each call held
   the test row and rows drawn like the rows that the `Pipeline` was fitted
-  on. The twin raises on none of these added rows alone (`band.py` asserts
-  this).
+  on. When the twin reads one of these added rows alone, it raises no
+  error (`band.py` asserts this).
 - On 2,224 test rows, the twin raised in one of two calls and answered in
   the other: the call of the test row alone, and the call of 64 rows. 54
   of the 80 `Pipeline`s had such test rows.
 - The entry trapped on 13,623 test rows. On 713 of them, the twin answered
   when it read the test row alone. On 2,316 other test rows, the entry
-  answered and the twin raised alone. Each of these rows was one of the
-  22,268 rows where a sum of the projection can overflow.
+  answered and the twin raised alone. Each of these 713 and 2,316 test
+  rows was one of the 22,268 rows where a sum of the projection can
+  overflow.
 - The parity run of T59 (`measure.py`) served 264 random compositions,
   each with a step that is not bit-exact. Each composition read rows of
   nine kinds: rows drawn like the rows that it was fitted on, rows near
-  their mean, rows far from it, rows of magnitudes from 1e-300 to 1e300,
-  rows of tiny values, rows of integers, rows of signed zeros, rows with a
-  NaN, an infinity or NULL, and rows of values near DBL_MAX. On the eight
-  kinds that are not near DBL_MAX, the run compared 8.9 million output
-  fields, and none was past its bound. No row of these kinds trapped or
-  raised an error on one side only. On the kind near DBL_MAX, 447 of
-  174,778 output fields were past their bound, against the twin alone. On
-  231 rows of that kind, one side trapped or raised an error alone.
+  the mean of those rows, rows far from that mean, rows of magnitudes from
+  1e-300 to 1e300, rows of tiny values, rows of integers, rows of signed
+  zeros, rows with a NaN, an infinity or NULL, and rows of values near
+  DBL_MAX. On the eight kinds that are not near DBL_MAX, the run compared
+  8.9 million output fields, and none was past its bound. No row of these
+  kinds trapped or raised an error on one side only. On the kind near
+  DBL_MAX, 447 of 174,778 output fields were past their bound, against the
+  twin alone. On 231 rows of that kind, one side trapped or raised an
+  error alone.
 
 **Options.**
 
@@ -165,7 +172,8 @@ Its `README.md` names each script.
    of each sum, and it computes each carried bound. Then the entry never
    answers where the twin raises. But it traps where the twin answers, and
    requirement 2 forbids that. In `fields.py`, the twin of each projection
-   alone answered each test row. In `band.py`, the twin answered 7,042 of
+   answered each test row when it read the row alone, with infinite or NaN
+   values in some fields. In `band.py`, the twin answered 7,042 of
    the 22,268 test rows where a sum of the projection can overflow, when
    it read each test row alone.
 
