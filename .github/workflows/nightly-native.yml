@@ -1,0 +1,156 @@
+name: Nightly native
+
+# Six runners: one rotating 200-seed catalog, five cheap 8-seed bounded lanes.
+# Expected (not a measured runner SLA): 30-60 min for 200 seeds, 5-15 min per
+# bounded lane, plus a cold release build. Dispatch overrides are same-host
+# sensitivity checks, not independent cross-host proof or identical-fit replay.
+on:
+  schedule:
+    - cron: "43 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-native
+  cancel-in-progress: false
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: catalog-200
+            coretype: ""
+            threads: "1"
+            disable: ""
+          - lane: default
+            coretype: ""
+            threads: "1"
+            disable: ""
+          - lane: sandybridge
+            coretype: Sandybridge
+            threads: "1"
+            disable: ""
+          - lane: haswell
+            coretype: Haswell
+            threads: "1"
+            disable: ""
+          - lane: four-threads
+            coretype: ""
+            threads: "4"
+            disable: ""
+          - lane: no-avx512
+            coretype: ""
+            threads: "1"
+            disable: AVX512F,AVX512_SKX
+    env:
+      OPENBLAS_CORETYPE: ${{ matrix.coretype }}
+      OPENBLAS_NUM_THREADS: ${{ matrix.threads }}
+      OMP_NUM_THREADS: ${{ matrix.threads }}
+      # catalog_test's threadpool_limits fixture otherwise overrides the
+      # four-thread environment back to one. No xdist: four means four total.
+      NATIVE_BLAS_THREADS: ${{ matrix.threads }}
+      NPY_DISABLE_CPU_FEATURES: ${{ matrix.disable }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Build release extension + install deps
+        run: uv sync --locked
+
+      - name: Record numerical environment
+        run: |
+          mkdir -p native-nightly
+          uv run --no-sync python - <<'PY' | tee native-nightly/environment.txt
+          import os
+          import platform
+          import numpy as np
+          import scipy.linalg
+          from threadpoolctl import threadpool_info, threadpool_limits
+          print(platform.platform(), np.__version__)
+          np.show_runtime()
+          with threadpool_limits(limits=int(os.environ['NATIVE_BLAS_THREADS'])):
+              print(threadpool_info())
+          PY
+
+      - name: Native parity
+        env:
+          LANE: ${{ matrix.lane }}
+        shell: bash
+        run: |
+          set -o pipefail
+          if [ "$LANE" = catalog-200 ]; then
+            export NATIVE_SEEDS=200
+            # The width ladder's cases past its default ceilings run only here.
+            export NATIVE_WIDE=1
+            # A fresh, disjoint window each UTC day; printed for reproduction.
+            export NATIVE_SEED_BASE=$(( $(date -u +%s) / 86400 * 200 ))
+            printf 'NATIVE_SEED_BASE=%s NATIVE_SEEDS=%s\n' "$NATIVE_SEED_BASE" "$NATIVE_SEEDS" | tee native-nightly/seeds.txt
+            uv run --no-sync python -m pytest packages/sql-transform/sql_transform/native/catalog_test.py \
+              -q -p no:xdist --junitxml=native-nightly/parity.xml 2>&1 | tee native-nightly/parity.txt
+          else
+            export NATIVE_SEEDS=8 NATIVE_SEED_BASE=0
+            native=packages/sql-transform/sql_transform/native
+            uv run --no-sync python -m pytest \
+              "$native/project_test.py" "$native/kernel_test.py" "$native/distance_test.py" \
+              "$native/power_test.py" "$native/check_test.py" -q -p no:xdist \
+              --junitxml=native-nightly/families.xml 2>&1 | tee native-nightly/families.txt
+          fi
+
+      - name: Bounded catalog
+        if: ${{ !cancelled() && matrix.lane != 'catalog-200' }}
+        env:
+          NATIVE_SEEDS: "8"
+          NATIVE_SEED_BASE: "0"
+        run: |
+          set -o pipefail
+          bounded=$(uv run --no-sync python -c 'from sql_transform.native._registry import catalog; print(" or ".join(c.__name__ for c,e in catalog().items() if e.ulps or e.scale is not None))')
+          uv run --no-sync python -m pytest packages/sql-transform/sql_transform/native/catalog_test.py -k "$bounded" \
+            -q -p no:xdist --junitxml=native-nightly/catalog.xml 2>&1 | tee native-nightly/catalog.txt
+
+      - name: Build estimate drift
+        if: ${{ !cancelled() && matrix.lane == 'default' }}
+        run: |
+          set -o pipefail
+          uv run --no-sync python benchmarks/native_estimates.py --check 2>&1 | tee native-nightly/estimates.txt
+
+      - name: Upload findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-native-${{ matrix.lane }}
+          path: native-nightly/
+          retention-days: 30
+
+  report:
+    needs: native
+    if: ${{ !cancelled() && needs.native.result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: File findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '# Nightly native findings\n\n[Run and artifacts](%s)\n\n' "$RUN_URL" > report.md
+          printf 'Review failed jobs and retained environment, parity and estimate logs.\n' >> report.md
+          open=$(gh issue list --state open --search "in:title Nightly native findings" \
+                   --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body-file report.md
+          else
+            gh issue create --title "Nightly native findings" --body-file report.md
+          fi
