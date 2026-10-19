@@ -75,8 +75,14 @@ from sklearn.metrics.pairwise import check_pairwise_arrays
 from sklearn.utils.extmath import row_norms
 
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import ErrorScale, NotNative, translates
-from sql_transform.native.project import _TINY, MAX_BUILD_S, _tree
+from sql_transform.native._registry import (
+    MAX_BUILD_S,
+    ErrorScale,
+    NotNative,
+    build_estimate,
+    translates,
+)
+from sql_transform.native.project import _TINY, _tree
 
 
 def _centres(est: Any) -> np.ndarray:
@@ -117,7 +123,16 @@ def _squared_products(
     yield terms, np.ones(3)
 
 
-def _build_estimate(n: int, k: int) -> float:
+@build_estimate(
+    n=1.14e-3,
+    k=8.11e-4,
+    nk=7.47e-5,
+    n2=3.76e-7,
+    n2k=6.64e-8,
+    nk2=7.68e-8,
+    k3=7.75e-9,
+)
+def _build_estimate(n: int, k: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` of the entry, release
     build: the translation, the probe (`_registry._probed`) and confit's
     trial build (`_registry._builds`). It grows with the n features and k
@@ -138,15 +153,15 @@ def _build_estimate(n: int, k: int) -> float:
     (`project._centered_build_estimate`), whose products also read shared
     values, takes about 6,500 centres over 2 features, and one centre over
     4,096 features (14.8 s)."""
-    return (
-        1.14e-3 * n
-        + 8.11e-4 * k
-        + 7.47e-5 * n * k
-        + 3.76e-7 * n * n
-        + 6.64e-8 * n * n * k
-        + 7.68e-8 * n * k * k
-        + 7.75e-9 * k**3
-    )
+    return {
+        "n": (n,),
+        "k": (k,),
+        "nk": (n, k),
+        "n2": (n, n),
+        "n2k": (n, n, k),
+        "nk2": (n, k, k),
+        "k3": (k**3,),
+    }
 
 
 @translates(
@@ -155,6 +170,7 @@ def _build_estimate(n: int, k: int) -> float:
     BisectingKMeans,
     Birch,
     scale=DISTANCE,
+    builds=(_build_estimate,),
     sum_products=lambda est, x: _squared_products(x, _centres(est)),
 )
 def _distances(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:

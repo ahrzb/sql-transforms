@@ -42,7 +42,9 @@ def _standard_carry(est: Any) -> Carry:
     return lambda x, e: shifted(e, x, m, s)
 
 
-@translates(StandardScaler, carry=_standard_carry)
+@translates(
+    StandardScaler, carry=_standard_carry, uncapped="One output per input feature."
+)
 def _standard(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X -= mean_` if with_mean, then `X /= scale_` if with_std, in
     # float64. `scale_` already has zero variances replaced by 1.0.
@@ -58,7 +60,9 @@ def _standard(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Exp
 
 
 @translates(
-    MinMaxScaler, carry=lambda est: lambda x, e: scaled(e, x, est.scale_, est.min_)
+    MinMaxScaler,
+    carry=lambda est: lambda x, e: scaled(e, x, est.scale_, est.min_),
+    uncapped="One output per input feature.",
 )
 def _minmax(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X *= scale_`, `X += min_`, then with `clip` the array-API
@@ -74,7 +78,11 @@ def _minmax(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     return out
 
 
-@translates(MaxAbsScaler, carry=lambda est: lambda x, e: shifted(e, x, s=est.scale_))
+@translates(
+    MaxAbsScaler,
+    carry=lambda est: lambda x, e: shifted(e, x, s=est.scale_),
+    uncapped="One output per input feature.",
+)
 def _maxabs(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X /= scale_`, then with `clip` the array-API clip to [-1, 1].
     # `scale_` already has zero maxima replaced by 1.0.
@@ -91,7 +99,7 @@ def _robust_carry(est: Any) -> Carry:
     return lambda x, e: shifted(e, x, m, s)
 
 
-@translates(RobustScaler, carry=_robust_carry)
+@translates(RobustScaler, carry=_robust_carry, uncapped="One output per input feature.")
 def _robust(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `X -= center_` if with_centering, then `X /= scale_` if
     # with_scaling. `quantile_range` and `unit_variance` only shape the
@@ -107,7 +115,7 @@ def _robust(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]
     return out
 
 
-@translates(Normalizer)
+@translates(Normalizer, uncapped="One output per input feature; one shared norm.")
 def _normalizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn `normalize`: the row's norm (l1: `np.sum(abs(X), axis=1)`,
     # numpy's pairwise sum; l2: `sqrt(row_norms(X, squared=True))`, an
@@ -135,7 +143,7 @@ def _normalizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.E
     return [xi / norm for xi in x]
 
 
-@translates(Binarizer)
+@translates(Binarizer, uncapped="One output per input feature.")
 def _binarizer(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn `binarize`: 1 where `X > threshold`, else 0, in X's float64.
     # NaN raises in the twin.

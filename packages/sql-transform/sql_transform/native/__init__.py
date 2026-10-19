@@ -18,8 +18,9 @@ prediction (`_registry.py` says why).
 The catalog is one module per family (`scalers.py`, `impute.py`,
 `select.py`, `function.py`, `polynomial.py`, `spline.py`, `encode.py`,
 `quantile.py`, `isotonic.py`, `project.py`, ...), each entry registered with
-`@translates(EstimatorClass)`; `compose.py` composes them (a `Pipeline`,
-a `ColumnTransformer`, a `FeatureUnion`).
+`@translates(EstimatorClass, builds=(estimate,))`, or with an explicit
+`uncapped` reason when it has no time estimate. `compose.py` composes them
+(a `Pipeline`, a `ColumnTransformer`, a `FeatureUnion`).
 This package imports confit and sklearn and nothing else of sql_transform
 but the step class and `_trees._f32_grid_threshold` (the float32 cutpoint
 `discretize.py` and `trees.py` share with the tree predictors), so the

@@ -36,7 +36,10 @@ def _indicate(miss: list[S.Expr], features: Any) -> list[S.Expr]:
     return [S.case(miss[int(f)], f64(1.0)).otherwise(f64(0.0)) for f in features]
 
 
-@translates(SimpleImputer)
+@translates(
+    SimpleImputer,
+    uncapped="At most one value and one missing indicator per input feature.",
+)
 def _simple(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: the mask is computed first; features whose statistic is NaN
     # (no observed value at fit) are dropped unless keep_empty_features;
@@ -74,7 +77,11 @@ def _not_missing(est: Any, types: list[pa.DataType]) -> list[Any]:
     ]
 
 
-@translates(MissingIndicator, base=_not_missing)
+@translates(
+    MissingIndicator,
+    base=_not_missing,
+    uncapped="At most one missing indicator per input feature.",
+)
 def _indicator(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: the mask's columns that had a missing value at fit
     # (features="missing-only"; with error_on_new a new one raises in the

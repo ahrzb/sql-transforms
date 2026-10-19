@@ -75,14 +75,16 @@ from sklearn.utils.extmath import row_norms
 from sql_transform.native._helpers import f64
 from sql_transform.native._registry import (
     EPS,
+    MAX_BUILD_S,
     ErrorScale,
     NotNative,
+    build_estimate,
     rejects,
     translates,
 )
 from sql_transform.native.distance import _squared_products
 from sql_transform.native.function import kernel_distance
-from sql_transform.native.project import _TINY, MAX_BUILD_S, _refuse_past_cap, _tree
+from sql_transform.native.project import _TINY, _refuse_past_cap, _tree
 
 # The sample interval sklearn takes where `sample_interval` is None, for
 # `sample_steps` 1 to 3 (Vedaldi and Zisserman, 2011, figure 2 c).
@@ -202,7 +204,14 @@ def _root(w: S.Expr) -> S.Expr:
     return S.case(w < _ZERO, _NAN).otherwise(S.fn("sqrt", w))
 
 
-def _additive_chi2_build_estimate(n: int, steps: int) -> float:
+@build_estimate(
+    fields=9.06e-4,
+    n_fields=3.80e-6,
+    n_pairs=6.92e-5,
+    n2_fields=4.28e-9,
+    n_pairs2=2.16e-7,
+)
+def _additive_chi2_build_estimate(n: int, steps: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` of the entry, as
     `_rbf_build_estimate`, from its n features and s sample steps: its F =
     n·(2s - 1) output fields and its p = n·(s - 1) pairs of a cos and a sin
@@ -220,16 +229,21 @@ def _additive_chi2_build_estimate(n: int, steps: int) -> float:
     past 4,000,000 tokens, and the cap refuses it at an estimated 26 s."""
     f = n * (2 * steps - 1)
     p = n * (steps - 1)
-    return (
-        9.06e-4 * f
-        + 3.80e-6 * n * f
-        + 6.92e-5 * n * p
-        + 4.28e-9 * n * n * f
-        + 2.16e-7 * n * p * p
-    )
+    return {
+        "fields": (f,),
+        "n_fields": (n, f),
+        "n_pairs": (n, p),
+        "n2_fields": (n, n, f),
+        "n_pairs2": (n, p, p),
+    }
 
 
-@translates(AdditiveChi2Sampler, scale=_SCALE, scaled=lambda est: not _exact(est))
+@translates(
+    AdditiveChi2Sampler,
+    scale=_SCALE,
+    scaled=lambda est: not _exact(est),
+    builds=(_additive_chi2_build_estimate,),
+)
 def _additive_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: `validate_data(..., ensure_non_negative=True)`, where NaN,
     # infinity and any x < 0 raise (-0.0 passes: `X.min() < 0` reads it as
@@ -319,7 +333,18 @@ RBF = ErrorScale(
 )
 
 
-def _rbf_build_estimate(n: int, m: int, apart: bool) -> float:
+@build_estimate(
+    apart_n=7.61e-4,
+    apart_m=5.21e-4,
+    apart_nm=1.01e-4,
+    apart_n2m=1.23e-7,
+    apart_list_n2=2.20e-7,
+    plain_n=6.48e-4,
+    plain_m=5.80e-4,
+    plain_nm=2.15e-4,
+    plain_n2m=6.17e-8,
+)
+def _rbf_build_estimate(n: int, m: int, apart: bool) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` of the entry, release
     build: the translation, the probe (`_registry._probed`) and confit's
     trial build (`_registry._builds`). It grows with the n features and m
@@ -337,15 +362,16 @@ def _rbf_build_estimate(n: int, m: int, apart: bool) -> float:
     struct of 512 features of 100 components read `x - 0.0` at 6.9 s, which
     built in 9.2 s, and one of 1,024 features of 50 read `coalesce(x, NaN)`
     at 6.8 s, which built in 15.4 s."""
+    prefix = "apart" if apart else "plain"
+    terms = {
+        f"{prefix}_n": (n,),
+        f"{prefix}_m": (m,),
+        f"{prefix}_nm": (n, m),
+        f"{prefix}_n2m": (n, n, m),
+    }
     if apart:
-        return (
-            7.61e-4 * n
-            + 5.21e-4 * m
-            + 1.01e-4 * n * m
-            + 1.23e-7 * n * n * m
-            + (2.20e-7 * n * n if m > 1 else 0.0)
-        )
-    return 6.48e-4 * n + 5.80e-4 * m + 2.15e-4 * n * m + 6.17e-8 * n * n * m
+        terms["apart_list_n2"] = (n, n) if m > 1 else (0.0,)
+    return terms
 
 
 def _rbf_reads_apart(est: Any) -> bool:
@@ -362,6 +388,7 @@ def _rbf_reads_apart(est: Any) -> bool:
     RBFSampler,
     scale=RBF,
     apart=_rbf_reads_apart,
+    builds=(_rbf_build_estimate,),
     sum_products=lambda est, x: ((x, np.asarray(est.random_weights_).T),),
 )
 def _rbf(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
@@ -522,7 +549,14 @@ def _above_skew(est: Any, types: list[pa.DataType]) -> list[Any]:
 _SKEWED_PRODUCTS = 2048
 
 
-def _skewed_build_estimate(n: int, m: int) -> float:
+@build_estimate(
+    n=7.40e-4,
+    nm=3.57e-4,
+    n2m=7.48e-7,
+    nm2=8.76e-6,
+    list_n2=6.13e-6,
+)
+def _skewed_build_estimate(n: int, m: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` of the entry, as
     `_rbf_build_estimate`, from its n features and m components, where n·m
     is at most `_SKEWED_PRODUCTS`. confit computes the logarithm in each
@@ -535,19 +569,20 @@ def _skewed_build_estimate(n: int, m: int) -> float:
     0.75 to 1.41 times the estimate. The cap took none slower than 5.18 s
     and refused none faster than 8.91 s, and it refuses the struct that ran
     out of memory, at an estimated 37 s."""
-    return (
-        7.40e-4 * n
-        + 3.57e-4 * n * m
-        + 7.48e-7 * n * n * m
-        + 8.76e-6 * n * m * m
-        + (6.13e-6 * n * n if m > 1 else 0.0)
-    )
+    return {
+        "n": (n,),
+        "nm": (n, m),
+        "n2m": (n, n, m),
+        "nm2": (n, m, m),
+        "list_n2": (n, n) if m > 1 else (0.0,),
+    }
 
 
 @translates(
     SkewedChi2Sampler,
     scale=SKEWED_CHI2,
     base=_above_skew,
+    builds=(_skewed_build_estimate,),
     sum_products=_skewed_products,
 )
 def _skewed_chi2(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
@@ -732,7 +767,8 @@ def _nystroem_products(
     yield k, np.asarray(est.normalization_)
 
 
-def _nystroem_build_estimate(n: int, m: int) -> float:
+@build_estimate(n=4.36e-4, nm=7.05e-5, m2=5.40e-5, m3=1.35e-7, n2=5.55e-7)
+def _nystroem_build_estimate(n: int, m: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` of the entry, as
     `_rbf_build_estimate`, from its n features and m components: the n·m
     products of the squared distances, the m² products of the output
@@ -749,16 +785,21 @@ def _nystroem_build_estimate(n: int, m: int) -> float:
     over 1 to 32 features, 400 over 64 and 128, 350 over 256, 250 over 512,
     150 over 1,024 (a struct) and 100 over 2,048. The cap refuses each of
     them at an estimated 13.5 s or more."""
-    return (
-        4.36e-4 * n
-        + 7.05e-5 * n * m
-        + 5.40e-5 * m * m
-        + 1.35e-7 * m**3
-        + 5.55e-7 * n * n
-    )
+    return {
+        "n": (n,),
+        "nm": (n, m),
+        "m2": (m, m),
+        "m3": (m**3,),
+        "n2": (n, n),
+    }
 
 
-@translates(Nystroem, scale=NYSTROEM, sum_products=_nystroem_products)
+@translates(
+    Nystroem,
+    scale=NYSTROEM,
+    builds=(_nystroem_build_estimate,),
+    sum_products=_nystroem_products,
+)
 def _nystroem(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     """`Nystroem(kernel="rbf")` (`transform`): `validate_data`, where NaN
     and the infinities raise; `pairwise_kernels(X, components_)`, which for

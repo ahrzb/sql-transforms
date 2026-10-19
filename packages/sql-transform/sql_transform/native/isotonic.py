@@ -62,18 +62,18 @@ from scipy.interpolate import interp1d
 from sklearn.isotonic import IsotonicRegression
 
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import NotNative, rejects, translates
+from sql_transform.native._registry import (
+    MAX_BUILD_S,
+    NotNative,
+    build_estimate,
+    rejects,
+    translates,
+)
 from sql_transform.native.quantile import interp_is_numpys
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
 # `slope * (x - start) + value`, or `value` at `start` when `exact`.
 _Piece = tuple[float, float, float, bool]
-
-# The longest build the entry takes on for one estimator, in seconds, by
-# `_build_estimate` (as quantile.py's cap). Serving 64 rows takes 37 us at
-# the widest fixture (51 thresholds) and 366 us at 8,000, against the
-# twin's 5,400 us (release build, master f2ef184, 2026-10-05).
-MAX_BUILD_S = 7.0
 
 
 def _pieces(xp: np.ndarray, fp: np.ndarray) -> list[_Piece]:
@@ -93,18 +93,28 @@ def _pieces(xp: np.ndarray, fp: np.ndarray) -> list[_Piece]:
     return out
 
 
-def _build_estimate(pieces: int) -> float:
-    """The seconds of confit's trial build of the entry alone
-    (`_registry._builds`, warm, release build), without the translation and
-    the probe that `to_native` also runs, from the pieces of its one CASE
-    tree, a little worse than linear. Fitted on 18 builds of 0.5 to 8.6 s
+@build_estimate(warm_factor=1.6, pieces=1.33e-4, pieces2=4.79e-9)
+def _build_estimate(pieces: int) -> dict[str, tuple[float, ...]]:
+    """Seconds of the whole warm to_native, with a release build of confit.
+
+    The original trial-build fit below is multiplied by 1.6, not refitted
+    to this host's speed. On Windows 11 10.0.26300 AMD64, Python 3.14,
+    master 40f6ab17, 2026-10-17, benchmarks/native_estimates.py measured
+    18,000, 24,703 and 28,524 thresholds (nan, clip and raise), as scalars
+    and structs, median of three after warming each return. Whole/trial
+    ratios were 1.44--1.55; the maximum rounded up gives 1.6. Translation
+    walks the same pieces as the trial build, so a factor covers this
+    overhead on these near-cap shapes without changing the original fit.
+
+    Original trial-build evidence: a little worse than linear in pieces,
+    fitted on 18 builds of 0.5 to 8.6 s
     (3,418 to 31,725 thresholds, `out_of_bounds` "clip" and "raise"; T46 on
     master 12aca98, 2026-10-16): each within 0.89 to 1.22 times the
     estimate, which reaches 7 s at about 26,800 thresholds. The cap took on
     none slower than 7.2 s and refused none faster than 7.4 s. Fitted before
     T44's reads (`_registry._apart`; master 318575b), the estimate reached
     7 s at about 19,700 thresholds."""
-    return 1.33e-4 * pieces + 4.79e-9 * pieces**2
+    return {"pieces": (pieces,), "pieces2": (pieces**2,)}
 
 
 def _leaf(x: S.Expr, piece: _Piece) -> S.Expr:
@@ -131,7 +141,7 @@ def _first_threshold(est: Any, types: list[pa.DataType]) -> list[Any]:
     return [float(est.X_thresholds_[0])]
 
 
-@translates(IsotonicRegression, base=_first_threshold)
+@translates(IsotonicRegression, base=_first_threshold, builds=(_build_estimate,))
 def _isotonic(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     xp, fp = est.X_thresholds_, est.y_thresholds_
     if xp.dtype != np.float64 or fp.dtype != np.float64:

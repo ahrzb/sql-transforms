@@ -1,7 +1,7 @@
 """How a step carries a bound on its input to its output fields: the parity
 bound of a composition where a step reads the output of a step whose bound
 is above 0 (option 2 of the owner's ruling,
-loops/native/decisions/closed/bounded-steps-in-compositions.md).
+proposals/closed/bounded-steps-in-compositions.md).
 
 There, the entry reads a value v_e and the twin reads a value v_t, and
 the bound e says |v_e - v_t| <= e, field by field, for the twin of any
@@ -31,7 +31,7 @@ DBL_MAX/n, an output field can be infinite or NaN on one side alone, a
 later step's validation can raise on one side alone, either side, and the
 twin itself answers such a row one way in one call and another way in
 another. The bound does not cover that row, and
-loops/native/decisions/open/where-a-sum-overflows.md asks the owner what
+questions/open/where-a-sum-overflows.md asks the owner what
 holds there.
 """
 

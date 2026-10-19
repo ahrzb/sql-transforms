@@ -294,7 +294,13 @@ def _bound(est: Any) -> int:
     return 0 if b and kernel_distance(est.func) == 0 else b
 
 
-@translates(FunctionTransformer, ulps=max(_BOUNDS.values()), bound=_bound, carry=_carry)
+@translates(
+    FunctionTransformer,
+    ulps=max(_BOUNDS.values()),
+    bound=_bound,
+    carry=_carry,
+    uncapped="Only elementwise functions: one output per input feature.",
+)
 def _function(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate if `validate` (NaN and infinity raise), then
     # `func(X, **kw_args)`, elementwise on the float64 row.

@@ -216,24 +216,25 @@ def _estimate(X: np.ndarray, **params) -> float:
 
 
 def test_the_entry_takes_a_fit_by_its_estimated_build():
-    # 12,000 quantiles over one feature build in 4.8 s, and 500 over 32
-    # integer features in 2.5 s: their runs of equal quantiles leave about
-    # 155 leaves a feature (quantile.py, `_build_estimate`).
+    # The old trial-only estimate admitted 12,000 quantiles; the new one
+    # prices the translation and probe too. Runs of equal quantiles still
+    # leave fewer leaves than the fitted count suggests.
     rng = np.random.default_rng(4)
     X = rng.normal(size=(24000, 1))
-    assert _estimate(X, n_quantiles=12000, subsample=None) <= MAX_BUILD_S
+    assert _estimate(X, n_quantiles=8000, subsample=None) <= MAX_BUILD_S
+    assert _estimate(X, n_quantiles=12000, subsample=None) > MAX_BUILD_S
     ints = rng.integers(0, 125, size=(2000, 32)).astype(float)
     assert _estimate(ints, n_quantiles=500) <= MAX_BUILD_S
 
 
 @pytest.mark.parametrize(
     ("shape", "quantiles", "seconds"),
-    [((16000, 8), 2000, 8), ((2000, 800), 20, 12)],
+    [((16000, 8), 2000, 13), ((2000, 800), 20, 30)],
     ids=["2000x8", "20x800"],
 )
 def test_past_the_estimated_build_stays_python(shape, quantiles, seconds):
-    # 2,000 quantiles over 8 features: 15,992 leaves, built in 8.3 s. 20
-    # quantiles over 800 features: 15,200 leaves; 10 built in 9.0 s.
+    # Refuse before translating either the many-leaf or many-feature fit;
+    # both now include translation and probe cost, not only the trial build.
     step = _step(np.random.default_rng(4).normal(size=shape), n_quantiles=quantiles)
     with pytest.raises(NotNative, match=rf"an estimated {seconds} s build, past 7 s"):
         to_native(step, strict=True)

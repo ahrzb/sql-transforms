@@ -72,14 +72,12 @@ from confit import sql as S
 from sklearn.preprocessing import QuantileTransformer
 
 from sql_transform.native._helpers import f64, isnan
-from sql_transform.native._registry import NotNative, translates
-
-# The longest build the entry takes on for one estimator, in seconds, by
-# `_build_estimate` (as trees.py's and spline.py's caps). Serving 64 rows
-# is 25 times faster than the twin at 1,000 quantiles over one feature, 2
-# times at 8,000 over one, 3 at 1,000 over eight, 13 at 10 over 800
-# (release build, one container, 2026-10-05).
-MAX_BUILD_S = 7.0
+from sql_transform.native._registry import (
+    MAX_BUILD_S,
+    NotNative,
+    build_estimate,
+    translates,
+)
 
 # One interval of `np.interp`'s line: x in [start, next start) answers
 # `slope * (x - start) + value`, or `value` at `start` when `exact`.
@@ -215,15 +213,36 @@ def _leaves_of(q: np.ndarray, r: np.ndarray) -> list[_Leaf]:
     return _leaves(q, r)
 
 
-def _build_estimate(leaves: int, arms: int, features: int) -> float:
-    """The seconds of confit's trial build of the entry alone
-    (`_registry._builds`, warm, release build), without the translation and
-    the probe that `to_native` also runs, from `n`, the leaves of its trees
-    plus 0.4 times their exact arms, and the features. The build is about
-    linear in `n`, however the features split it (16,000 leaves as 2, 4, 8,
-    16 or 32 trees: 8.2 to 9.0 s), with a term in `n` squared past that, and
-    a term in the features squared from the struct return (800 features of
-    one leaf: 5.6 s as a struct, 0.6 s as a list). Fitted on the slower of
+@build_estimate(
+    warm_factor=1.65,
+    weighted_leaves=3.04e-4,
+    weighted_leaves2=1.07e-8,
+    features2=1.771e-5,
+)
+def _build_estimate(
+    leaves: int, arms: int, features: int
+) -> dict[str, tuple[float, ...]]:
+    """Seconds of the whole warm to_native, with a release build of confit.
+
+    Multiply the trial-build fit by 1.65 and add the probe's quadratic
+    feature cost. On Windows 11 10.0.26300 AMD64, Python 3.14,
+    master 40f6ab17, 2026-10-17, benchmarks/native_estimates.py timed
+    8,000 quantiles over one feature, 750 over 16, and 10 over 512 integer
+    features, both returns, median of three after warming. Whole/trial
+    was 1.60--1.65 on the first two. On the wide shape,
+    max(whole)/max(trial) was 3.05: the probe hands the twin an n-feature
+    row for each feature. Before the factor, add
+    (3.05/1.65 - 1) * old_estimate(512x10) / 512**2 = 9.8e-6 (rounded)
+    to the old features2 coefficient 7.91e-6. This uses phase ratios,
+    not a host-speed refit. Whole times were 3.47, 9.68 and 11.22 s,
+    taking the slower return for each shape.
+
+    Original trial-build evidence: n is the leaves plus 0.4 times their
+    exact arms. The build is about linear in n, however features split it
+    (16,000 leaves as 2, 4, 8, 16 or 32 trees: 8.2 to 9.0 s), with a term
+    in n squared and a term in features squared from the struct return
+    (800 features of one leaf: 5.6 s as a struct, 0.6 s as a list).
+    Fitted on the slower of
     the two returns over 66 builds of 0.3 to 13.0 s (1 to 800 features, 10
     to 24,000 quantiles, fits of continuous values and of integers, whose
     runs of equal quantiles leave fewer leaves with more arms; T46 on master
@@ -236,7 +255,11 @@ def _build_estimate(leaves: int, arms: int, features: int) -> float:
     reads (`_registry._apart`; master 318575b), the estimate reached 7 s at
     about 13,400 leaves."""
     n = leaves + 0.4 * arms
-    return 3.04e-4 * n + 1.07e-8 * n**2 + 7.91e-6 * features**2
+    return {
+        "weighted_leaves": (n,),
+        "weighted_leaves2": (n**2,),
+        "features2": (features**2,),
+    }
 
 
 def _feature(x: S.Expr, q: np.ndarray, leaves: list[_Leaf]) -> S.Expr:
@@ -258,7 +281,7 @@ def _feature(x: S.Expr, q: np.ndarray, leaves: list[_Leaf]) -> S.Expr:
     return e.otherwise(_tree(x, leaves))
 
 
-@translates(QuantileTransformer)
+@translates(QuantileTransformer, builds=(_build_estimate,))
 def _quantile(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     if est.output_distribution != "uniform":
         raise NotNative(

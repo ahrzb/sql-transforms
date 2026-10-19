@@ -53,7 +53,11 @@ def _carry(est: Any) -> Carry | None:
     return carry
 
 
-@translates(FeatureAgglomeration, carry=_carry)
+@translates(
+    FeatureAgglomeration,
+    carry=_carry,
+    uncapped="One output per fitted cluster, at most the input width.",
+)
 def _agglomeration(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # sklearn: validate (NaN and infinity raise), then, for
     # `pooling_func == np.mean` over dense X, each row is
