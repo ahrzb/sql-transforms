@@ -15,6 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check native bound changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          python scripts/check_bounds.py "origin/$BASE_REF"
+
       # The package is a pyo3/maturin extension, so CI needs a Rust toolchain
       # to build it during `uv sync`.
       - name: Install Rust toolchain
