@@ -1,0 +1,92 @@
+# Confit engine: tracker
+
+## Tasks
+
+- [Match narrow overflow errors](tasks/overflow-error-text.md): open.
+- [Skip the ON clause for an all-NULL hash build](tasks/all-null-left-join.md): open.
+- [Parse integer string members exactly](tasks/integer-string-members.md): open.
+- [Make deep CASE builds scale linearly](tasks/deep-case-builds.md): open.
+- [Serve remaining DECIMAL input casts](tasks/decimal-casts.md): open.
+- [Serve capped DECIMAL comparison families](tasks/decimal-common-width.md): open.
+- [Serve unsigned negation and wide shifts](tasks/wide-integer-operators.md): open.
+- [Serve remaining wide numeric casts](tasks/wide-integer-casts.md): open.
+- [Serve wide round and trunc digits](tasks/wide-rounding.md): open.
+- [Serve UHUGEINT](tasks/uhugeint-lane.md): open.
+- [Carry struct slots through derived tables](tasks/struct-derived-slots.md): open.
+- [Unify struct CASE types](tasks/struct-case-types.md): open.
+- [Serve struct NULL tests and operands](tasks/struct-null-and-operands.md): open.
+- [Serve remaining named and unnamed struct construction](tasks/struct-construction.md): open.
+- [Serve merged struct USING keys](tasks/struct-using-keys.md): open.
+- [Carry opaque struct leaves](tasks/opaque-struct-leaves.md): open.
+- [Compute scan avg and DOUBLE sum](tasks/scan-avg-float-sum.md): open.
+- [Compute DISTINCT scan aggregates](tasks/scan-distinct.md): open.
+- [Evaluate single-row scan items](tasks/scan-single-row-item.md): open.
+- [Evaluate uncorrelated static terms at build](tasks/static-subquery-traps.md): open.
+- [Compute IN ANY and ALL scans](tasks/scan-quantified-subqueries.md): open.
+- [Compute ORDER BY LIMIT scans](tasks/scan-order-limit.md): open.
+- [Compile bounded scans with Cranelift](tasks/jit-scan-probes.md): open.
+- [Evaluate trapping grouped items per request](tasks/trapping-group-items.md): open.
+- [Serve remaining grouped aggregate forms](tasks/aggregate-remainders.md): open.
+- [Serve scalar subquery field reads](tasks/subquery-item-boundaries.md): open.
+- [Serve calls in scalar subquery items](tasks/scalar-subquery-calls.md): open.
+- [Serve remaining scalar subquery output forms](tasks/scalar-subquery-output-types.md): open.
+- [Find a static-only subquery witness](tasks/static-only-subqueries.md): open.
+- [Serve reusable row-local CTEs](tasks/remaining-subquery-boundaries.md): open.
+- [Serve remaining row-local subquery scopes](tasks/nested-subquery-scopes.md): open.
+- [Serve a row-local set-operation slice](tasks/row-local-set-operations.md): open.
+- [Serve list columns and nested list leaves](tasks/lists-and-nested-leaves.md): open.
+- [Serve COLUMNS and a lambda/list expression slice](tasks/columns-and-lambdas.md): open.
+- [Serve float32 arithmetic](tasks/float32-lane.md): open.
+- [Serve opaque temporal join keys](tasks/temporal-key-lane.md): open.
+- [Serve temporal values and casts](tasks/temporal-values.md): open.
+- [Serve a temporal function slice](tasks/temporal-functions.md): open.
+- [Serve BLOB values](tasks/blob-lane.md): open.
+- [Add remaining precedence hooks](tasks/parse-hooks.md): open.
+- [Resolve the RE2-compatible regex boundary](tasks/regex-list-boundary.md): open.
+- [Name refusals and map their classes](tasks/refusal-names-and-inventory.md): open.
+- [Add executable refusal twins](tasks/refusal-executable-twins.md): open.
+- [Preserve NULL-folded constant traps](tasks/constant-fold-traps.md): open.
+- [Coerce negated integer literals in builtin calls](tasks/negated-literal-coercion.md): open.
+- [Measure static JOIN residual trap analysis](tasks/join-residual-trap-analysis.md): open.
+- [Fold constant string terms before comma admission](tasks/comma-constant-folds.md): open.
+- [Evaluate request-only comma prefixes before probes](tasks/comma-request-prefix.md): open.
+- [Run pytest with debug assertions in the gate](tasks/debug-assertion-gate.md): open.
+- [Generate every missing IR opcode](tasks/ir-generator-coverage.md): open.
+- [Make pin queries replayable](tasks/replay-pin-queries.md): open.
+- [Resolve unagreed ledger ordering contracts](tasks/ledger-ordering-contracts.md): open.
+- [Bisect serving against the Python twin](tasks/serving-regression.md): open.
+- [Profile numeric helper costs](tasks/numeric-jit-inlining.md): open.
+- [Vectorize UDF apply_batch](tasks/vectorized-apply-batch.md): open.
+- [Reduce compilation near the register cap](tasks/cranelift-register-cost.md): open.
+- [Make long AND OR builds scale linearly](tasks/long-boolean-builds.md): open.
+- [Reduce unnecessary CASE branches](tasks/case-select-cost.md): open.
+- [Measure a vectorized multi-tree walk](tasks/native-kernel-boundaries.md): open.
+- [Write maintainer docs in simple English](tasks/maintainer-docs-plain-english.md): open.
+- [Specify off-support window steps](tasks/authoring-admission.md): open.
+- [Resolve open composition directions](tasks/composition-open-directions.md): open.
+- [Round-trip remaining partition keys](tasks/partition-key-roundtrip.md): open.
+- [Parse Spark SQL](tasks/reverse-dialect-frontends.md): open.
+- [Execute BigQuery L3 checks](tasks/bigquery-execution-leg.md): open.
+- [Merge downstream cost tests](tasks/downstream-cost-tests.md): claimed by the review-fixes session of 2026-10-17.
+- [Parse BigQuery SQL](tasks/bigquery-reverse-frontend.md): open.
+- [Generate nonliteral IN-list items](tasks/nonliteral-in-generator.md): open.
+- [Admit frozen static joins in composition](tasks/frozen-static-joins.md): open.
+- [Admit IN-subqueries as fitted sets](tasks/fitted-in-sets.md): open.
+- [Admit star bundles into transformers](tasks/star-transformer-bundles.md): open.
+- [Admit typed takes](tasks/typed-takes.md): open.
+- [Resolve non-SQL scoring kernels](tasks/remaining-native-kernels.md): open.
+
+## Needs
+
+Historical costs below are not fresh measurements. Reproduce external evidence before making new numeric claims.
+
+- **build-deadline:** from [native catalog](../native/README.md); needs a deadline or preflight refusing by name before excessive time/memory; evidence: [native report 8](../native/reports/2026-10-17-reading-8.md), sections 3 and 6; distance 4,000 centres refused after 475 s, SkewedChi2 2,048 components exhausted 16 GB (historical); blocks growing families; on delivery replace native estimate formulas only if the contract covers them.
+- **shared-logarithm:** from [native catalog](../native/README.md); needs a logarithm, root or trig value (`ln`, `log2`, `log10`, `sqrt`, `sin`, `cos`, `tan`, and values that read one) computed once a row, also under a CASE that rules its raise out; evidence: not in the repository: `/mnt/project-files/transforms-loop/t52/` and `t59/`; SkewedChi2 computes n·m logarithms a row and runs out of 16 GB at 2,048 products; since #514 a composition after such a call builds in 21–31 s and up to 3.8 GB; medium priority, because it limits the compositions #514 serves; on delivery lift `kernel._SKEWED_PRODUCTS` and `_registry.MAX_UNSHARED`, refit `_skewed_build_estimate`.
+- **definition-bound-once:** from [native catalog](../native/README.md); needs `SqlFunction.register` to write each bound value once in the DuckDB definition instead of at each read; evidence: not in the repository: `/mnt/project-files/transforms-loop/t54/` and `t59/`; Nystroem's definition is 25 MB at 8×100 and runs out of memory at 64×100; since #514 a `StandardScaler` and four `PCA`s over 8 features spell out to 9.6 million characters (21,554 in the let form), so `check` skips definitions past 4 million; medium priority; on delivery remove those skips and widen the tests.
+- **struct-field-reads:** from [native catalog](../native/README.md); needs whole-struct and field-read builds without repeated field cost; evidence: not in the repository: `/mnt/project-files/transforms-loop/confit-field-reads-456.py`; [native report 8](../native/reports/2026-10-17-reading-8.md), section 3; blocks forest/spline/quantile/distance/power/additive-chi2/sparse estimates; on delivery retime both forms and refit affected estimates; #430/#461 did not complete this need.
+- **shared-small-values:** from [native catalog](../native/README.md); needs sharing below `MIN_SHARED_SIZE = 6` without cost-only SQL; evidence: not in the repository: `/mnt/project-files/transforms-loop/t44/reads3.py`; `packages/confit/src/specializer/share.rs`; projections/forests retain T44’s `x - 0.0`; on delivery measure without it, remove `_apart` and cost-only reads, refit `_build_estimate`, `_centered_build_estimate` and forest estimates.
+- **function-body-pass:** from [native catalog](../native/README.md); needs less Python rewriting during large SQL-function construction; evidence: not in the repository: `/mnt/project-files/transforms-loop/confit-function-body-pass.py`; blocks quantile/large functions; on delivery retime `SqlFunction` and warm `to_native`, refit whole-call estimates.
+- **deep-expressions:** from [native catalog](../native/README.md); needs deep expressions without depth refusals or RecursionError; evidence: [native report 8](../native/reports/2026-10-17-reading-8.md), finding 86; `packages/sql-transform/sql_transform/native/catalog_test.py`; blocks Normalizer l2/Box-Cox/sparse projection; on delivery retest exact reduction order, remove obsolete depth/`_MAX_STORED` caps and refit sparse/power costs.
+- **one-case-tree-cost:** from [native catalog](../native/README.md); needs linear-cost deep CASE builds; evidence: [deep CASE task](tasks/deep-case-builds.md); not in the repository: `/mnt/project-files/transforms-loop/`; native finding 49; Isotonic 20,000 thresholds about 22 s; on delivery retime threshold/leaf grids and refit Isotonic/quantile `_build_estimate`.
+- **optimizer-size-refusal:** from [native catalog](../native/README.md); needs a named refusal after optimizer growth before Cranelift’s index limit; evidence: not in the repository: `/mnt/project-files/transforms-loop/confit-wide-encoder-verifier.py`; wide encoders fall back to Python; old case builds after #430; on delivery retain a post-optimizer limit regression; no unmeasured cap lift.
+- **sharing-outside-projection:** from [native catalog](../native/README.md); needs sharing in WHERE, join keys and existing many-row projections; evidence: `packages/confit/src/specializer/share.rs`; shared-subexpression follow-ups at `40f6ab17`; no current native estimate or workaround; on delivery measure callers and refit any newly affected estimates.

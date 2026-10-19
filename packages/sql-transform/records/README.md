@@ -18,4 +18,4 @@ Research lessons:
   pre-aggregated params table, and how many refusals that costs.
 
 A loop keeps its own decision records. The native catalog's records are in
-[loops/native/decisions/](../../../loops/native/decisions/README.md).
+[questions/README.md](../../../questions/README.md).

@@ -116,7 +116,7 @@ class Rule:
 
     id: str
     ledger: str  # the anchor in docs/oracle/07-the-divergence-ledger.md
-    ruling: str  # the decision that admits it (under docs/, or a loops/ record)
+    ruling: str  # what admits it: a doc under docs/, or a closed proposal (proposals/)
     claim: str
     canaries: tuple[int, ...]
     expected_per_100k: float  # the nightly flags a count far above this
@@ -184,7 +184,7 @@ def _ceiling(ev: Evidence) -> str | None:
 _EMPTY_INNER = joins_static_where(rows=0, kinds=("INNER", "CROSS"))
 # An INNER join on a key whose static has no row that a request can match:
 # DuckDB leaves a row whose key is NULL out of its hash table, which is then
-# empty too (loops/confit/decisions/closed/all-null-key-static.md).
+# empty too (proposals/closed/all-null-key-static.md).
 _NULL_KEYED = joins_static_where(built=0, kinds=("KEYED",))
 
 
@@ -207,7 +207,7 @@ def _empty_static(ev: Evidence, raw) -> str | None:
     # DuckDB must then trap. Any trap counts, as for AGREE_TRAP: DuckDB
     # evaluates one column over the batch at a time and confit one row at a
     # time, so with traps in two rows each engine can meet another one first
-    # (loops/confit/decisions/closed/empty-static-witness-trap-order.md).
+    # (proposals/closed/empty-static-witness-trap-order.md).
     # Whether the row matches does not matter: the row side runs either way.
     err = _duck_with_padding(ev, empty)
     if err is None:
@@ -380,7 +380,7 @@ def _long_string(case) -> str | None:
     # witness, the kind stays: a cap changes the values that the query
     # computes, so the capped query can raise an error that the original
     # does not, such as a cast of a string that the cap made shorter
-    # (loops/confit/decisions/closed/oracle-timeout-before-a-trap.md).
+    # (proposals/closed/oracle-timeout-before-a-trap.md).
     from fuzz import oracle as O  # noqa: PLC0415 -- oracle imports this module
 
     udf_objs = O._udf_objs(case)
@@ -414,10 +414,10 @@ RULES: tuple[Rule, ...] = (
     Rule(
         id="empty-static-trap-timing",
         ledger="divergence: empty-static-trap-timing",
-        ruling="loops/confit/decisions/closed/empty-static-join-trap-timing.md",
+        ruling="proposals/closed/empty-static-join-trap-timing.md",
         extended_by=(
-            "loops/confit/decisions/closed/all-null-key-static.md",
-            "loops/confit/decisions/closed/empty-static-witness-trap-order.md",
+            "proposals/closed/all-null-key-static.md",
+            "proposals/closed/empty-static-witness-trap-order.md",
         ),
         claim=(
             "An INNER or CROSS join on an empty static, or an INNER join on "
@@ -448,7 +448,7 @@ RULES: tuple[Rule, ...] = (
     Rule(
         id="oracle-timeout-before-a-trap",
         ledger="divergence: oracle-timeout-before-a-trap",
-        ruling="loops/confit/decisions/closed/oracle-timeout-before-a-trap.md",
+        ruling="proposals/closed/oracle-timeout-before-a-trap.md",
         claim=(
             "Confit traps on a request before it builds a long string. The "
             "oracle evaluates one expression over all the requests at a "

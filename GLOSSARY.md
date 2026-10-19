@@ -265,83 +265,17 @@ _Avoid_: skip list, allowlist
 A test that compares two spellings of the same query, which must give the
 same answer.
 
-## Documents
+## Package documents
 
-**Spec**:
-The description of what a package does now, in the package's `spec/`
-folder. It holds no plans, proposals or history.
-_Avoid_: design doc
+Meta words (spec, proposal, question, mandate, report and the rest) are the `repo-docs` skill's. These terms name the older document kinds that `packages/sql-transform/` still uses.
 
 **Claim**:
-One named rule in a spec, written as `**claim: <name>.**`. It ends with an
+One named rule in a package spec, written as `**claim: <name>.**`. It ends with an
 Evidence line that names the tests that pin it.
 
 **RFC**:
-A complete proposed design, with the options weighed. It waits for the
-owner's review before it changes a spec.
-_Avoid_: proposal (for an RFC)
-
-**Record**:
-A document that is kept as written: a closed decision, an applied RFC, a
-research lesson or a changelog entry. Only its links change, when a target
-moves.
+A complete proposed design for `sql-transform`, with the options weighed. It waits for the
+maintainer's review before it changes a spec.
 
 **Decision record**:
-A file that asks the owner one question, or holds the owner's ruling. A loop
-keeps its records in its `decisions/` folder. `sql-transform` keeps open and
-postponed records in `packages/sql-transform/plan/decisions/`, and closed
-records in `packages/sql-transform/records/decisions/`.
-_Avoid_: ADR, owner question (without a record)
-
-## Loops
-
-**Loop**:
-An agent session that turns a goal into merged PRs, one verified change at a
-time. It stops when the remaining work needs the owner.
-_Avoid_: bot, agent run
-
-**Owner**:
-The person who owns the repository and rules on decisions.
-_Avoid_: user, human
-
-**Supervisor**:
-A loop session that splits work into tickets, starts workers, reviews their
-PRs and merges them.
-_Avoid_: lead, orchestrator
-
-**Worker**:
-A session that does one ticket on its own branch and opens one PR.
-_Avoid_: subagent, helper
-
-**Ticket**:
-One item of work, for one branch and one PR. The loop's `tickets.md` lists
-the tickets in progress.
-_Avoid_: task, job
-
-**Wave**:
-A set of tickets that the supervisor starts at the same time.
-_Avoid_: batch, round
-
-**Need**:
-A capability that one loop asks the other loop to make.
-_Avoid_: ask, blocker, dependency
-
-**Report**:
-A file in a loop's `reports/` folder that starts with the KPI block. It is a
-milestone report or a short reading.
-_Avoid_: update, status
-
-**Reading**:
-A report that measures the success measures on one commit of master. A short
-reading measures only some of them, and its KPI block gives `null` for the
-others.
-_Avoid_: snapshot, yardstick reading
-
-**KPI block**:
-The front matter of a report, with fixed keys that the owner's tracker
-reads. `loops/reporting.md` lists the keys.
-
-**PLANS**:
-The loop's list of open work in `PLANS.md`, with the most valuable item
-first.
-_Avoid_: roadmap, todo list
+A file in `packages/sql-transform/plan/decisions/` that asks the maintainer one question about `sql-transform`, or, in `packages/sql-transform/records/decisions/`, holds the answer.

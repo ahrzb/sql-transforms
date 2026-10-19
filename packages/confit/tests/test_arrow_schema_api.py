@@ -407,7 +407,7 @@ def test_foreign_type_unreferenced_builds_referenced_refuses():
 
 
 # A query that reads no request table is outside the model
-# (loops/confit/decisions/closed/static-only-queries.md): it refuses at build, naming
+# (proposals/closed/static-only-queries.md): it refuses at build, naming
 # why -- whatever else it carries (aggregates, ORDER BY, row limits) and
 # under every shape.
 @pytest.mark.parametrize(

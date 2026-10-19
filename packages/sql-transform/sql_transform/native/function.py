@@ -206,7 +206,7 @@ def _random_doubles(rng: np.random.Generator, n: int) -> np.ndarray:
     normal double's bits equally likely. `exp(t)` of a uniform `t` would
     not do: for |t| >= 2 its log lies within ulp(t)/4 of the double `t`,
     far from a rounding midpoint, so two accurate `log` kernels agree there
-    (loops/native/decisions/research/2026-10-06/chi2.md, section 2)."""
+    (research/native-parity-bounds/chi2.md, section 2)."""
     sign = rng.integers(0, 2, n, dtype=np.uint64) << np.uint64(63)
     exponent = rng.integers(1, 2047, n, dtype=np.uint64) << np.uint64(52)
     significand = rng.integers(0, 1 << 52, n, dtype=np.uint64)

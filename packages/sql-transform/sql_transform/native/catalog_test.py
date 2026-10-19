@@ -334,7 +334,7 @@ def _spline_with_knots(**params: Any) -> Callable[[], SplineTransformer]:
 # builds in a few seconds since confit #387 (spline.py, `_build_estimate`),
 # but the family's gate share grows with it: 31 s on 4 workers at 8 features,
 # 49 s at 16, 60 s without the limit (2026-10-06). The 200-seed sweep
-# (NATIVE_SEEDS=200, loops/native/report-format.md) covers every width.
+# (NATIVE_SEEDS=200, mandates/native/README.md#reporting-contract) covers every width.
 SPLINE_FEATURES = 8
 FIXTURES[SplineTransformer] = [
     SplineTransformer,
@@ -1037,7 +1037,7 @@ REFUSED = (
     "two pivot candidates of the LU",
 )
 # Seeds per configuration: 8 in the gate; a milestone report sweeps more
-# (NATIVE_SEEDS=200, loops/native/report-format.md).
+# (NATIVE_SEEDS=200, mandates/native/README.md#reporting-contract).
 SEEDS = int(os.environ.get("NATIVE_SEEDS", "8"))
 SEED_BASE = int(os.environ.get("NATIVE_SEED_BASE", "0"))
 

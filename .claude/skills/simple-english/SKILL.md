@@ -1,14 +1,14 @@
 ---
 name: simple-english
-description: Writing rules (Simplified Technical English) and the glossary rules, for text that the owner reads. Use it when you write or change a doc that the owner reviews or maintains, a report, a decision record, or the summary of a large technical PR. Not needed for code, code comments, PLANS.md, the ticket board or an ordinary PR body.
+description: Writing rules (Simplified Technical English) and the glossary rules, for text that the owner reads. Use it when you write or change a doc that the owner reviews or maintains, a report, a question, a proposal, or the summary of a large technical PR. Not needed for code, code comments, a tracker, a task description or an ordinary PR body.
 ---
 
 # Simple English
 
 Use this skill for text that the owner reads. This is the docs that the
-owner reviews or maintains, reports, decision records, and the summary of a
-large technical PR. Working files for agents, such as `PLANS.md` and the ticket
-board, need only be clear to the next agent.
+owner reviews or maintains, reports, questions, proposals, and the summary of a
+large technical PR. Working files for agents, such as a tracker and a task
+description, need only be clear to the next agent.
 
 ## The writing rules
 
@@ -89,8 +89,8 @@ words that we do not use for that thing.
 2. **Add a term when it becomes fixed,** in the PR that fixes it. Do not
    collect terms at the end of the work.
 3. **Keep only terms in the glossary.** Do not put implementation details,
-   specifications, decisions or general programming words in it. A decision
-   goes to a loop's `decisions/`. A specification goes to the package docs.
+   specifications, decisions or general programming words in it. A question
+   goes to `questions/open/`. A specification goes to the package docs.
 4. **If the code and the glossary disagree,** say so in the PR. Then change
    one of them.
 5. **Make the glossary shorter when you can.** Remove a term that the

@@ -10,7 +10,7 @@ unclassified difference stays unresolved rather than being relabelled
 contract-unspecified. The unresolved/unspecified distinction itself is defined in
 [ordering and status vocabulary](03-nondeterminism.md).
 
-*Decision:* [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../../../../proposals/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 *Enforced-by:* `fuzz.runner.CATEGORY` and `fuzz.runner.report`. The campaign report's
 outcome section counts, over a stated population, `agreement` (`AGREE`, `AGREE_TRAP`,
@@ -64,7 +64,7 @@ itself an engine defect. An unlisted divergence is therefore neither excused nor
 definition — the contract decides, and index completeness carries no service-level
 promise.
 
-*Decision:* [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../../../../proposals/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 Severity follows [the four-rung ladder](08-the-severity-ladder.md). Trap elision and the
 subquery LIMIT ceiling are contract entries rather than engine-versus-oracle value
@@ -77,10 +77,10 @@ divergences, but are indexed where readers expect them.
 | **divergence: ilike-nul** | source exclusion / n/a | kept | unruled |
 | **divergence: trap-elision** | optimizer-on contract gap / 1 | kept | unruled |
 | **divergence: subquery-limit-ceiling** | optimizer-on contract gap / 3 | kept | unruled |
-| **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#reference-and-comparison) |
+| **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../../../../proposals/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
-| **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../../../../loops/confit/decisions/closed/empty-static-join-trap-timing.md), extended by [all-NULL-key static](../../../../loops/confit/decisions/closed/all-null-key-static.md) and [error category](../../../../loops/confit/decisions/closed/empty-static-witness-trap-order.md) |
-| **divergence: oracle-timeout-before-a-trap** | execution order / n/a | excluded with a witness | **ruled** by [oracle timeout before a trap](../../../../loops/confit/decisions/closed/oracle-timeout-before-a-trap.md) |
+| **divergence: empty-static-trap-timing** | execution order / n/a | excluded with a witness | **ruled** by [empty-static join trap timing](../../../../proposals/closed/empty-static-join-trap-timing.md), extended by [all-NULL-key static](../../../../proposals/closed/all-null-key-static.md) and [error category](../../../../proposals/closed/empty-static-witness-trap-order.md) |
+| **divergence: oracle-timeout-before-a-trap** | execution order / n/a | excluded with a witness | **ruled** by [oracle timeout before a trap](../../../../proposals/closed/oracle-timeout-before-a-trap.md) |
 | **divergence: wrapped-query-refusals** | metamorphic rewrite tolerance / n/a | kept | **ruled** by [the row-local subqueries design](../specs/2026-09-26-row-local-subqueries-design.md) |
 | **divergence: decimal-literal-typing** | closed | shipped: literals are DECIMAL | n/a |
 | **divergence: decimal-cast-rounding** | closed | shipped: DECIMAL casts round half away from zero | n/a |
@@ -141,7 +141,7 @@ Slugs are stable when multiple entries describe one mechanism.
   if the oracle raises an error too, of any kind, after the witness adds one row of
   plain values that are not NULL (such as 0, an empty string or FALSE) to the static
   table. Evidence: `empty-static-join-trap-timing.md`, `all-null-key-static.md` and
-  `empty-static-witness-trap-order.md` in `loops/confit/decisions/closed/`; nightly
+  `empty-static-witness-trap-order.md` in `proposals/README.md`; nightly
   seeds 1994509, 2286807, 4001288, 4100483, 4313391, 4889739, 7242549, 7829571.
 - **divergence: oracle-timeout-before-a-trap.** Confit evaluates the whole query for
   one request before the next request. So it traps on an ordinary error, such as an
@@ -156,7 +156,7 @@ Slugs are stable when multiple entries describe one mechanism.
   oracle then raises an error. The error must have the kind that the error of confit
   names, such as "Out of Range Error". If the error of confit names no kind, any error
   counts.
-  Evidence: `oracle-timeout-before-a-trap.md` in `loops/confit/decisions/closed/`;
+  Evidence: `oracle-timeout-before-a-trap.md` in `proposals/README.md`;
   nightly seeds 4226438, 4657943, 8249704, 9195711 and campaign seed 946454.
 - **divergence: wrapped-query-refusals.** Wrapping a query in a derived table or CTE
   reaches two named refusals the unwrapped query does not (a struct slot in a derived
@@ -209,8 +209,8 @@ below is the registry's own output (`python -m fuzz.exclusions --ledger`).
 | id | kind | ledger entry | status | ruling | measured on | canaries |
 |---|---|---|---|---|---|---|
 | `resource-ceiling` | verdict | exclusion: resource-ceilings | ruled | `specs/serving-contract.md` | DuckDB 1.5.5 | 1 |
-| `empty-static-trap-timing` | verdict | divergence: empty-static-trap-timing | ruled | `loops/confit/decisions/closed/empty-static-join-trap-timing.md`, extended by `loops/confit/decisions/closed/all-null-key-static.md` and `loops/confit/decisions/closed/empty-static-witness-trap-order.md` | DuckDB 1.5.5 | 8 |
-| `oracle-timeout-before-a-trap` | verdict | divergence: oracle-timeout-before-a-trap | ruled | `loops/confit/decisions/closed/oracle-timeout-before-a-trap.md` | DuckDB 1.5.5 | 5 |
+| `empty-static-trap-timing` | verdict | divergence: empty-static-trap-timing | ruled | `proposals/closed/empty-static-join-trap-timing.md`, extended by `proposals/closed/all-null-key-static.md` and `proposals/closed/empty-static-witness-trap-order.md` | DuckDB 1.5.5 | 8 |
+| `oracle-timeout-before-a-trap` | verdict | divergence: oracle-timeout-before-a-trap | ruled | `proposals/closed/oracle-timeout-before-a-trap.md` | DuckDB 1.5.5 | 5 |
 | `wrap-derived: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
 | `wrap-cte: struct slot` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
 | `wrap-derived: many join` | rewrite | divergence: wrapped-query-refusals | ruled | `specs/2026-09-26-row-local-subqueries-design.md` | DuckDB 1.5.5 | - |
@@ -231,7 +231,7 @@ one-test-per-paragraph registry. Important gaps named in this chapter: no twin m
 the DuckDB-serves cost of divergence: bind-time-constant-refusals, and no test exercises
 the Arrow batch ceiling.
 
-*Decision:* [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../../../../proposals/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 ## Where a decision is written down
 
@@ -240,7 +240,7 @@ comparison rule that it qualifies, and is linked from this chapter. Open bugs an
 unfinished investigations stay in the ledger. Indexing a divergence here never
 approves it.
 
-*Decision:* [oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md#limits-on-process-rules).
+*Decision:* [oracle policy](../../../../proposals/closed/oracle-policy.md#limits-on-process-rules).
 The [comparison contract](05-the-comparison-contract.md) lists the approved bounds
 separately from independent references. The accepted policy itself is
-[the oracle policy decision](../../../../loops/confit/decisions/closed/oracle-policy.md).
+[the oracle policy decision](../../../../proposals/closed/oracle-policy.md).

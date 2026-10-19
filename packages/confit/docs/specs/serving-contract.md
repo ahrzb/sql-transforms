@@ -1,9 +1,9 @@
 # Serving contract
 
-The [goal](../../../../loops/confit/goal.md) defines the target. This document supplies the API and
+The [goal](../../../../mandates/confit/README.md#objective) defines the target. This document supplies the API and
 scope details; the [oracle](../oracle/README.md) defines SQL compatibility. The
 rationale for the scope classification and output-nullability rule is in the
-[oracle policy](../../../../loops/confit/decisions/closed/oracle-policy.md).
+[oracle policy](../../../../proposals/closed/oracle-policy.md).
 
 ## API and output shape
 
@@ -55,7 +55,7 @@ not change a request row's answer. Grouping, aggregation, sorting, distinctness,
 limits, and windows that depend on sibling request rows are outside the model.
 Aggregating frozen rows matched by one request row is inside it, as is reducing
 a list stored in that row. Queries reading no request table are outside it.
-The rationale is in the [scope decision](../../../../loops/confit/decisions/closed/static-only-queries.md).
+The rationale is in the [scope decision](../../../../proposals/closed/static-only-queries.md).
 
 Confit also refuses these forms: a CTE read twice, the subqueries that the
 [restriction inventory](#restriction-inventory-by-class) does not list as
@@ -104,7 +104,7 @@ DuckDB 1.5.5.
 
 | Family | Class | Ground |
 |---|---|---|
-| Aggregation, `GROUP BY`/`HAVING`, windows, `QUALIFY` over request rows | 1 outside | answer depends on sibling request rows, also for a join to a static table with `GROUP BY` ([ruling](../../../../loops/confit/decisions/closed/join-group-by-per-request.md)) |
+| Aggregation, `GROUP BY`/`HAVING`, windows, `QUALIFY` over request rows | 1 outside | answer depends on sibling request rows, also for a join to a static table with `GROUP BY` ([ruling](../../../../proposals/closed/join-group-by-per-request.md)) |
 | `ORDER BY`, `LIMIT`/`OFFSET`/`FETCH`/`TOP`, `DISTINCT` over request rows | 1 outside | order, count or identity across the batch |
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
@@ -628,7 +628,7 @@ once. For `avg`, confit divides this sum by the count of the values, and the
 division rounds once, as in the oracle.
 
 In the measurements of the
-[decision record](../../../../loops/confit/decisions/closed/double-sum-bound.md),
+[decision record](../../../../proposals/closed/double-sum-bound.md),
 the oracle adds the values of a table of 5,000 rows in the same order, and the
 two answers are equal bit for bit. Over a table of 300,000 rows, the oracle
 adds parts of the table in parallel. Then its answer can differ from the answer
