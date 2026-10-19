@@ -8,7 +8,7 @@ A configuration within a bound above 0 serves only with
 `to_native(step, allow_bound=True)`. Such an entry can change a prediction.
 On repeated training values, HistGradientBoosting flipped labels under the
 Box-Cox entry. On one host, the twin of an elementwise family flips none
-([matvec-parity-bound.md](../../../../loops/native/decisions/closed/matvec-parity-bound.md), the
+([matvec-parity-bound.md](../../../../proposals/closed/matvec-parity-bound.md), the
 owner's ruling).
 
 <!-- coverage:begin -->

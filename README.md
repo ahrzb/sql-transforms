@@ -15,9 +15,9 @@ time.
 
 The [glossary](GLOSSARY.md) defines the terms of this project.
 
-## Packages
+## Components
 
-| Package | What it is |
+| Component | What it is |
 |---|---|
 | [`sql-transform`](packages/sql-transform) | The authoring package. `SQLTransform` composes, fits and runs general SQL transforms in batch. `SQLProjection` adds the row-local rule, so that a fitted projection can compile to a Confit function. The native catalog translates fitted scikit-learn transformers into transforms that Confit serves. |
 | [`confit`](packages/confit) | The serving engine. It builds SQL and its static tables into a native function. You can use it without sql-transform. |
@@ -165,7 +165,8 @@ mise tasks                                # all mise tasks
 | `docs/specs` | The index of the current system specification |
 | `benchmarks` | Serving and transform benchmarks |
 | `scripts` | The gate and maintenance scripts |
-| `loops` | The plans, decision records and reports of the agent loops for Confit and the native catalog |
+| `mandates` | The two agent mandates, for Confit and the native catalog: their authority, briefs, trackers, audit logs and reports |
+| `proposals`, `questions`, `research` | Changes to what is agreed, questions for the maintainer, and sourced findings, as the `repo-docs` skill lays them out |
 
 ## Documentation
 

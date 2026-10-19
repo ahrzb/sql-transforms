@@ -5,7 +5,7 @@ asks one question. The spec holds only the current rules. These files keep
 the options and the reasons for each choice.
 
 A loop asks its questions in its own `decisions/` folder, for example
-[loops/native/decisions/](../../../../loops/native/decisions/README.md).
+[questions/README.md](../../../../questions/README.md).
 This folder is for questions from work outside a loop.
 
 | Folder | Holds |

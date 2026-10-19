@@ -112,7 +112,7 @@ says whether each form is inside the model.
   row-local, because its answer for one request would depend on the other
   requests of the batch. The refusal holds under each shape, also for a join
   to a static table with `GROUP BY`
-  ([decision](../../../loops/confit/decisions/closed/join-group-by-per-request.md)).
+  ([decision](../../../proposals/closed/join-group-by-per-request.md)).
   It names the spelling that serves: a scalar subquery over a static table,
   such as `(SELECT sum(s.v) FROM s WHERE s.k = t.k)`. This engine serves a
   scalar subquery over a static table that selects an aggregate, an expression
@@ -138,7 +138,7 @@ the model and refuses at build, naming the first construct the binder meets:
 the driving relation (`table 's' as the driving relation (must be the dynamic
 table …)`), `FROM-less SELECT`, or a clause such as `ORDER BY`. Run such a
 query on DuckDB. The ruling is
-[static-only queries](../../../loops/confit/decisions/closed/static-only-queries.md).
+[static-only queries](../../../proposals/closed/static-only-queries.md).
 
 ## 3. Type-system boundaries
 

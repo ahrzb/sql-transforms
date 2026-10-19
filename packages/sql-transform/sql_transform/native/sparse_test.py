@@ -1,5 +1,5 @@
 """The catalog serves a sparse output as the step reads it, dense
-(loops/native/decisions/closed/sparse-outputs.md, the ruling). Each
+(proposals/closed/sparse-outputs.md, the ruling). Each
 configuration is checked against its twin under both of sklearn's sparse
 containers, on rows the twin answers, so that `check` compares every row;
 each sparse configuration that stays Python names why."""

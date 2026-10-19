@@ -15,7 +15,7 @@ composes the same way.
 
 A step whose parity bound is above 0, in ulps or in an error scale,
 serves in a composition only with `to_native(step, allow_bound=True)` (the
-owner's ruling, loops/native/decisions/closed/bounded-steps-in-compositions.md).
+owner's ruling, proposals/closed/bounded-steps-in-compositions.md).
 Where it reads bit-exact input, the input its twin reads, its own bound
 holds (option 1): as a part of a `ColumnTransformer` or `FeatureUnion`,
 times its weight where it has one, or as the first such step of a

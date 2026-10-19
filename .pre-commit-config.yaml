@@ -6,9 +6,9 @@
 #
 # One-time local setup:  uv run pre-commit install
 #
-# The research scripts behind decision records are kept verbatim, as the
-# evidence they are, not as maintained code.
-exclude: ^loops/native/decisions/research/
+# The research scripts are kept verbatim, as the evidence they are, not as
+# maintained code.
+exclude: ^research/[^/]+/scripts/
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.21

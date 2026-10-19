@@ -44,10 +44,10 @@ def test_a_record_cites_its_ledger_entry_and_ruling(rec):
     assert f"**{rec.ledger}**" in text, f"no ledger entry '{rec.ledger}'"
     assert rec.status in ("ruled", "kept")
     if rec.status == "ruled":
-        # A ruling is a package doc, or a loop's decision record (loops/),
+        # A ruling is a package doc, or a closed proposal (proposals/),
         # and so is each later ruling that widens it.
         for ruling in (rec.ruling, *getattr(rec, "extended_by", ())):
-            base = REPO if ruling.startswith("loops/") else DOCS
+            base = REPO if ruling.startswith("proposals/") else DOCS
             assert (base / ruling).is_file(), f"no ruling at {ruling}"
     else:
         row = next(line for line in text.splitlines() if f"**{rec.ledger}**" in line)
@@ -175,7 +175,7 @@ ROW = table({"c0": "int8"}, [{"c0": 100}])
 EMPTY = table({"k": "int"}, [])
 FULL = table({"k": "int"}, [{"k": 5}])
 # Rows whose `=` key is NULL can match no request, so DuckDB's hash table
-# stays empty (loops/confit/decisions/closed/all-null-key-static.md).
+# stays empty (proposals/closed/all-null-key-static.md).
 NULLS = table({"k": "int?"}, [{"k": None}, {"k": None}])
 NULL1 = table({"k": "int?"}, [{"k": None}])
 
@@ -340,7 +340,7 @@ def plant(monkeypatch):
 def test_a_planted_trap_of_another_category_is_excused(plant, static):
     # DuckDB's padded run traps with an Out of Range Error; confit's planted
     # trap is a Conversion Error. The witness accepts any trap, as AGREE_TRAP
-    # does (loops/confit/decisions/closed/empty-static-witness-trap-order.md).
+    # does (proposals/closed/empty-static-witness-trap-order.md).
     plant("Conversion Error: planted")
     v = verdict(TRAPS, ROW, statics={"s": static})
     assert (v.kind, v.klass) == ("EXCLUDED", "empty-static-trap-timing")

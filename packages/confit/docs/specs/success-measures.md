@@ -1,6 +1,6 @@
 # Success measures
 
-The [goal](../../../../loops/confit/goal.md) sets the priorities. These are the five correctness
+The [goal](../../../../mandates/confit/README.md#objective) sets the priorities. These are the five correctness
 controls (C1–C5) and two optimization measures (D1–D2), including checks owned by
 `sql_transform`, which keeps ownership of its checks.
 
@@ -24,7 +24,7 @@ The [sql-transform spec](../../../sql-transform/spec/transform-model.md) defines
 Gate: `packages/sql-transform/sql_transform/_marginal_projection_test.py::gate`
 and `::test_fuzz_differential`. `MARGINALIZE_FUZZ_N` controls the depth
 (seed 20260729); the default is 1,500 cases
-([C1 depth](../../../../loops/confit/decisions/closed/c1-depth.md)).
+([C1 depth](../../../../proposals/closed/c1-depth.md)).
 Explicit replacements preserve the original computations.
 They do not count as acceptance of the original syntax.
 

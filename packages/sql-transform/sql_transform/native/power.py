@@ -7,7 +7,7 @@ neither `log1p` nor `expm1`, and confit cannot add a function, as the
 definition must run on DuckDB. So the entry spells `log1p` (Goldberg's) and
 `expm1` (Kahan's) from `ln` and `exp`, a few roundings from the twin's,
 and is held to the error scales of the ruling
-(loops/native/decisions/closed/power-parity-bound.md): Box-Cox within
+(proposals/closed/power-parity-bound.md): Box-Cox within
 5·eps·|t| + tau and Yeo-Johnson within 10·eps·(1 + max(w, 0))·|t| + tau,
 with t the twin's output and w the argument of its `expm1` (`_power`).
 Both serve only with `to_native(step, allow_bound=True)`, only where the
@@ -63,7 +63,7 @@ def log1p(z: S.Expr) -> S.Expr:
     `u = 1 + z`: z where u rounds to 1. Within 4.04 u (u = 2**-53) of the
     exact value where `ln` is within 0.52 ulp, as glibc's is, and 5.04 u
     where 1 + z passes 2**53; measured within 2.01 ulps over 400,000 draws
-    (loops/native/decisions/research/2026-10-06/power.md)."""
+    (research/native-parity-bounds/power.md)."""
     u = z + _ONE
     # z >= 0, so `u <= 1` holds only where u rounds to 1. It is also the
     # guard confit reads to know `ln(u)` cannot raise (confit #362).

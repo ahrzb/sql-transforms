@@ -31,13 +31,13 @@ Bit-exact is the default: a translation whose parity bound is above 0
 serves only with `to_native(step, allow_bound=True)`. Such an entry can
 change a prediction: on repeated training values, HistGradientBoosting
 flipped labels under the Box-Cox entry, where the twin of an elementwise
-family flips none (loops/native/decisions/closed/matvec-parity-bound.md).
+family flips none (proposals/closed/matvec-parity-bound.md).
 A parity bound is an ulp bound (`ulps`), or an error scale
 (`ErrorScale`) for a family that rounds in an order its twin does not
 follow.
 
 Where the validation of the twin raises, the entry traps
-(loops/native/decisions/closed/tolerated-differences.md, the ruling): the
+(proposals/closed/tolerated-differences.md, the ruling): the
 input guard. Each estimator a translation reads, the step's own or a
 composition's part, adds tests on its own input expressions: the values
 its twin rejects in each feature, found by handing the fitted estimator

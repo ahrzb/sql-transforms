@@ -48,7 +48,7 @@ of a struct and a list return (release build, 8 features and, for nine
 forests, 32 to 128; fits of 1,000 to 8,000 rows; T46 on master 12aca98,
 2026-10-16). The struct return is the slower, by 1.7 to 5.8 times, more as
 the output fields grow: confit builds each field read of a struct on its own
-(loops/native/PLANS.md, "Needs from confit"). The estimate keeps a term in
+(mandates/native/tracker.md, "Needs from confit"). The estimate keeps a term in
 the output fields times the features, larger since T44's reads
 (`_registry._apart`): 100 trees of depth 5 build in 0.81 s over 8 features
 and 2.7 s over 128. Before T44's reads, in one process, they built in 2.2 s

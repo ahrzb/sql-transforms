@@ -116,7 +116,7 @@ def test_whole_relation_constructs_reject(sql, needle):
 
 @pytest.mark.parametrize("shape", ["map", "filter", "many"])
 def test_an_aggregate_over_request_rows_refuses_and_names_the_scalar_subquery(shape):
-    # The owner's ruling (loops/confit/decisions/closed/join-group-by-per-request.md):
+    # The owner's ruling (proposals/closed/join-group-by-per-request.md):
     # a group over the request rows is not row-local, so the refusal holds
     # under each shape, and it names the spelling that serves.
     s = static(

@@ -457,7 +457,7 @@ def _dense(out: Any) -> Any:
     """A ``transform`` output as the step reads it: a scipy sparse matrix
     or array becomes its dense array, ``.toarray()``, which adds each
     stored value to 0.0 (a stored -0.0 reads 0.0); any other output stays
-    as it is (loops/native/decisions/closed/sparse-outputs.md, the
+    as it is (proposals/closed/sparse-outputs.md, the
     ruling). sklearn picks the sparse container per thread
     (``sparse_interface``), so the step reads both. A sparse output means
     scipy is loaded: this does not import it."""

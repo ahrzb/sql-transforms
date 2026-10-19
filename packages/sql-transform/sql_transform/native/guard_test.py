@@ -1,5 +1,5 @@
 """The input guard: where the validation of the twin raises, the entry
-traps, and nowhere else (loops/native/decisions/closed/tolerated-differences.md,
+traps, and nowhere else (proposals/closed/tolerated-differences.md,
 the ruling). `check` holds every row to it; each test here also says which
 rows trap, so that none passes with both sides answering."""
 

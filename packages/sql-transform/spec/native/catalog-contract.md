@@ -3,7 +3,7 @@
 `to_native(step)` turns a fitted `PythonTransform` into a confit
 `SqlFunction`. The function serves the same calls, with no Python in the
 work for each row. The loop that grows the catalog is in
-[loops/native/](../../../../loops/native/README.md).
+[the native catalog mandate](../../../../mandates/native/README.md).
 
 ## What an entry must equal
 
@@ -48,10 +48,10 @@ The kernel probe compares zero signs before it permits bit-exact serving.
   `PythonTransform` unchanged. A discretizer is an example of such a step.
   `to_native` does the same if an infinite weight multiplies such an
   output. The owner ruled this in
-  [bounded-steps-in-compositions.md](../../../../loops/native/decisions/closed/bounded-steps-in-compositions.md).
+  [bounded-steps-in-compositions.md](../../../../proposals/closed/bounded-steps-in-compositions.md).
 - The owner ruled this in
-  [native-transform-parity-bounds.md](../../../../loops/confit/decisions/closed/native-transform-parity-bounds.md)
-  and [matvec-parity-bound.md](../../../../loops/native/decisions/closed/matvec-parity-bound.md).
+  [native-transform-parity-bounds.md](../../../../proposals/closed/native-transform-parity-bounds.md)
+  and [matvec-parity-bound.md](../../../../proposals/closed/matvec-parity-bound.md).
 - NaN equals NaN, and NULL equals NULL. With a bound of 0, -0.0 and 0.0
   are different answers.
 - On a row of values near the largest double, a sum of a projection can
@@ -61,7 +61,7 @@ The kernel probe compares zero signs before it permits bit-exact serving.
   a row, the entry can be past its parity bound, and `native.check` then
   reports a `ParityError`. An open decision record asks the owner what
   must hold there:
-  [where-a-sum-overflows.md](../../../../loops/native/decisions/open/where-a-sum-overflows.md).
+  [where-a-sum-overflows.md](../../../../questions/open/where-a-sum-overflows.md).
 
 *Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/project_test.py::test_a_projection_parts_from_its_twin_within_its_error_scale`, `native/project_test.py::test_a_projection_serves_only_on_request`, `native/compose_test.py::test_a_bounded_step_serves_last_or_as_a_part_on_request`, `native/compose_test.py::test_a_bounded_step_is_carried_by_the_steps_after_it`, `native/compose_test.py::test_a_carried_bound_grows_as_the_step_that_carries_it`, `native/compose_test.py::test_a_weight_carries_its_part_s_bound_times_the_weight`, `native/compose_test.py::test_a_pipeline_names_the_step_it_refuses`, `native/check_test.py::test_a_composition_holds_its_last_step_to_its_error_scale`, `native/check_test.py::test_a_composition_carries_an_error_scale_a_later_step_reads`, `native/_carry_test.py::test_a_carry_bounds_the_two_sides`, `native/check_test.py::test_a_composition_holds_a_bit_exact_part_bit_exactly`, `native/distance_test.py::test_a_distance_near_a_centre_is_compared_by_its_square`, `native/distance_test.py::test_a_distance_in_a_composition_stays_python`.
 
@@ -167,7 +167,7 @@ independently of the authoring model.
 **claim: entry-traps-where-twin-raises.** If the validation of the twin
 raises on an input, the entry must trap on that input too. An input guard
 in the entry does this. The owner ruled this in
-[tolerated-differences.md](../../../../loops/native/decisions/closed/tolerated-differences.md).
+[tolerated-differences.md](../../../../proposals/closed/tolerated-differences.md).
 
 - Until an entry has its input guard, it may answer where the twin raises.
 - An entry may never trap where the twin answers.
@@ -181,7 +181,7 @@ in the entry does this. The owner ruled this in
   claim can fail, and `native.check` then reports a `ParityError`. The twin
   itself raises on such a row in one call and answers in another. An open
   decision record asks the owner what must hold there:
-  [where-a-sum-overflows.md](../../../../loops/native/decisions/open/where-a-sum-overflows.md).
+  [where-a-sum-overflows.md](../../../../questions/open/where-a-sum-overflows.md).
 
 *Evidence:* `native/guard_test.py::test_the_guard_traps_where_the_validation_raises`, `native/guard_test.py::test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else`.
 

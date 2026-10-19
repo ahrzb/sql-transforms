@@ -482,7 +482,7 @@ def test_nan_filter_differential_on_native_tables():
 # ----------------------------------------------------- static-only queries --
 # A query that reads no request table is outside the model: it refuses at
 # build, naming the driving relation
-# (loops/confit/decisions/closed/static-only-queries.md).
+# (proposals/closed/static-only-queries.md).
 
 
 def test_a_static_only_aggregation_refuses_at_build():

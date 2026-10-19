@@ -1,7 +1,7 @@
 """A transformer whose output is a scipy sparse matrix serves as its dense
 configuration does: the step reads the output as `.toarray()` makes it
 dense, at fit, where the probe counts the output fields a field read
-names, and at each row (loops/native/decisions/closed/sparse-outputs.md,
+names, and at each row (proposals/closed/sparse-outputs.md,
 the ruling). sklearn 1.9 picks the container per thread
 (`sparse_interface`): a sparse matrix by default (`spmatrix`), a sparse
 array on request (`sparray`); each test runs under both."""

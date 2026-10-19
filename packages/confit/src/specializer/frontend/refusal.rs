@@ -9,7 +9,7 @@ pub(super) fn unsup(what: impl Into<String>) -> PrepareError {
 /// The refusal of a GROUP BY, a HAVING or an aggregate over the rows of the
 /// query (`what`). It states why, and names the spelling that serves: the
 /// owner ruled to keep this refusal under each shape
-/// (loops/confit/decisions/closed/join-group-by-per-request.md).
+/// (proposals/closed/join-group-by-per-request.md).
 pub(super) fn row_aggregate_refusal(what: &str) -> PrepareError {
     unsup(format!(
         "{what} -- a group or an aggregate over the request rows is not row-local, because \

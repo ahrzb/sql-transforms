@@ -94,7 +94,7 @@ def _exactness(entry: Entry) -> str:
 
 
 def nonzero_ulp_bounds() -> int:
-    """The KPI of that name (loops/native/report-format.md): the catalog
+    """The KPI of that name (mandates/native/README.md#reporting-contract): the catalog
     classes some configuration of which serves within a bound above 0,
     with `allow_bound=True`: an ulp bound above 0, or an error scale."""
     return sum(1 for e in catalog().values() if e.ulps or e.scale is not None)
@@ -145,7 +145,7 @@ STATUSES = ("native", "not yet", "composition", "out of scope")
 
 def modules() -> str:
     """The same rows counted per sklearn module, for the milestone reports
-    (loops/native/report-format.md, "Scoreboard")."""
+    (mandates/native/README.md#reporting-contract, "Scoreboard")."""
     status = {n: s for n, s, _ in rows()}
     counts: dict[str, dict[str, int]] = {}
     for name, cls in _classes().items():

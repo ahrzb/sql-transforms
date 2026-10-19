@@ -5,7 +5,7 @@ comparisons that make that statement operational. A weaker comparison applies on
 the named family and surface that adopted it.
 
 Settled comparison policy comes from the
-[oracle policy record](../../../../loops/confit/decisions/closed/oracle-policy.md).
+[oracle policy record](../../../../proposals/closed/oracle-policy.md).
 
 For UDF-bearing SQL, the reference leg registers the same declared UDFs. That
 parameterization is defined by the [oracle](README.md) and
@@ -191,7 +191,7 @@ extend training-round-trip KPI C1, which is bit-exact under its own fixed-thread
 comparison.
 
 On 2026-10-15, the owner approved definitions for the parts that this bound left open
-([decision record](../../../../loops/confit/decisions/closed/double-sum-bound.md)). A group
+([decision record](../../../../proposals/closed/double-sum-bound.md)). A group
 is the set of static rows that one key value matches, and the build computes the answer
 of each group once.
 
