@@ -136,19 +136,32 @@ from confit import sql as S
 from sklearn.preprocessing import SplineTransformer
 
 from sql_transform.native._helpers import SameTree, f64, isnan
-from sql_transform.native._registry import NotNative, rejects, translates
+from sql_transform.native._registry import (
+    MAX_BUILD_S,
+    NotNative,
+    build_estimate,
+    rejects,
+    translates,
+)
 
-# The longest build the entry takes on (seconds, warm, release), as
-# quantile.py's and isotonic.py's caps.
-MAX_BUILD_S = 7.0
 
+@build_estimate(
+    warm_factor=1.15, nodes=2.37e-5, nodes_width=7.53e-9, width_features=6.48e-6
+)
+def _build_estimate(fields: list[S.Expr], est: Any) -> dict[str, tuple[float, ...]]:
+    """Seconds of the whole warm to_native, with a release build of confit.
 
-def _build_estimate(fields: list[S.Expr], est: Any) -> float:
-    """The seconds of confit's trial build alone (`_registry._builds`, warm,
-    release build), without the translation and the probe that `to_native`
-    also runs: the build of these output fields into the query that reads
-    each output field. confit binds once a value that the body reads more
-    than once (#412), so the build follows the distinct nodes the output
+    Multiply the original trial-build fit by 1.15. On Windows 11
+    10.0.26300 AMD64, Python 3.14, master 40f6ab17, 2026-10-17,
+    benchmarks/native_estimates.py timed 160 features, degree 3, 8 knots,
+    constant and error extrapolation, and 112 features, degree 5, 8 knots,
+    continue extrapolation. Both returns, median of three after warming:
+    whole/trial was 1.08--1.13. The maximum rounded up gives 1.15.
+    Translation walks the same distinct nodes; this factor adds its cost
+    and the probe without refitting absolute seconds on a different host.
+
+    Original trial-build evidence: confit binds once a value the body reads
+    more than once (#412), so the build follows the distinct nodes the output
     fields read, not the text they spell, plus a term in the nodes times the
     output fields and one in the output fields times the features. Since the
     input guard's tests read each number as it is (T46, `_registry._plain`),
@@ -177,7 +190,11 @@ def _build_estimate(fields: list[S.Expr], est: Any) -> float:
             stack.extend(e.children)
     nodes, width = len(seen), len(fields)
     features = est.n_features_in_
-    return 2.37e-5 * nodes + 7.53e-9 * nodes * width + 6.48e-6 * width * features
+    return {
+        "nodes": (nodes,),
+        "nodes_width": (nodes, width),
+        "width_features": (width, features),
+    }
 
 
 # A knot gap under this, but not zero, could overflow `1 / gap` in the
@@ -573,7 +590,7 @@ def _inside(est: Any, types: list[pa.DataType]) -> list[Any]:
     return row
 
 
-@translates(SplineTransformer, base=_inside)
+@translates(SplineTransformer, base=_inside, builds=(_build_estimate,))
 def _spline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     if est.sparse_output:
         _sparse_parts(est)

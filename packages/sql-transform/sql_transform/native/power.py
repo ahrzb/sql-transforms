@@ -37,14 +37,16 @@ from sklearn.preprocessing import PowerTransformer, StandardScaler
 
 from sql_transform.native._helpers import f64, isnan
 from sql_transform.native._registry import (
+    MAX_BUILD_S,
     ErrorScale,
     NotNative,
     any_of,
+    build_estimate,
     rejects,
     translates,
 )
 from sql_transform.native.function import doubles_apart, probe_values
-from sql_transform.native.project import _TINY, MAX_BUILD_S
+from sql_transform.native.project import _TINY
 
 _ONE = f64(1.0)
 _ZERO = f64(0.0)
@@ -352,7 +354,21 @@ def _probe(method: str) -> None:
         )
 
 
-def _build_estimate(n: int, method: str, standardize: bool = False) -> float:
+@build_estimate(
+    box_n=1.17e-3,
+    box_n2=1.25e-5,
+    yeo_n=5.69e-3,
+    yeo_n2=4.15e-5,
+    standardized_box_n=3.92e-3,
+    standardized_box_n2=9.3e-6,
+    standardized_yeo_n=6.19e-3,
+    standardized_yeo_n2=5.13e-5,
+)
+def _build_estimate(
+    n: int,
+    method: str,
+    standardize: bool = False,
+) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` (release build) of a step
     of n features: the translation, the probe (`_registry._probed`) and
     confit's trial build (`_registry._builds`). The probe hands the twin a
@@ -381,13 +397,10 @@ def _build_estimate(n: int, method: str, standardize: bool = False) -> float:
     about 313 features of Yeo-Johnson and 682 of Box-Cox. On that machine,
     it took 1.04 to 1.15 times as long as the step without `standardize`,
     at 256 to 768 features."""
-    if standardize:
-        if method == "box-cox":
-            return 3.92e-3 * n + 9.3e-6 * n * n
-        return 6.19e-3 * n + 5.13e-5 * n * n
-    if method == "box-cox":
-        return 1.17e-3 * n + 1.25e-5 * n * n
-    return 5.69e-3 * n + 4.15e-5 * n * n
+    prefix = ("standardized_" if standardize else "") + (
+        "box" if method == "box-cox" else "yeo"
+    )
+    return {f"{prefix}_n": (n,), f"{prefix}_n2": (n, n)}
 
 
 def _at_zero(est: Any, types: list[pa.DataType]) -> list[Any]:
@@ -402,7 +415,7 @@ def _at_zero(est: Any, types: list[pa.DataType]) -> list[Any]:
     ]
 
 
-@translates(PowerTransformer, scale=POWER, base=_at_zero)
+@translates(PowerTransformer, scale=POWER, base=_at_zero, builds=(_build_estimate,))
 def _power(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     """`PowerTransformer` (`transform`): `validate_data`, where the
     infinities raise and NaN passes; Box-Cox raises where `np.nanmin(X) <=

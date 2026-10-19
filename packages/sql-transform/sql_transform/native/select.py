@@ -47,6 +47,7 @@ def _carry(est: Any) -> Carry | None:
     SelectPercentile,
     SequentialFeatureSelector,
     VarianceThreshold,
+    uncapped="The fitted support mask selects at most the input width (_select).",
     carry=_carry,
 )
 def _select(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:

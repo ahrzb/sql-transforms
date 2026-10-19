@@ -154,7 +154,13 @@ def _first_classes(est: Any, types: list[pa.DataType]) -> list[Any]:
     return [_classes(est.categories_[j], t)[0] for j, t in enumerate(types)]
 
 
-@translates(OneHotEncoder, OrdinalEncoder, TargetEncoder, base=_first_classes)
+@translates(
+    OneHotEncoder,
+    OrdinalEncoder,
+    TargetEncoder,
+    base=_first_classes,
+    uncapped="No limit yet: fitted categories and target classes expand output width.",
+)
 def _encode(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     classes = [_classes(est.categories_[j], t) for j, t in enumerate(types)]
     base = _first_classes(est, types)

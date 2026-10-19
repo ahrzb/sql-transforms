@@ -3,7 +3,7 @@
 A translator turns ONE fitted estimator into its output fields, as
 `confit.sql` expressions over the feature expressions it is handed:
 
-    @translates(StandardScaler)
+    @translates(StandardScaler, uncapped="One output per input feature.")
     def _(est, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]: ...
 
 `x` holds one expression per declared feature, `types` the declared type
@@ -73,6 +73,50 @@ Translator = Callable[[Any, list[S.Expr], list[pa.DataType]], list[S.Expr]]
 SumProducts = Callable[[Any, np.ndarray], Iterable[tuple[np.ndarray, np.ndarray]]]
 
 EPS = np.longdouble(2.0**-52)
+
+# Admission estimates price the whole warm to_native of one step, using a
+# release build of confit. This is an estimate, not an enforced deadline.
+MAX_BUILD_S = 7.0
+
+
+@dataclass(frozen=True)
+class BuildEstimate:
+    """A sum of named terms, with coefficients in seconds.
+
+    Keep each term's factors in multiplication order so declaring an old
+    formula does not change its floating-point result. `warm_factor` converts
+    a trial-only fit to whole warm to_native, without refitting host speeds.
+    """
+
+    factors: Callable[..., dict[str, tuple[float, ...]]]
+    coefficients: dict[str, float]
+    warm_factor: float = 1.0
+
+    def terms(self, *args: Any, **kwargs: Any) -> dict[str, float]:
+        return {
+            name: math.prod(values) * self.warm_factor
+            for name, values in self.factors(*args, **kwargs).items()
+        }
+
+    def __call__(self, *args: Any, **kwargs: Any) -> float:
+        seconds = 0.0
+        for name, values in self.factors(*args, **kwargs).items():
+            term = self.coefficients[name]
+            for value in values:
+                term *= value
+            seconds += term
+        return seconds * self.warm_factor
+
+
+def build_estimate(
+    *, warm_factor: float = 1.0, **coefficients: float
+) -> Callable[[Callable[..., dict[str, tuple[float, ...]]]], BuildEstimate]:
+    """Declare a formula once, for admission and the calibration command."""
+
+    def decorate(factors: Callable[..., dict[str, tuple[float, ...]]]) -> BuildEstimate:
+        return BuildEstimate(factors, coefficients, warm_factor)
+
+    return decorate
 
 
 @dataclass(frozen=True)
@@ -197,6 +241,8 @@ class Entry:
     part_bounds_of: Callable[[Any], PartBounds | None] | None = None
     apart_of: Callable[[Any], bool] | None = None
     scaled_of: Callable[[Any], bool] | None = None
+    builds: tuple[BuildEstimate, ...] = ()
+    uncapped: str | None = None
     carry_of: Callable[[Any], Carry | None] | None = None
     sum_products: SumProducts | None = None
 
@@ -297,6 +343,8 @@ def translates(
     part_bounds: Callable[[Any], PartBounds | None] | None = None,
     apart: Callable[[Any], bool] | None = None,
     scaled: Callable[[Any], bool] | None = None,
+    builds: tuple[BuildEstimate, ...] = (),
+    uncapped: str | None = None,
     carry: Callable[[Any], Carry | None] | None = None,
     sum_products: SumProducts | None = None,
 ) -> Callable[[Translator], Translator]:
@@ -309,7 +357,10 @@ def translates(
     so: elsewhere the estimator is bit-exact (`AdditiveChi2Sampler` of one
     sample step). `base`, `composes`, a composition's `part_bounds`,
     `apart` (`apart_of`), `carry` (`carry_of`) and `sum_products` are `Entry`'s.
-    A subclass is not covered: it may override what `transform` computes."""
+    `builds` declares the admission formulas; otherwise `uncapped` explains
+    why there is no time estimate. Neither is a deadline. The registry-wide
+    test requires one declaration. A subclass is not covered: it may
+    override what `transform` computes."""
     if bound is not None and ulps == 0:
         raise ValueError("a per-estimator bound needs a ceiling above 0")
     if scale is not None and (ulps or bound is not None):
@@ -331,6 +382,8 @@ def translates(
                 part_bounds,
                 apart,
                 scaled,
+                builds,
+                uncapped,
                 carry,
                 sum_products,
             )

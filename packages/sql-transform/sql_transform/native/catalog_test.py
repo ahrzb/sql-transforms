@@ -1491,7 +1491,7 @@ def _gate_rows(step: PythonTransform, rows: pa.Table) -> pa.Table:
     """Keep raw overflow rows for strict xfails, not the default parity gate.
 
     The interim rule keeps check strict and serves entries unchanged:
-    loops/native/decisions/open/where-a-sum-overflows.md.
+    questions/open/where-a-sum-overflows.md.
     """
     from sql_transform.native._check import _twin_input
 
@@ -1759,7 +1759,7 @@ def test_extreme_finite_pairs_fit_a_computable_bound(cls, cfg, seed, offset):
 @pytest.mark.xfail(
     strict=True,
     raises=ParityError,
-    reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
+    reason="strict interim rule: questions/open/where-a-sum-overflows.md",
 )
 def test_a_projection_sum_overflow_remains_a_strict_mismatch():
     step = _step(FIXTURES[GaussianRandomProjection][1], 3, 1)
@@ -1772,7 +1772,7 @@ def test_a_projection_sum_overflow_remains_a_strict_mismatch():
 @pytest.mark.xfail(
     strict=True,
     raises=ParityError,
-    reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
+    reason="strict interim rule: questions/open/where-a-sum-overflows.md",
 )
 @pytest.mark.parametrize(
     "cls, cfg, seed, offset",
@@ -3225,13 +3225,13 @@ def test_isotonic_refuses_two_features():
 def test_isotonic_takes_a_fit_by_its_estimated_build():
     from sql_transform.native.isotonic import MAX_BUILD_S, _build_estimate
 
-    # 24,703 thresholds built in 5.9 s and 28,524 in 7.4 s (isotonic.py,
-    # `_build_estimate`), where a count of 8,000 thresholds was the cap.
-    assert _build_estimate(24_702) <= MAX_BUILD_S
-    assert _build_estimate(28_523) > MAX_BUILD_S
+    # Translation and probing are included now: the old trial-only fit
+    # admitted 24,703 thresholds, which took 10.7 s for whole to_native.
+    assert _build_estimate(17_999) <= MAX_BUILD_S
+    assert _build_estimate(24_702) > MAX_BUILD_S
     X = np.arange(32_000.0)
     step = _isotonic_step(IsotonicRegression().fit(X, X))
-    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
+    with pytest.raises(NotNative, match=r"an estimated 15 s build, past 7 s"):
         to_native(step, strict=True)
 
 
@@ -3466,19 +3466,17 @@ def _forest(
 def test_trees_take_a_forest_by_the_estimated_build():
     from sql_transform.native.trees import MAX_BUILD_S, _build_estimate
 
-    # The entry's build is estimated within 7 s for the default forest, the
-    # default forest over 32 features, 400 trees of depth 5 (9,210 output
-    # fields, built in 6.3 s) and one unbounded tree over 8,000 rows (4.7 s;
-    # T46 on master 12aca98, trees.py).
+    # The default forest and smaller near-cap fits still fit. The whole
+    # to_native estimate now also prices translation and probing.
     assert _build_estimate(_forest(100, 5, 2000)) <= MAX_BUILD_S
     assert _build_estimate(_forest(100, 5, 2000, features=32)) <= MAX_BUILD_S
-    assert _build_estimate(_forest(400, 5, 2000)) <= MAX_BUILD_S
-    assert _build_estimate(_forest(1, None, 8000)) <= MAX_BUILD_S
+    assert _build_estimate(_forest(250, 5, 2000)) <= MAX_BUILD_S
+    assert _build_estimate(_forest(1, None, 6000)) <= MAX_BUILD_S
 
 
 def test_trees_refuse_a_build_past_the_cap():
-    # 300 trees of depth 6: 11,402 output fields, estimated at 9 s (8.1 s
-    # measured).
-    est = _forest(300, 6, 2000)
-    with pytest.raises(NotNative, match=r"an estimated 9 s build, past 7 s"):
+    # This passed the trial-only cap, but whole warm to_native took 11.6 s
+    # as a struct in the conversion measurements.
+    est = _forest(400, 5, 2000)
+    with pytest.raises(NotNative, match=r"an estimated 10 s build, past 7 s"):
         to_native(_tree_step(est, 8), strict=True)

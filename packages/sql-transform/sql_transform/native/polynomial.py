@@ -49,7 +49,13 @@ def refuse_large_polynomial(est: Any) -> None:
             pending.extend(child for _, child, _ in _parts(part))
 
 
-@translates(PolynomialFeatures)
+@translates(
+    PolynomialFeatures,
+    uncapped=(
+        "No time estimate: refuse_large_polynomial enforces MAX_TERMS=13_041 "
+        "before output metadata and in compositions."
+    ),
+)
 def _polynomial(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     refuse_large_polynomial(est)
     # sklearn fills its output column by column: a bias of 1, the features,

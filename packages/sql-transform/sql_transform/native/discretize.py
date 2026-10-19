@@ -141,7 +141,10 @@ def _onehot(x: S.Expr, edges: list[float]) -> list[S.Expr]:
     return fields
 
 
-@translates(KBinsDiscretizer)
+@translates(
+    KBinsDiscretizer,
+    uncapped="No limit yet: fitted n_bins_ can expand one-hot output width.",
+)
 def _kbins(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     narrow = est.dtype is not None and np.dtype(est.dtype) == np.float32
     if est.dtype is not None and not narrow and np.dtype(est.dtype) != np.float64:

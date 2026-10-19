@@ -445,7 +445,15 @@ def _parts_bounds(est: Any) -> PartBounds | None:
     return PartBounds(at, f"within the bound{s} of its part{s} {_named(names)}")
 
 
-@translates(Pipeline, composes=True, part_bounds=_pipeline_bounds)
+@translates(
+    Pipeline,
+    composes=True,
+    part_bounds=_pipeline_bounds,
+    uncapped=(
+        "Parts enforce their own time caps; MAX_UNSHARED bounds only "
+        "unshared-value growth, not total build time."
+    ),
+)
 def _pipeline(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     # `transform_input` transforms fit metadata only; `memory` and
     # `verbose` act in fit. Refused all the same: the composition is
@@ -742,7 +750,15 @@ def _columns(columns: Any, n: int) -> list[int]:
     return [int(i) for i in picked[0]]
 
 
-@translates(ColumnTransformer, composes=True, part_bounds=_parts_bounds)
+@translates(
+    ColumnTransformer,
+    composes=True,
+    part_bounds=_parts_bounds,
+    uncapped=(
+        "Parts enforce their own time caps; MAX_UNSHARED bounds only "
+        "unshared-value growth, not total build time."
+    ),
+)
 def _column_transformer(
     est: Any, x: list[S.Expr], types: list[pa.DataType]
 ) -> list[S.Expr]:
@@ -795,7 +811,15 @@ def _column_transformer(
     return out
 
 
-@translates(FeatureUnion, composes=True, part_bounds=_parts_bounds)
+@translates(
+    FeatureUnion,
+    composes=True,
+    part_bounds=_parts_bounds,
+    uncapped=(
+        "Parts enforce their own time caps; MAX_UNSHARED bounds only "
+        "unshared-value growth, not total build time."
+    ),
+)
 def _union(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     _refuse_container(est)
     weights = est.transformer_weights or {}

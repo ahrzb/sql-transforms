@@ -126,7 +126,7 @@ row, output field and both values.
 
 The generated gate reads each entry's declared sums of products, including
 intermediate inputs, to separate rows covered by the
-[open overflow question](../../../../loops/native/decisions/open/where-a-sum-overflows.md).
+[open overflow question](../../../../questions/open/where-a-sum-overflows.md).
 
 *Evidence:* `native/catalog_test.py::test_an_entry_matches_its_twin`, `native/catalog_test.py::test_a_reordered_translation_is_caught`, `native/catalog_test.py::test_the_default_gate_finds_the_rbf_sampler_sum_overflow`, `native/catalog_test.py::test_each_matrix_product_entry_declares_its_actual_sum_operands`, `native/guard_test.py::test_check_asserts_a_trap_where_the_step_raises_and_nowhere_else`, `native/check_test.py::test_null_ids_do_not_supply_parity_evidence`, `native/check_test.py::test_a_comparison_map_cannot_pass_by_overflowing`, `native/check_test.py::test_a_checker_overflow_names_the_configuration_row_field_and_values`, `native/check_test.py::test_check_does_not_require_the_test_oracles_version_pin`.
 

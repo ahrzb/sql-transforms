@@ -39,14 +39,14 @@ entry traps: its input guard (`_registry.rejects`).
 One CASE per tree serves a row about twice as fast as the conjunctions of
 the branch tests on each leaf's path (100 trees of depth 5 at T30: 222 us
 against 459), and since confit #430 it builds about as fast, so it is the
-entry's one spelling. The entry takes a forest whose build is estimated
-within MAX_BUILD_S (`_build_estimate`), about 10,000 output fields at 8
-features, 8,600 at 32, 7,200 at 64 and 5,200 at 128, and refuses it past
-that. The estimate is fitted on 35 warm trial builds (`_registry._builds`,
-without `to_native`'s translation and probe) over 0.3 s, each the slower
-of a struct and a list return (release build, 8 features and, for nine
-forests, 32 to 128; fits of 1,000 to 8,000 rows; T46 on master 12aca98,
-2026-10-16). The struct return is the slower, by 1.7 to 5.8 times, more as
+entry's one spelling. The entry takes a forest whose whole warm
+to_native is estimated within MAX_BUILD_S (`_build_estimate`).
+The original trial-only fit reached about 10,000 output fields at 8
+features, 8,600 at 32, 7,200 at 64 and 5,200 at 128. It used 35 warm trial
+builds (`_registry._builds`, without translation and probing) over 0.3 s,
+each the slower of a struct and a list return (release build, 8 features
+and, for nine forests, 32 to 128; fits of 1,000 to 8,000 rows; T46 on
+master 12aca98, 2026-10-16). The struct return was slower by 1.7 to 5.8 times, more as
 the output fields grow: confit builds each field read of a struct on its own
 (mandates/native/tracker.md, "Needs from confit"). The estimate keeps a term in
 the output fields times the features, larger since T44's reads
@@ -96,21 +96,37 @@ from sklearn.ensemble import RandomTreesEmbedding
 
 from sql_transform._trees import _f32_grid_threshold
 from sql_transform.native._helpers import f64, isnan, narrows_to_infinity
-from sql_transform.native._registry import NotNative, rejects, translates
+from sql_transform.native._registry import (
+    MAX_BUILD_S,
+    NotNative,
+    build_estimate,
+    rejects,
+    translates,
+)
 
-# The longest build the entry takes on, in seconds, by the estimate below
-# (module docstring).
-MAX_BUILD_S = 7.0
 
+@build_estimate(
+    warm_factor=1.65, fields=1.89e-4, fields2=4.56e-8, fields_features=7.19e-6
+)
+def _build_estimate(est: Any) -> dict[str, tuple[float, ...]]:
+    """Seconds of the whole warm to_native, with a release build of confit.
 
-def _build_estimate(est: Any) -> float:
-    """The seconds of confit's trial build of the entry alone
-    (`_registry._builds`, warm, release build), without the translation
-    and the probe that `to_native` also runs, from its output fields and
-    features (module docstring)."""
+    Multiply the module's trial-build fit by 1.65, without a host-speed
+    refit. On Windows 11 10.0.26300 AMD64, Python 3.14, master 40f6ab17,
+    2026-10-17, benchmarks/native_estimates.py timed 400 depth-5 trees over
+    8 features, 200 over 128 (2,000 fit rows), and one unbounded tree over
+    8 features and 8,000 rows. Both returns, median of three after warming:
+    max(whole)/max(trial) was 1.20, 1.63 and 1.14. The maximum rounded up
+    gives 1.65. The slower-return ratio matters: list-only ratios reached
+    2.89, but the original fit already prices the more costly struct.
+    Translation and probing grow with these fields and features too."""
     fields = sum(len(c) for c in est.one_hot_encoder_.categories_)
     features = int(est.n_features_in_)
-    return 1.89e-4 * fields + 4.56e-8 * fields**2 + 7.19e-6 * fields * features
+    return {
+        "fields": (fields,),
+        "fields2": (fields**2,),
+        "fields_features": (fields, features),
+    }
 
 
 def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:
@@ -137,7 +153,7 @@ def _leaf(tree: Any, x: list[S.Expr]) -> S.Expr | None:
     return node[0]
 
 
-@translates(RandomTreesEmbedding)
+@translates(RandomTreesEmbedding, builds=(_build_estimate,))
 def _embed(est: Any, x: list[S.Expr], types: list[pa.DataType]) -> list[S.Expr]:
     cats = est.one_hot_encoder_.categories_
     if len(cats) != len(est.estimators_):

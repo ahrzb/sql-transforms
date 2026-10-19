@@ -426,7 +426,7 @@ def test_a_composition_carries_an_error_scale_a_later_step_reads(dot):
 @pytest.mark.xfail(
     strict=True,
     raises=ParityError,
-    reason="strict interim rule: loops/native/decisions/open/where-a-sum-overflows.md",
+    reason="strict interim rule: questions/open/where-a-sum-overflows.md",
 )
 def test_a_carried_overflow_can_trap_on_one_side_only(dot):
     pipe = Pipeline([("dot", _Dot()), ("scale", StandardScaler())])

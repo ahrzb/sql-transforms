@@ -127,7 +127,14 @@ from sklearn.random_projection import GaussianRandomProjection, SparseRandomProj
 
 from sql_transform.native._carry import SLACK, TINY, carried, gamma, shifted
 from sql_transform.native._helpers import f64
-from sql_transform.native._registry import Carry, ErrorScale, NotNative, translates
+from sql_transform.native._registry import (
+    MAX_BUILD_S,
+    Carry,
+    ErrorScale,
+    NotNative,
+    build_estimate,
+    translates,
+)
 
 _EPS = float(np.finfo(np.float64).eps)
 _TINY = 2.0**-1074
@@ -205,12 +212,8 @@ def _project_carry(est: Any) -> Carry:
     return carry
 
 
-# The longest build the entry takes on for one estimator, in seconds, by
-# `_build_estimate` (as quantile.py's, spline.py's and trees.py's caps).
-MAX_BUILD_S = 7.0
-
-
-def _build_estimate(n: int, k: int) -> float:
+@build_estimate(n=6.10e-4, nk=9.28e-5, n2k=2.14e-8, nk2=6.82e-8, n2=1.14e-7)
+def _build_estimate(n: int, k: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` (release build) of a step
     whose products read `coalesce(x, NaN)`, past the reach of
     `_centered_build_estimate` (`_reads_apart`), from its n features and k
@@ -229,12 +232,17 @@ def _build_estimate(n: int, k: int) -> float:
     it, and one component over 6,144 features built in 9.5 s against an
     estimate of 5.0 s (finding 87)."""
     p = n * k
-    return (
-        6.10e-4 * n + 9.28e-5 * p + 2.14e-8 * p * n + 6.82e-8 * p * k + 1.14e-7 * n * n
-    )
+    return {
+        "n": (n,),
+        "nk": (p,),
+        "n2k": (p, n),
+        "nk2": (p, k),
+        "n2": (n, n),
+    }
 
 
-def _centered_build_estimate(n: int, k: int) -> float:
+@build_estimate(plain=1.0, shared_n2k=3.01e-8, list_n2=2.99e-7)
+def _centered_build_estimate(n: int, k: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native`, as `_build_estimate`,
     where each product reads a value that confit shares: the feature's
     difference from the mean of a centered projection that subtracts one
@@ -260,11 +268,11 @@ def _centered_build_estimate(n: int, k: int) -> float:
     the estimate had no term in n²: these builds took 0.96 to 2.04 times it,
     and `FastICA` of 2 components over 4,096 features built in 11.7 s as a
     list against an estimate of 5.9 s (finding 87)."""
-    return (
-        _build_estimate(n, k)
-        + 3.01e-8 * n * n * k
-        + (2.99e-7 * n * n if k > 1 else 0.0)
-    )
+    return {
+        "plain": (_build_estimate(n, k),),
+        "shared_n2k": (n, n, k),
+        "list_n2": (n, n) if k > 1 else (0.0,),
+    }
 
 
 def _refuse_past_cap(
@@ -321,6 +329,7 @@ def _tree(terms: list[S.Expr]) -> S.Expr:
     GaussianRandomProjection,
     scale=MATVEC,
     apart=_reads_apart,
+    builds=(_build_estimate, _centered_build_estimate),
     carry=_project_carry,
     sum_products=_project_products,
 )
@@ -425,7 +434,17 @@ def _repeated_sums(c: Any) -> int:
     return sum(1 for v in reads.values() if v >= 2)
 
 
-def _sparse_build_estimate(c: Any) -> float:
+@build_estimate(
+    n=4.99e-4,
+    n2=1.08e-7,
+    stored=6.43e-5,
+    stored2=2.72e-7,
+    nk=6.55e-6,
+    n2k=2.22e-9,
+    k2=1.30e-7,
+    repeated=1.68e-5,
+)
+def _sparse_build_estimate(c: Any) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` (release build) of a
     `SparseRandomProjection` whose CSR `components_` is `c`: the
     translation, the probe (`_registry._probed`) and confit's trial build
@@ -465,16 +484,16 @@ def _sparse_build_estimate(c: Any) -> float:
     m = np.diff(c.indptr).astype(np.float64)
     p, q = float(m.sum()), float(m @ m)
     r = _repeated_sums(c)
-    return (
-        4.99e-4 * n
-        + 1.08e-7 * n * n
-        + 6.43e-5 * p
-        + 2.72e-7 * q
-        + 6.55e-6 * n * k
-        + 2.22e-9 * n * n * k
-        + 1.30e-7 * k * k
-        + 1.68e-5 * k * r
-    )
+    return {
+        "n": (n,),
+        "n2": (n, n),
+        "stored": (p,),
+        "stored2": (q,),
+        "nk": (n, k),
+        "n2k": (n, n, k),
+        "k2": (k, k),
+        "repeated": (k, r),
+    }
 
 
 def _sparse_carry(est: Any) -> Carry:
@@ -513,6 +532,7 @@ def _sparse_carry(est: Any) -> Carry:
     scale=MATVEC,
     scaled=lambda est: not sparse.issparse(est.components_),
     apart=lambda est: sparse.issparse(est.components_) or _reads_apart(est),
+    builds=(_sparse_build_estimate, _build_estimate, _centered_build_estimate),
     carry=_sparse_carry,
     sum_products=_project_products,
 )
@@ -702,6 +722,7 @@ def _refuse_a_degenerate_ica(est: Any, name: str) -> None:
     *_CENTERED,
     scale=CENTERED,
     apart=_reads_apart,
+    builds=(_build_estimate, _centered_build_estimate),
     carry=_centered_carry,
     sum_products=_centered_products,
 )
@@ -1068,7 +1089,15 @@ def _factor_carry(est: Any) -> Carry:
     return carry
 
 
-def _factor_build_estimate(n: int, k: int) -> float:
+@build_estimate(
+    n=5.97e-4,
+    nk=4.70e-5,
+    n2k=1.78e-7,
+    nk2=3.07e-7,
+    list_n2=1.89e-7,
+    k2=8.48e-5,
+)
+def _factor_build_estimate(n: int, k: int) -> dict[str, tuple[float, ...]]:
     """The seconds of the whole warm `to_native` (release build) of a
     `FactorAnalysis` of n features and k components: the translation,
     which computes D (`_factor_prior`), the probe (`_registry._probed`) and
@@ -1091,19 +1120,20 @@ def _factor_build_estimate(n: int, k: int) -> float:
     over 512, 25 over 1,024, 5 over 2,048 or 1 over 4,096, and one
     component over 4,700 features."""
     p = n * k
-    return (
-        5.97e-4 * n
-        + 4.70e-5 * p
-        + 1.78e-7 * p * n
-        + 3.07e-7 * p * k
-        + (1.89e-7 * n * n if k > 1 else 0.0)
-        + 8.48e-5 * k * k
-    )
+    return {
+        "n": (n,),
+        "nk": (p,),
+        "n2k": (p, n),
+        "nk2": (p, k),
+        "list_n2": (n, n) if k > 1 else (0.0,),
+        "k2": (k, k),
+    }
 
 
 @translates(
     FactorAnalysis,
     scale=FACTOR,
+    builds=(_factor_build_estimate,),
     carry=_factor_carry,
     sum_products=_factor_products,
 )
